@@ -1,0 +1,105 @@
+services:
+  db:
+    image: "postgres:alpine"
+    environment:
+      - POSTGRES_USER=vinta_schedule_api
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=vinta_schedule_api
+    ports:
+      - "5432:5432"
+    volumes:
+      - dbdata:/var/lib/postgresql/data:delegated
+
+  broker:
+    image: "rabbitmq:alpine"
+
+  result:
+    image: "redis:alpine"
+    ports:
+    - "6379:6379"
+
+  api:
+    build:
+      dockerfile: Dockerfile.development
+      context: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/home/user/app/
+      - virtualenv:/home/user/app/.venv:delegated
+    env_file: .env
+    depends_on:
+      - db
+      - broker
+      - result
+      - mailpit
+      - localstack
+    stdin_open: true
+    tty: true
+
+  worker:
+    build:
+      dockerfile: Dockerfile.development
+      context: .
+    command: poetry run celery --app=vinta_schedule_api worker --loglevel=info
+    volumes:
+      - ./:/home/user/app/
+      - virtualenv:/home/user/app/.venv:delegated
+    env_file: .env
+    depends_on:
+      - db
+      - broker
+      - result
+    stdin_open: true
+    tty: true
+
+  mailpit:
+    image: axllent/mailpit
+    restart: unless-stopped
+    volumes:
+      - ./.mailpit-data:/data
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_DATABASE: /data/mailpit.db
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    networks:
+      - default
+
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - '4566:4566'
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - DEBUG=1
+      - SERVICES=s3
+      - DEFAULT_REGION=us-east-1
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - BUCKET_NAME=vinta_schedule
+      - S3_SKIP_SIGNATURE_VALIDATION=1
+      - S3_SKIP_KMS_KEY_VALIDATION=1
+      - DISABLE_CORS_CHECKS=1
+      - HOSTNAME_EXTERNAL=localhost
+      - CORS_ALLOWED_ORIGINS=*
+      - CORS_ALLOWED_HEADERS=*
+      - CORS_ALLOWED_METHODS=GET,POST,PUT,DELETE,HEAD,OPTIONS
+
+
+volumes:
+  dbdata:
+    name: vinta_schedule_api_dbdata
+    external: true
+  localstack_data:
+    name: vinta_schedule_api_localstack_data
+    external: true
+  virtualenv:
+    name: vinta_schedule_api_virtualenv
+    external: true

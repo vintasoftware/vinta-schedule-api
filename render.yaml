@@ -1,0 +1,134 @@
+databases:
+  - name: vinta_schedule_api-postgres
+    databaseName: vinta_schedule_api
+    plan: free
+    user: vinta_schedule_api
+
+services:
+  - type: redis
+    name: vinta_schedule_api-redis
+    plan: free
+    ipAllowList: [] # only allow internal connections
+
+  - type: web
+    name: vinta_schedule_api
+    plan: free
+    runtime: python
+    buildCommand: "./render_build.sh"
+    startCommand: "poetry run gunicorn vinta_schedule_api.wsgi:application --chdir backend --limit-request-line 8188 --log-file -"
+    envVars:
+      - key: ENABLE_DJANGO_COLLECTSTATIC
+        value: 1
+      - key: AUTO_MIGRATE
+        value: 1
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vinta_schedule_api-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: vinta_schedule_api-redis
+          property: connectionString
+      - fromGroup: python-services
+      - fromGroup: integrations-credentials
+
+  # As there aren't free plans for Workers in Render, the configuration for
+  # celery workers/beat will be commented by default
+  #
+  # - type: worker
+  #   name: worker-default
+  #   runtime: python
+  #   env: python
+  #   buildCommand: poetry install
+  #   startCommand: "poetry run celery --workdir backend --app=vinta_schedule_api worker --loglevel=info --max-memory-per-child=$WORKER_MAX_MEMORY  --concurrency=$WORKER_CONCURRENCY"
+  #   envVars:
+  #     - key: REMAP_SIGTERM
+  #       value: SIGQUIT
+  #     - key: CELERY_BROKER_POOL_LIMIT
+  #       value: 1
+  #     - key: CELERY_BROKER_CONNECTION_TIMEOUT
+  #       value: 30.0
+  #     - key: CELERY_REDIS_MAX_CONNECTIONS
+  #       value: null
+  #     - key: CELERY_TASK_ACKS_ON_FAILURE_OR_TIMEOUT
+  #       value: true
+  #     - key: CELERY_TASK_REJECT_ON_WORKER_LOST
+  #       value: false
+  #     - key: CELERY_WORKER_PREFETCH_MULTIPLIER
+  #       value: 1
+  #     - key: CELERY_WORKER_CONCURRENCY
+  #       value: null
+  #     - key: CELERY_WORKER_MAX_TASKS_PER_CHILD
+  #       value: 1000
+  #     - key: CELERY_WORKER_SEND_TASK_EVENTS
+  #       value: true
+  #     - key: CELERY_EVENT_QUEUE_EXPIRES
+  #       value: 60.0
+  #     - key: CELERY_EVENT_QUEUE_TTL
+  #       value: 5.0
+  #     - key: WORKER_MAX_MEMORY
+  #       sync: false
+  #     - key: WORKER_CONCURRENCY
+  #       sync: false
+  #     - key: DATABASE_URL
+  #       fromDatabase:
+  #         name: vinta_schedule_api-postgres
+  #         property: connectionString
+  #     - key: REDIS_URL
+  #       fromService:
+  #         type: redis
+  #         name: vinta_schedule_api-redis
+  #         property: connectionString
+  #     - fromGroup: python-services
+  #     - fromGroup: integrations-credentials
+  # - type: worker
+  #   name: beat
+  #   runtime: python
+  #   env: python
+  #   buildCommand: poetry install
+  #   startCommand: "poetry run celery --workdir backend --app=vinta_schedule_api beat --loglevel=info"
+  #   envVars:
+  #     - key: REMAP_SIGTERM
+  #       value: SIGQUIT
+  #     - key: DATABASE_URL
+  #       fromDatabase:
+  #         name: vinta_schedule_api-postgres
+  #         property: connectionString
+  #     - key: REDIS_URL
+  #       fromService:
+  #         type: redis
+  #         name: vinta_schedule_api-redis
+  #         property: connectionString
+  #     - fromGroup: python-services
+  #     - fromGroup: integrations-credentials
+
+envVarGroups:
+  - name: python-services
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.0
+      - key: POETRY_VERSION
+        value: 2.1.3
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DJANGO_SETTINGS_MODULE
+        value: vinta_schedule_api.settings.production
+      - key: ALLOWED_HOSTS
+        value: '*'
+      - key: SITE_DOMAIN
+        value: 'https://vinta_schedule-site.onrender.com'
+      - key: API_DOMAIN
+        value: 'https://vinta_schedule-api.onrender.com'
+      - key: SENTRY_DSN
+        value: apikey
+      - key: DEFAULT_BCC_EMAILS
+        value: 'hugo@bessa.me'
+  - name: integrations-credentials
+    envVars:
+      - key: SMTP_HOST
+        value: apikey
+      - key: SMTP_USERNAME
+        value: apikey
+      - key: SMTP_PASSWORD
+        value: apikey

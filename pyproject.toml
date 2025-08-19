@@ -1,0 +1,210 @@
+[tool.poetry]
+name = "vinta_schedule_api"
+version = "0.1.0"
+description = "Django 5, React, Bootstrap 5 with Python 3 and webpack project boilerplate"
+authors = ["Vinta Software <contact@vinta.com.br>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "~3.13"
+Django = "^5.2"
+celery = "^5.5.2"
+celery-redbeat = "^2.3.2"
+django-model-utils = "^5.0.0"
+django-import-export = "^4.3.7"
+djangorestframework = "^3.16.0"
+python-decouple-typed = "^3.11"
+psycopg = "^3.2.8"
+brotlipy = "^0.7.0"
+django-log-request-id = "^2.1.0"
+dj-database-url = "^2.3.0"
+gunicorn = "^23.0.0"
+whitenoise = "^6.9.0"
+ipython = "8.36.0"
+sentry-sdk = "^2.28.0"
+setuptools = "^80.4.0"
+django-permissions-policy = "^4.26.0"
+django-csp = "^4.0"
+django-defender = "^0.9.8"
+django-guid = "^3.5.1"
+drf-spectacular = "^0.28.0"
+drf-rw-serializers = "^1.4.0"
+django-allauth = {extras = ["socialaccount", "mfa"], version ="^65.10.0"}
+pillow = "^11.2.1"
+django-virtual-models = "^0.4.0"
+django-s3direct = "^2.0.3"
+djangorestframework-simplejwt = "^5.5.0"
+mercadopago = "^2.3.0"
+boto3 = "^1.38.13"
+django-storages = "^1.14.6"
+sqlalchemy = "^2.0.40"
+python-git = "^2018.2.1"
+vintasend = "^0.1.4"
+vintasend-django = "^0.1.4"
+vintasend-celery = "^0.1.4"
+celery-types = "^0.23.0"
+pytest-xdist = {extras = ["psutil"], version = "^3.6.1"}
+django-filter = "^25.1"
+dependency-injector = "^4.47.0"
+cuid2 = "^2.0.1"
+google-api-python-client = "^2.172.0"
+google-auth-httplib2 = "^0.2.0"
+google-auth-oauthlib = "^1.2.2"
+django-fernet-encrypted-fields = "^0.3.0"
+pyrate-limiter = "^3.7.1"
+redis = "^6.2.0"
+django-cors-headers = "^4.7.0"
+twilio = "^9.6.5"
+
+[tool.poetry.group.dev.dependencies]
+coverage = "^7.2.7"
+model-bakery = "^1.12.0"
+pre-commit = "^3.3.3"
+ruff = "^0.11.9"
+mypy = "^1.15.0"
+django-stubs = {extras = ["compatible-mypy"], version = "^5.2.0"}
+djangorestframework-stubs = {extras = ["compatible-mypy"], version = "^3.16.0"}
+tblib = "^3.1.0"
+freezegun = "^1.5.1"
+pytest = "^8.3.5"
+pytest-django = "^4.11.1"
+pytest-cov = "^6.1.1"
+ipdb = "^0.13.13"
+
+[build-system]
+requires = ["poetry-core>=1.2.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pep8-naming
+    "N",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-bandit
+    "S",
+    # flake8-blind-except
+    "BLE",
+    # flake8-builtins
+    "A",
+    # flake8-django
+    "DJ",
+    # isort
+    "I",
+    # flake8-logging-format
+    "G",
+    # flake8-no-pep420
+    "INP",
+    # Ruff-specific rules
+    "RUF"
+]
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    "virtualenvs",
+    "**/migrations/**"
+]
+ignore = [
+  # Disable eradicate (commented code removal)
+  "ERA001",
+  # Disable Conflicting lint rules,
+  # see https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
+  "W191",
+  "E501",
+  "E111",
+  "E117",
+  "D206",
+  "D300",
+  "Q000",
+  "Q001",
+  "Q002",
+  "Q003",
+  "COM812",
+  "COM819",
+  "ISC001",
+  "ISC002",
+  # Disable unused `noqa` directive
+  "RUF100",
+]
+line-length = 100
+indent-width = 4
+target-version = "py312"
+# Allow unused variables when underscore-prefixed:
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.pycodestyle]
+ignore-overlong-task-comments = true
+
+[tool.ruff.lint.isort]
+section-order = ["future", "standard-library", "django", "third-party", "first-party", "local-folder"]
+lines-after-imports = 2
+
+[tool.ruff.lint.isort.sections]
+# Group all Django imports into a separate section.
+"django" = ["django"]
+
+[tool.ruff.per-file-ignores]
+# Ignore "E402", "F403", "F405" (import violations) in __init__.py files.
+# Ignore "S" (flake8-bandit) and "N802" (function name should be lowercase) in tests and docs.
+# Ignore "RUF" (Ruff-specific rules) and "I" (isort) in migrations.
+"__init__.py" = ["E402", "F403", "F405"]
+"**/{tests,docs}/*" = ["E402", "F403", "F405", "S", "N802"]
+"**/*test*.py" = ["E402", "F403", "F405", "S", "N802"]
+"**/{settings}/*" = ["E402", "F403", "F405"]
+"**/migrations/*" = ["RUF", "I"]
+
+[tool.coverage.run]
+branch = true
+omit = [
+  "manage.py",
+  "conftest.py",
+  "**/venv/*",
+  "**/env/*",
+  "**/virtualenvs/*",
+  "**/node_modules/*",
+  "**/migrations/*",
+  "**/settings/*",
+  "**/tests/*",
+  "**/factories/*",
+  "**/vinta_schedule_api/*"
+]
+
+[tool.mypy]
+python_version = "3.13"
+plugins = [
+  "mypy_django_plugin.main",
+  "mypy_drf_plugin.main",
+]
+
+[[tool.mypy.overrides]]
+module = ["allauth.*", "googleapiclient.*", "storages.*", "twilio.*", "django_filters.*", "mercadopago.*", "s3direct.*", "encrypted_fields.*"]
+ignore_missing_imports = true
+
+[tool.django-stubs]
+django_settings_module = "vinta_schedule_api.settings.local"

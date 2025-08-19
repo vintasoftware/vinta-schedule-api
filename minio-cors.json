@@ -1,0 +1,11 @@
+{
+  "Rules": [
+    {
+      "AllowedOrigin": ["*"],
+      "AllowedMethod": ["GET", "PUT", "POST"],
+      "AllowedHeader": ["*"],
+      "ExposeHeader": ["ETag"],
+      "MaxAgeSeconds": 3000
+    }
+  ]
+}

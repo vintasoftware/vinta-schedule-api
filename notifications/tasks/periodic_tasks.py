@@ -1,0 +1,6 @@
+from vintasend_celery.tasks.periodic_tasks import periodic_send_pending_notifications_task_factory
+
+from vinta_schedule_api.celery import app
+
+
+periodic_send_pending_notifications_task = periodic_send_pending_notifications_task_factory(app)

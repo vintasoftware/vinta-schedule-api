@@ -1,0 +1,87 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/docker-existing-docker-compose
+{
+	"name": "vinta_schedule API",
+
+	// Update the 'dockerComposeFile' list if you have more compose files or use different names.
+	// The .devcontainer/docker-compose.yml file contains any overrides you need/want to make.
+	"dockerComposeFile": [
+		"../docker-compose.yml",
+		"docker-compose.yml"
+	],
+
+	// The 'service' property is the name of the service for the container that VS Code should
+	// use. Update this value and .devcontainer/docker-compose.yml to the real service name.
+	"service": "api",
+
+	// The optional 'workspaceFolder' property is the path VS Code should open by default when
+	// connected. This is typically a file mount in .devcontainer/docker-compose.yml
+	"workspaceFolder": "/home/user/app",
+
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	// "features": {},
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	// Uncomment the next line if you want start specific services in your Docker Compose config.
+	// "runServices": [],
+
+	// Uncomment the next line if you want to keep your containers running after VS Code shuts down.
+	// "shutdownAction": "none",
+
+	// Uncomment the next line to run commands after the container is created.
+	"postCreateCommand": "poetry install --no-root --no-interaction --no-ansi --with=dev",
+
+	// Configure tool-specific properties.
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"adpyke.vscode-sql-formatter",
+				"gruntfuggly.todo-tree",
+				"mikestead.dotenv",
+				"ms-python.python",
+				"charliermarsh.ruff",
+				"streetsidesoftware.code-spell-checker",
+				"ms-python.mypy-type-checker",
+				"eamodio.gitlens", // GitLens is a Git supercharged
+				"GrapeCity.gc-excelviewer", // Excel/CSV Viewer
+				"wmaurer.change-case", // Change text Case
+				"njpwerner.autodocstring" // AutoDocstring
+			],
+			"settings": {
+				"terminal.integrated.inheritEnv": true,
+				"python.defaultInterpreterPath": "/home/user/app/.venv/bin/python",
+				"python.analysis.autoImportCompletions": true,
+				"python.analysis.typeCheckingMode": "off",
+				"emmet.includeLanguages": {
+					"django-html": "html"
+				},
+				"editor.defaultFormatter": "charliermarsh.ruff",
+				"editor.formatOnSave": true,
+				"editor.codeActionsOnSave": {
+					"source.organizeImports": "always"
+				},
+				"[django-html]": {
+					"editor.defaultFormatter": null
+				},
+				"python.linting.mypyEnabled": true,
+				"python.linting.enabled": true,
+				"cSpell.words": [
+					"vinta_schedule",
+					"idempotency",
+					"mentee",
+					"mentees",
+					"MERCADOPAGO",
+					"preapproval",
+					"preheader",
+					"viewset",
+					"filterset"
+				]
+			}
+		}
+	}
+
+	// Uncomment to connect as an existing user other than the container default. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "devcontainer"
+}
