@@ -1,3 +1,8 @@
+---
+description: RPC Service boilerplate
+globs:
+alwaysApply: false
+---
 # Copilot Contribution Instructions
 
 Welcome to the Vinta Schedule project! This guide provides instructions for contributing to the codebase, with details on architecture, patterns, and best practices.
@@ -17,7 +22,7 @@ Welcome to the Vinta Schedule project! This guide provides instructions for cont
 - Use custom managers to encapsulate query logic and expose domain-specific methods.
 - Querysets should be chainable and composable.
 - No complex queryset should be created within services/views/serializers. We must always define methods in custom managers/querysets to simplify the code and centralize querying logic.
-- Example: see `calendar_integration/managers.py` and `calendar_integration/querysets.py`.
+- Example: see @calendar_integration/managers.py and @calendar_integration/querysets.py.
 
 ## Django Virtual Models
 - We use [`django-virtual-models`](https://github.com/vintasoftware/django-virtual-models) for optimizing Django ORM querysets based on the Django REST Framework Serializers attached on views/endpoints. 
@@ -25,7 +30,7 @@ Welcome to the Vinta Schedule project! This guide provides instructions for cont
 - Use virtual models for optimizing querysets in API responses. 
 
 ## Custom Views (common app)
-- Shared views are defined in `common/views.py`.
+- Shared views are defined in @common/views.py.
 - Use these views for reusable logic across apps.
 - When creating new views, prefer class-based views/viewsets and leverage mixins from the common app.
 
