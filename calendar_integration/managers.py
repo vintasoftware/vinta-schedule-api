@@ -2,6 +2,7 @@ import datetime
 from collections.abc import Iterable
 
 from calendar_integration.querysets import (
+    CalendarEventQuerySet,
     CalendarQuerySet,
     CalendarSyncQuerySet,
 )
@@ -50,6 +51,20 @@ class CalendarManager(BaseOrganizationModelManager):
         :return: QuerySet of calendars available in the specified range.
         """
         return self.get_queryset().only_calendars_available_in_ranges(ranges=ranges)
+
+
+class CalendarEventManager(BaseOrganizationModelManager):
+    """Custom manager for CalendarEvent model to handle specific queries."""
+
+    def get_queryset(self):
+        return CalendarEventQuerySet(self.model, using=self._db)
+
+    def annotate_recurring_occurrences_on_date_range(
+        self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000
+    ):
+        return self.get_queryset().annotate_recurring_occurrences_on_date_range(
+            start, end, max_occurrences
+        )
 
 
 class CalendarSyncManager(BaseOrganizationModelManager):

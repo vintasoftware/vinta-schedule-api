@@ -1,4 +1,3 @@
-import calendar
 import datetime
 from typing import TYPE_CHECKING
 
@@ -19,6 +18,7 @@ from calendar_integration.constants import (
     RSVPStatus,
 )
 from calendar_integration.managers import (
+    CalendarEventManager,
     CalendarManager,
     CalendarSyncManager,
 )
@@ -524,6 +524,8 @@ class CalendarEvent(OrganizationModel):
     external_attendances: "RelatedManager[EventExternalAttendance]"
     recurring_instances: "RelatedManager[CalendarEvent]"
 
+    objects: CalendarEventManager = CalendarEventManager()
+
     def __str__(self):
         return f"{self.title} ({self.start_time} - {self.end_time})"
 
@@ -548,7 +550,9 @@ class CalendarEvent(OrganizationModel):
         """
         return self.end_time - self.start_time
 
-    def get_next_occurrence(self, after_date=None):
+    def get_next_occurrence(
+        self, after_date: datetime.datetime | None = None
+    ) -> "CalendarEvent | None":
         """
         Get the next occurrence of this recurring event after the given date.
         If no date is provided, uses the current time.
@@ -556,245 +560,45 @@ class CalendarEvent(OrganizationModel):
         if not self.is_recurring:
             return None
 
-        if after_date is None:
-            after_date = datetime.datetime.now(datetime.UTC)
+        after_date = after_date or timezone.now()
 
-        # Ensure after_date is timezone-aware
-        if after_date.tzinfo is None:
-            after_date = timezone.make_aware(after_date)
+        try:
+            # Add microsecond to ensure we get occurrences strictly after the given date
+            search_start_date = after_date + datetime.timedelta(microseconds=1)
 
-        # Start from the event's start time
-        current_date = self.start_time
-        rule = self.recurrence_rule
+            # Use rule's until date if specified, otherwise use a reasonable future date
+            if self.recurrence_rule and self.recurrence_rule.until:
+                end_date = min(
+                    self.recurrence_rule.until + datetime.timedelta(days=1),
+                    after_date + datetime.timedelta(days=10 * 365),
+                )
+            else:
+                end_date = after_date + datetime.timedelta(days=10 * 365)
 
-        # If we have an end date/count limit, check if we've exceeded it
-        if rule.until and after_date > rule.until:
+            # Get just the next occurrence after the given date
+            future_occurrences = self.get_occurrences_in_range(
+                start_date=search_start_date,
+                end_date=end_date,
+                include_self=False,
+                include_exceptions=False,
+                max_occurrences=1,
+            )
+
+            if not future_occurrences:
+                return None
+
+            return future_occurrences[0]
+        except (IndexError, AttributeError):
             return None
 
-        # Simple implementation for basic recurrence patterns
-        if rule.frequency == RecurrenceFrequency.DAILY:
-            # Calculate days between start and after_date
-            days_diff = (after_date.date() - current_date.date()).days
-            if days_diff < 0:
-                # after_date is before start_time
-                return current_date
-
-            # Calculate next occurrence
-            next_occurrence_days = ((days_diff // rule.interval) + 1) * rule.interval
-            next_occurrence = current_date + datetime.timedelta(days=next_occurrence_days)
-
-            # Check count limit
-            if rule.count and next_occurrence_days >= rule.count:
-                return None
-
-            return next_occurrence
-
-        elif rule.frequency == RecurrenceFrequency.WEEKLY:
-            # Calculate weeks between start and after_date
-            weeks_diff = (after_date.date() - current_date.date()).days // 7
-            if weeks_diff < 0:
-                return current_date
-
-            next_occurrence_weeks = ((weeks_diff // rule.interval) + 1) * rule.interval
-            next_occurrence = current_date + datetime.timedelta(weeks=next_occurrence_weeks)
-
-            # Check count limit
-            if rule.count and next_occurrence_weeks >= rule.count:
-                return None
-
-            return next_occurrence
-
-        elif rule.frequency == RecurrenceFrequency.MONTHLY:
-            # Simple monthly recurrence (same day of month)
-            months_diff = (after_date.year - current_date.year) * 12 + (
-                after_date.month - current_date.month
-            )
-            if months_diff < 0 or (months_diff == 0 and after_date.day < current_date.day):
-                return current_date
-
-            next_occurrence_months = ((months_diff // rule.interval) + 1) * rule.interval
-
-            # Check count limit
-            if rule.count and next_occurrence_months >= rule.count:
-                return None
-
-            # Calculate next month/year
-            target_month = current_date.month + next_occurrence_months
-            target_year = current_date.year + ((target_month - 1) // 12)
-            target_month = ((target_month - 1) % 12) + 1
-
-            try:
-                next_occurrence = current_date.replace(year=target_year, month=target_month)
-                return next_occurrence
-            except ValueError:
-                # Handle cases like Feb 31 -> Feb 28/29
-                last_day = calendar.monthrange(target_year, target_month)[1]
-                if current_date.day > last_day:
-                    next_occurrence = current_date.replace(
-                        year=target_year, month=target_month, day=last_day
-                    )
-                    return next_occurrence
-                return None
-
-        elif rule.frequency == RecurrenceFrequency.YEARLY:
-            # Simple yearly recurrence
-            years_diff = after_date.year - current_date.year
-            if years_diff < 0 or (
-                years_diff == 0
-                and after_date.timetuple().tm_yday < current_date.timetuple().tm_yday
-            ):
-                return current_date
-
-            next_occurrence_years = ((years_diff // rule.interval) + 1) * rule.interval
-
-            # Check count limit
-            if rule.count and next_occurrence_years >= rule.count:
-                return None
-
-            try:
-                next_occurrence = current_date.replace(
-                    year=current_date.year + next_occurrence_years
-                )
-                return next_occurrence
-            except ValueError:
-                # Handle leap year edge case (Feb 29)
-                next_occurrence = current_date.replace(
-                    year=current_date.year + next_occurrence_years, day=28
-                )
-                return next_occurrence
-
-        return None
-
-    def generate_instances(self, start_date, end_date):
-        """
-        Generate recurring event instances between start_date and end_date.
-        Returns a list of CalendarEvent instances (not saved to database).
-        """
-        if not self.is_recurring:
-            return []
-
-        instances = []
-        current_date = self.start_time
-        rule = self.recurrence_rule
-        occurrence_count = 0
-
-        # Get all existing exceptions for this recurring event
-        exceptions = set()
-        if hasattr(self, "recurrence_exceptions"):
-            exceptions = set(exc.exception_date for exc in self.recurrence_exceptions.all())
-
-        while current_date <= end_date:
-            # Check if we've hit the until date
-            if rule.until and current_date > rule.until:
-                break
-
-            # Check if we've hit the count limit
-            if rule.count and occurrence_count >= rule.count:
-                break
-
-            # If this occurrence is within our date range and not an exception
-            if current_date >= start_date and current_date not in exceptions:
-                # Create an instance (not saved to database)
-                instance = CalendarEvent(
-                    calendar=self.calendar,
-                    organization=self.organization,
-                    title=self.title,
-                    description=self.description,
-                    start_time=current_date,
-                    end_time=current_date + self.duration,
-                    external_id=f"{self.external_id}_instance_{current_date.isoformat()}"
-                    if self.external_id
-                    else "",
-                    recurrence_id=current_date,
-                    parent_event=self,
-                    is_recurring_exception=False,
-                )
-                instances.append(instance)
-
-            # Calculate next occurrence
-            if rule.frequency == RecurrenceFrequency.DAILY:
-                current_date += datetime.timedelta(days=rule.interval)
-
-            elif rule.frequency == RecurrenceFrequency.WEEKLY:
-                if rule.by_weekday:
-                    # Handle specific weekdays (e.g., MO,WE,FR)
-                    weekdays = [day.strip() for day in rule.by_weekday.split(",")]
-                    weekday_map = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
-
-                    # Find next occurrence within the current week or next week
-                    current_weekday = current_date.weekday()
-                    found_next = False
-
-                    # Check remaining days in current week
-                    for day_abbr in weekdays:
-                        if day_abbr in weekday_map:
-                            target_weekday = weekday_map[day_abbr]
-                            if target_weekday > current_weekday:
-                                days_ahead = target_weekday - current_weekday
-                                current_date += datetime.timedelta(days=days_ahead)
-                                found_next = True
-                                break
-
-                    # If no day found in current week, go to next week
-                    if not found_next:
-                        # Move to next week and find first occurrence
-                        days_to_next_week = 7 - current_weekday
-                        current_date += datetime.timedelta(days=days_to_next_week)
-
-                        min_weekday = min(
-                            weekday_map[day] for day in weekdays if day in weekday_map
-                        )
-                        days_to_target = min_weekday - current_date.weekday()
-                        if days_to_target < 0:
-                            days_to_target += 7
-                        current_date += datetime.timedelta(days=days_to_target)
-
-                        # Skip additional weeks based on interval
-                        if rule.interval > 1:
-                            current_date += datetime.timedelta(weeks=rule.interval - 1)
-                else:
-                    # Simple weekly recurrence
-                    current_date += datetime.timedelta(weeks=rule.interval)
-
-            elif rule.frequency == RecurrenceFrequency.MONTHLY:
-                # Simple monthly recurrence (same day of month)
-                next_month = current_date.month + rule.interval
-                next_year = current_date.year + ((next_month - 1) // 12)
-                next_month = ((next_month - 1) % 12) + 1
-
-                try:
-                    current_date = current_date.replace(year=next_year, month=next_month)
-                except ValueError:
-                    # Handle cases like Feb 31 -> Feb 28/29
-                    last_day = calendar.monthrange(next_year, next_month)[1]
-                    if current_date.day > last_day:
-                        current_date = current_date.replace(
-                            year=next_year, month=next_month, day=last_day
-                        )
-                    else:
-                        break  # Something went wrong, exit
-
-            elif rule.frequency == RecurrenceFrequency.YEARLY:
-                try:
-                    current_date = current_date.replace(year=current_date.year + rule.interval)
-                except ValueError:
-                    # Handle leap year edge case (Feb 29)
-                    current_date = current_date.replace(
-                        year=current_date.year + rule.interval, day=28
-                    )
-            else:
-                # Unknown frequency, break to avoid infinite loop
-                break
-
-            occurrence_count += 1
-
-            # Safety check to prevent infinite loops
-            if occurrence_count > 1000:  # Reasonable limit
-                break
-
-        return instances
-
-    def get_occurrences_in_range(self, start_date, end_date, include_exceptions=True):
+    def get_occurrences_in_range(
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        include_self=True,
+        include_exceptions=True,
+        max_occurrences=10000,
+    ) -> list["CalendarEvent"]:
         """
         Get all occurrences of this event in the given date range.
         This includes both generated instances and any saved exceptions.
@@ -807,31 +611,76 @@ class CalendarEvent(OrganizationModel):
         Returns:
             List of CalendarEvent instances (mix of generated and saved events)
         """
-        occurrences = []
+        if not self.is_recurring:
+            return []
 
-        if self.is_recurring:
-            # Get generated instances
-            generated_instances = self.generate_instances(start_date, end_date)
-            occurrences.extend(generated_instances)
-
-            if include_exceptions and hasattr(self, "recurrence_exceptions"):
-                # Add modified exceptions that fall within the date range
-                for exception in self.recurrence_exceptions.filter(
-                    exception_date__gte=start_date,
-                    exception_date__lte=end_date,
-                    is_cancelled=False,
-                    modified_event__isnull=False,
-                ):
-                    if exception.modified_event:
-                        occurrences.append(exception.modified_event)
+        if hasattr(self, "recurring_occurrences"):
+            occurrences = self.recurring_occurrences
         else:
-            # For non-recurring events, just check if this event falls in the range
-            if start_date <= self.start_time <= end_date:
-                occurrences.append(self)
+            occurrences = (
+                self.__class__.objects.annotate_recurring_occurrences_on_date_range(
+                    start_date, end_date, max_occurrences
+                )
+                .filter(organization_id=self.organization_id, id=self.id)
+                .values_list("recurring_occurrences", flat=True)
+                .first()
+            )
 
-        # Sort by start time
-        occurrences.sort(key=lambda x: x.start_time)
-        return occurrences
+        all_exception_events_by_id: dict[int, CalendarEvent] = {
+            e.pk: e
+            for e in self.__class__.objects.filter(
+                organization_id=self.organization_id,
+                id__in=[o["modified_event_id"] for o in occurrences if "modified_event_id" in o],
+            )
+        }
+
+        events: list[CalendarEvent] = []
+        for occurrence in occurrences:
+            occurrence_start_time = datetime.datetime.fromisoformat(occurrence["start_time"])
+            occurrence_end_time = datetime.datetime.fromisoformat(occurrence["end_time"])
+            if (
+                include_self
+                and occurrence_start_time == self.start_time
+                and occurrence_end_time == self.end_time
+            ):
+                events.append(self)
+                continue
+
+            if occurrence["exception_type"] == "cancelled":
+                continue
+
+            if occurrence["modified_event_id"] and (
+                exception_event := all_exception_events_by_id.get(occurrence["modified_event_id"])
+            ):
+                if include_exceptions:
+                    events.append(exception_event)
+                continue
+
+            events.append(
+                CalendarEvent(
+                    calendar_fk=self.calendar,
+                    organization=self.organization,
+                    title=self.title,
+                    description=self.description,
+                    start_time=occurrence_start_time,
+                    end_time=occurrence_end_time,
+                    recurrence_rule_fk=self.recurrence_rule,
+                    recurrence_id=occurrence_start_time,
+                )
+            )
+
+        return events
+
+    def get_generated_occurrences_in_range(
+        self, start_date: datetime.datetime, end_date: datetime.datetime
+    ) -> list["CalendarEvent"]:
+        """
+        Generate recurring event instances between start_date and end_date.
+        Returns a list of CalendarEvent instances (not saved to database).
+        """
+        return self.get_occurrences_in_range(
+            start_date, end_date, include_self=False, include_exceptions=False
+        )
 
     def create_exception(self, exception_date, is_cancelled=True, modified_event=None):
         """

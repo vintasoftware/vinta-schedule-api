@@ -100,7 +100,7 @@ def test_calendar_event_get_next_occurrence_daily_basic():
     after_date = _dt(2025, 1, 2, 10)  # after second day occurrence
     next_occurrence = event.get_next_occurrence(after_date=after_date)
     # Should be Jan 3rd 09:00
-    assert next_occurrence == _dt(2025, 1, 3)
+    assert next_occurrence.start_time == _dt(2025, 1, 3)
 
 
 @pytest.mark.django_db
@@ -129,7 +129,7 @@ def test_calendar_event_get_next_occurrence_daily_count_limit():
     # After day2 (3rd occurrence) should return next occurrence only if count not exceeded.
     # Since count=3 means occurrences at Jan1, Jan2, Jan3 only, asking after Jan2 noon should give Jan3 09:00
     after_date = _dt(2025, 1, 2, 12)
-    assert event.get_next_occurrence(after_date=after_date) == _dt(2025, 1, 3)
+    assert event.get_next_occurrence(after_date=after_date).start_time == _dt(2025, 1, 3)
     # After the third occurrence finishes, there is no next occurrence
     after_last = _dt(2025, 1, 3, 12)
     assert event.get_next_occurrence(after_date=after_last) is None
@@ -161,7 +161,7 @@ def test_calendar_event_generate_instances_with_cancelled_exception():
     )
     # Cancel 3rd occurrence (Jan 3)
     event.create_exception(exception_date=_dt(2025, 1, 3), is_cancelled=True)
-    instances = event.generate_instances(_dt(2025, 1, 1), _dt(2025, 1, 7))
+    instances = event.get_generated_occurrences_in_range(_dt(2025, 1, 1), _dt(2025, 1, 7))
     dates = [inst.start_time.date() for inst in instances]
     assert _dt(2025, 1, 3).date() not in dates  # skipped
     # Other first five (except cancelled) present
@@ -506,7 +506,8 @@ def test_get_next_occurrence_after_date_none():
     )
     # Should return next occurrence after now
     result = event.get_next_occurrence()
-    assert isinstance(result, datetime.datetime)
+    assert result is not None
+    assert isinstance(result.start_time, datetime.datetime)
 
 
 @pytest.mark.django_db
@@ -526,7 +527,7 @@ def test_get_next_occurrence_after_date_before_start():
         recurrence_rule=rule,
     )
     after_date = datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC)
-    assert event.get_next_occurrence(after_date=after_date) == event.start_time
+    assert event.get_next_occurrence(after_date=after_date).start_time == event.start_time
 
 
 @pytest.mark.django_db
@@ -589,7 +590,7 @@ def test_get_next_occurrence_weekly():
     )
     after_date = datetime.datetime(2025, 1, 8, 9, 0, tzinfo=datetime.UTC)
     expected = event.start_time + datetime.timedelta(weeks=2)
-    assert event.get_next_occurrence(after_date=after_date) == expected
+    assert event.get_next_occurrence(after_date=after_date).start_time == expected
 
 
 @pytest.mark.django_db
@@ -613,11 +614,11 @@ def test_get_next_occurrence_monthly():
     after_date = datetime.datetime(2025, 2, 1, 9, 0, tzinfo=datetime.UTC)
     result = event.get_next_occurrence(after_date=after_date)
     # Accept either Feb or Mar, depending on code behavior
-    assert result.month in (2, 3)
-    if result.month == 2:
-        assert result.day in (28, 29)
-    elif result.month == 3:
-        assert result.day == 31
+    assert result.start_time.month in (2, 3)
+    if result.start_time.month == 2:
+        assert result.start_time.day in (28, 29)
+    elif result.start_time.month == 3:
+        assert result.start_time.day == 31
 
 
 @pytest.mark.django_db
@@ -639,27 +640,11 @@ def test_get_next_occurrence_yearly():
     after_date = datetime.datetime(2021, 3, 1, 9, 0, tzinfo=datetime.UTC)
     # Should handle leap year edge case
     result = event.get_next_occurrence(after_date=after_date)
-    assert result.year == 2022 and result.month == 2 and result.day == 28
-
-
-@pytest.mark.django_db
-def test_get_next_occurrence_unknown_frequency():
-    org = baker.make("organizations.Organization")
-    rule = baker.make(
-        RecurrenceRule,
-        organization=org,
-        frequency="UNKNOWN",
-        interval=1,
+    assert (
+        result.start_time.year == 2022
+        and result.start_time.month == 2
+        and result.start_time.day == 28
     )
-    event = baker.make(
-        CalendarEvent,
-        organization=org,
-        start_time=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
-        recurrence_rule=rule,
-    )
-    after_date = datetime.datetime(2025, 1, 2, 9, 0, tzinfo=datetime.UTC)
-    assert event.get_next_occurrence(after_date=after_date) is None
 
 
 @pytest.mark.django_db
@@ -675,7 +660,7 @@ def test_generate_instances_not_recurring():
         recurrence_rule=None,
     )
     assert (
-        event.generate_instances(
+        event.get_generated_occurrences_in_range(
             datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC),
             datetime.datetime(2025, 1, 10, tzinfo=datetime.UTC),
         )
@@ -703,7 +688,7 @@ def test_generate_instances_daily_until_and_count():
         end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
         recurrence_rule=rule,
     )
-    instances = event.generate_instances(
+    instances = event.get_generated_occurrences_in_range(
         datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC),
         datetime.datetime(2025, 1, 10, tzinfo=datetime.UTC),
     )
@@ -730,7 +715,7 @@ def test_generate_instances_weekly_by_weekday():
         end_time=datetime.datetime(2025, 1, 6, 10, 0, tzinfo=datetime.UTC),
         recurrence_rule=rule,
     )
-    instances = event.generate_instances(
+    instances = event.get_generated_occurrences_in_range(
         datetime.datetime(2025, 1, 6, tzinfo=datetime.UTC),
         datetime.datetime(2025, 1, 20, tzinfo=datetime.UTC),
     )
@@ -758,7 +743,7 @@ def test_generate_instances_weekly_simple():
         end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
         recurrence_rule=rule,
     )
-    instances = event.generate_instances(
+    instances = event.get_generated_occurrences_in_range(
         datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC),
         datetime.datetime(2025, 2, 1, tzinfo=datetime.UTC),
     )
@@ -783,7 +768,7 @@ def test_generate_instances_monthly_edge_case():
         end_time=datetime.datetime(2025, 1, 31, 10, 0, tzinfo=datetime.UTC),
         recurrence_rule=rule,
     )
-    instances = event.generate_instances(
+    instances = event.get_generated_occurrences_in_range(
         datetime.datetime(2025, 1, 31, tzinfo=datetime.UTC),
         datetime.datetime(2025, 3, 1, tzinfo=datetime.UTC),
     )
@@ -809,7 +794,7 @@ def test_generate_instances_yearly_leap_year():
         end_time=datetime.datetime(2020, 2, 29, 10, 0, tzinfo=datetime.UTC),
         recurrence_rule=rule,
     )
-    instances = event.generate_instances(
+    instances = event.get_generated_occurrences_in_range(
         datetime.datetime(2020, 2, 29, tzinfo=datetime.UTC),
         datetime.datetime(2022, 3, 1, tzinfo=datetime.UTC),
     )
@@ -836,7 +821,7 @@ def test_generate_instances_unknown_frequency():
         end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
         recurrence_rule=rule,
     )
-    instances = event.generate_instances(
+    instances = event.get_generated_occurrences_in_range(
         datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC),
         datetime.datetime(2025, 1, 10, tzinfo=datetime.UTC),
     )
@@ -870,10 +855,289 @@ def test_generate_instances_with_exceptions():
         exception_date=datetime.datetime(2025, 1, 3, 9, 0, tzinfo=datetime.UTC),
         is_cancelled=True,
     )
-    instances = event.generate_instances(
+    instances = event.get_generated_occurrences_in_range(
         datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC),
         datetime.datetime(2025, 1, 7, tzinfo=datetime.UTC),
     )
     dates = [inst.start_time.date() for inst in instances]
     assert datetime.date(2025, 1, 3) not in dates
-    assert len(instances) == 4
+    # Cancelled occurrences within search range don't count toward limit,
+    # so we should get 5 instances: Jan 1, 2, 4, 5, 6 (Jan 3 cancelled)
+    assert len(instances) == 5
+
+
+@pytest.mark.django_db
+def test_get_next_occurrence_with_cancelled_exception_before_range():
+    """Test that cancelled exceptions before search range don't count toward limit"""
+    org = baker.make("organizations.Organization")
+    cal = baker.make("calendar_integration.Calendar", organization=org)
+    rule = baker.make(
+        RecurrenceRule,
+        organization=org,
+        frequency=RecurrenceFrequency.DAILY,
+        interval=1,
+        count=3,  # Should generate 3 non-cancelled occurrences
+    )
+    event = baker.make(
+        CalendarEvent,
+        calendar_fk=cal,
+        organization=org,
+        title="Daily with Cancelled",
+        start_time=_dt(2025, 1, 1),
+        end_time=_dt(2025, 1, 1, 10),
+        recurrence_rule_fk=rule,
+    )
+
+    # Cancel the second occurrence (Jan 2)
+    event.create_exception(exception_date=_dt(2025, 1, 2), is_cancelled=True)
+
+    # Search for next occurrence after Jan 3 - should find Jan 4 since Jan 2 was cancelled
+    # and doesn't count toward the limit
+    after_date = _dt(2025, 1, 3, 12)
+    next_occurrence = event.get_next_occurrence(after_date=after_date)
+
+    # Should return Jan 4 because:
+    # - Jan 1: occurrence #1 (counts toward limit)
+    # - Jan 2: cancelled (doesn't count toward limit)
+    # - Jan 3: occurrence #2 (counts toward limit)
+    # - Jan 4: occurrence #3 (counts toward limit) - this should be returned
+    assert next_occurrence is not None
+    assert next_occurrence.start_time == _dt(2025, 1, 4)
+
+    # After Jan 4, there should be no more occurrences (limit reached)
+    after_last = _dt(2025, 1, 4, 12)
+    assert event.get_next_occurrence(after_date=after_last) is None
+
+
+@pytest.mark.django_db
+def test_get_next_occurrence_with_modified_exception_before_range():
+    """Test that modified exceptions before search range still count toward limit"""
+    org = baker.make("organizations.Organization")
+    cal = baker.make("calendar_integration.Calendar", organization=org)
+    rule = baker.make(
+        RecurrenceRule,
+        organization=org,
+        frequency=RecurrenceFrequency.DAILY,
+        interval=1,
+        count=3,  # Should generate exactly 3 occurrences
+    )
+    event = baker.make(
+        CalendarEvent,
+        calendar_fk=cal,
+        organization=org,
+        title="Daily with Modified",
+        start_time=_dt(2025, 1, 1),
+        end_time=_dt(2025, 1, 1, 10),
+        recurrence_rule_fk=rule,
+    )
+
+    # Create modified event for second occurrence (Jan 2) - move it to later time
+    modified = baker.make(
+        CalendarEvent,
+        calendar=cal,
+        organization=org,
+        title="Modified Occurrence",
+        start_time=_dt(2025, 1, 2, 15),  # moved to 3 PM
+        end_time=_dt(2025, 1, 2, 16),
+        parent_event=event,
+        is_recurring_exception=True,
+        external_id="modified-jan-2",
+    )
+    event.create_exception(
+        exception_date=_dt(2025, 1, 2), is_cancelled=False, modified_event=modified
+    )
+
+    # Search for next occurrence after Jan 2 - should find Jan 3
+    after_date = _dt(2025, 1, 2, 12)
+    next_occurrence = event.get_next_occurrence(after_date=after_date)
+    assert next_occurrence is not None
+    assert next_occurrence.start_time == _dt(2025, 1, 3)
+
+    # After Jan 3, there should be no more occurrences (limit reached)
+    # because the modified Jan 2 occurrence still counts toward the limit
+    after_last = _dt(2025, 1, 3, 12)
+    assert event.get_next_occurrence(after_date=after_last) is None
+
+
+@pytest.mark.django_db
+def test_get_occurrences_in_range_with_cancelled_before_range():
+    """Test generating occurrences when cancelled exceptions exist before the range"""
+    org = baker.make("organizations.Organization")
+    cal = baker.make("calendar_integration.Calendar", organization=org)
+    rule = baker.make(
+        RecurrenceRule,
+        organization=org,
+        frequency=RecurrenceFrequency.DAILY,
+        interval=1,
+        count=4,  # Should allow 4 non-cancelled occurrences
+    )
+    event = baker.make(
+        CalendarEvent,
+        calendar_fk=cal,
+        organization=org,
+        title="Daily with Early Cancellation",
+        start_time=_dt(2025, 1, 1),
+        end_time=_dt(2025, 1, 1, 10),
+        recurrence_rule_fk=rule,
+    )
+
+    # Cancel the first occurrence (Jan 1) - before our search range
+    event.create_exception(exception_date=_dt(2025, 1, 1), is_cancelled=True)
+
+    # Get occurrences starting from Jan 3 onward
+    occurrences = event.get_occurrences_in_range(
+        start_date=_dt(2025, 1, 3), end_date=_dt(2025, 1, 7)
+    )
+
+    # Should get Jan 3, 4, 5, 6 because Jan 1 was cancelled and doesn't count toward limit
+    # but we're only looking from Jan 3 onward, so we should see Jan 3, 4, 5
+    dates = [occ.start_time.date() for occ in occurrences]
+    expected_dates = [_dt(2025, 1, 3).date(), _dt(2025, 1, 4).date(), _dt(2025, 1, 5).date()]
+    assert dates == expected_dates
+
+
+@pytest.mark.django_db
+def test_get_occurrences_in_range_weekly_with_cancelled_before_range():
+    """Test weekly recurrence with cancelled exceptions before range"""
+    org = baker.make("organizations.Organization")
+    cal = baker.make("calendar_integration.Calendar", organization=org)
+    rule = baker.make(
+        RecurrenceRule,
+        organization=org,
+        frequency=RecurrenceFrequency.WEEKLY,
+        interval=1,
+        by_weekday="MO,WE,FR",
+        count=4,  # Should allow 4 non-cancelled occurrences
+    )
+    event = baker.make(
+        CalendarEvent,
+        calendar_fk=cal,
+        organization=org,
+        title="Weekly with Cancellation",
+        start_time=_dt(2025, 1, 6),  # Monday
+        end_time=_dt(2025, 1, 6, 10),
+        recurrence_rule_fk=rule,
+    )
+
+    # Cancel the first occurrence (Jan 6, Monday) - before our search range
+    event.create_exception(exception_date=_dt(2025, 1, 6), is_cancelled=True)
+
+    # Get occurrences starting from Jan 10 onward
+    occurrences = event.get_occurrences_in_range(
+        start_date=_dt(2025, 1, 10),  # Friday
+        end_date=_dt(2025, 1, 20),
+    )
+
+    # Should get Jan 10 (Fri), 13 (Mon), 15 (Wed)
+    # because Jan 6 was cancelled and doesn't count toward the limit
+    # but Jan 8 (Wed) before search range counts as occurrence #1,
+    # so we get 3 more occurrences within search range for total of 4
+    dates = [occ.start_time.date() for occ in occurrences]
+    expected_dates = [
+        _dt(2025, 1, 10).date(),  # Fri
+        _dt(2025, 1, 13).date(),  # Mon
+        _dt(2025, 1, 15).date(),  # Wed
+    ]
+    assert dates == expected_dates
+
+
+@pytest.mark.django_db
+def test_get_next_occurrence_multiple_cancellations_before_range():
+    """Test with multiple cancelled exceptions before search range"""
+    org = baker.make("organizations.Organization")
+    cal = baker.make("calendar_integration.Calendar", organization=org)
+    rule = baker.make(
+        RecurrenceRule,
+        organization=org,
+        frequency=RecurrenceFrequency.DAILY,
+        interval=1,
+        count=3,  # Should generate 3 non-cancelled occurrences
+    )
+    event = baker.make(
+        CalendarEvent,
+        calendar_fk=cal,
+        organization=org,
+        title="Daily with Multiple Cancellations",
+        start_time=_dt(2025, 1, 1),
+        end_time=_dt(2025, 1, 1, 10),
+        recurrence_rule_fk=rule,
+    )
+
+    # Cancel Jan 1 and Jan 2 (both before our search range)
+    event.create_exception(exception_date=_dt(2025, 1, 1), is_cancelled=True)
+    event.create_exception(exception_date=_dt(2025, 1, 2), is_cancelled=True)
+
+    # Search for next occurrence after Jan 4
+    after_date = _dt(2025, 1, 4, 12)
+    next_occurrence = event.get_next_occurrence(after_date=after_date)
+
+    # Should return Jan 5 because:
+    # - Jan 1: cancelled (doesn't count)
+    # - Jan 2: cancelled (doesn't count)
+    # - Jan 3: occurrence #1 (counts)
+    # - Jan 4: occurrence #2 (counts)
+    # - Jan 5: occurrence #3 (counts) - this should be returned
+    assert next_occurrence is not None
+    assert next_occurrence.start_time == _dt(2025, 1, 5)
+
+    # After Jan 5, there should be no more occurrences (limit reached)
+    after_last = _dt(2025, 1, 5, 12)
+    assert event.get_next_occurrence(after_date=after_last) is None
+
+
+@pytest.mark.django_db
+def test_get_next_occurrence_mixed_exceptions_before_range():
+    """Test with both cancelled and modified exceptions before search range"""
+    org = baker.make("organizations.Organization")
+    cal = baker.make("calendar_integration.Calendar", organization=org)
+    rule = baker.make(
+        RecurrenceRule,
+        organization=org,
+        frequency=RecurrenceFrequency.DAILY,
+        interval=1,
+        count=3,  # Should generate exactly 3 occurrence slots
+    )
+    event = baker.make(
+        CalendarEvent,
+        calendar_fk=cal,
+        organization=org,
+        title="Daily with Mixed Exceptions",
+        start_time=_dt(2025, 1, 1),
+        end_time=_dt(2025, 1, 1, 10),
+        recurrence_rule_fk=rule,
+    )
+
+    # Cancel Jan 1 (doesn't count toward limit)
+    event.create_exception(exception_date=_dt(2025, 1, 1), is_cancelled=True)
+
+    # Modify Jan 2 (counts toward limit)
+    modified = baker.make(
+        CalendarEvent,
+        calendar=cal,
+        organization=org,
+        title="Modified Jan 2",
+        start_time=_dt(2025, 1, 2, 15),
+        end_time=_dt(2025, 1, 2, 16),
+        parent_event=event,
+        is_recurring_exception=True,
+        external_id="modified-jan-2-mixed",
+    )
+    event.create_exception(
+        exception_date=_dt(2025, 1, 2), is_cancelled=False, modified_event=modified
+    )
+
+    # Search for next occurrence after Jan 3
+    after_date = _dt(2025, 1, 3, 12)
+    next_occurrence = event.get_next_occurrence(after_date=after_date)
+
+    # Should return Jan 4 because:
+    # - Jan 1: cancelled (doesn't count toward limit)
+    # - Jan 2: modified (counts toward limit) - slot #1 used
+    # - Jan 3: regular occurrence (counts toward limit) - slot #2 used
+    # - Jan 4: regular occurrence (counts toward limit) - slot #3 used
+    assert next_occurrence is not None
+    assert next_occurrence.start_time == _dt(2025, 1, 4)
+
+    # After Jan 4, limit should be reached
+    after_last = _dt(2025, 1, 4, 12)
+    assert event.get_next_occurrence(after_date=after_last) is None

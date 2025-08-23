@@ -365,7 +365,6 @@ class CalendarEventSerializer(VirtualModelSerializer):
         read_only=True, help_text="True if this is a recurring event"
     )
     parent_event = ParentEventSerializer(read_only=True)
-    next_occurrence = serializers.SerializerMethodField()
 
     class Meta:
         model = CalendarEvent
@@ -393,7 +392,6 @@ class CalendarEventSerializer(VirtualModelSerializer):
             "is_recurring",
             "is_recurring_exception",
             "recurrence_id",
-            "next_occurrence",
         )
         read_only_fields = (
             "id",
@@ -698,15 +696,6 @@ class CalendarEventSerializer(VirtualModelSerializer):
         Returns True if this event is a recurring event.
         """
         return obj.is_recurring
-
-    @v.hints.no_deferred_fields()
-    def get_next_occurrence(self, obj: CalendarEvent) -> datetime.datetime | None:
-        """
-        Returns the next occurrence of the event if it is recurring.
-        """
-        if obj.is_recurring:
-            return obj.get_next_occurrence()
-        return None
 
 
 class BlockedTimeSerializer(VirtualModelSerializer):

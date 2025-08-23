@@ -1403,12 +1403,6 @@ components:
           nullable: true
           description: For recurring event instances, this identifies which occurrence
             this is
-        next_occurrence:
-          type: string
-          format: date-time
-          nullable: true
-          description: Returns the next occurrence of the event if it is recurring.
-          readOnly: true
         google_calendar_service_account:
           type: integer
           writeOnly: true
@@ -1425,7 +1419,6 @@ components:
       - is_recurring
       - is_recurring_instance
       - modified
-      - next_occurrence
       - parent_event
       - recurrence_rule
       - resource_allocations
@@ -1735,12 +1728,6 @@ components:
           nullable: true
           description: For recurring event instances, this identifies which occurrence
             this is
-        next_occurrence:
-          type: string
-          format: date-time
-          nullable: true
-          description: Returns the next occurrence of the event if it is recurring.
-          readOnly: true
         google_calendar_service_account:
           type: integer
           writeOnly: true

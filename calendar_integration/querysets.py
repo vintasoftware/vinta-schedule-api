@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from django.db.models import OuterRef, Prefetch, Q, Subquery
 
 from calendar_integration.constants import CalendarSyncStatus, CalendarType
+from calendar_integration.database_functions import GetEventOccurrencesJSON
 from organizations.querysets import BaseOrganizationModelQuerySet
 
 
@@ -131,10 +132,14 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
             ) & ~Q(
                 Q(
                     id__in=Subquery(
-                        CalendarEvent.objects.filter(
+                        CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(
+                            start_datetime, end_datetime
+                        )
+                        .filter(
                             Q(start_time__range=(start_datetime, end_datetime))
                             | Q(end_time__range=(start_datetime, end_datetime))
-                            | Q(start_time__lte=start_datetime, end_time__gte=end_datetime),
+                            | Q(start_time__lte=start_datetime, end_time__gte=end_datetime)
+                            | Q(recurring_occurrences__len__gt=0),
                             calendar_fk_id=OuterRef("id"),
                         )
                         .values("calendar_fk_id")
@@ -165,6 +170,24 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
             combined_query &= query
 
         return self.filter(combined_query)
+
+
+class CalendarEventQuerySet(BaseOrganizationModelQuerySet):
+    """
+    Custom QuerySet for CalendarEvent model to handle specific queries.
+    """
+
+    def annotate_recurring_occurrences_on_date_range(
+        self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000
+    ):
+        """
+        Annotated an Array aggregating all occurrences of a recurring event within the specified date range.
+        The occurrences are calculated dynamically based on the master event's recurrence rule.
+        Each occurrence will be a JSON containing the start_datetime and the end_datetime in UTC.
+        """
+        return self.annotate(
+            recurring_occurrences=GetEventOccurrencesJSON("id", start, end, max_occurrences)
+        )
 
 
 class CalendarSyncQuerySet(BaseOrganizationModelQuerySet):

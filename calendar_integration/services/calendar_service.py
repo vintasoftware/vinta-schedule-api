@@ -315,7 +315,7 @@ class BaseCalendarService(Protocol):
     def authenticate(
         self,
         account: SocialAccount | GoogleCalendarServiceAccount,
-        organization: Organization | None = None,
+        organization: Organization,
     ) -> None:
         ...
 
@@ -1219,7 +1219,9 @@ class CalendarService(BaseCalendarService):
         if not recurring_event.is_recurring:
             return [recurring_event] if start_date <= recurring_event.start_time <= end_date else []
 
-        return recurring_event.get_occurrences_in_range(start_date, end_date, include_exceptions)
+        return recurring_event.get_occurrences_in_range(
+            start_date, end_date, include_self=True, include_exceptions=include_exceptions
+        )
 
     def get_calendar_events_expanded(
         self,
@@ -1266,23 +1268,16 @@ class CalendarService(BaseCalendarService):
                 Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__lt=start_date),
                 start_time__gt=end_date,
             )
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date)  # type: ignore
             .select_related("recurrence_rule")
         )
 
         for master_event in recurring_master_events:
-            # Generate instances for the master event
-            instances = master_event.get_occurrences_in_range(start_date, end_date)
+            # Generate instances for the master event including exceptions
+            instances = master_event.get_occurrences_in_range(
+                start_date, end_date, include_self=False, include_exceptions=True
+            )
             events.extend(instances)
-
-        # Get synced exception instances (modified instances from external providers)
-        exception_instances = calendar.events.filter(
-            start_time__lte=end_date,
-            end_time__gte=start_date,
-            parent_event__isnull=False,  # These are instances
-            is_recurring_exception=True,  # Exception instances
-        ).select_related("parent_event", "recurrence_rule")
-
-        events.extend(exception_instances)
 
         # Sort by start time
         events.sort(key=lambda x: x.start_time)

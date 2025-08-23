@@ -1498,9 +1498,9 @@ def test_get_calendar_events_expanded_with_exceptions(
         start_date=start - datetime.timedelta(days=1),
         end_date=start + datetime.timedelta(weeks=3, hours=2),
     )
-    # Should return: 3 generated instances + 1 modified exception = 4 events total
+    # Should return: 2 generated instances + 1 modified exception = 3 events total (1 cancelled, excluded)
     # Week 0: generated, Week 1: modified exception (replaces generated), Week 2: cancelled (excluded), Week 3: generated
-    assert len(expanded) == 4
+    assert len(expanded) == 3
     # Ensure modified exception is present
     assert any(e.external_id == "exp_modified_exc_123" for e in expanded)
     # Ensure week 2 (cancelled) start_time is missing from events
