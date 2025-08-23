@@ -180,8 +180,11 @@ BEGIN
             WHEN 'WEEKLY' THEN
                 IF v_weekdays IS NOT NULL THEN
                     -- For weekly with by_weekday, we need to find the first valid occurrence at or after start_date
-                    -- Start from the search start date and find the first matching weekday
-                    v_current_date := p_start_date;
+                    -- Start from the search start date but preserve the original event's time component
+                    v_current_date := date_trunc('day', p_start_date) + 
+                                      (EXTRACT(HOUR FROM v_event.start_time) || ' hours')::INTERVAL +
+                                      (EXTRACT(MINUTE FROM v_event.start_time) || ' minutes')::INTERVAL +
+                                      (EXTRACT(SECOND FROM v_event.start_time) || ' seconds')::INTERVAL;
                     
                     -- Find the first occurrence at or after start_date that matches a weekday
                     WHILE v_current_date <= p_end_date LOOP
