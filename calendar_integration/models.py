@@ -83,6 +83,15 @@ class Calendar(OrganizationModel):
         through_fields=("calendar_fk", "user"),
         blank=True,
     )
+    children: "models.ManyToManyField[Calendar, ChildrenCalendarRelationship]" = (
+        models.ManyToManyField(
+            "self",
+            related_name="bundles",
+            blank=True,
+            through="ChildrenCalendarRelationship",
+            through_fields=("bundle_calendar", "child_calendar"),
+        )
+    )
 
     objects: CalendarManager = CalendarManager()
 
@@ -127,6 +136,19 @@ class Calendar(OrganizationModel):
             return self._latest_sync[0]
 
         return self.syncs.filter(should_update_events=True).order_by("-start_datetime").first()
+
+
+class ChildrenCalendarRelationship(OrganizationModel):
+    bundle_calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        related_name="bundle_relationships",
+    )
+    child_calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        related_name="bundle_children_relatioships",
+    )
 
 
 class CalendarOwnership(OrganizationModel):

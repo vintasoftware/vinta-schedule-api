@@ -14,7 +14,7 @@ class CalendarManager(BaseOrganizationModelManager):
     Custom manager for Calendar model to handle specific queries.
     """
 
-    def get_queryset(self):
+    def get_queryset(self) -> CalendarQuerySet:
         return CalendarQuerySet(self.model, using=self._db)
 
     def only_virtual_calendars(self):
@@ -56,7 +56,7 @@ class CalendarManager(BaseOrganizationModelManager):
 class CalendarEventManager(BaseOrganizationModelManager):
     """Custom manager for CalendarEvent model to handle specific queries."""
 
-    def get_queryset(self):
+    def get_queryset(self) -> CalendarEventQuerySet:
         return CalendarEventQuerySet(self.model, using=self._db)
 
     def annotate_recurring_occurrences_on_date_range(
@@ -70,7 +70,7 @@ class CalendarEventManager(BaseOrganizationModelManager):
 class CalendarSyncManager(BaseOrganizationModelManager):
     """Custom manager for CalendarSync model to handle specific queries."""
 
-    def get_queryset(self):
+    def get_queryset(self) -> CalendarSyncQuerySet:
         return CalendarSyncQuerySet(self.model, using=self._db)
 
     def get_not_started_calendar_sync(self, calendar_sync_id: int):

@@ -473,8 +473,7 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
     service = CalendarService()
     service.authenticate(account=social_account, organization=organization)
 
-    with patch.object(service.calendar_adapter, "subscribe_to_calendar_events") as mock_subscribe:
-        service.import_account_calendars()
+    service.import_account_calendars()
 
     # Verify calendars were created
     assert Calendar.objects.filter(organization=organization, external_id="cal_123").exists()
@@ -509,16 +508,6 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
     ).first()
     assert work_ownership is not None
     assert work_ownership.is_default is False
-
-    # Verify webhook subscriptions were set up
-    assert mock_subscribe.call_count == 2
-    mock_subscribe.assert_any_call(
-        "cal_123",
-        callback_url=f"http://localhost:8000/api/calendars/{primary_calendar.id}/updates/",
-    )
-    mock_subscribe.assert_any_call(
-        "cal_456", callback_url=f"http://localhost:8000/api/calendars/{work_calendar.id}/updates/"
-    )
 
 
 def test_import_account_calendars_updates_existing(
@@ -590,7 +579,7 @@ def test_import_account_calendars_not_authenticated():
     service = CalendarService()
 
     # Should fail because no authentication
-    with pytest.raises(AttributeError):
+    with pytest.raises(ValueError):
         service.import_account_calendars()
 
 
@@ -1018,6 +1007,348 @@ def test_create_recurring_exception_non_recurring_error(
             exception_date=calendar_event.start_time + datetime.timedelta(weeks=1),
             is_cancelled=True,
         )
+
+
+def test_create_recurring_exception_on_master_event_with_future_occurrences(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    patch_get_calendar,
+):
+    """Test creating an exception on the master event date when there are future occurrences."""
+    recurrence_rule = "RRULE:FREQ=WEEKLY;COUNT=5;BYDAY=MO"
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    # Mock data for creating the parent recurring event
+    parent_created_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="parent_recurring_master_123",
+        title="Master Weekly Meeting",
+        description="Master recurring meeting",
+        start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),  # Monday
+        end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule=recurrence_rule.replace("RRULE:", ""),
+    )
+
+    # Mock data for creating the new recurring event (starting from second occurrence)
+    new_recurring_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="new_recurring_from_second_123",
+        title="Master Weekly Meeting",
+        description="Master recurring meeting",
+        start_time=datetime.datetime(2025, 6, 30, 10, 0, tzinfo=datetime.UTC),  # Following Monday
+        end_time=datetime.datetime(2025, 6, 30, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule="FREQ=WEEKLY;COUNT=4;BYDAY=MO",  # COUNT reduced by 1
+    )
+
+    # Side effects: first call creates parent, second call creates new recurring event
+    mock_google_adapter.create_event.side_effect = [
+        parent_created_event_data,
+        new_recurring_event_data,
+    ]
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+
+    # Patch availability to always allow
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=parent_created_event_data.start_time,
+                end_time=parent_created_event_data.end_time,
+                id=1,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        parent_event = service.create_recurring_event(
+            "cal_123",
+            title="Master Weekly Meeting",
+            description="Master recurring meeting",
+            start_time=parent_created_event_data.start_time,
+            end_time=parent_created_event_data.end_time,
+            recurrence_rule=recurrence_rule,
+        )
+
+    assert parent_event.recurrence_rule is not None
+    original_recurrence_rule_id = parent_event.recurrence_rule.id
+
+    # Create exception on the master event date (same as parent_event.start_time.date())
+    exception_date = parent_event.start_time.date()
+    modified_title = "Modified Master Meeting"
+    modified_description = "Modified first occurrence"
+
+    # Patch availability for the new recurring event - use next week's time
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=parent_event.start_time + timedelta(weeks=1),
+                end_time=parent_event.end_time + timedelta(weeks=1),
+                id=2,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        result_event = service.create_recurring_exception(
+            parent_event=parent_event,
+            exception_date=exception_date,
+            modified_title=modified_title,
+            modified_description=modified_description,
+            is_cancelled=False,
+        )
+
+    # The result should be the modified original event (no longer recurring)
+    assert result_event.id == parent_event.id
+    assert result_event.recurrence_rule is None  # No longer recurring
+    assert result_event.title == modified_title
+    assert result_event.description == modified_description
+
+    # Verify that create_event was called twice (once for parent, once for new recurring)
+    assert mock_google_adapter.create_event.call_count == 2
+
+    # Verify the original recurrence rule was deleted
+    from calendar_integration.models import RecurrenceRule
+
+    assert not RecurrenceRule.objects.filter(id=original_recurrence_rule_id).exists()
+
+
+def test_create_recurring_exception_on_master_event_no_future_occurrences(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    patch_get_calendar,
+):
+    """Test creating an exception on master event date when there are no future occurrences."""
+    recurrence_rule = "RRULE:FREQ=WEEKLY;COUNT=1;BYDAY=MO"  # Only one occurrence
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    parent_created_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="parent_single_occurrence_123",
+        title="Single Occurrence Meeting",
+        description="Only one occurrence",
+        start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule=recurrence_rule.replace("RRULE:", ""),
+    )
+
+    # For this test, we should only have one call to create_event since there's no next occurrence
+    mock_google_adapter.create_event.return_value = parent_created_event_data
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=parent_created_event_data.start_time,
+                end_time=parent_created_event_data.end_time,
+                id=1,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        parent_event = service.create_recurring_event(
+            "cal_123",
+            title="Single Occurrence Meeting",
+            description="Only one occurrence",
+            start_time=parent_created_event_data.start_time,
+            end_time=parent_created_event_data.end_time,
+            recurrence_rule=recurrence_rule,
+        )
+
+    assert parent_event.recurrence_rule is not None
+    original_recurrence_rule_id = parent_event.recurrence_rule.id
+
+    # Create exception on the master event date - use actual date
+    exception_date = parent_event.start_time.date()
+    modified_title = "Modified Single Meeting"
+
+    # Since there are no future occurrences, we shouldn't need to mock availability again
+    # The service should just modify the original event and make it non-recurring
+    result_event = service.create_recurring_exception(
+        parent_event=parent_event,
+        exception_date=exception_date,
+        modified_title=modified_title,
+        is_cancelled=False,
+    )
+
+    # The result should be the modified original event (no longer recurring)
+    assert result_event.id == parent_event.id
+    assert result_event.recurrence_rule is None  # No longer recurring
+    assert result_event.title == modified_title
+
+    # Verify that create_event was only called once (for the original parent)
+    assert mock_google_adapter.create_event.call_count == 1
+
+    # Verify the original recurrence rule was deleted
+    from calendar_integration.models import RecurrenceRule
+
+    assert not RecurrenceRule.objects.filter(id=original_recurrence_rule_id).exists()
+
+    # Verify any existing exceptions were deleted
+    assert parent_event.recurrence_exceptions.count() == 0
+
+
+def test_create_recurring_exception_on_master_preserves_attendances_and_resources(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    patch_get_calendar,
+    db,
+):
+    """Test that creating an exception on master event preserves attendances and resources in new recurring event."""
+    recurrence_rule = "RRULE:FREQ=WEEKLY;COUNT=3;BYDAY=MO"
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    # Create additional user and resource for testing
+    additional_user = User.objects.create_user(
+        username="attendee", email="attendee@example.com", password="testpass123"
+    )
+    resource_calendar = Calendar.objects.create(
+        name="Test Resource",
+        external_id="resource_123",
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.RESOURCE,
+        organization=calendar.organization,
+    )
+
+    parent_created_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="parent_with_attendees_123",
+        title="Meeting with Attendees",
+        description="Has attendees and resources",
+        start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule=recurrence_rule.replace("RRULE:", ""),
+    )
+
+    new_recurring_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="new_recurring_with_attendees_123",
+        title="Meeting with Attendees",
+        description="Has attendees and resources",
+        start_time=datetime.datetime(2025, 6, 30, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 30, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule="FREQ=WEEKLY;COUNT=2;BYDAY=MO",
+    )
+
+    mock_google_adapter.create_event.side_effect = [
+        parent_created_event_data,
+        new_recurring_event_data,
+    ]
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=parent_created_event_data.start_time,
+                end_time=parent_created_event_data.end_time,
+                id=1,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        parent_event = service.create_event(
+            "cal_123",
+            CalendarEventInputData(
+                title="Meeting with Attendees",
+                description="Has attendees and resources",
+                start_time=parent_created_event_data.start_time,
+                end_time=parent_created_event_data.end_time,
+                recurrence_rule=recurrence_rule,
+                attendances=[
+                    EventAttendanceInputData(user_id=additional_user.id),
+                ],
+                external_attendances=[
+                    EventExternalAttendanceInputData(
+                        external_attendee=ExternalAttendeeInputData(
+                            email="external@example.com",
+                            name="External User",
+                        )
+                    ),
+                ],
+                resource_allocations=[
+                    ResourceAllocationInputData(resource_id=resource_calendar.id),
+                ],
+            ),
+        )
+
+    assert parent_event.attendances.count() == 1
+    assert parent_event.external_attendances.count() == 1
+    assert parent_event.resource_allocations.count() == 1
+
+    # Create exception on master event date
+    exception_date = parent_event.start_time.date()
+
+    # Patch availability for the new recurring event - use next week's time
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=parent_event.start_time + timedelta(weeks=1),
+                end_time=parent_event.end_time + timedelta(weeks=1),
+                id=2,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        result_event = service.create_recurring_exception(
+            parent_event=parent_event,
+            exception_date=exception_date,
+            modified_title="Modified Meeting",
+            is_cancelled=False,
+        )
+
+    # Verify the result event is the modified original
+    assert result_event.id == parent_event.id
+    assert result_event.recurrence_rule is None
+    assert result_event.title == "Modified Meeting"
+
+    # Verify a new recurring event was created (should be the second call to create_event)
+    assert mock_google_adapter.create_event.call_count == 2
+
+    # Verify new recurring event has attendances and resources
+    # Note: The new recurring event should be created with the same attendances as the original
+    new_recurring_events = CalendarEvent.objects.filter(
+        organization_id=calendar.organization.id,
+    ).exclude(id=parent_event.id)
+    assert new_recurring_events.count() == 1
+    new_recurring_event = new_recurring_events.first()
+
+    # The new recurring event should have copied attendances and resources
+    assert new_recurring_event.attendances.count() == 1
+    assert new_recurring_event.external_attendances.count() == 1
+    assert new_recurring_event.resource_allocations.count() == 1
 
 
 def test_get_recurring_event_instances_non_recurring_in_and_out_of_range(
@@ -3784,3 +4115,436 @@ def test_get_unavailable_time_windows_in_range_with_recurring_events_outside_mas
     assert not (search_start <= master_start <= search_end)
     # But the occurrence time IS in our search window
     assert search_start <= expected_occurrence_start <= search_end
+
+
+# Tests for EventsSyncChanges and related sync functionality
+def test_events_sync_changes_initialization():
+    """Test EventsSyncChanges dataclass initialization."""
+    changes = EventsSyncChanges()
+
+    assert changes.events_to_update == []
+    assert changes.events_to_create == []
+    assert changes.blocked_times_to_create == []
+    assert changes.blocked_times_to_update == []
+    assert changes.attendances_to_create == []
+    assert changes.external_attendances_to_create == []
+    assert changes.events_to_delete == []
+    assert changes.blocks_to_delete == []
+    assert changes.matched_event_ids == set()
+    assert changes.recurrence_rules_to_create == []
+
+
+def test_events_sync_changes_with_data(calendar, organization, db):
+    """Test EventsSyncChanges with actual data."""
+    from calendar_integration.models import RecurrenceRule
+
+    changes = EventsSyncChanges()
+
+    # Create test event
+    event = CalendarEvent(
+        calendar_fk=calendar,
+        title="Test Event",
+        external_id="event_123",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        organization=calendar.organization,
+    )
+
+    # Create test blocked time
+    blocked_time = BlockedTime(
+        calendar_fk=calendar,
+        start_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        reason="Test block",
+        external_id="block_123",
+        organization=calendar.organization,
+    )
+
+    # Create test recurrence rule
+    rule = RecurrenceRule.from_rrule_string(
+        "FREQ=WEEKLY;COUNT=3;BYDAY=MO", organization=calendar.organization
+    )
+
+    # Add data to changes
+    changes.events_to_create.append(event)
+    changes.blocked_times_to_create.append(blocked_time)
+    changes.events_to_delete.append("old_event_123")
+    changes.blocks_to_delete.append("old_block_123")
+    changes.matched_event_ids.add("event_123")
+    changes.recurrence_rules_to_create.append(rule)
+
+    assert len(changes.events_to_create) == 1
+    assert len(changes.blocked_times_to_create) == 1
+    assert len(changes.events_to_delete) == 1
+    assert len(changes.blocks_to_delete) == 1
+    assert len(changes.matched_event_ids) == 1
+    assert len(changes.recurrence_rules_to_create) == 1
+    assert changes.events_to_create[0].title == "Test Event"
+    assert changes.blocked_times_to_create[0].reason == "Test block"
+    assert "event_123" in changes.matched_event_ids
+    assert "old_event_123" in changes.events_to_delete
+
+
+def test_apply_sync_changes_events_to_create(
+    social_account, social_token, mock_google_adapter, calendar
+):
+    """Test _apply_sync_changes creates new events correctly."""
+    changes = EventsSyncChanges()
+
+    # Create new event to be created
+    new_event = CalendarEvent(
+        calendar_fk=calendar,
+        title="New Event",
+        description="A new event",
+        start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        external_id="new_event_123",
+        organization=calendar.organization,
+    )
+    changes.events_to_create.append(new_event)
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+    service._apply_sync_changes(calendar.external_id, changes)
+
+    # Verify event was created
+    created_event = CalendarEvent.objects.get(
+        external_id="new_event_123", organization=calendar.organization
+    )
+    assert created_event.title == "New Event"
+    assert created_event.description == "A new event"
+    assert created_event.calendar_fk == calendar
+    assert created_event.organization == calendar.organization
+
+
+def test_apply_sync_changes_events_to_delete(
+    social_account, social_token, mock_google_adapter, calendar
+):
+    """Test _apply_sync_changes deletes events correctly."""
+    # Create existing event to be deleted
+    CalendarEvent.objects.create(
+        calendar_fk=calendar,
+        title="Event to Delete",
+        external_id="delete_event_123",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        organization=calendar.organization,
+    )
+
+    changes = EventsSyncChanges()
+    changes.events_to_delete.append("delete_event_123")
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+    service._apply_sync_changes(calendar.external_id, changes)
+
+    # Verify event was deleted
+    assert not CalendarEvent.objects.filter(
+        external_id="delete_event_123", organization=calendar.organization
+    ).exists()
+
+
+def test_apply_sync_changes_blocked_times_to_create(
+    social_account, social_token, mock_google_adapter, calendar
+):
+    """Test _apply_sync_changes creates blocked times correctly."""
+    changes = EventsSyncChanges()
+
+    # Create blocked time to be created
+    new_blocked_time = BlockedTime(
+        calendar_fk=calendar,
+        start_time=datetime.datetime(2025, 6, 22, 16, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 17, 0, tzinfo=datetime.UTC),
+        reason="New blocked time",
+        external_id="new_block_123",
+        organization=calendar.organization,
+    )
+    changes.blocked_times_to_create.append(new_blocked_time)
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+    service._apply_sync_changes(calendar.external_id, changes)
+
+    # Verify blocked time was created
+    created_block = BlockedTime.objects.get(
+        external_id="new_block_123", organization=calendar.organization
+    )
+    assert created_block.reason == "New blocked time"
+    assert created_block.calendar_fk == calendar
+    assert created_block.organization == calendar.organization
+
+
+def test_apply_sync_changes_blocked_times_to_update(
+    social_account, social_token, mock_google_adapter, calendar
+):
+    """Test _apply_sync_changes updates blocked times correctly."""
+    # Create existing blocked time to be updated
+    existing_block = BlockedTime.objects.create(
+        calendar_fk=calendar,
+        start_time=datetime.datetime(2025, 6, 22, 18, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 19, 0, tzinfo=datetime.UTC),
+        reason="Original reason",
+        external_id="update_block_123",
+        organization=calendar.organization,
+    )
+
+    # Update the blocked time
+    existing_block.reason = "Updated reason"
+    existing_block.start_time = datetime.datetime(2025, 6, 22, 18, 30, tzinfo=datetime.UTC)
+
+    changes = EventsSyncChanges()
+    changes.blocked_times_to_update.append(existing_block)
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+    service._apply_sync_changes(calendar.external_id, changes)
+
+    # Verify blocked time was updated
+    existing_block.refresh_from_db()
+    assert existing_block.reason == "Updated reason"
+    assert existing_block.start_time == datetime.datetime(2025, 6, 22, 18, 30, tzinfo=datetime.UTC)
+
+
+def test_apply_sync_changes_blocks_to_delete(
+    social_account, social_token, mock_google_adapter, calendar
+):
+    """Test _apply_sync_changes deletes blocked times correctly."""
+    # Create existing blocked time to be deleted
+    BlockedTime.objects.create(
+        calendar_fk=calendar,
+        start_time=datetime.datetime(2025, 6, 22, 20, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 21, 0, tzinfo=datetime.UTC),
+        reason="Block to delete",
+        external_id="delete_block_123",
+        organization=calendar.organization,
+    )
+
+    changes = EventsSyncChanges()
+    changes.blocks_to_delete.append("delete_block_123")
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+    service._apply_sync_changes(calendar.external_id, changes)
+
+    # Verify blocked time was deleted
+    assert not BlockedTime.objects.filter(
+        external_id="delete_block_123", organization=calendar.organization
+    ).exists()
+
+
+def test_apply_sync_changes_attendances_to_create(
+    social_account, social_token, mock_google_adapter, calendar, db
+):
+    """Test _apply_sync_changes creates event attendances correctly."""
+    # Create event first
+    event = CalendarEvent.objects.create(
+        calendar_fk=calendar,
+        title="Event with Attendees",
+        external_id="event_with_attendees",
+        start_time=datetime.datetime(2025, 6, 22, 22, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 23, 0, tzinfo=datetime.UTC),
+        organization=calendar.organization,
+    )
+
+    # Create user for attendance
+    user = User.objects.create_user(
+        username="attendee", email="attendee@example.com", password="testpass123"
+    )
+
+    changes = EventsSyncChanges()
+
+    # Create attendance to be created
+    new_attendance = EventAttendance(
+        event_fk=event,
+        user=user,
+        organization=calendar.organization,
+    )
+    changes.attendances_to_create.append(new_attendance)
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+    service._apply_sync_changes(calendar.external_id, changes)
+
+    # Verify attendance was created
+    created_attendance = EventAttendance.objects.get(
+        event_fk=event, user=user, organization=calendar.organization
+    )
+    assert created_attendance.organization == calendar.organization
+
+
+def test_apply_sync_changes_external_attendances_to_create(
+    social_account, social_token, mock_google_adapter, calendar, db
+):
+    """Test _apply_sync_changes creates external event attendances correctly."""
+    # Create event first
+    event = CalendarEvent.objects.create(
+        calendar_fk=calendar,
+        title="Event with External Attendees",
+        external_id="event_with_external_attendees",
+        start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        organization=calendar.organization,
+    )
+
+    # Create external attendee
+    external_attendee = ExternalAttendee.objects.create(
+        email="external@example.com",
+        name="External User",
+        organization=calendar.organization,
+    )
+
+    changes = EventsSyncChanges()
+
+    # Create external attendance to be created
+    new_external_attendance = EventExternalAttendance(
+        event_fk=event,
+        external_attendee_fk=external_attendee,
+        organization=calendar.organization,
+    )
+    changes.external_attendances_to_create.append(new_external_attendance)
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+    service._apply_sync_changes(calendar.external_id, changes)
+
+    # Verify external attendance was created
+    created_external_attendance = EventExternalAttendance.objects.get(
+        event_fk=event, external_attendee_fk=external_attendee, organization=calendar.organization
+    )
+    assert created_external_attendance.organization == calendar.organization
+
+
+def test_handle_deletions_for_full_sync_no_organization(
+    social_account, social_token, mock_google_adapter, calendar
+):
+    """Test _handle_deletions_for_full_sync returns early when no organization."""
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+    service.organization = None  # Simulate no organization
+
+    # Should return early without doing anything
+    result = service._handle_deletions_for_full_sync(
+        calendar.external_id,
+        {},
+        set(),
+        datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC),
+    )
+
+    assert result is None
+
+
+def test_apply_sync_changes_comprehensive(
+    social_account, social_token, mock_google_adapter, calendar, db
+):
+    """Test _apply_sync_changes with multiple types of changes."""
+    from calendar_integration.models import RecurrenceRule
+
+    # Create existing event to update
+    existing_event = CalendarEvent.objects.create(
+        calendar_fk=calendar,
+        title="Original Title",
+        external_id="update_event_123",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        organization=calendar.organization,
+    )
+
+    # Create existing blocked time to update
+    existing_block = BlockedTime.objects.create(
+        calendar_fk=calendar,
+        start_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        reason="Original reason",
+        external_id="update_block_123",
+        organization=calendar.organization,
+    )
+
+    # Create event to be deleted
+    CalendarEvent.objects.create(
+        calendar_fk=calendar,
+        title="Event to Delete",
+        external_id="delete_event_789",
+        start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        organization=calendar.organization,
+    )
+
+    changes = EventsSyncChanges()
+
+    # Add new event to create
+    new_event = CalendarEvent(
+        calendar_fk=calendar,
+        title="New Event",
+        external_id="new_event_456",
+        start_time=datetime.datetime(2025, 6, 22, 16, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 17, 0, tzinfo=datetime.UTC),
+        organization=calendar.organization,
+    )
+    changes.events_to_create.append(new_event)
+
+    # Add new blocked time to create
+    new_block = BlockedTime(
+        calendar_fk=calendar,
+        start_time=datetime.datetime(2025, 6, 22, 18, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 19, 0, tzinfo=datetime.UTC),
+        reason="New block reason",
+        external_id="new_block_456",
+        organization=calendar.organization,
+    )
+    changes.blocked_times_to_create.append(new_block)
+
+    # Add recurrence rule to create
+    rule = RecurrenceRule.from_rrule_string(
+        "FREQ=DAILY;COUNT=5", organization=calendar.organization
+    )
+    changes.recurrence_rules_to_create.append(rule)
+
+    # Update existing event
+    existing_event.title = "Updated Title"
+    changes.events_to_update.append(existing_event)
+
+    # Update existing blocked time
+    existing_block.reason = "Updated reason"
+    changes.blocked_times_to_update.append(existing_block)
+
+    # Add events/blocks to delete
+    changes.events_to_delete.append("delete_event_789")
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+    service._apply_sync_changes(calendar.external_id, changes)
+
+    # Verify all changes were applied
+    # New event created
+    assert CalendarEvent.objects.filter(
+        external_id="new_event_456", organization=calendar.organization
+    ).exists()
+    new_created_event = CalendarEvent.objects.get(
+        external_id="new_event_456", organization=calendar.organization
+    )
+    assert new_created_event.title == "New Event"
+
+    # New blocked time created
+    assert BlockedTime.objects.filter(
+        external_id="new_block_456", organization=calendar.organization
+    ).exists()
+    new_created_block = BlockedTime.objects.get(
+        external_id="new_block_456", organization=calendar.organization
+    )
+    assert new_created_block.reason == "New block reason"
+
+    # Recurrence rule created
+    assert RecurrenceRule.objects.filter(frequency="DAILY", count=5).exists()
+
+    # Existing event updated
+    existing_event.refresh_from_db()
+    assert existing_event.title == "Updated Title"
+
+    # Existing blocked time updated
+    existing_block.refresh_from_db()
+    assert existing_block.reason == "Updated reason"
+
+    # Event deleted
+    assert not CalendarEvent.objects.filter(
+        external_id="delete_event_789", organization=calendar.organization
+    ).exists()

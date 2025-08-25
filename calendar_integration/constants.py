@@ -5,6 +5,7 @@ class CalendarType(TextChoices):
     PERSONAL = "personal", "Personal Calendar"
     RESOURCE = "resource", "Resource Calendar"
     VIRTUAL = "virtual", "Virtual Calendar"
+    BUNDLE = "bundle", "Bundle Calendar"
 
 
 class CalendarProvider(TextChoices):
