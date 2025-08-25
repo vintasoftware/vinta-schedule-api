@@ -34,6 +34,14 @@ Welcome to the Vinta Schedule project! This guide provides instructions for cont
 - Organization context is managed in models, views, and services.
 - Always scope queries and business logic to the current organization. This is mandatory and not respecting it will lead to exceptions.
 - Tenant-scoped models must inherit from the OrganizationModel abstract model class.
+- Every model that inherits from OrganizationModel (are scoped by organization) should always be retrieved with the proper organization filters. The model manager will raise exceptions in case the we don't filter by organization.
+- All foreign keys and one to one fields that are declared with `OrganizationForeignKey` and `OrganizationOneToOneField` actually create two fields: one concrete field using the original name appended by "_fk" and a ForeignObject field with the original name that's using the concrete field and the organization foreign key to join the tables.
+- Other foreign keys and one to one fields that use default Django fields will behave as normal Django fields without the additional organization scoping.
+
+## Custom Database functions/procedures/triggers/views/materialized views
+- We have a migrations system implemented on `common/raw_sql_migration_managers.py`. It allows us to keep track of database-defined code over time.
+- To create a new database-defined structure you need to create a directory with its name under the structure name directory and the numbered sql file (0001.sql) with its code. You also need to create the migration manager inheriting from one of the managers defined `common/raw_sql_migration_managers.py` in the `__init__.py` file. Then you need to create a migration including the migration manager you defined and calling its `migration` method in the `operations` array of the migration.
+- To update an existing database structure you just need to add a new sql file  with the following number (four digits) containing the updated version. You also need to create a migration including the proper migration manager referencing the new version name in the operations (and calling its `migrate` method).
 
 ## Testing
 - We use [`pytest`](https://docs.pytest.org/) for testing.
@@ -48,5 +56,10 @@ Welcome to the Vinta Schedule project! This guide provides instructions for cont
 - Document public classes, methods, and functions.
 - Write meaningful commit messages.
 - Open pull requests with a clear description of changes and related issues.
+
+## Specific module instructions
+
+### Calendar Integration 
+- The calculation of recurring events occurrances happens dynamically on the database based on the mastaer event `reccurence_rule` and also its rule exceptions. The functions to generate the occurrences are defined on `calendar_integration/migrations/sql/functions/calculate_recurring_events` and `calendar_integration/migrations/sql/functions/get_event_occurrences_json`. There's also a Django ORM compatible function defined on  `calendar_integration/database_functions.py`.
 
 For more details, refer to the README and code comments.
