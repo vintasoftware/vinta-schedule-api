@@ -1009,6 +1009,348 @@ def test_create_recurring_exception_non_recurring_error(
         )
 
 
+def test_create_recurring_exception_on_master_event_with_future_occurrences(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    patch_get_calendar,
+):
+    """Test creating an exception on the master event date when there are future occurrences."""
+    recurrence_rule = "RRULE:FREQ=WEEKLY;COUNT=5;BYDAY=MO"
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    # Mock data for creating the parent recurring event
+    parent_created_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="parent_recurring_master_123",
+        title="Master Weekly Meeting",
+        description="Master recurring meeting",
+        start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),  # Monday
+        end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule=recurrence_rule.replace("RRULE:", ""),
+    )
+
+    # Mock data for creating the new recurring event (starting from second occurrence)
+    new_recurring_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="new_recurring_from_second_123",
+        title="Master Weekly Meeting",
+        description="Master recurring meeting",
+        start_time=datetime.datetime(2025, 6, 30, 10, 0, tzinfo=datetime.UTC),  # Following Monday
+        end_time=datetime.datetime(2025, 6, 30, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule="FREQ=WEEKLY;COUNT=4;BYDAY=MO",  # COUNT reduced by 1
+    )
+
+    # Side effects: first call creates parent, second call creates new recurring event
+    mock_google_adapter.create_event.side_effect = [
+        parent_created_event_data,
+        new_recurring_event_data,
+    ]
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+
+    # Patch availability to always allow
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=parent_created_event_data.start_time,
+                end_time=parent_created_event_data.end_time,
+                id=1,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        parent_event = service.create_recurring_event(
+            "cal_123",
+            title="Master Weekly Meeting",
+            description="Master recurring meeting",
+            start_time=parent_created_event_data.start_time,
+            end_time=parent_created_event_data.end_time,
+            recurrence_rule=recurrence_rule,
+        )
+
+    assert parent_event.recurrence_rule is not None
+    original_recurrence_rule_id = parent_event.recurrence_rule.id
+
+    # Create exception on the master event date (same as parent_event.start_time.date())
+    exception_date = parent_event.start_time.date()
+    modified_title = "Modified Master Meeting"
+    modified_description = "Modified first occurrence"
+
+    # Patch availability for the new recurring event - use next week's time
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=parent_event.start_time + timedelta(weeks=1),
+                end_time=parent_event.end_time + timedelta(weeks=1),
+                id=2,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        result_event = service.create_recurring_exception(
+            parent_event=parent_event,
+            exception_date=exception_date,
+            modified_title=modified_title,
+            modified_description=modified_description,
+            is_cancelled=False,
+        )
+
+    # The result should be the modified original event (no longer recurring)
+    assert result_event.id == parent_event.id
+    assert result_event.recurrence_rule is None  # No longer recurring
+    assert result_event.title == modified_title
+    assert result_event.description == modified_description
+
+    # Verify that create_event was called twice (once for parent, once for new recurring)
+    assert mock_google_adapter.create_event.call_count == 2
+
+    # Verify the original recurrence rule was deleted
+    from calendar_integration.models import RecurrenceRule
+
+    assert not RecurrenceRule.objects.filter(id=original_recurrence_rule_id).exists()
+
+
+def test_create_recurring_exception_on_master_event_no_future_occurrences(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    patch_get_calendar,
+):
+    """Test creating an exception on master event date when there are no future occurrences."""
+    recurrence_rule = "RRULE:FREQ=WEEKLY;COUNT=1;BYDAY=MO"  # Only one occurrence
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    parent_created_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="parent_single_occurrence_123",
+        title="Single Occurrence Meeting",
+        description="Only one occurrence",
+        start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule=recurrence_rule.replace("RRULE:", ""),
+    )
+
+    # For this test, we should only have one call to create_event since there's no next occurrence
+    mock_google_adapter.create_event.return_value = parent_created_event_data
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=parent_created_event_data.start_time,
+                end_time=parent_created_event_data.end_time,
+                id=1,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        parent_event = service.create_recurring_event(
+            "cal_123",
+            title="Single Occurrence Meeting",
+            description="Only one occurrence",
+            start_time=parent_created_event_data.start_time,
+            end_time=parent_created_event_data.end_time,
+            recurrence_rule=recurrence_rule,
+        )
+
+    assert parent_event.recurrence_rule is not None
+    original_recurrence_rule_id = parent_event.recurrence_rule.id
+
+    # Create exception on the master event date - use actual date
+    exception_date = parent_event.start_time.date()
+    modified_title = "Modified Single Meeting"
+
+    # Since there are no future occurrences, we shouldn't need to mock availability again
+    # The service should just modify the original event and make it non-recurring
+    result_event = service.create_recurring_exception(
+        parent_event=parent_event,
+        exception_date=exception_date,
+        modified_title=modified_title,
+        is_cancelled=False,
+    )
+
+    # The result should be the modified original event (no longer recurring)
+    assert result_event.id == parent_event.id
+    assert result_event.recurrence_rule is None  # No longer recurring
+    assert result_event.title == modified_title
+
+    # Verify that create_event was only called once (for the original parent)
+    assert mock_google_adapter.create_event.call_count == 1
+
+    # Verify the original recurrence rule was deleted
+    from calendar_integration.models import RecurrenceRule
+
+    assert not RecurrenceRule.objects.filter(id=original_recurrence_rule_id).exists()
+
+    # Verify any existing exceptions were deleted
+    assert parent_event.recurrence_exceptions.count() == 0
+
+
+def test_create_recurring_exception_on_master_preserves_attendances_and_resources(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    patch_get_calendar,
+    db,
+):
+    """Test that creating an exception on master event preserves attendances and resources in new recurring event."""
+    recurrence_rule = "RRULE:FREQ=WEEKLY;COUNT=3;BYDAY=MO"
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    # Create additional user and resource for testing
+    additional_user = User.objects.create_user(
+        username="attendee", email="attendee@example.com", password="testpass123"
+    )
+    resource_calendar = Calendar.objects.create(
+        name="Test Resource",
+        external_id="resource_123",
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.RESOURCE,
+        organization=calendar.organization,
+    )
+
+    parent_created_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="parent_with_attendees_123",
+        title="Meeting with Attendees",
+        description="Has attendees and resources",
+        start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule=recurrence_rule.replace("RRULE:", ""),
+    )
+
+    new_recurring_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="new_recurring_with_attendees_123",
+        title="Meeting with Attendees",
+        description="Has attendees and resources",
+        start_time=datetime.datetime(2025, 6, 30, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 30, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule="FREQ=WEEKLY;COUNT=2;BYDAY=MO",
+    )
+
+    mock_google_adapter.create_event.side_effect = [
+        parent_created_event_data,
+        new_recurring_event_data,
+    ]
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=parent_created_event_data.start_time,
+                end_time=parent_created_event_data.end_time,
+                id=1,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        parent_event = service.create_event(
+            "cal_123",
+            CalendarEventInputData(
+                title="Meeting with Attendees",
+                description="Has attendees and resources",
+                start_time=parent_created_event_data.start_time,
+                end_time=parent_created_event_data.end_time,
+                recurrence_rule=recurrence_rule,
+                attendances=[
+                    EventAttendanceInputData(user_id=additional_user.id),
+                ],
+                external_attendances=[
+                    EventExternalAttendanceInputData(
+                        external_attendee=ExternalAttendeeInputData(
+                            email="external@example.com",
+                            name="External User",
+                        )
+                    ),
+                ],
+                resource_allocations=[
+                    ResourceAllocationInputData(resource_id=resource_calendar.id),
+                ],
+            ),
+        )
+
+    assert parent_event.attendances.count() == 1
+    assert parent_event.external_attendances.count() == 1
+    assert parent_event.resource_allocations.count() == 1
+
+    # Create exception on master event date
+    exception_date = parent_event.start_time.date()
+
+    # Patch availability for the new recurring event - use next week's time
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=parent_event.start_time + timedelta(weeks=1),
+                end_time=parent_event.end_time + timedelta(weeks=1),
+                id=2,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        result_event = service.create_recurring_exception(
+            parent_event=parent_event,
+            exception_date=exception_date,
+            modified_title="Modified Meeting",
+            is_cancelled=False,
+        )
+
+    # Verify the result event is the modified original
+    assert result_event.id == parent_event.id
+    assert result_event.recurrence_rule is None
+    assert result_event.title == "Modified Meeting"
+
+    # Verify a new recurring event was created (should be the second call to create_event)
+    assert mock_google_adapter.create_event.call_count == 2
+
+    # Verify new recurring event has attendances and resources
+    # Note: The new recurring event should be created with the same attendances as the original
+    new_recurring_events = CalendarEvent.objects.filter(
+        organization_id=calendar.organization.id,
+    ).exclude(id=parent_event.id)
+    assert new_recurring_events.count() == 1
+    new_recurring_event = new_recurring_events.first()
+
+    # The new recurring event should have copied attendances and resources
+    assert new_recurring_event.attendances.count() == 1
+    assert new_recurring_event.external_attendances.count() == 1
+    assert new_recurring_event.resource_allocations.count() == 1
+
+
 def test_get_recurring_event_instances_non_recurring_in_and_out_of_range(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar, calendar_event
 ):

@@ -1,3 +1,4 @@
+import copy
 import datetime
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ from calendar_integration.models import (
     EventExternalAttendance,
     ExternalAttendee,
     GoogleCalendarServiceAccount,
+    RecurrenceException,
     RecurrenceRule,
     ResourceAllocation,
 )
@@ -1275,6 +1277,9 @@ class CalendarService(BaseCalendarService):
         """
         Create an exception for a recurring event (either cancelled or modified).
 
+        if the exception is on the master event, this method makes the master event non-recurring
+        and creates a new recurring event on the second occurence
+
         :param parent_event: The recurring event to create an exception for
         :param exception_date: The date of the occurrence to modify/cancel
         :param modified_title: New title for the modified occurrence (if not cancelled)
@@ -1286,6 +1291,72 @@ class CalendarService(BaseCalendarService):
         """
         if not parent_event.is_recurring:
             raise ValueError("Cannot create exception for non-recurring event")
+
+        if exception_date == parent_event.start_time.date():
+            # Convert date to datetime for get_next_occurrence call
+            exception_datetime = datetime.datetime.combine(
+                exception_date,
+                parent_event.start_time.time(),
+                tzinfo=parent_event.start_time.tzinfo,
+            )
+            second_occurrence = parent_event.get_next_occurrence(exception_datetime)
+            if not second_occurrence:
+                # there are no future occurrences, so make the event non-recurring
+                old_recurrence_rule = parent_event.recurrence_rule
+
+                # Delete recurrence rule and exceptions
+                RecurrenceException.objects.filter(parent_event=parent_event).delete()
+                if old_recurrence_rule:
+                    old_recurrence_rule.delete()
+            else:
+                # make the parent_event non-recurring and create a separate event
+                # on the second occurrence date/time following same recurrence rules
+                old_recurrence_rule = parent_event.recurrence_rule
+                new_recurrence_rule: RecurrenceRule = copy.copy(old_recurrence_rule)
+                new_recurrence_rule.id = None
+                new_recurrence_rule.count = (
+                    new_recurrence_rule.count - 1 if new_recurrence_rule.count else None
+                )
+                new_recurring_event = self.create_recurring_event(
+                    calendar_id=parent_event.calendar.external_id,
+                    title=parent_event.title,
+                    description=parent_event.description,
+                    start_time=second_occurrence.start_time,
+                    end_time=second_occurrence.end_time,
+                    recurrence_rule=new_recurrence_rule.to_rrule_string(),
+                    attendances=[
+                        EventAttendanceInputData(user_id=a.user_id)
+                        for a in parent_event.attendances.all()
+                    ],
+                    external_attendances=[
+                        EventExternalAttendanceInputData(
+                            external_attendee=ExternalAttendeeInputData(
+                                email=ea.external_attendee.email,
+                                name=ea.external_attendee.name,
+                                id=ea.external_attendee.id,
+                            )
+                        )
+                        for ea in parent_event.external_attendances.all()
+                    ],
+                    resource_allocations=[
+                        ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
+                        for r in parent_event.resource_allocations.all()
+                    ],
+                )
+                RecurrenceException.objects.filter(parent_event=parent_event).update(
+                    parent_event_fk=new_recurring_event
+                )
+                old_recurrence_rule.delete()
+
+            parent_event.recurrence_rule_fk_id = None
+            parent_event.title = modified_title or parent_event.title
+            parent_event.description = modified_description or parent_event.description
+            parent_event.start_time = modified_start_time or parent_event.start_time
+            parent_event.end_time = modified_end_time or parent_event.end_time
+            parent_event.save()
+            return CalendarEvent.objects.get(
+                organization_id=parent_event.organization_id, id=parent_event.id
+            )
 
         if is_cancelled:
             # Create a cancelled exception
