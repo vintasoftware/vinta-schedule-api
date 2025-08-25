@@ -65,6 +65,19 @@ Welcome to the Vinta Schedule project! This guide provides instructions for cont
 ## Specific module instructions
 
 ### Calendar Integration 
-- The calculation of recurring events occurrances happens dynamically on the database based on the mastaer event `reccurence_rule` and also its rule exceptions. The functions to generate the occurrences are defined on `calendar_integration/migrations/sql/functions/calculate_recurring_events` and `calendar_integration/migrations/sql/functions/get_event_occurrences_json`. There's also a Django ORM compatible function defined on  `calendar_integration/database_functions.py`.
+- The calculation of recurring events occurrences happens dynamically on the database based on the master event `recurrence_rule` and also its rule exceptions. The functions to generate the occurrences are defined on `calendar_integration/migrations/sql/functions/calculate_recurring_events` and `calendar_integration/migrations/sql/functions/get_event_occurrences_json`. There's also a Django ORM compatible function defined on  `calendar_integration/database_functions.py`.
+
+#### Calendar Bundles
+- **Bundle calendars** allow creating events across multiple child calendars simultaneously while maintaining a single source of truth.
+- Bundle calendars are of type `CalendarType.BUNDLE` and contain multiple child calendars through the `ChildrenCalendarRelationship` model.
+- Each bundle has exactly one **primary calendar** (marked with `is_primary=True` in the relationship) that hosts the actual external events.
+- **Event creation behavior**:
+  - Primary calendar: Gets the actual `CalendarEvent` created via external providers (Google, Outlook, etc.)
+  - Internal child calendars: Get representation `CalendarEvent` instances linked to the primary via `bundle_primary_event`
+  - Other provider child calendars: Get `BlockedTime` entries to block the time slot
+- **Bundle relationships**: The `ChildrenCalendarRelationship` model links bundle calendars to their children with organization scoping and primary designation.
+- **Availability checking**: Bundle events are automatically considered when checking availability across child calendars.
+- **Event management**: Use `create_event()` with a bundle calendar, call `update_event()` or `delete_event()` passing a bundle primary event. Regular `get_calendar_events_expanded()` works for bundle calendars and automatically handles deduplication.
+- **Primary calendar selection**: Must be explicitly specified when creating bundle calendars via the `primary_calendar` parameter in `create_bundle_calendar()`.
 
 For more details, refer to the README and code comments.

@@ -4548,3 +4548,643 @@ def test_apply_sync_changes_comprehensive(
     assert not CalendarEvent.objects.filter(
         external_id="delete_event_789", organization=calendar.organization
     ).exists()
+
+
+# Bundle Calendar Tests
+
+
+@pytest.fixture
+def bundle_calendar(organization, child_calendar_internal, child_calendar_google, db):
+    """Create a bundle calendar with Google as primary for testing."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    return service.create_bundle_calendar(
+        name="Test Bundle Calendar",
+        description="A test bundle calendar",
+        child_calendars=[child_calendar_internal, child_calendar_google],
+        primary_calendar=child_calendar_google,  # Google is primary
+    )
+
+
+@pytest.fixture
+def empty_bundle_calendar(organization, db):
+    """Create a bundle calendar with no children for testing error cases."""
+    return Calendar.objects.create(
+        name="Empty Bundle Calendar",
+        description="A bundle calendar with no children",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.BUNDLE,
+        organization=organization,
+    )
+
+
+@pytest.fixture
+def child_calendar_internal(organization, db):
+    """Create an internal child calendar for testing."""
+    return Calendar.objects.create(
+        name="Internal Child Calendar",
+        external_id="internal-child-1",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.PERSONAL,
+        organization=organization,
+    )
+
+
+@pytest.fixture
+def child_calendar_google(organization, db):
+    """Create a Google child calendar for testing."""
+    return Calendar.objects.create(
+        name="Google Child Calendar",
+        external_id="google-child-1",
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.PERSONAL,
+        organization=organization,
+    )
+
+
+@pytest.fixture
+def bundle_event_data():
+    """Sample event data for bundle tests."""
+    return CalendarEventInputData(
+        title="Bundle Meeting",
+        description="A meeting created through bundle calendar",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        attendances=[],
+        external_attendances=[],
+        resource_allocations=[],
+    )
+
+
+@pytest.mark.django_db
+def test_create_bundle_calendar(organization):
+    """Test creating a bundle calendar without child calendars."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    bundle_calendar = service.create_bundle_calendar(
+        name="Test Bundle",
+        description="Test bundle description",
+    )
+
+    assert bundle_calendar.name == "Test Bundle"
+    assert bundle_calendar.description == "Test bundle description"
+    assert bundle_calendar.calendar_type == CalendarType.BUNDLE
+    assert bundle_calendar.provider == CalendarProvider.INTERNAL
+    assert bundle_calendar.organization == organization
+
+
+@pytest.mark.django_db
+def test_create_bundle_calendar_with_children(
+    organization, child_calendar_internal, child_calendar_google
+):
+    """Test creating a bundle calendar with child calendars."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    bundle_calendar = service.create_bundle_calendar(
+        name="Test Bundle",
+        description="Test bundle description",
+        child_calendars=[child_calendar_internal, child_calendar_google],
+        primary_calendar=child_calendar_google,
+    )
+
+    assert bundle_calendar.name == "Test Bundle"
+    assert bundle_calendar.calendar_type == CalendarType.BUNDLE
+
+    # Check relationships were created
+    relationships = bundle_calendar.bundle_relationships.all()
+    assert relationships.count() == 2
+
+    # Check bundle_children relationship
+    child_calendars = bundle_calendar.bundle_children.all()
+    assert child_calendars.count() == 2
+    assert child_calendar_internal in child_calendars
+    assert child_calendar_google in child_calendars
+
+    # Check primary designation
+    primary_rel = bundle_calendar.bundle_relationships.filter(is_primary=True).first()
+    assert primary_rel is not None
+    assert primary_rel.child_calendar == child_calendar_google
+
+
+@pytest.mark.django_db
+def test_create_bundle_calendar_different_organization_error(organization, child_calendar_internal):
+    """Test that child calendars must belong to the same organization."""
+    # Create another organization and calendar
+    other_org = Organization.objects.create(name="Other Org")
+    other_calendar = Calendar.objects.create(
+        name="Other Calendar",
+        external_id="other-1",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.PERSONAL,
+        organization=other_org,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    with pytest.raises(
+        ValueError, match="All child calendars must belong to the same organization"
+    ):
+        service.create_bundle_calendar(
+            name="Test Bundle",
+            child_calendars=[child_calendar_internal, other_calendar],
+            primary_calendar=other_calendar,
+        )
+
+
+@pytest.mark.django_db
+def test_create_bundle_calendar_primary_not_in_children_error(
+    organization, child_calendar_internal, child_calendar_google
+):
+    """Test that primary calendar must be one of the child calendars."""
+    # Create another calendar that's not in the children list
+    other_calendar = Calendar.objects.create(
+        name="Other Calendar",
+        external_id="other-2",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.PERSONAL,
+        organization=organization,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    with pytest.raises(ValueError, match="Primary calendar must be one of the child calendars"):
+        service.create_bundle_calendar(
+            name="Test Bundle",
+            child_calendars=[child_calendar_internal, child_calendar_google],
+            primary_calendar=other_calendar,  # Not in child_calendars
+        )
+
+
+@pytest.mark.django_db
+@patch(
+    "calendar_integration.services.calendar_service.CalendarService.get_availability_windows_in_range"
+)
+def test_create_bundle_event_uses_designated_primary(
+    mock_availability,
+    organization,
+    child_calendar_google,
+    bundle_event_data,
+):
+    """Test bundle event creation uses the designated primary calendar."""
+    other_calendar_google = Calendar.objects.create(
+        name="Google Child Calendar",
+        external_id="google-child-2",
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.PERSONAL,
+        organization=organization,
+    )
+
+    # Create bundle with Google as primary
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    bundle_calendar = service.create_bundle_calendar(
+        name="Test Bundle",
+        description="Test bundle description",
+        child_calendars=[other_calendar_google, child_calendar_google],
+        primary_calendar=child_calendar_google,  # Explicitly set Google as primary
+    )
+
+    # Mock availability as available
+    mock_availability.return_value = [
+        AvailableTimeWindow(
+            start_time=bundle_event_data.start_time,
+            end_time=bundle_event_data.end_time,
+        )
+    ]
+
+    # Mock the create_event method
+    with patch.object(service, "create_event") as mock_create_event:
+        mock_primary_event = CalendarEvent(
+            id=1,
+            title=bundle_event_data.title,
+            calendar=child_calendar_google,  # Primary calendar
+            organization=organization,
+            start_time=bundle_event_data.start_time,
+            end_time=bundle_event_data.end_time,
+        )
+        mock_create_event.return_value = mock_primary_event
+
+        service._create_bundle_event(bundle_calendar, bundle_event_data)
+
+        # Should have created primary event on Google calendar (the designated primary)
+        mock_create_event.assert_called_once()
+        call_args = mock_create_event.call_args
+        assert call_args[0][0] == child_calendar_google.external_id
+
+
+@pytest.mark.django_db
+@patch(
+    "calendar_integration.services.calendar_service.CalendarService.get_availability_windows_in_range"
+)
+def test_create_bundle_event_no_availability_error(
+    mock_availability,
+    organization,
+    bundle_calendar,
+    child_calendar_internal,
+    bundle_event_data,
+):
+    """Test that bundle event creation fails when no availability."""
+    from calendar_integration.models import ChildrenCalendarRelationship
+
+    # Set up bundle relationships
+    ChildrenCalendarRelationship.objects.create(
+        bundle_calendar=bundle_calendar,
+        child_calendar=child_calendar_internal,
+        organization=organization,
+    )
+
+    # Mock no availability
+    mock_availability.return_value = []
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    with pytest.raises(ValueError, match="No availability in child calendar"):
+        service._create_bundle_event(bundle_calendar, bundle_event_data)
+
+
+@pytest.mark.django_db
+def test_create_bundle_event_non_bundle_calendar_error(
+    organization, child_calendar_internal, bundle_event_data
+):
+    """Test that create_bundle_event only works with bundle calendars."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    with pytest.raises(ValueError, match="Calendar must be a bundle calendar"):
+        service._create_bundle_event(child_calendar_internal, bundle_event_data)
+
+
+@pytest.mark.django_db
+def test_create_bundle_event_no_children_error(
+    organization, empty_bundle_calendar, bundle_event_data
+):
+    """Test that bundle calendar must have child calendars."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    with pytest.raises(ValueError, match="Bundle calendar has no child calendars"):
+        service._create_bundle_event(empty_bundle_calendar, bundle_event_data)
+
+
+@pytest.mark.django_db
+@patch(
+    "calendar_integration.services.calendar_service.CalendarService.get_availability_windows_in_range"
+)
+def test_create_bundle_event_creates_representations(
+    mock_availability,
+    organization,
+    bundle_calendar,  # This now includes the relationships
+    bundle_event_data,
+):
+    """Test that bundle event creates appropriate representations."""
+    # Mock availability as available
+    mock_availability.return_value = [
+        AvailableTimeWindow(
+            start_time=bundle_event_data.start_time,
+            end_time=bundle_event_data.end_time,
+        )
+    ]
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Mock the create_event method to track calls
+    created_events = []
+
+    def mock_create_event(calendar_id, event_data):
+        # Get calendar from the bundle relationships
+        relationships = bundle_calendar.bundle_relationships.all()
+        calendar = None
+        for rel in relationships:
+            if rel.child_calendar.external_id == calendar_id:
+                calendar = rel.child_calendar
+                break
+
+        if not calendar:
+            raise ValueError(f"Calendar with external_id {calendar_id} not found")
+
+        event = CalendarEvent.objects.create(
+            title=event_data.title,
+            description=event_data.description,
+            start_time=event_data.start_time,
+            end_time=event_data.end_time,
+            calendar=calendar,
+            organization=organization,
+            external_id=f"event-{len(created_events)}",
+        )
+        created_events.append(event)
+        return event
+
+    with patch.object(service, "create_event", side_effect=mock_create_event):
+        service._create_bundle_event(bundle_calendar, bundle_event_data)
+
+        # Should have created 2 events: primary + internal representation
+        assert len(created_events) == 2
+
+        # Primary event should be marked as bundle primary
+        created_events[0].refresh_from_db()
+        assert created_events[0].is_bundle_primary is True
+        assert created_events[0].bundle_calendar == bundle_calendar
+
+        # Should have created a representation event for the Internal calendar
+        # (since Google is primary, Internal gets a representation)
+        representation_event = created_events[1]
+        representation_event.refresh_from_db()
+        assert representation_event.is_bundle_primary is False
+        assert representation_event.bundle_calendar == bundle_calendar
+        assert representation_event.bundle_primary_event == created_events[0]
+        # Get the internal calendar from relationships
+        internal_calendar = None
+        for rel in bundle_calendar.bundle_relationships.all():
+            if not rel.is_primary:
+                internal_calendar = rel.child_calendar
+                break
+        assert representation_event.calendar == internal_calendar
+
+
+@pytest.mark.django_db
+def test_update_bundle_event(organization, bundle_calendar):
+    """Test updating a bundle event."""
+    # Create a primary bundle event
+    primary_event = CalendarEvent.objects.create(
+        title="Original Title",
+        description="Original description",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        calendar=Calendar.objects.create(
+            name="Primary Calendar",
+            external_id="primary-1",
+            provider=CalendarProvider.GOOGLE,
+            organization=organization,
+        ),
+        organization=organization,
+        external_id="primary-event-1",
+        is_bundle_primary=True,
+        bundle_calendar=bundle_calendar,
+    )
+
+    # Create representation event
+    CalendarEvent.objects.create(
+        title="[Bundle] Original Title",
+        description="Bundle event from Test Bundle Calendar\n\nOriginal description",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        calendar=Calendar.objects.create(
+            name="Internal Calendar",
+            external_id="internal-1",
+            provider=CalendarProvider.INTERNAL,
+            organization=organization,
+        ),
+        organization=organization,
+        external_id="repr-event-1",
+        bundle_calendar=bundle_calendar,
+        bundle_primary_event=primary_event,
+    )
+
+    # Create blocked time representation
+    blocked_time = BlockedTime.objects.create(
+        calendar=Calendar.objects.create(
+            name="Another Calendar",
+            external_id="another-1",
+            provider=CalendarProvider.GOOGLE,
+            organization=organization,
+        ),
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        reason="Bundle event: Original Title",
+        organization=organization,
+        bundle_calendar=bundle_calendar,
+        bundle_primary_event=primary_event,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Mock the update_event method
+    with patch.object(service, "update_event") as mock_update_event:
+        mock_update_event.return_value = primary_event
+
+        updated_data = CalendarEventInputData(
+            title="Updated Title",
+            description="Updated description",
+            start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+            attendances=[],
+            external_attendances=[],
+            resource_allocations=[],
+        )
+
+        service._update_bundle_event(primary_event, updated_data)
+
+        # Should have called update_event twice (primary + representation)
+        assert mock_update_event.call_count == 2
+
+        # Check blocked time was updated
+        blocked_time.refresh_from_db()
+        assert blocked_time.start_time == updated_data.start_time
+        assert blocked_time.end_time == updated_data.end_time
+        assert blocked_time.reason == "Bundle event: Updated Title"
+
+
+@pytest.mark.django_db
+def test_update_bundle_event_non_primary_error(organization):
+    """Test that update_bundle_event only works with primary events."""
+    non_primary_event = CalendarEvent.objects.create(
+        title="Non-primary Event",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        calendar=Calendar.objects.create(
+            name="Some Calendar", external_id="some-1", organization=organization
+        ),
+        organization=organization,
+        is_bundle_primary=False,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    updated_data = CalendarEventInputData(
+        title="Updated Title",
+        description="Updated description",
+        start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        attendances=[],
+        external_attendances=[],
+        resource_allocations=[],
+    )
+
+    with pytest.raises(ValueError, match="Event must be a bundle primary event"):
+        service._update_bundle_event(non_primary_event, updated_data)
+
+
+@pytest.mark.django_db
+def test_delete_bundle_event(organization, bundle_calendar):
+    """Test deleting a bundle event and all its representations."""
+    # Create a primary bundle event
+    primary_event = CalendarEvent.objects.create(
+        title="Primary Event",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        calendar=Calendar.objects.create(
+            name="Primary Calendar",
+            external_id="primary-1",
+            provider=CalendarProvider.GOOGLE,
+            organization=organization,
+        ),
+        organization=organization,
+        external_id="primary-event-1",
+        is_bundle_primary=True,
+        bundle_calendar=bundle_calendar,
+    )
+
+    # Create representation event
+    CalendarEvent.objects.create(
+        title="[Bundle] Primary Event",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        calendar=Calendar.objects.create(
+            name="Internal Calendar",
+            external_id="internal-1",
+            provider=CalendarProvider.INTERNAL,
+            organization=organization,
+        ),
+        organization=organization,
+        external_id="repr-event-1",
+        bundle_calendar=bundle_calendar,
+        bundle_primary_event=primary_event,
+    )
+
+    # Create blocked time representation
+    blocked_time = BlockedTime.objects.create(
+        calendar=Calendar.objects.create(
+            name="Another Calendar",
+            external_id="another-1",
+            provider=CalendarProvider.GOOGLE,
+            organization=organization,
+        ),
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        reason="Bundle event: Primary Event",
+        organization=organization,
+        bundle_calendar=bundle_calendar,
+        bundle_primary_event=primary_event,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Mock the delete_event method
+    with patch.object(service, "delete_event") as mock_delete_event:
+        service._delete_bundle_event(primary_event)
+
+        # Should have called delete_event twice (primary + representation)
+        assert mock_delete_event.call_count == 2
+
+        # Check blocked time was deleted
+        assert not BlockedTime.objects.filter(id=blocked_time.id).exists()
+
+
+@pytest.mark.django_db
+def test_delete_bundle_event_non_primary_error(organization):
+    """Test that delete_bundle_event only works with primary events."""
+    non_primary_event = CalendarEvent.objects.create(
+        title="Non-primary Event",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        calendar=Calendar.objects.create(
+            name="Some Calendar", external_id="some-1", organization=organization
+        ),
+        organization=organization,
+        is_bundle_primary=False,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    with pytest.raises(ValueError, match="Event must be a bundle primary event"):
+        service._delete_bundle_event(non_primary_event)
+
+
+@pytest.mark.django_db
+def test_get_calendar_events_expanded_bundle_calendar(organization, bundle_calendar):
+    """Test getting expanded events from a bundle calendar using the main method."""
+    # Create child calendars
+    child1 = Calendar.objects.create(
+        name="Child 1",
+        external_id="child-1",
+        provider=CalendarProvider.INTERNAL,
+        organization=organization,
+    )
+    child2 = Calendar.objects.create(
+        name="Child 2",
+        external_id="child-2",
+        provider=CalendarProvider.GOOGLE,
+        organization=organization,
+    )
+
+    # Set up bundle relationships
+    from calendar_integration.models import ChildrenCalendarRelationship
+
+    ChildrenCalendarRelationship.objects.create(
+        bundle_calendar=bundle_calendar, child_calendar=child1, organization=organization
+    )
+    ChildrenCalendarRelationship.objects.create(
+        bundle_calendar=bundle_calendar, child_calendar=child2, organization=organization
+    )
+
+    # Create a bundle primary event
+    primary_event = CalendarEvent.objects.create(
+        title="Bundle Primary Event",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        calendar=child2,
+        organization=organization,
+        external_id="primary-1",
+        is_bundle_primary=True,
+        bundle_calendar=bundle_calendar,
+    )
+
+    # Create a representation event (should be filtered out)
+    CalendarEvent.objects.create(
+        title="[Bundle] Primary Event",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        calendar=child1,
+        organization=organization,
+        external_id="repr-1",
+        bundle_calendar=bundle_calendar,
+        bundle_primary_event=primary_event,
+    )
+
+    # Create a regular event in child calendar
+    CalendarEvent.objects.create(
+        title="Regular Event",
+        start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        calendar=child1,
+        organization=organization,
+        external_id="regular-1",
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    events = service.get_calendar_events_expanded(
+        bundle_calendar,
+        datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC),
+        datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Should only return primary and regular events, not representations
+    assert len(events) == 2
+    event_titles = [e.title for e in events]
+    assert "Bundle Primary Event" in event_titles
+    assert "Regular Event" in event_titles
+    assert "[Bundle] Primary Event" not in event_titles

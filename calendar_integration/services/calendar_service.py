@@ -342,12 +342,25 @@ class BaseCalendarService(Protocol):
     ) -> ApplicationCalendarData:
         ...
 
+    def _create_bundle_event(
+        self, bundle_calendar: Calendar, event_data: "CalendarEventInputData"
+    ) -> CalendarEvent:
+        ...
+
     def create_event(self, calendar_id: str, event_data: CalendarEventInputData) -> CalendarEvent:
+        ...
+
+    def _update_bundle_event(
+        self, bundle_event: CalendarEvent, event_data: "CalendarEventInputData"
+    ) -> CalendarEvent:
         ...
 
     def update_event(
         self, calendar_id: str, event_id: str, event_data: CalendarEventInputData
     ) -> CalendarEvent:
+        ...
+
+    def _delete_bundle_event(self, bundle_event: CalendarEvent) -> None:
         ...
 
     def delete_event(self, calendar_id: str, event_id: str) -> None:
@@ -846,12 +859,14 @@ class CalendarService(BaseCalendarService):
         name: str,
         description: str | None = None,
         child_calendars: Iterable[Calendar] | None = None,
+        primary_calendar: Calendar | None = None,
     ) -> Calendar:
         """
         Create a new bundle calendar in the application without linking to an external provider.
         :param name: Name of the calendar.
         :param description: Description of the calendar.
         :param child_calendars: Iterable of child Calendar instances to include in the bundle.
+        :param primary_calendar: The child calendar to be designated as primary. Must be in child_calendars.
         :return: Created Calendar instance.
         """
         if not is_calendar_service_initialized_without_provider(self):
@@ -863,26 +878,158 @@ class CalendarService(BaseCalendarService):
             raise NotImplementedError(
                 "Calendar organization is not set for the current service instance."
             )
+
+        child_calendars_list = list(child_calendars or [])
+
+        # Validate primary calendar
+        if primary_calendar and primary_calendar not in child_calendars_list:
+            raise ValueError("Primary calendar must be one of the child calendars")
+
         bundle_calendar = Calendar.objects.create(
             organization=self.organization,
             name=name,
-            description=description,
+            description=description or "",
             provider=CalendarProvider.INTERNAL,
             calendar_type=CalendarType.BUNDLE,
-            original_payload={},
         )
 
-        for calendar in child_calendars or []:
+        for calendar in child_calendars_list:
             if calendar.organization_id != self.organization.id:
                 raise ValueError(
                     "All child calendars must belong to the same organization as the bundle."
                 )
 
+            is_primary = primary_calendar is not None and calendar.id == primary_calendar.id
             ChildrenCalendarRelationship.objects.create(
-                parent_calendar=bundle_calendar,
+                bundle_calendar=bundle_calendar,
                 child_calendar=calendar,
+                organization=self.organization,
+                is_primary=is_primary,
             )
         return bundle_calendar
+
+    def _create_bundle_event(
+        self, bundle_calendar: Calendar, event_data: "CalendarEventInputData"
+    ) -> CalendarEvent:
+        """
+        Create an event in a bundle calendar by:
+        1. Selecting a primary PROVIDER calendar or defaulting to INTERNAL
+        2. Creating the main event in the primary calendar
+        3. Creating BlockedTime entries in other PROVIDER calendars
+        4. Creating CalendarEvent entries in INTERNAL calendars
+        5. Adding users from non-primary calendars as attendees
+        """
+        if bundle_calendar.calendar_type != CalendarType.BUNDLE:
+            raise ValueError("Calendar must be a bundle calendar")
+
+        child_calendars = list(bundle_calendar.bundle_children.all())
+        if not child_calendars:
+            raise ValueError("Bundle calendar has no child calendars")
+
+        # Check availability across all child calendars
+        for child_calendar in child_calendars:
+            available_windows = self.get_availability_windows_in_range(
+                child_calendar, event_data.start_time, event_data.end_time
+            )
+            if not available_windows:
+                raise ValueError(f"No availability in child calendar {child_calendar.name}")
+
+        # Get the designated primary calendar
+        primary_calendar = self._get_primary_calendar(bundle_calendar)
+
+        # Collect all attendees from child calendar ownerships
+        all_attendees = self._collect_bundle_attendees(child_calendars, event_data)
+
+        # Create the primary event
+        primary_event_data = CalendarEventInputData(
+            title=event_data.title,
+            description=event_data.description,
+            start_time=event_data.start_time,
+            end_time=event_data.end_time,
+            attendances=all_attendees,
+            external_attendances=event_data.external_attendances,
+            resource_allocations=event_data.resource_allocations,
+            recurrence_rule=event_data.recurrence_rule,
+        )
+
+        primary_event = self.create_event(primary_calendar.external_id, primary_event_data)
+
+        # Mark primary event as part of bundle
+        primary_event.bundle_calendar = bundle_calendar
+        primary_event.is_bundle_primary = True
+        primary_event.save()
+
+        # Create representations in other calendars
+        for child_calendar in child_calendars:
+            if child_calendar.id == primary_calendar.id:
+                continue
+
+            if child_calendar.provider == CalendarProvider.INTERNAL:
+                # Create full CalendarEvent for internal calendars
+                child_event_data = CalendarEventInputData(
+                    title=f"[Bundle] {event_data.title}",
+                    description=f"Bundle event from {bundle_calendar.name}\n\n{event_data.description}",
+                    start_time=event_data.start_time,
+                    end_time=event_data.end_time,
+                    attendances=[],  # No direct attendances for linked events
+                    external_attendances=[],
+                    resource_allocations=[],
+                )
+
+                child_event = self.create_event(child_calendar.external_id, child_event_data)
+
+                # Link to primary event and bundle
+                child_event.bundle_calendar = bundle_calendar
+                child_event.bundle_primary_event = primary_event
+                child_event.save()
+
+            else:
+                # Create BlockedTime for other PROVIDER calendars
+                BlockedTime.objects.create(
+                    calendar=child_calendar,
+                    start_time=event_data.start_time,
+                    end_time=event_data.end_time,
+                    reason=f"Bundle event: {event_data.title}",
+                    organization=child_calendar.organization,
+                    bundle_calendar=bundle_calendar,
+                    bundle_primary_event=primary_event,
+                )
+
+        return primary_event
+
+    def _get_primary_calendar(self, bundle_calendar: Calendar) -> Calendar:
+        """Get the designated primary calendar for a bundle."""
+        primary_relationship = ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle_calendar,
+            is_primary=True,
+            organization=self.organization,
+        ).first()
+
+        if not primary_relationship:
+            raise ValueError("Bundle calendar has no designated primary child calendar")
+
+        return primary_relationship.child_calendar
+
+    def _collect_bundle_attendees(
+        self, child_calendars: list[Calendar], event_data: "CalendarEventInputData"
+    ) -> list["EventAttendanceInputData"]:
+        """Collect attendees from calendar ownerships and explicit attendances."""
+        attendee_user_ids = set()
+
+        # Add explicitly specified attendees
+        for attendance in event_data.attendances:
+            attendee_user_ids.add(attendance.user_id)
+
+        # Add users who own child calendars
+        calendar_owners = User.objects.filter(
+            calendar_ownerships__calendar__in=child_calendars,
+            calendar_ownerships__organization=self.organization,
+        ).distinct()
+
+        for owner in calendar_owners:
+            attendee_user_ids.add(owner.id)
+
+        return [EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids]
 
     def create_event(self, calendar_id: str, event_data: CalendarEventInputData) -> CalendarEvent:
         """
@@ -900,6 +1047,10 @@ class CalendarService(BaseCalendarService):
             )
 
         calendar = self._get_calendar_by_external_id(calendar_id)
+
+        if calendar.calendar_type == CalendarType.BUNDLE:
+            return self._create_bundle_event(bundle_calendar=calendar, event_data=event_data)
+
         available_windows = self.get_availability_windows_in_range(
             calendar,
             event_data.start_time,
@@ -1033,6 +1184,58 @@ class CalendarService(BaseCalendarService):
 
         return event
 
+    def _update_bundle_event(
+        self, bundle_event: CalendarEvent, event_data: "CalendarEventInputData"
+    ) -> CalendarEvent:
+        """Update a bundle event and all its representations."""
+        if not bundle_event.is_bundle_primary:
+            raise ValueError("Event must be a bundle primary event")
+
+        bundle_calendar = bundle_event.bundle_calendar
+
+        # Update the primary event
+        updated_primary = self.update_event(
+            bundle_event.calendar.external_id, bundle_event.external_id, event_data
+        )
+
+        # Update all representation events
+        if not self.organization:
+            raise ValueError("Organization is required for bundle operations")
+
+        representation_events = CalendarEvent.objects.filter(
+            organization_id=self.organization.id, bundle_primary_event=bundle_event
+        )
+
+        for representation_event in representation_events:
+            representation_data = CalendarEventInputData(
+                title=f"[Bundle] {event_data.title}",
+                description=f"Bundle event from {bundle_calendar.name}\n\n{event_data.description}",
+                start_time=event_data.start_time,
+                end_time=event_data.end_time,
+                attendances=[],
+                external_attendances=[],
+                resource_allocations=[],
+            )
+
+            self.update_event(
+                representation_event.calendar.external_id,
+                representation_event.external_id,
+                representation_data,
+            )
+
+        # Update all blocked time representations
+        blocked_time_representations = BlockedTime.objects.filter(
+            organization_id=self.organization.id, bundle_primary_event=bundle_event
+        )
+
+        for blocked_time in blocked_time_representations:
+            blocked_time.start_time = event_data.start_time
+            blocked_time.end_time = event_data.end_time
+            blocked_time.reason = f"Bundle event: {event_data.title}"
+            blocked_time.save(update_fields=["start_time", "end_time", "reason"])
+
+        return updated_primary
+
     def update_event(
         self, calendar_id: str, event_id: str, event_data: CalendarEventInputData
     ) -> CalendarEvent:
@@ -1050,6 +1253,15 @@ class CalendarService(BaseCalendarService):
                 "This method requires calendar organization setup. "
                 "Please call either `authenticate` or `initialize_without_provider` first."
             )
+
+        calendar_event = CalendarEvent.objects.get(
+            calendar__external_id=calendar_id,
+            external_id=event_id,
+            organization_id=self.organization.id,
+        )
+
+        if calendar_event.is_bundle_primary:
+            self._update_bundle_event(calendar_event, event_data)
 
         original_payload = {}
         if self.calendar_adapter:
@@ -1109,12 +1321,6 @@ class CalendarService(BaseCalendarService):
                 ),
             )
             original_payload = updated_event.original_payload or {}
-
-        calendar_event = CalendarEvent.objects.get(
-            calendar__external_id=calendar_id,
-            external_id=event_id,
-            organization_id=self.organization.id,
-        )
 
         calendar_event.title = event_data.title
         calendar_event.description = event_data.description
@@ -1454,7 +1660,7 @@ class CalendarService(BaseCalendarService):
         if calendar.calendar_type == CalendarType.BUNDLE:
             base_qs = base_qs.filter(
                 organization_id=calendar.organization_id,
-                calendar__in=calendar.children.all(),
+                calendar__in=calendar.bundle_children.all(),
             )
         else:
             base_qs = base_qs.filter(
@@ -1486,7 +1692,56 @@ class CalendarService(BaseCalendarService):
 
         # Sort by start time
         events.sort(key=lambda x: x.start_time)
+
+        # If this is a bundle calendar, filter out bundle representations to avoid duplicates
+        if calendar.calendar_type == CalendarType.BUNDLE:
+            # Remove duplicates (keep primary events, remove representations)
+            seen_primary_events = set()
+            unique_events = []
+
+            for event in events:
+                if event.is_bundle_representation:
+                    # Skip representations - we want to show the primary event instead
+                    continue
+                elif event.is_bundle_primary:
+                    # For bundle primary events, check if we've already seen this one
+                    if event.id not in seen_primary_events:
+                        seen_primary_events.add(event.id)
+                        unique_events.append(event)
+                else:
+                    # For non-bundle events, include them normally
+                    unique_events.append(event)
+
+            events = unique_events
+            events.sort(key=lambda x: x.start_time)
+
         return events
+
+    def _delete_bundle_event(self, bundle_event: CalendarEvent) -> None:
+        """Delete a bundle event and all its representations."""
+        if not bundle_event.is_bundle_primary:
+            raise ValueError("Event must be a bundle primary event")
+
+        if not self.organization:
+            raise ValueError("Organization is required for bundle operations")
+
+        # Delete all representation events
+        representation_events = CalendarEvent.objects.filter(
+            organization_id=self.organization.id, bundle_primary_event=bundle_event
+        )
+
+        for representation_event in representation_events:
+            self.delete_event(
+                representation_event.calendar.external_id, representation_event.external_id
+            )
+
+        # Delete all blocked time representations
+        BlockedTime.objects.filter(
+            organization_id=self.organization.id, bundle_primary_event=bundle_event
+        ).delete()
+
+        # Delete the primary event
+        self.delete_event(bundle_event.calendar.external_id, bundle_event.external_id)
 
     def delete_event(self, calendar_id: str, event_id: str, delete_series: bool = False) -> None:
         """
@@ -1509,6 +1764,10 @@ class CalendarService(BaseCalendarService):
             external_id=event_id,
             organization_id=self.organization.id,
         )
+
+        if event.is_bundle_primary:
+            self._delete_bundle_event(event)
+            return
 
         if self.calendar_adapter:
             if event.is_recurring and delete_series:
@@ -2182,6 +2441,31 @@ class CalendarService(BaseCalendarService):
             end_time__gt=start_datetime,
         ).order_by("start_time")
 
+        # If this calendar is part of any bundles, include bundle events
+        bundle_calendars = Calendar.objects.filter(
+            calendar_type=CalendarType.BUNDLE,
+            bundle_children=calendar,
+            organization_id=calendar.organization_id,
+        )
+
+        bundle_events = []
+        for bundle_calendar in bundle_calendars:
+            # Get bundle events from the bundle calendar directly
+            bundle_calendar_events = CalendarEvent.objects.filter(
+                bundle_calendar=bundle_calendar,
+                start_time__lt=end_datetime,
+                end_time__gt=start_datetime,
+                organization_id=bundle_calendar.organization_id,
+            )
+            # Only include bundle events that aren't already in our calendar_events
+            # (to avoid counting the same event twice)
+            for bundle_event in bundle_calendar_events:
+                if not any(ce.id == bundle_event.id for ce in calendar_events):
+                    bundle_events.append(bundle_event)
+
+        # Combine regular events with bundle events
+        all_events = calendar_events + bundle_events
+
         return sorted(
             [
                 UnavailableTimeWindow(
@@ -2250,7 +2534,7 @@ class CalendarService(BaseCalendarService):
                         external_id=event.external_id,
                     ),
                 )
-                for event in calendar_events
+                for event in all_events
             ]
             + [
                 UnavailableTimeWindow(
