@@ -1,8 +1,12 @@
+from typing import Protocol
+
 from calendar_integration.models import Organization
-from calendar_integration.services.protocols.base_calendar_service import BaseCalendarService
+from calendar_integration.services.protocols.initializer_or_authenticated_calendar_service import (
+    InitializedOrAuthenticatedCalendarService,
+)
 
 
-class NoProviderCalendarService(BaseCalendarService):
+class InitializedCalendarService(InitializedOrAuthenticatedCalendarService, Protocol):
     organization: Organization
     account: None
     calendar_adapter: None

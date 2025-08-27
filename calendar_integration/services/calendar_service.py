@@ -50,13 +50,12 @@ from calendar_integration.services.dataclasses import (
     ResourceData,
     UnavailableTimeWindow,
 )
-from calendar_integration.services.decorators import (
-    requires_authentication,
-    requires_authentication_or_initialization,
-    requires_initialization,
-)
 from calendar_integration.services.protocols.base_calendar_service import BaseCalendarService
 from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
+from calendar_integration.services.type_guards import (
+    is_authenticated_calendar_service,
+    is_initialized_or_authenticated_calendar_service,
+)
 from organizations.models import Organization
 
 
@@ -160,7 +159,6 @@ class CalendarService(BaseCalendarService):
         self.account = None
         self.calendar_adapter = None
 
-    @requires_authentication
     def request_organization_calendar_resources_import(
         self,
         start_time: datetime.datetime,
@@ -168,19 +166,14 @@ class CalendarService(BaseCalendarService):
     ) -> None:
         from calendar_integration.tasks import import_organization_calendar_resources_task
 
+        if not is_authenticated_calendar_service(self):
+            raise
+
         import_workflow_state = CalendarOrganizationResourcesImport.objects.create(
             organization=self.organization,
             start_time=start_time,
             end_time=end_time,
         )
-
-        if not self.organization or not self.organization.id:
-            raise NotImplementedError(
-                "Calendar organization is not set for the current service instance."
-            )
-
-        if not self.account or not self.account.id:
-            raise NotImplementedError("Account is not set for the current service instance.")
 
         import_organization_calendar_resources_task.delay(  # type: ignore
             account_type="google_service_account"
@@ -191,7 +184,6 @@ class CalendarService(BaseCalendarService):
             import_workflow_state_id=import_workflow_state.id,
         )
 
-    @requires_authentication
     def import_organization_calendar_resources(
         self,
         import_workflow_state: CalendarOrganizationResourcesImport,
@@ -202,6 +194,9 @@ class CalendarService(BaseCalendarService):
         :param end_time: End time for the availability check.
         :return: List of available resources.
         """
+        if not is_authenticated_calendar_service(self):
+            raise
+
         import_workflow_state.status = CalendarOrganizationResourceImportStatus.IN_PROGRESS
         import_workflow_state.save(update_fields=["status"])
 
@@ -231,6 +226,9 @@ class CalendarService(BaseCalendarService):
         :param end_time: End time for the availability check.
         :return: List of available resources.
         """
+        if not is_authenticated_calendar_service(self):
+            raise
+
         if not self.calendar_adapter:
             raise NotImplementedError(
                 "Calendar adapter is not implemented for the current account provider."
@@ -256,7 +254,6 @@ class CalendarService(BaseCalendarService):
             )
         return resources
 
-    @requires_authentication
     def create_application_calendar(
         self, name: str, organization: Organization
     ) -> ApplicationCalendarData:
@@ -264,6 +261,9 @@ class CalendarService(BaseCalendarService):
         Create a new application calendar using the calendar adapter.
         :return: Created ApplicationCalendarData instance.
         """
+        if not is_authenticated_calendar_service(self):
+            raise
+
         if self.calendar_adapter:
             created_calendar = self.calendar_adapter.create_application_calendar(name)
         else:
@@ -303,8 +303,10 @@ class CalendarService(BaseCalendarService):
         return created_calendar
 
     @lru_cache(maxsize=128)  # noqa: B019
-    @requires_authentication
     def _get_calendar_by_external_id(self, calendar_external_id: str) -> Calendar:
+        if not is_authenticated_calendar_service(self):
+            raise
+
         query_kwargs = {
             "external_id": calendar_external_id,
             "organization_id": self.organization.id,
@@ -314,14 +316,15 @@ class CalendarService(BaseCalendarService):
         return Calendar.objects.get(**query_kwargs)
 
     @lru_cache(maxsize=128)  # noqa: B019
-    @requires_authentication
     def _get_calendar_by_id(self, calendar_id: str) -> Calendar:
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         return Calendar.objects.get(
             id=calendar_id,
             organization_id=self.organization.id,
         )
 
-    @requires_authentication
     def request_calendars_import(self) -> None:
         """
         Import calendars associated with the authenticated account and create them as Calendar
@@ -329,10 +332,8 @@ class CalendarService(BaseCalendarService):
         """
         from calendar_integration.tasks import import_account_calendars_task
 
-        if not self.organization or not self.organization.id:
-            raise NotImplementedError(
-                "Calendar organization is not set for the current service instance."
-            )
+        if not is_authenticated_calendar_service(self):
+            raise
 
         if not self.account or not self.account.id:
             raise NotImplementedError("Account is not set for the current service instance.")
@@ -345,12 +346,14 @@ class CalendarService(BaseCalendarService):
             organization_id=self.organization.id,
         )
 
-    @requires_authentication
     def import_account_calendars(self):
         """
         Import calendars associated with the authenticated account and create them as Calendar
         records.
         """
+        if not is_authenticated_calendar_service(self):
+            raise
+
         calendars = self.calendar_adapter.get_account_calendars()
 
         for calendar_data in calendars:
@@ -381,7 +384,6 @@ class CalendarService(BaseCalendarService):
                 should_update_events=True,
             )
 
-    @requires_initialization
     def create_virtual_calendar(
         self,
         name: str,
@@ -393,10 +395,8 @@ class CalendarService(BaseCalendarService):
         :param description: Description of the calendar.
         :return: Created Calendar instance.
         """
-        if not self.organization:
-            raise NotImplementedError(
-                "Calendar organization is not set for the current service instance."
-            )
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
 
         calendar = Calendar.objects.create(
             organization=self.organization,
@@ -409,7 +409,6 @@ class CalendarService(BaseCalendarService):
 
         return calendar
 
-    @requires_initialization
     def create_bundle_calendar(
         self,
         name: str,
@@ -425,10 +424,8 @@ class CalendarService(BaseCalendarService):
         :param primary_calendar: The child calendar to be designated as primary. Must be in child_calendars.
         :return: Created Calendar instance.
         """
-        if not self.organization:
-            raise NotImplementedError(
-                "Calendar organization is not set for the current service instance."
-            )
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
 
         child_calendars_list = list(child_calendars or [])
 
@@ -470,6 +467,9 @@ class CalendarService(BaseCalendarService):
         4. Creating CalendarEvent entries in INTERNAL calendars
         5. Adding users from non-primary calendars as attendees
         """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         if bundle_calendar.calendar_type != CalendarType.BUNDLE:
             raise ValueError("Calendar must be a bundle calendar")
 
@@ -550,6 +550,9 @@ class CalendarService(BaseCalendarService):
 
     def _get_primary_calendar(self, bundle_calendar: Calendar) -> Calendar:
         """Get the designated primary calendar for a bundle."""
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         primary_relationship = ChildrenCalendarRelationship.objects.filter(
             bundle_calendar=bundle_calendar,
             is_primary=True,
@@ -565,6 +568,9 @@ class CalendarService(BaseCalendarService):
         self, child_calendars: list[Calendar], event_data: "CalendarEventInputData"
     ) -> list["EventAttendanceInputData"]:
         """Collect attendees from calendar ownerships and explicit attendances."""
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         attendee_user_ids = set()
 
         # Add explicitly specified attendees
@@ -582,15 +588,17 @@ class CalendarService(BaseCalendarService):
 
         return [EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids]
 
-    @requires_authentication_or_initialization
     def create_event(self, calendar_id: str, event_data: CalendarEventInputData) -> CalendarEvent:
         """
         Create a new event in the calendar.
-        :param calendar_id: External ID of the calendar
+        :param calendar_id: Internal ID of the calendar
         :param event_data: Dictionary containing event details.
         :return: Response from the calendar client.
         """
-        calendar = self._get_calendar_by_external_id(calendar_id)
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        calendar = self._get_calendar_by_id(calendar_id)
 
         if calendar.calendar_type == CalendarType.BUNDLE:
             return self._create_bundle_event(bundle_calendar=calendar, event_data=event_data)
@@ -604,7 +612,7 @@ class CalendarService(BaseCalendarService):
             raise ValueError("No available time windows for the event.")
 
         external_id = ""
-        original_payload = {}
+        original_payload: dict = {}
         if self.calendar_adapter:
             users_by_id = {
                 u.id: u
@@ -732,6 +740,9 @@ class CalendarService(BaseCalendarService):
         self, bundle_event: CalendarEvent, event_data: "CalendarEventInputData"
     ) -> CalendarEvent:
         """Update a bundle event and all its representations."""
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         if not bundle_event.is_bundle_primary:
             raise ValueError("Event must be a bundle primary event")
 
@@ -780,25 +791,32 @@ class CalendarService(BaseCalendarService):
 
         return updated_primary
 
-    @requires_authentication_or_initialization
     def update_event(
         self, calendar_id: str, event_id: str, event_data: CalendarEventInputData
     ) -> CalendarEvent:
         """
         Update an existing event in the calendar.
-        :param calendar_id: External ID of the calendar
+        :param calendar_id: Internal ID of the calendar
         :param event_id: Unique identifier of the event to update.
         :param event_data: Dictionary containing updated event details.
         :return: Updated CalendarEvent instance.
         """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         calendar_event = CalendarEvent.objects.get(
-            calendar__external_id=calendar_id,
+            calendar_id=calendar_id,
             external_id=event_id,
             organization_id=self.organization.id,
         )
 
         if calendar_event.is_bundle_primary:
-            self._update_bundle_event(calendar_event, event_data)
+            return self._update_bundle_event(calendar_event, event_data)
+        elif calendar_event.is_bundle_event:
+            raise ValueError(
+                "Cannot update an event created from bundle calendar from a non-primary "
+                "calendar event"
+            )
 
         original_payload = {}
         if self.calendar_adapter:
@@ -984,7 +1002,7 @@ class CalendarService(BaseCalendarService):
         """
         Create a recurring event with the specified recurrence rule.
 
-        :param calendar_id: External ID of the calendar
+        :param calendar_id: Internal ID of the calendar
         :param title: Event title
         :param description: Event description
         :param start_time: Start time for the first occurrence
@@ -995,6 +1013,9 @@ class CalendarService(BaseCalendarService):
         :param resource_allocations: List of resource allocations
         :return: Created CalendarEvent with recurrence rule
         """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         event_data = CalendarEventInputData(
             title=title,
             description=description,
@@ -1032,6 +1053,9 @@ class CalendarService(BaseCalendarService):
         :param is_cancelled: True if cancelling the occurrence, False if modifying
         :return: Created modified event or None if cancelled
         """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         if not parent_event.is_recurring:
             raise ValueError("Cannot create exception for non-recurring event")
 
@@ -1140,6 +1164,9 @@ class CalendarService(BaseCalendarService):
         :param include_exceptions: Whether to include modified exceptions
         :return: List of event instances
         """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         if not recurring_event.is_recurring:
             return [recurring_event] if start_date <= recurring_event.start_time <= end_date else []
 
@@ -1170,6 +1197,9 @@ class CalendarService(BaseCalendarService):
         :param end_date: End of the date range
         :return: List of all event instances in the range
         """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         base_qs = (
             CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
             .select_related("recurrence_rule")
@@ -1239,6 +1269,9 @@ class CalendarService(BaseCalendarService):
 
     def _delete_bundle_event(self, bundle_event: CalendarEvent) -> None:
         """Delete a bundle event and all its representations."""
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         if not bundle_event.is_bundle_primary:
             raise ValueError("Event must be a bundle primary event")
 
@@ -1263,17 +1296,19 @@ class CalendarService(BaseCalendarService):
         # Delete the primary event
         self.delete_event(bundle_event.calendar.external_id, bundle_event.external_id)
 
-    @requires_authentication_or_initialization
     def delete_event(self, calendar_id: str, event_id: str, delete_series: bool = False) -> None:
         """
         Delete an event from the calendar.
-        :param calendar_id: External ID of the calendar
+        :param calendar_id: Internal ID of the calendar
         :param event_id: Unique identifier of the event to delete.
         :param delete_series: If True and the event is recurring, delete the entire series
         :return: None
         """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         event = CalendarEvent.objects.get(
-            calendar__external_id=calendar_id,
+            calendar_id=calendar_id,
             external_id=event_id,
             organization_id=self.organization.id,
         )
@@ -1309,7 +1344,6 @@ class CalendarService(BaseCalendarService):
             # Delete single non-recurring event
             event.delete()
 
-    @requires_authentication
     def transfer_event(self, event: CalendarEvent, new_calendar: Calendar) -> CalendarEvent:
         """
         Transfer an event to a different calendar.
@@ -1317,6 +1351,9 @@ class CalendarService(BaseCalendarService):
         :param new_calendar_external_id: External ID of the new calendar.
         :return: Transferred CalendarEvent instance.
         """
+        if not is_authenticated_calendar_service(self):
+            raise
+
         event_data = self.calendar_adapter.get_event(event.calendar.external_id, event.external_id)
 
         # Create a new event in the target calendar
@@ -1356,7 +1393,6 @@ class CalendarService(BaseCalendarService):
 
         return new_event
 
-    @requires_authentication
     def request_calendar_sync(
         self,
         calendar: Calendar,
@@ -1373,6 +1409,9 @@ class CalendarService(BaseCalendarService):
         :return: Created CalendarSync instance.
         """
         from calendar_integration.tasks import sync_calendar_task
+
+        if not is_authenticated_calendar_service(self):
+            raise
 
         if not self.calendar_adapter:
             raise NotImplementedError(
@@ -1400,7 +1439,6 @@ class CalendarService(BaseCalendarService):
         )
         return calendar_sync
 
-    @requires_authentication
     def sync_events(
         self,
         calendar_sync: CalendarSync,
@@ -1413,10 +1451,8 @@ class CalendarService(BaseCalendarService):
         :param update_events: Whether to update existing events.
         :param sync_token: Token for incremental sync, if available.
         """
-        if not self.calendar_adapter:
-            raise NotImplementedError(
-                "Calendar adapter is not implemented for the current account provider."
-            )
+        if not is_authenticated_calendar_service(self):
+            raise
 
         latest_sync = calendar_sync.calendar.latest_sync
 
@@ -1445,10 +1481,8 @@ class CalendarService(BaseCalendarService):
         calendar_sync: CalendarSync,
         sync_token: str | None = None,
     ) -> None:
-        if not self.calendar_adapter:
-            raise NotImplementedError(
-                "Calendar adapter is not implemented for the current account provider."
-            )
+        if not is_authenticated_calendar_service(self):
+            raise
 
         calendar: Calendar = calendar_sync.calendar
         start_date = calendar_sync.start_datetime
@@ -1511,7 +1545,7 @@ class CalendarService(BaseCalendarService):
         calendar_events_by_external_id = {
             e.external_id: e
             for e in CalendarEvent.objects.filter(
-                calendar__external_id=calendar_id,
+                calendar_id=calendar_id,
                 start_time__gte=start_date,
                 end_time__lte=end_date,
                 organization_id=self.organization.id,
@@ -1520,7 +1554,7 @@ class CalendarService(BaseCalendarService):
         blocked_times_by_external_id = {
             e.external_id: e
             for e in BlockedTime.objects.filter(
-                calendar__external_id=calendar_id,
+                calendar_id=calendar_id,
                 start_time__gte=start_date,
                 end_time__lte=end_date,
                 organization_id=self.organization.id,
@@ -1743,7 +1777,7 @@ class CalendarService(BaseCalendarService):
 
         deleted_ids = set(calendar_events_by_external_id.keys()) - matched_event_ids
         CalendarEvent.objects.filter(
-            calendar__external_id=calendar_id,
+            calendar_id=calendar_id,
             external_id__in=deleted_ids,
             start_time__gte=start_date,
             organization_id=self.organization.id,
@@ -1780,14 +1814,14 @@ class CalendarService(BaseCalendarService):
 
         if changes.events_to_delete:
             CalendarEvent.objects.filter(
-                calendar__external_id=calendar_id,
+                calendar_id=calendar_id,
                 external_id__in=changes.events_to_delete,
                 organization=self.organization,
             ).delete()
 
         if changes.blocks_to_delete:
             BlockedTime.objects.filter(
-                calendar__external_id=calendar_id,
+                calendar_id=calendar_id,
                 external_id__in=changes.blocks_to_delete,
                 organization=self.organization,
             ).delete()
@@ -1805,7 +1839,7 @@ class CalendarService(BaseCalendarService):
 
         # Find events that have a pending parent external ID in their meta
         orphaned_instances = CalendarEvent.objects.filter(
-            calendar__external_id=calendar_id,
+            calendar_id=calendar_id,
             organization_id=self.organization.id,
             parent_event__isnull=True,
             meta__pending_parent_external_id__isnull=False,
@@ -1813,7 +1847,7 @@ class CalendarService(BaseCalendarService):
 
         # Also find blocked times that might be orphaned instances
         orphaned_blocked_times = BlockedTime.objects.filter(
-            calendar__external_id=calendar_id,
+            calendar_id=calendar_id,
             organization_id=self.organization.id,
             meta__pending_parent_external_id__isnull=False,
         )
@@ -1873,7 +1907,7 @@ class CalendarService(BaseCalendarService):
         events = list(events)
 
         available_time_windows = AvailableTime.objects.filter(
-            calendar__external_id=calendar_id,
+            calendar_id=calendar_id,
             start_time__gte=start_time,
             end_time__lte=end_time,
             organization_id=self.organization.id,
@@ -1900,10 +1934,9 @@ class CalendarService(BaseCalendarService):
 
         AvailableTime.objects.filter(
             id__in=available_time_windows_to_delete,
-            calendar__external_id=calendar_id,
+            calendar_id=calendar_id,
         ).delete()
 
-    @requires_authentication_or_initialization
     def get_unavailable_time_windows_in_range(
         self,
         calendar: Calendar,
@@ -1920,6 +1953,9 @@ class CalendarService(BaseCalendarService):
         :param end_datetime: End date for the availability search.
         :return: List of UnavailableTimeWindow instances.
         """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         # Get expanded calendar events (including recurring instances)
         # This handles both master events and their generated instances
         calendar_events = self.get_calendar_events_expanded(
@@ -2051,7 +2087,6 @@ class CalendarService(BaseCalendarService):
             key=lambda x: x.start_time,
         )
 
-    @requires_authentication_or_initialization
     def get_availability_windows_in_range(
         self, calendar: Calendar, start_datetime: datetime.datetime, end_datetime: datetime.datetime
     ) -> Iterable[AvailableTimeWindow]:
@@ -2062,6 +2097,9 @@ class CalendarService(BaseCalendarService):
         :param end_datetime: End date for the availability search.
         :return: Iterable of AvalableTimeWindow instances.
         """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         if calendar.manage_available_windows:
             return [
                 AvailableTimeWindow(
@@ -2119,7 +2157,6 @@ class CalendarService(BaseCalendarService):
             for start, end in available_windows
         ]
 
-    @requires_authentication_or_initialization
     def bulk_create_availability_windows(
         self,
         calendar: Calendar,
@@ -2132,6 +2169,9 @@ class CalendarService(BaseCalendarService):
         :param end_time: End time of the availability window.
         :return: Created AvailableTime instance.
         """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         if not calendar.manage_available_windows:
             raise ValueError("This calendar does not manage available windows.")
 
@@ -2147,7 +2187,6 @@ class CalendarService(BaseCalendarService):
             ]
         )
 
-    @requires_authentication_or_initialization
     def bulk_create_manual_blocked_times(
         self,
         calendar: Calendar,
@@ -2159,6 +2198,9 @@ class CalendarService(BaseCalendarService):
         :param blocked_times: Iterable of tuples containing start time, end time, and reason.
         :return: List of created BlockedTime instances.
         """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
         return BlockedTime.objects.bulk_create(
             [
                 BlockedTime(
