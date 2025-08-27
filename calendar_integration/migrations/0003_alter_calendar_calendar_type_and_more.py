@@ -28,8 +28,8 @@ class Migration(migrations.Migration):
                 ('meta', models.JSONField(blank=True, default=dict, verbose_name='meta')),
                 ('bundle_calendar', models.ForeignObject(editable=False, from_fields=['bundle_calendar_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='bundle_relationships', to='calendar_integration.calendar', to_fields=['id', 'organization_id'])),
                 ('bundle_calendar_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='bundle_relationships_fk_rel', to='calendar_integration.calendar')),
-                ('child_calendar', models.ForeignObject(editable=False, from_fields=['child_calendar_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='bundle_children_relatioships', to='calendar_integration.calendar', to_fields=['id', 'organization_id'])),
-                ('child_calendar_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='bundle_children_relatioships_fk_rel', to='calendar_integration.calendar')),
+                ('child_calendar', models.ForeignObject(editable=False, from_fields=['child_calendar_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='bundle_children_relationships', to='calendar_integration.calendar', to_fields=['id', 'organization_id'])),
+                ('child_calendar_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='bundle_children_relationships_fk_rel', to='calendar_integration.calendar')),
                 ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
             ],
             options={

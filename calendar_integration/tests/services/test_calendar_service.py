@@ -27,22 +27,22 @@ from calendar_integration.models import (
     GoogleCalendarServiceAccount,
     ResourceAllocation,
 )
-from calendar_integration.services.calendar_service import (
+from calendar_integration.services.calendar_service import CalendarService
+from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     AvailableTimeWindow,
     CalendarEventAdapterInputData,
     CalendarEventData,
     CalendarEventInputData,
     CalendarResourceData,
-    CalendarService,
     EventAttendanceInputData,
     EventAttendeeData,
     EventExternalAttendanceInputData,
     EventsSyncChanges,
     ExternalAttendeeInputData,
     ResourceAllocationInputData,
-    ResourceData,  # Add this import
-    UnavailableTimeWindow,  # Add this import
+    ResourceData,
+    UnavailableTimeWindow,
 )
 from organizations.models import Organization
 

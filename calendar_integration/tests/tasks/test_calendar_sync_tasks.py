@@ -406,7 +406,6 @@ def test_import_organization_calendar_resources_service_exception(
     )
 
 
-# Additional tests for changes functionality in sync tasks
 def test_sync_calendar_task_with_changes_applied(
     social_account, social_token, calendar, organization
 ):

@@ -32,15 +32,15 @@ from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_clie
     MSGraphEvent,
     MSOutlookCalendarAPIClient,
 )
-from calendar_integration.services.calendar_service import (
+from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
-    CalendarAdapter,
     CalendarEventAdapterInputData,
     CalendarEventData,
     CalendarEventsSyncTypedDict,
     CalendarResourceData,
     EventAttendeeData,
 )
+from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
 
 
 logger = logging.getLogger(__name__)

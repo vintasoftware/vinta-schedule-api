@@ -146,7 +146,7 @@ class ChildrenCalendarRelationship(OrganizationModel):
     child_calendar = OrganizationForeignKey(
         Calendar,
         on_delete=models.CASCADE,
-        related_name="bundle_children_relatioships",
+        related_name="bundle_children_relationships",
     )
     is_primary = models.BooleanField(
         default=False,

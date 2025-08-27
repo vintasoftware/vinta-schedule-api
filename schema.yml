@@ -242,6 +242,133 @@ paths:
               schema:
                 $ref: '#/components/schemas/BillingProfile'
           description: ''
+  /calendar/:
+    get:
+      operationId: calendar_list
+      description: ViewSet for managing calendars.
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarList'
+          description: ''
+    post:
+      operationId: calendar_create
+      description: ViewSet for managing calendars.
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+  /calendar{format}:
+    get:
+      operationId: calendar_formatted_list
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarList'
+          description: ''
+    post:
+      operationId: calendar_formatted_create
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
   /calendar-events/:
     get:
       operationId: calendar_events_list
@@ -699,9 +826,245 @@ paths:
       responses:
         '204':
           description: No response body
-  /calendars/{id}/available-windows/:
+  /calendar/{id}/:
     get:
-      operationId: calendars_available_windows_list
+      operationId: calendar_retrieve
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+    put:
+      operationId: calendar_update
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+    patch:
+      operationId: calendar_partial_update
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendar'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendar'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendar'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+    delete:
+      operationId: calendar_destroy
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /calendar/{id}{format}:
+    get:
+      operationId: calendar_formatted_retrieve
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+    put:
+      operationId: calendar_formatted_update
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+    patch:
+      operationId: calendar_formatted_partial_update
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendar'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendar'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendar'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+    delete:
+      operationId: calendar_formatted_destroy
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /calendar/{id}/available-windows/:
+    get:
+      operationId: calendar_available_windows_list
       description: Get available time windows for a calendar within a specified date
         range.
       summary: Get available time windows
@@ -736,7 +1099,7 @@ paths:
         description: Start datetime in ISO format (YYYY-MM-DDTHH:MM:SS)
         required: true
       tags:
-      - calendars
+      - calendar
       security:
       - jwtAuth: []
       - cookieAuth: []
@@ -747,9 +1110,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedAvailableTimeWindowList'
           description: ''
-  /calendars/{id}/available-windows{format}:
+  /calendar/{id}/available-windows{format}:
     get:
-      operationId: calendars_available_windows_formatted_list
+      operationId: calendar_available_windows_formatted_list
       description: Get available time windows for a calendar within a specified date
         range.
       summary: Get available time windows
@@ -791,7 +1154,7 @@ paths:
         description: Start datetime in ISO format (YYYY-MM-DDTHH:MM:SS)
         required: true
       tags:
-      - calendars
+      - calendar
       security:
       - jwtAuth: []
       - cookieAuth: []
@@ -802,9 +1165,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedAvailableTimeWindowList'
           description: ''
-  /calendars/{id}/unavailable-windows/:
+  /calendar/{id}/unavailable-windows/:
     get:
-      operationId: calendars_unavailable_windows_list
+      operationId: calendar_unavailable_windows_list
       description: Get unavailable time windows for a calendar within a specified
         date range.
       summary: Get unavailable time windows
@@ -839,7 +1202,7 @@ paths:
         description: Start datetime in ISO format (YYYY-MM-DDTHH:MM:SS)
         required: true
       tags:
-      - calendars
+      - calendar
       security:
       - jwtAuth: []
       - cookieAuth: []
@@ -850,9 +1213,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedUnavailableTimeWindowList'
           description: ''
-  /calendars/{id}/unavailable-windows{format}:
+  /calendar/{id}/unavailable-windows{format}:
     get:
-      operationId: calendars_unavailable_windows_formatted_list
+      operationId: calendar_unavailable_windows_formatted_list
       description: Get unavailable time windows for a calendar within a specified
         date range.
       summary: Get unavailable time windows
@@ -894,7 +1257,7 @@ paths:
         description: Start datetime in ISO format (YYYY-MM-DDTHH:MM:SS)
         required: true
       tags:
-      - calendars
+      - calendar
       security:
       - jwtAuth: []
       - cookieAuth: []
@@ -904,6 +1267,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PaginatedUnavailableTimeWindowList'
+          description: ''
+  /calendar/bundle/:
+    post:
+      operationId: calendar_bundle_create
+      description: ViewSet for managing calendars.
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarBundleCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarBundleCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarBundleCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+  /calendar/bundle{format}:
+    post:
+      operationId: calendar_bundle_formatted_create
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarBundleCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarBundleCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarBundleCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
           description: ''
   /payments/{id}/payment-update/{provider}/:
     post:
@@ -1321,6 +1748,75 @@ components:
       - document_type
       - id
       - modified
+    Calendar:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        email:
+          type: string
+          format: email
+          readOnly: true
+        external_id:
+          type: string
+          readOnly: true
+        provider:
+          allOf:
+          - $ref: '#/components/schemas/ProviderEnum'
+          readOnly: true
+        calendar_type:
+          allOf:
+          - $ref: '#/components/schemas/CalendarTypeEnum'
+          readOnly: true
+          description: |-
+            The type of calendar. Personal calendars are for individual use, resource calendars are for shared resources, and virtual calendars are for online meetings or events.
+
+            * `personal` - Personal Calendar
+            * `resource` - Resource Calendar
+            * `virtual` - Virtual Calendar
+            * `bundle` - Bundle Calendar
+        capacity:
+          type: integer
+          readOnly: true
+          nullable: true
+          description: The maximum number of attendees that can be accommodated in
+            this calendar's events. This is only applicable for resource calendars.
+        manage_available_windows:
+          type: boolean
+          description: If true, this calendar can manage its own available time windows.
+            If not, it will use the available time windows of the external calendar
+            it's attached to.
+      required:
+      - calendar_type
+      - capacity
+      - email
+      - external_id
+      - id
+      - name
+      - provider
+    CalendarBundleCreate:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        bundle_calendars:
+          type: array
+          items:
+            type: integer
+        primary_calendar:
+          type: integer
+          nullable: true
+      required:
+      - bundle_calendars
+      - name
+      - primary_calendar
     CalendarEvent:
       type: object
       properties:
@@ -1424,6 +1920,18 @@ components:
       - resource_allocations
       - start_time
       - title
+    CalendarTypeEnum:
+      enum:
+      - personal
+      - resource
+      - virtual
+      - bundle
+      type: string
+      description: |-
+        * `personal` - Personal Calendar
+        * `resource` - Resource Calendar
+        * `virtual` - Virtual Calendar
+        * `bundle` - Bundle Calendar
     EventAttendance:
       type: object
       properties:
@@ -1566,6 +2074,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CalendarEvent'
+    PaginatedCalendarList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Calendar'
     PaginatedUnavailableTimeWindowList:
       type: object
       required:
@@ -1646,6 +2177,50 @@ components:
           type: string
           format: date-time
           readOnly: true
+    PatchedCalendar:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        email:
+          type: string
+          format: email
+          readOnly: true
+        external_id:
+          type: string
+          readOnly: true
+        provider:
+          allOf:
+          - $ref: '#/components/schemas/ProviderEnum'
+          readOnly: true
+        calendar_type:
+          allOf:
+          - $ref: '#/components/schemas/CalendarTypeEnum'
+          readOnly: true
+          description: |-
+            The type of calendar. Personal calendars are for individual use, resource calendars are for shared resources, and virtual calendars are for online meetings or events.
+
+            * `personal` - Personal Calendar
+            * `resource` - Resource Calendar
+            * `virtual` - Virtual Calendar
+            * `bundle` - Bundle Calendar
+        capacity:
+          type: integer
+          readOnly: true
+          nullable: true
+          description: The maximum number of attendees that can be accommodated in
+            this calendar's events. This is only applicable for resource calendars.
+        manage_available_windows:
+          type: boolean
+          description: If true, this calendar can manage its own available time windows.
+            If not, it will use the available time windows of the external calendar
+            it's attached to.
     PatchedCalendarEvent:
       type: object
       properties:
@@ -1768,6 +2343,20 @@ components:
           nullable: true
       required:
       - id
+    ProviderEnum:
+      enum:
+      - internal
+      - google
+      - microsoft
+      - apple
+      - ics
+      type: string
+      description: |-
+        * `internal` - Internal Calendar
+        * `google` - Google Calendar
+        * `microsoft` - Microsoft Outlook Calendar
+        * `apple` - Apple Calendar
+        * `ics` - ICS
     RecurrenceRule:
       type: object
       properties:

@@ -10,7 +10,6 @@ from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
-from rest_framework.viewsets import GenericViewSet
 
 from calendar_integration.filtersets import CalendarEventFilterSet
 from calendar_integration.models import (
@@ -23,7 +22,9 @@ from calendar_integration.permissions import (
 )
 from calendar_integration.serializers import (
     AvailableTimeWindowSerializer,
+    CalendarBundleCreateSerializer,
     CalendarEventSerializer,
+    CalendarSerializer,
     UnavailableTimeWindowSerializer,
 )
 from calendar_integration.services.calendar_service import CalendarService
@@ -31,68 +32,14 @@ from common.utils.view_utils import VintaScheduleModelViewSet
 from organizations.models import OrganizationMembership
 
 
-class CalendarEventViewSet(VintaScheduleModelViewSet):
+class CalendarViewSet(VintaScheduleModelViewSet):
     """
-    ViewSet for managing calendar events.
-    """
-
-    filterset_class = CalendarEventFilterSet
-    permission_classes = (CalendarEventPermission,)
-    queryset = CalendarEvent.objects.all()
-    serializer_class = CalendarEventSerializer
-
-    def get_queryset(self):
-        """
-        Filter events by calendar organization of the authenticated user.
-        """
-        try:
-            organization_id = self.request.user.organization_membership.organization_id
-        except OrganizationMembership.DoesNotExist as e:
-            raise Http404("Calendar organization not found for the user.") from e
-        queryset = super().get_queryset().filter_by_organization(organization_id)
-        return queryset
-
-    @extend_schema(
-        summary="Delete calendar event",
-        description="Delete a calendar event.",
-        responses={204: None},
-    )
-    @inject
-    def destroy(
-        self,
-        request,
-        *args,
-        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
-        **kwargs,
-    ):
-        """
-        Delete a calendar event using the calendar service.
-        """
-        instance = self.get_object()
-
-        try:
-            calendar_service.authenticate(
-                account=SocialAccount.objects.get(
-                    user=request.user, provider=instance.calendar.provider
-                ),
-                organization=instance.organization,
-            )
-            calendar_service.delete_event(
-                calendar_id=instance.calendar.external_id,
-                event_id=instance.external_id,
-            )
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        except ValueError as e:
-            raise ValidationError({"non_field_errors": [str(e)]}) from e
-
-
-class CalendarAvailabilityViewSet(GenericViewSet):
-    """
-    ViewSet for checking calendar availability.
+    ViewSet for managing calendars.
     """
 
     permission_classes = (CalendarAvailabilityPermission,)
     queryset = Calendar.objects.all()
+    serializer_class = CalendarSerializer
 
     def get_queryset(self):
         """Filter calendars by user's accessible calendar organizations."""
@@ -106,6 +53,31 @@ class CalendarAvailabilityViewSet(GenericViewSet):
         except OrganizationMembership.DoesNotExist:
             # If user has no calendar organization membership, return empty queryset
             return Calendar.objects.none()
+
+    @extend_schema(request=CalendarBundleCreateSerializer())
+    @action(
+        methods=["POST"],
+        detail=False,
+        url_path="bundle",
+        url_name="bundle",
+    )
+    def create_bundle_calendar(self, request, *args, **kwargs):
+        serializer = CalendarBundleCreateSerializer(
+            data=request.data,
+            context=self.get_serializer_context(),
+        )
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        calendar_bundle = serializer.save()
+
+        optimized_calendar_bundle = self.get_queryset().get(id=calendar_bundle.id)
+
+        return Response(
+            self.get_serializer_class()(instance=optimized_calendar_bundle).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     @extend_schema(
         summary="Get available time windows",
@@ -270,5 +242,60 @@ class CalendarAvailabilityViewSet(GenericViewSet):
 
             serializer = UnavailableTimeWindowSerializer(unavailable_windows, many=True)
             return Response(serializer.data)
+        except ValueError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+
+class CalendarEventViewSet(VintaScheduleModelViewSet):
+    """
+    ViewSet for managing calendar events.
+    """
+
+    filterset_class = CalendarEventFilterSet
+    permission_classes = (CalendarEventPermission,)
+    queryset = CalendarEvent.objects.all()
+    serializer_class = CalendarEventSerializer
+
+    def get_queryset(self):
+        """
+        Filter events by calendar organization of the authenticated user.
+        """
+        try:
+            organization_id = self.request.user.organization_membership.organization_id
+        except OrganizationMembership.DoesNotExist as e:
+            raise Http404("Calendar organization not found for the user.") from e
+        queryset = super().get_queryset().filter_by_organization(organization_id)
+        return queryset
+
+    @extend_schema(
+        summary="Delete calendar event",
+        description="Delete a calendar event.",
+        responses={204: None},
+    )
+    @inject
+    def destroy(
+        self,
+        request,
+        *args,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
+        **kwargs,
+    ):
+        """
+        Delete a calendar event using the calendar service.
+        """
+        instance = self.get_object()
+
+        try:
+            calendar_service.authenticate(
+                account=SocialAccount.objects.get(
+                    user=request.user, provider=instance.calendar.provider
+                ),
+                organization=instance.organization,
+            )
+            calendar_service.delete_event(
+                calendar_id=instance.calendar.external_id,
+                event_id=instance.external_id,
+            )
+            return Response(status=status.HTTP_204_NO_CONTENT)
         except ValueError as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
