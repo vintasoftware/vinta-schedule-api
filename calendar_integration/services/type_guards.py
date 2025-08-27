@@ -27,7 +27,7 @@ def is_authenticated_calendar_service(
         True if the calendar service is authenticated, False otherwise.
 
     Raises:
-        TypeError: If the calendar service is not authenticated and raise_error is True.
+        ValueError: If the calendar service is not authenticated and raise_error is True.
     """
 
     if (
@@ -43,7 +43,7 @@ def is_authenticated_calendar_service(
     if not raise_error:
         return False
 
-    raise TypeError("Calendar service is not authenticated")
+    raise ValueError("Calendar service is not authenticated")
 
 
 def is_initialized_calendar_service(
@@ -61,7 +61,7 @@ def is_initialized_calendar_service(
         True if the calendar service is initialized, False otherwise.
 
     Raises:
-        TypeError: If the calendar service is not initialized and raise_error is True.
+        ValueError: If the calendar service is not initialized and raise_error is True.
     """
 
     if (
@@ -77,7 +77,7 @@ def is_initialized_calendar_service(
     if not raise_error:
         return False
 
-    raise TypeError("Calendar service is not initialized without provider")
+    raise ValueError("Calendar service is not initialized without provider")
 
 
 def is_initialized_or_authenticated_calendar_service(
@@ -95,7 +95,7 @@ def is_initialized_or_authenticated_calendar_service(
         True if the calendar service is initialized or authenticated, False otherwise.
 
     Raises:
-        TypeError: If the calendar service is not initialized or authenticated and raise_error is True.
+        ValueError: If the calendar service is not initialized or authenticated and raise_error is True.
     """
 
     if hasattr(calendar_service, "organization") and calendar_service.organization is not None:
@@ -104,4 +104,4 @@ def is_initialized_or_authenticated_calendar_service(
     if not raise_error:
         return False
 
-    raise TypeError("Calendar service is not initialized or authenticated")
+    raise ValueError("Calendar service is not initialized or authenticated")

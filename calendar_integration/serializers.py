@@ -655,7 +655,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
             final_rrule_string = rrule_string
 
         event = self.calendar_service.create_event(
-            calendar_id=calendar.external_id,
+            calendar_id=calendar.id,
             event_data=CalendarEventInputData(
                 title=validated_data.get("title"),
                 description=validated_data.get("description"),
@@ -749,7 +749,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
             final_rrule_string = instance.recurrence_rule.to_rrule_string()
 
         event = self.calendar_service.update_event(
-            calendar_id=calendar.external_id,
+            calendar_id=calendar.id,
             event_id=instance.external_id,
             event_data=CalendarEventInputData(
                 title=validated_data.get("title", instance.title),

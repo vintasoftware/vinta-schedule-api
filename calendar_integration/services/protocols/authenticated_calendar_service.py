@@ -87,7 +87,7 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
         ...
 
     def _get_existing_calendar_data(
-        self, calendar_id: str, start_date: datetime.datetime, end_date: datetime.datetime
+        self, calendar_id: int, start_date: datetime.datetime, end_date: datetime.datetime
     ):
         ...
 
@@ -130,22 +130,22 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
 
     def _handle_deletions_for_full_sync(
         self,
-        calendar_id: str,
+        calendar_id: int,
         calendar_events_by_external_id: dict,
         matched_event_ids: set[str],
         start_date: datetime.datetime,
     ):
         ...
 
-    def _apply_sync_changes(self, calendar_id: str, changes: EventsSyncChanges):
+    def _apply_sync_changes(self, calendar_id: int, changes: EventsSyncChanges):
         ...
 
-    def _link_orphaned_recurring_instances(self, calendar_id: str):
+    def _link_orphaned_recurring_instances(self, calendar_id: int):
         ...
 
     def _remove_available_time_windows_that_overlap_with_blocked_times_and_events(
         self,
-        calendar_id: str,
+        calendar_id: int,
         blocked_times: Iterable[BlockedTime],
         events: Iterable[CalendarEvent],
         start_time: datetime.datetime,

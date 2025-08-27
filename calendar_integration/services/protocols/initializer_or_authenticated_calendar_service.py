@@ -28,7 +28,7 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
     account: SocialAccount | GoogleCalendarServiceAccount | None
     calendar_adapter: CalendarAdapter | None
 
-    def _get_calendar_by_id(self, calendar_id: str) -> Calendar:
+    def _get_calendar_by_id(self, calendar_id: int) -> Calendar:
         ...
 
     def _create_bundle_event(
@@ -36,7 +36,7 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
     ) -> CalendarEvent:
         ...
 
-    def create_event(self, calendar_id: str, event_data: CalendarEventInputData) -> CalendarEvent:
+    def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
         ...
 
     def _update_bundle_event(

@@ -316,7 +316,7 @@ class CalendarService(BaseCalendarService):
         return Calendar.objects.get(**query_kwargs)
 
     @lru_cache(maxsize=128)  # noqa: B019
-    def _get_calendar_by_id(self, calendar_id: str) -> Calendar:
+    def _get_calendar_by_id(self, calendar_id: int) -> Calendar:
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
 
@@ -398,7 +398,7 @@ class CalendarService(BaseCalendarService):
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
 
-        calendar = Calendar.objects.create(
+        return Calendar.objects.create(
             organization=self.organization,
             name=name,
             description=description,
@@ -406,8 +406,6 @@ class CalendarService(BaseCalendarService):
             calendar_type=CalendarType.VIRTUAL,
             original_payload={},
         )
-
-        return calendar
 
     def create_bundle_calendar(
         self,
@@ -445,6 +443,11 @@ class CalendarService(BaseCalendarService):
             if calendar.organization_id != self.organization.id:
                 raise ValueError(
                     "All child calendars must belong to the same organization as the bundle."
+                )
+
+            if calendar.calendar_type == CalendarType.BUNDLE:
+                raise ValueError(
+                    "Child calendars of a bundle must not be bundle calendars themselves."
                 )
 
             is_primary = primary_calendar is not None and calendar.id == primary_calendar.id
@@ -503,7 +506,7 @@ class CalendarService(BaseCalendarService):
             recurrence_rule=event_data.recurrence_rule,
         )
 
-        primary_event = self.create_event(primary_calendar.external_id, primary_event_data)
+        primary_event = self.create_event(primary_calendar.id, primary_event_data)
 
         # Mark primary event as part of bundle
         primary_event.bundle_calendar = bundle_calendar
@@ -527,7 +530,7 @@ class CalendarService(BaseCalendarService):
                     resource_allocations=[],
                 )
 
-                child_event = self.create_event(child_calendar.external_id, child_event_data)
+                child_event = self.create_event(child_calendar.id, child_event_data)
 
                 # Link to primary event and bundle
                 child_event.bundle_calendar = bundle_calendar
@@ -571,11 +574,7 @@ class CalendarService(BaseCalendarService):
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
 
-        attendee_user_ids = set()
-
-        # Add explicitly specified attendees
-        for attendance in event_data.attendances:
-            attendee_user_ids.add(attendance.user_id)
+        attendee_user_ids = {attendance.user_id for attendance in event_data.attendances}
 
         # Add users who own child calendars
         calendar_owners = User.objects.filter(
@@ -588,7 +587,7 @@ class CalendarService(BaseCalendarService):
 
         return [EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids]
 
-    def create_event(self, calendar_id: str, event_data: CalendarEventInputData) -> CalendarEvent:
+    def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
         """
         Create a new event in the calendar.
         :param calendar_id: Internal ID of the calendar
@@ -792,7 +791,7 @@ class CalendarService(BaseCalendarService):
         return updated_primary
 
     def update_event(
-        self, calendar_id: str, event_id: str, event_data: CalendarEventInputData
+        self, calendar_id: int, event_id: str, event_data: CalendarEventInputData
     ) -> CalendarEvent:
         """
         Update an existing event in the calendar.
@@ -804,8 +803,8 @@ class CalendarService(BaseCalendarService):
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
 
-        calendar_event = CalendarEvent.objects.get(
-            calendar_id=calendar_id,
+        calendar_event = CalendarEvent.objects.select_related("calendar").get(
+            calendar_fk_id=calendar_id,
             external_id=event_id,
             organization_id=self.organization.id,
         )
@@ -837,10 +836,10 @@ class CalendarService(BaseCalendarService):
                 )
             }
             updated_event = self.calendar_adapter.update_event(
-                calendar_id,
+                calendar_event.calendar.external_id,
                 event_id,
                 CalendarEventData(
-                    calendar_external_id=calendar_id,
+                    calendar_external_id=calendar_event.calendar.external_id,
                     title=event_data.title,
                     description=event_data.description,
                     start_time=event_data.start_time,
@@ -989,7 +988,7 @@ class CalendarService(BaseCalendarService):
 
     def create_recurring_event(
         self,
-        calendar_id: str,
+        calendar_id: int,
         title: str,
         description: str,
         start_time: datetime.datetime,
@@ -1067,9 +1066,9 @@ class CalendarService(BaseCalendarService):
                 tzinfo=parent_event.start_time.tzinfo,
             )
             second_occurrence = parent_event.get_next_occurrence(exception_datetime)
+            old_recurrence_rule = parent_event.recurrence_rule
             if not second_occurrence:
                 # there are no future occurrences, so make the event non-recurring
-                old_recurrence_rule = parent_event.recurrence_rule
 
                 # Delete recurrence rule and exceptions
                 RecurrenceException.objects.filter(parent_event=parent_event).delete()
@@ -1078,14 +1077,13 @@ class CalendarService(BaseCalendarService):
             else:
                 # make the parent_event non-recurring and create a separate event
                 # on the second occurrence date/time following same recurrence rules
-                old_recurrence_rule = parent_event.recurrence_rule
                 new_recurrence_rule: RecurrenceRule = copy.copy(old_recurrence_rule)
                 new_recurrence_rule.id = None
                 new_recurrence_rule.count = (
                     new_recurrence_rule.count - 1 if new_recurrence_rule.count else None
                 )
                 new_recurring_event = self.create_recurring_event(
-                    calendar_id=parent_event.calendar.external_id,
+                    calendar_id=parent_event.calendar.id,
                     title=parent_event.title,
                     description=parent_event.description,
                     start_time=second_occurrence.start_time,
@@ -1140,9 +1138,7 @@ class CalendarService(BaseCalendarService):
                 is_recurring_exception=True,
             )
 
-            modified_event = self.create_event(
-                parent_event.calendar.external_id, modified_event_data
-            )
+            modified_event = self.create_event(parent_event.calendar.id, modified_event_data)
             parent_event.create_exception(
                 exception_date, is_cancelled=False, modified_event=modified_event
             )
@@ -1296,7 +1292,7 @@ class CalendarService(BaseCalendarService):
         # Delete the primary event
         self.delete_event(bundle_event.calendar.external_id, bundle_event.external_id)
 
-    def delete_event(self, calendar_id: str, event_id: str, delete_series: bool = False) -> None:
+    def delete_event(self, calendar_id: int, event_id: str, delete_series: bool = False) -> None:
         """
         Delete an event from the calendar.
         :param calendar_id: Internal ID of the calendar
@@ -1307,8 +1303,8 @@ class CalendarService(BaseCalendarService):
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
 
-        event = CalendarEvent.objects.get(
-            calendar_id=calendar_id,
+        event = CalendarEvent.objects.select_related("calendar").get(
+            calendar_fk_id=calendar_id,
             external_id=event_id,
             organization_id=self.organization.id,
         )
@@ -1320,14 +1316,14 @@ class CalendarService(BaseCalendarService):
         if self.calendar_adapter:
             if event.is_recurring and delete_series:
                 # Delete the entire recurring series from external calendar
-                self.calendar_adapter.delete_event(calendar_id, event_id)
+                self.calendar_adapter.delete_event(event.calendar.external_id, event_id)
             elif event.is_recurring_instance and not delete_series:
                 # Create a cancellation exception instead of deleting
                 if event.parent_event:
                     event.parent_event.create_exception(event.recurrence_id, is_cancelled=True)
             else:
                 # Delete single event or instance
-                self.calendar_adapter.delete_event(calendar_id, event_id)
+                self.calendar_adapter.delete_event(event.calendar.external_id, event_id)
 
         if event.is_recurring and delete_series:
             # Delete the entire series including all instances and exceptions
@@ -1386,10 +1382,10 @@ class CalendarService(BaseCalendarService):
                 if r.calendar_fk_id
             ],
         )
-        new_event = self.create_event(new_calendar.external_id, new_event_data)
+        new_event = self.create_event(new_calendar.id, new_event_data)
 
         # Delete the old event
-        self.delete_event(event.calendar.external_id, event.external_id)
+        self.delete_event(event.calendar.id, event.external_id)
 
         return new_event
 
@@ -1499,7 +1495,7 @@ class CalendarService(BaseCalendarService):
         (
             calendar_events_by_external_id,
             blocked_times_by_external_id,
-        ) = self._get_existing_calendar_data(calendar.external_id, start_date, end_date)
+        ) = self._get_existing_calendar_data(calendar.id, start_date, end_date)
 
         # Process events and collect changes
         changes = self._process_events_for_sync(
@@ -1513,7 +1509,7 @@ class CalendarService(BaseCalendarService):
         # Handle deletions for full sync
         if not sync_token:
             self._handle_deletions_for_full_sync(
-                calendar.external_id,
+                calendar.id,
                 calendar_events_by_external_id,
                 changes.matched_event_ids,
                 start_date,
@@ -1523,12 +1519,12 @@ class CalendarService(BaseCalendarService):
             calendar_sync.save(update_fields=["next_sync_token"])
 
         # Apply all changes to database
-        self._apply_sync_changes(calendar.external_id, changes)
+        self._apply_sync_changes(calendar.id, changes)
 
         # Update available time windows if needed
         if calendar.manage_available_windows:
             self._remove_available_time_windows_that_overlap_with_blocked_times_and_events(
-                calendar.external_id,
+                calendar.id,
                 changes.blocked_times_to_create + changes.blocked_times_to_update,
                 changes.events_to_update,
                 start_date,
@@ -1536,7 +1532,7 @@ class CalendarService(BaseCalendarService):
             )
 
     def _get_existing_calendar_data(
-        self, calendar_id: str, start_date: datetime.datetime, end_date: datetime.datetime
+        self, calendar_id: int, start_date: datetime.datetime, end_date: datetime.datetime
     ):
         """Get existing calendar events and blocked times for the date range."""
         if not self.organization:
@@ -1545,7 +1541,7 @@ class CalendarService(BaseCalendarService):
         calendar_events_by_external_id = {
             e.external_id: e
             for e in CalendarEvent.objects.filter(
-                calendar_id=calendar_id,
+                calendar_fk_id=calendar_id,
                 start_time__gte=start_date,
                 end_time__lte=end_date,
                 organization_id=self.organization.id,
@@ -1554,7 +1550,7 @@ class CalendarService(BaseCalendarService):
         blocked_times_by_external_id = {
             e.external_id: e
             for e in BlockedTime.objects.filter(
-                calendar_id=calendar_id,
+                calendar_fk_id=calendar_id,
                 start_time__gte=start_date,
                 end_time__lte=end_date,
                 organization_id=self.organization.id,
@@ -1766,7 +1762,7 @@ class CalendarService(BaseCalendarService):
 
     def _handle_deletions_for_full_sync(
         self,
-        calendar_id: str,
+        calendar_id: int,
         calendar_events_by_external_id: dict,
         matched_event_ids: set[str],
         start_date: datetime.datetime,
@@ -1777,13 +1773,13 @@ class CalendarService(BaseCalendarService):
 
         deleted_ids = set(calendar_events_by_external_id.keys()) - matched_event_ids
         CalendarEvent.objects.filter(
-            calendar_id=calendar_id,
+            calendar_fk_id=calendar_id,
             external_id__in=deleted_ids,
             start_time__gte=start_date,
             organization_id=self.organization.id,
         ).delete()
 
-    def _apply_sync_changes(self, calendar_id: str, changes: EventsSyncChanges):
+    def _apply_sync_changes(self, calendar_id: int, changes: EventsSyncChanges):
         """Apply all the collected changes to the database."""
         # Create recurrence rules first
         if changes.recurrence_rules_to_create:
@@ -1814,14 +1810,14 @@ class CalendarService(BaseCalendarService):
 
         if changes.events_to_delete:
             CalendarEvent.objects.filter(
-                calendar_id=calendar_id,
+                calendar_fk_id=calendar_id,
                 external_id__in=changes.events_to_delete,
                 organization=self.organization,
             ).delete()
 
         if changes.blocks_to_delete:
             BlockedTime.objects.filter(
-                calendar_id=calendar_id,
+                calendar_fk_id=calendar_id,
                 external_id__in=changes.blocks_to_delete,
                 organization=self.organization,
             ).delete()
@@ -1829,7 +1825,7 @@ class CalendarService(BaseCalendarService):
         # After all changes are applied, link orphaned recurring instances to their parents
         self._link_orphaned_recurring_instances(calendar_id)
 
-    def _link_orphaned_recurring_instances(self, calendar_id: str):
+    def _link_orphaned_recurring_instances(self, calendar_id: int):
         """
         Link recurring event instances that were created before their parent events
         were synced. This happens when webhook events come out of order.
@@ -1839,7 +1835,7 @@ class CalendarService(BaseCalendarService):
 
         # Find events that have a pending parent external ID in their meta
         orphaned_instances = CalendarEvent.objects.filter(
-            calendar_id=calendar_id,
+            calendar_fk_id=calendar_id,
             organization_id=self.organization.id,
             parent_event__isnull=True,
             meta__pending_parent_external_id__isnull=False,
@@ -1847,7 +1843,7 @@ class CalendarService(BaseCalendarService):
 
         # Also find blocked times that might be orphaned instances
         orphaned_blocked_times = BlockedTime.objects.filter(
-            calendar_id=calendar_id,
+            calendar_fk_id=calendar_id,
             organization_id=self.organization.id,
             meta__pending_parent_external_id__isnull=False,
         )
@@ -1891,7 +1887,7 @@ class CalendarService(BaseCalendarService):
 
     def _remove_available_time_windows_that_overlap_with_blocked_times_and_events(
         self,
-        calendar_id: str,
+        calendar_id: int,
         blocked_times: Iterable[BlockedTime],
         events: Iterable[CalendarEvent],
         start_time: datetime.datetime,
@@ -1907,7 +1903,7 @@ class CalendarService(BaseCalendarService):
         events = list(events)
 
         available_time_windows = AvailableTime.objects.filter(
-            calendar_id=calendar_id,
+            calendar_fk_id=calendar_id,
             start_time__gte=start_time,
             end_time__lte=end_time,
             organization_id=self.organization.id,
@@ -1934,7 +1930,7 @@ class CalendarService(BaseCalendarService):
 
         AvailableTime.objects.filter(
             id__in=available_time_windows_to_delete,
-            calendar_id=calendar_id,
+            calendar_fk_id=calendar_id,
         ).delete()
 
     def get_unavailable_time_windows_in_range(
@@ -1978,7 +1974,7 @@ class CalendarService(BaseCalendarService):
             organization_id=calendar.organization_id,
         )
 
-        bundle_events = []
+        bundle_events: list[CalendarEvent] = []
         for bundle_calendar in bundle_calendars:
             # Get bundle events from the bundle calendar directly
             bundle_calendar_events = CalendarEvent.objects.filter(
@@ -1989,9 +1985,11 @@ class CalendarService(BaseCalendarService):
             )
             # Only include bundle events that aren't already in our calendar_events
             # (to avoid counting the same event twice)
-            for bundle_event in bundle_calendar_events:
-                if not any(ce.id == bundle_event.id for ce in calendar_events):
-                    bundle_events.append(bundle_event)
+            bundle_events.extend(
+                bundle_event
+                for bundle_event in bundle_calendar_events
+                if all(ce.id != bundle_event.id for ce in calendar_events)
+            )
 
         # Combine regular events with bundle events
         all_events = calendar_events + bundle_events
