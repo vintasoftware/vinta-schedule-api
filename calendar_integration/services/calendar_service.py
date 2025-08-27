@@ -748,9 +748,7 @@ class CalendarService(BaseCalendarService):
         bundle_calendar = bundle_event.bundle_calendar
 
         # Update the primary event
-        updated_primary = self.update_event(
-            bundle_event.calendar.external_id, bundle_event.external_id, event_data
-        )
+        updated_primary = self.update_event(bundle_event.calendar.id, bundle_event.id, event_data)
 
         # Update all representation events
         if not self.organization:
@@ -772,8 +770,8 @@ class CalendarService(BaseCalendarService):
             )
 
             self.update_event(
-                representation_event.calendar.external_id,
-                representation_event.external_id,
+                representation_event.calendar.id,
+                representation_event.id,
                 representation_data,
             )
 
@@ -791,7 +789,7 @@ class CalendarService(BaseCalendarService):
         return updated_primary
 
     def update_event(
-        self, calendar_id: int, event_id: str, event_data: CalendarEventInputData
+        self, calendar_id: int, event_id: int, event_data: CalendarEventInputData
     ) -> CalendarEvent:
         """
         Update an existing event in the calendar.
@@ -805,7 +803,7 @@ class CalendarService(BaseCalendarService):
 
         calendar_event = CalendarEvent.objects.select_related("calendar").get(
             calendar_fk_id=calendar_id,
-            external_id=event_id,
+            id=event_id,
             organization_id=self.organization.id,
         )
 
@@ -827,7 +825,7 @@ class CalendarService(BaseCalendarService):
                 a.user_id: a.status
                 for a in EventAttendance.objects.filter_by_organization(
                     self.organization.id
-                ).filter(event__external_id=event_id, user_id__in=users_by_id.keys())
+                ).filter(event__id=event_id, user_id__in=users_by_id.keys())
             }
             resources_by_id = {
                 r.id: r
@@ -836,8 +834,8 @@ class CalendarService(BaseCalendarService):
                 )
             }
             updated_event = self.calendar_adapter.update_event(
-                calendar_event.calendar.external_id,
-                event_id,
+                calendar_event.calendar.id,
+                calendar_event.id,
                 CalendarEventData(
                     calendar_external_id=calendar_event.calendar.external_id,
                     title=event_data.title,
@@ -862,7 +860,8 @@ class CalendarService(BaseCalendarService):
                         )
                         for a in event_data.attendances
                     ],
-                    external_id=event_id,
+                    id=calendar_event.id,
+                    external_id=calendar_event.external_id,
                     resources=[
                         ResourceData(
                             email=resources_by_id[r.resource_id].email,
@@ -1290,9 +1289,9 @@ class CalendarService(BaseCalendarService):
         ).delete()
 
         # Delete the primary event
-        self.delete_event(bundle_event.calendar.external_id, bundle_event.external_id)
+        self.delete_event(bundle_event.calendar.id, bundle_event.id)
 
-    def delete_event(self, calendar_id: int, event_id: str, delete_series: bool = False) -> None:
+    def delete_event(self, calendar_id: int, event_id: int, delete_series: bool = False) -> None:
         """
         Delete an event from the calendar.
         :param calendar_id: Internal ID of the calendar
@@ -1305,7 +1304,7 @@ class CalendarService(BaseCalendarService):
 
         event = CalendarEvent.objects.select_related("calendar").get(
             calendar_fk_id=calendar_id,
-            external_id=event_id,
+            id=event_id,
             organization_id=self.organization.id,
         )
 
@@ -1316,14 +1315,14 @@ class CalendarService(BaseCalendarService):
         if self.calendar_adapter:
             if event.is_recurring and delete_series:
                 # Delete the entire recurring series from external calendar
-                self.calendar_adapter.delete_event(event.calendar.external_id, event_id)
+                self.calendar_adapter.delete_event(event.calendar.external_id, event.external_id)
             elif event.is_recurring_instance and not delete_series:
                 # Create a cancellation exception instead of deleting
                 if event.parent_event:
                     event.parent_event.create_exception(event.recurrence_id, is_cancelled=True)
             else:
                 # Delete single event or instance
-                self.calendar_adapter.delete_event(event.calendar.external_id, event_id)
+                self.calendar_adapter.delete_event(event.calendar.external_id, event.external_id)
 
         if event.is_recurring and delete_series:
             # Delete the entire series including all instances and exceptions
@@ -1385,7 +1384,7 @@ class CalendarService(BaseCalendarService):
         new_event = self.create_event(new_calendar.id, new_event_data)
 
         # Delete the old event
-        self.delete_event(event.calendar.id, event.external_id)
+        self.delete_event(event.calendar.id, event.id)
 
         return new_event
 

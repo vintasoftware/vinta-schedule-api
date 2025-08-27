@@ -1923,9 +1923,7 @@ def test_delete_recurring_event_series_deletes_all(
     assert parent_event.recurrence_exceptions.count() == 1
 
     # Delete entire series
-    service.delete_event(
-        calendar_id=calendar.id, event_id=parent_event.external_id, delete_series=True
-    )
+    service.delete_event(calendar_id=calendar.id, event_id=parent_event.id, delete_series=True)
 
     # Adapter should have been called once for deleting series
     mock_google_adapter.delete_event.assert_called_once_with(
@@ -2047,7 +2045,7 @@ def test_delete_recurring_modified_instance_creates_cancellation_exception(
 
     # Delete the modified instance (should create a cancellation exception for its modified start time)
     service.delete_event(
-        calendar_id=calendar.id, event_id=modified_instance.external_id, delete_series=False
+        calendar_id=calendar.id, event_id=modified_instance.id, delete_series=False
     )
 
     # Adapter should NOT be called for deleting instance (cancellation approach) under adapter branch
@@ -2137,9 +2135,7 @@ def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only
         )
     assert modified_instance is not None
 
-    service.delete_event(
-        calendar_id=calendar.id, event_id=modified_instance.external_id, delete_series=True
-    )
+    service.delete_event(calendar_id=calendar.id, event_id=modified_instance.id, delete_series=True)
 
     # Adapter should be called for deletion (treated as direct deletion)
     mock_google_adapter.delete_event.assert_called_once_with(
@@ -2222,9 +2218,7 @@ def test_update_event(social_account, social_token, mock_google_adapter, calenda
 
     service = CalendarService()
     service.authenticate(account=social_account, organization=calendar_event.organization)
-    result = service.update_event(
-        calendar_event.calendar.id, calendar_event.external_id, event_input_data
-    )
+    result = service.update_event(calendar_event.calendar.id, calendar_event.id, event_input_data)
 
     # Verify database object was updated
     calendar_event.refresh_from_db()
@@ -2353,9 +2347,7 @@ def test_update_event_with_attendances(
 
     service = CalendarService()
     service.authenticate(account=social_account, organization=calendar_event.organization)
-    result = service.update_event(
-        calendar_event.calendar.id, calendar_event.external_id, event_input_data
-    )
+    result = service.update_event(calendar_event.calendar.id, calendar_event.id, event_input_data)
 
     # Verify database object was updated
     calendar_event.refresh_from_db()
@@ -2434,9 +2426,7 @@ def test_update_event_with_resource_allocations(
 
     service = CalendarService()
     service.authenticate(account=social_account, organization=calendar_event.organization)
-    result = service.update_event(
-        calendar_event.calendar.id, calendar_event.external_id, event_input_data
-    )
+    result = service.update_event(calendar_event.calendar.id, calendar_event.id, event_input_data)
 
     # Verify database object was updated
     calendar_event.refresh_from_db()
@@ -2459,7 +2449,7 @@ def test_delete_event(social_account, social_token, mock_google_adapter, calenda
     """Test deleting an event."""
     service = CalendarService()
     service.authenticate(account=social_account, organization=calendar_event.organization)
-    service.delete_event(calendar_event.calendar.id, calendar_event.external_id)
+    service.delete_event(calendar_event.calendar.id, calendar_event.id)
 
     # Verify database object was deleted
     assert not CalendarEvent.objects.filter(

@@ -45,14 +45,14 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
         ...
 
     def update_event(
-        self, calendar_id: str, event_id: str, event_data: CalendarEventInputData
+        self, calendar_id: str, event_id: int, event_data: CalendarEventInputData
     ) -> CalendarEvent:
         ...
 
     def _delete_bundle_event(self, bundle_event: CalendarEvent) -> None:
         ...
 
-    def delete_event(self, calendar_id: str, event_id: str) -> None:
+    def delete_event(self, calendar_id: str, event_id: int) -> None:
         ...
 
     def get_unavailable_time_windows_in_range(

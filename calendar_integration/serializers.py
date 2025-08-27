@@ -750,7 +750,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
 
         event = self.calendar_service.update_event(
             calendar_id=calendar.id,
-            event_id=instance.external_id,
+            event_id=instance.id,
             event_data=CalendarEventInputData(
                 title=validated_data.get("title", instance.title),
                 description=validated_data.get("description", instance.description),
