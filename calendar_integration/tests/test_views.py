@@ -734,6 +734,189 @@ class TestRecurringCalendarEventViewSet:
         assert response.data["is_recurring"] is True
         assert response.data["recurrence_rule"] is not None
 
+    def test_create_recurring_exception_cancelled(
+        self, auth_client, calendar, user, social_account
+    ):
+        """Test creating a cancelled exception for a recurring event"""
+        from di_core.containers import container
+
+        # Create a recurring event
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+
+        recurring_event = CalendarIntegrationTestFactory.create_recurring_event(
+            calendar=calendar,
+            title="Weekly Meeting",
+            description="Weekly team meeting",
+            start_time=start_time,
+            end_time=end_time,
+            external_id="recurring_weekly_meeting",
+        )
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.create_recurring_exception.return_value = None  # Cancelled event
+
+        url = reverse("api:CalendarEvents-create-exception", kwargs={"pk": recurring_event.id})
+        exception_date = (start_time + datetime.timedelta(days=7)).date()
+        data = {
+            "exception_date": exception_date.isoformat(),
+            "is_cancelled": True,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+
+        # Verify the mock was called with correct parameters
+        mock_calendar_service.create_recurring_exception.assert_called_once()
+        call_args = mock_calendar_service.create_recurring_exception.call_args
+        assert call_args[1]["parent_event"] == recurring_event
+        assert call_args[1]["is_cancelled"] is True
+
+    def test_create_recurring_exception_modified(self, auth_client, calendar, user, social_account):
+        """Test creating a modified exception for a recurring event"""
+        from di_core.containers import container
+
+        # Create a recurring event
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+
+        recurring_event = CalendarIntegrationTestFactory.create_recurring_event(
+            calendar=calendar,
+            title="Weekly Meeting",
+            description="Weekly team meeting",
+            start_time=start_time,
+            end_time=end_time,
+            external_id="recurring_weekly_meeting",
+        )
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock modified event
+        modified_start_time = start_time + datetime.timedelta(days=7, hours=1)
+        modified_end_time = end_time + datetime.timedelta(days=7, hours=1)
+
+        modified_event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Modified Weekly Meeting",
+            description="Modified weekly team meeting",
+            start_time=modified_start_time,
+            end_time=modified_end_time,
+            external_id="modified_weekly_meeting",
+        )
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.create_recurring_exception.return_value = modified_event
+
+        url = reverse("api:CalendarEvents-create-exception", kwargs={"pk": recurring_event.id})
+        exception_date = (start_time + datetime.timedelta(days=7)).date()
+        data = {
+            "exception_date": exception_date.isoformat(),
+            "modified_title": "Modified Weekly Meeting",
+            "modified_description": "Modified weekly team meeting",
+            "modified_start_time": modified_start_time.isoformat(),
+            "modified_end_time": modified_end_time.isoformat(),
+            "is_cancelled": False,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data["title"] == "Modified Weekly Meeting"
+        assert response.data["description"] == "Modified weekly team meeting"
+
+        # Verify the mock was called with correct parameters
+        mock_calendar_service.create_recurring_exception.assert_called_once()
+        call_args = mock_calendar_service.create_recurring_exception.call_args
+        assert call_args[1]["parent_event"] == recurring_event
+        assert call_args[1]["is_cancelled"] is False
+        assert call_args[1]["modified_title"] == "Modified Weekly Meeting"
+
+    def test_create_recurring_exception_non_recurring_event(self, auth_client, calendar, user):
+        """Test creating an exception for a non-recurring event should fail"""
+        # Create a non-recurring event
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+
+        non_recurring_event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Single Meeting",
+            start_time=start_time,
+            end_time=end_time,
+            external_id="single_meeting",
+        )
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:CalendarEvents-create-exception", kwargs={"pk": non_recurring_event.id})
+        exception_date = (start_time + datetime.timedelta(days=7)).date()
+        data = {
+            "exception_date": exception_date.isoformat(),
+            "is_cancelled": True,
+        }
+
+        response = auth_client.post(url, data, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "not a recurring event" in str(response.data)
+
+    def test_create_recurring_exception_validation_errors(self, auth_client, calendar, user):
+        """Test validation errors when creating recurring exceptions"""
+        # Create a recurring event
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+
+        recurring_event = CalendarIntegrationTestFactory.create_recurring_event(
+            calendar=calendar,
+            title="Weekly Meeting",
+            start_time=start_time,
+            end_time=end_time,
+            external_id="recurring_weekly_meeting",
+        )
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:CalendarEvents-create-exception", kwargs={"pk": recurring_event.id})
+
+        # Test missing required fields
+        response = auth_client.post(url, {}, format="json")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+        # Test non-cancelled exception without modifications
+        exception_date = (start_time + datetime.timedelta(days=7)).date()
+        data = {
+            "exception_date": exception_date.isoformat(),
+            "is_cancelled": False,
+        }
+        response = auth_client.post(url, data, format="json")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "modification field must be provided" in str(response.data)
+
+        # Test invalid datetime range
+        data = {
+            "exception_date": exception_date.isoformat(),
+            "modified_start_time": (start_time + datetime.timedelta(hours=2)).isoformat(),
+            "modified_end_time": (start_time + datetime.timedelta(hours=1)).isoformat(),
+            "is_cancelled": False,
+        }
+        response = auth_client.post(url, data, format="json")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "must be before" in str(response.data)
+
 
 @pytest.mark.django_db
 class TestCalendarViewSet:

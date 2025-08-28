@@ -195,6 +195,116 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
         )
 
 
+class RecurringExceptionSerializer(serializers.Serializer):
+    """Serializer for creating recurring event exceptions."""
+
+    exception_date = serializers.DateField(
+        required=True, help_text="The date of the occurrence to modify or cancel"
+    )
+    modified_title = serializers.CharField(
+        required=False,
+        allow_null=True,
+        max_length=255,
+        help_text="New title for the modified occurrence (if not cancelled)",
+    )
+    modified_description = serializers.CharField(
+        required=False,
+        allow_null=True,
+        help_text="New description for the modified occurrence (if not cancelled)",
+    )
+    modified_start_time = serializers.DateTimeField(
+        required=False,
+        allow_null=True,
+        help_text="New start time for the modified occurrence (if not cancelled)",
+    )
+    modified_end_time = serializers.DateTimeField(
+        required=False,
+        allow_null=True,
+        help_text="New end time for the modified occurrence (if not cancelled)",
+    )
+    is_cancelled = serializers.BooleanField(
+        default=False, help_text="True if cancelling the occurrence, False if modifying"
+    )
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        self.calendar_service = calendar_service
+        super().__init__(*args, **kwargs)
+
+    def validate(self, attrs: dict) -> dict:
+        """Validate the exception data."""
+        is_cancelled = attrs.get("is_cancelled", False)
+
+        if not is_cancelled:
+            # If not cancelled, at least one modification field should be provided
+            has_modifications = any(
+                [
+                    attrs.get("modified_title"),
+                    attrs.get("modified_description"),
+                    attrs.get("modified_start_time"),
+                    attrs.get("modified_end_time"),
+                ]
+            )
+
+            if not has_modifications:
+                raise serializers.ValidationError(
+                    "For non-cancelled exceptions, at least one modification field must be provided."
+                )
+
+        # Validate that start_time is before end_time if both are provided
+        start_time = attrs.get("modified_start_time")
+        end_time = attrs.get("modified_end_time")
+
+        if start_time and end_time and start_time >= end_time:
+            raise serializers.ValidationError(
+                "modified_start_time must be before modified_end_time."
+            )
+
+        return attrs
+
+    def save(self, **kwargs) -> None:
+        """Create a recurring event exception."""
+        parent_event = self.context["parent_event"]
+
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+
+        if not self.calendar_service:
+            raise ValueError(
+                "calendar_service is not defined, please configure your DI container correctly"
+            )
+
+        # Initialize calendar service
+        self.calendar_service.authenticate(
+            account=SocialAccount.objects.get(user=user, provider=parent_event.calendar.provider),
+            organization=parent_event.organization,
+        )
+
+        # Convert date to datetime for the exception_date
+        exception_date = self.validated_data["exception_date"]
+        exception_datetime = datetime.datetime.combine(
+            exception_date,
+            parent_event.start_time.time(),
+            tzinfo=parent_event.start_time.tzinfo,
+        )
+
+        self.instance = self.calendar_service.create_recurring_exception(
+            parent_event=parent_event,
+            exception_date=exception_datetime,
+            modified_title=self.validated_data.get("modified_title"),
+            modified_description=self.validated_data.get("modified_description"),
+            modified_start_time=self.validated_data.get("modified_start_time"),
+            modified_end_time=self.validated_data.get("modified_end_time"),
+            is_cancelled=self.validated_data.get("is_cancelled", False),
+        )
+
+
 class ExternalAttendeeSerializer(VirtualModelSerializer):
     id = serializers.IntegerField(  # noqa: A003
         allow_null=True, required=False, help_text="ID of the external attendee."
@@ -511,7 +621,9 @@ class CalendarEventSerializer(VirtualModelSerializer):
     ):
         self.calendar_service = calendar_service
         super().__init__(*args, **kwargs)
-        user = self.context["request"].user
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
 
         # Initialize nested serializers with context
         self.fields["resource_allocations"] = ResourceAllocationSerializer(
@@ -527,9 +639,13 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 source="recurrence_rule_fk",
                 many=False,
                 required=False,
-                queryset=RecurrenceRule.objects.filter_by_organization(
-                    user.organization_membership.organization_id
-                ).all(),
+                queryset=(
+                    RecurrenceRule.objects.filter_by_organization(
+                        user.organization_membership.organization_id
+                    ).all()
+                    if user and user.is_authenticated and user.organization_membership
+                    else RecurrenceRule.objects.none()
+                ),
                 write_only=True,
             )
 
@@ -540,7 +656,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 GoogleCalendarServiceAccount.objects.filter_by_organization(
                     user.organization_membership.organization_id
                 ).all()
-                if user.is_authenticated
+                if user and user.is_authenticated and user.organization_membership
                 else GoogleCalendarServiceAccount.objects.none()
             ),
             required=False,
@@ -551,7 +667,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 Calendar.objects.filter_by_organization(
                     user.organization_membership.organization_id
                 ).all()
-                if user.is_authenticated
+                if user and user.is_authenticated and user.organization_membership
                 else Calendar.objects.none()
             ),
             required=False,

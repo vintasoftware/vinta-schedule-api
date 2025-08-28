@@ -25,6 +25,7 @@ from calendar_integration.serializers import (
     CalendarBundleCreateSerializer,
     CalendarEventSerializer,
     CalendarSerializer,
+    RecurringExceptionSerializer,
     UnavailableTimeWindowSerializer,
 )
 from calendar_integration.services.calendar_service import CalendarService
@@ -297,5 +298,59 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
                 event_id=instance.id,
             )
             return Response(status=status.HTTP_204_NO_CONTENT)
+        except ValueError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+    @extend_schema(
+        summary="Create recurring event exception",
+        description="Create an exception for a recurring event (either cancelled or modified).",
+        request=RecurringExceptionSerializer,
+        responses={
+            201: CalendarEventSerializer,
+            204: None,
+        },
+    )
+    @action(
+        methods=["POST"],
+        detail=True,
+        url_path="create-exception",
+        url_name="create-exception",
+    )
+    @inject
+    def create_exception(
+        self,
+        request,
+        pk,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
+    ):
+        """
+        Create an exception for a recurring event.
+        """
+        parent_event = self.get_object()
+
+        if not parent_event.is_recurring:
+            raise ValidationError({"non_field_errors": ["Event is not a recurring event"]})
+
+        serializer = RecurringExceptionSerializer(
+            data=request.data,
+            context={"request": request, "parent_event": parent_event},
+        )
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            serializer.save()
+
+            if serializer.instance is None:
+                # Event was cancelled
+                return Response(status=status.HTTP_204_NO_CONTENT)
+            else:
+                # Event was modified
+                return Response(
+                    CalendarEventSerializer(
+                        serializer.instance,
+                        context=self.get_serializer_context(),
+                    ).data,
+                    status=status.HTTP_201_CREATED,
+                )
         except ValueError as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e

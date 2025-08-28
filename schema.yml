@@ -826,6 +826,89 @@ paths:
       responses:
         '204':
           description: No response body
+  /calendar-events/{id}/create-exception/:
+    post:
+      operationId: calendar_events_create_exception_create
+      description: Create an exception for a recurring event (either cancelled or
+        modified).
+      summary: Create recurring event exception
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecurringException'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RecurringException'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RecurringException'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+        '204':
+          description: No response body
+  /calendar-events/{id}/create-exception{format}:
+    post:
+      operationId: calendar_events_create_exception_formatted_create
+      description: Create an exception for a recurring event (either cancelled or
+        modified).
+      summary: Create recurring event exception
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecurringException'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RecurringException'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RecurringException'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+        '204':
+          description: No response body
   /calendar/{id}/:
     get:
       operationId: calendar_retrieve
@@ -2442,6 +2525,39 @@ components:
       - id
       - modified
       - rrule_string
+    RecurringException:
+      type: object
+      description: Serializer for creating recurring event exceptions.
+      properties:
+        exception_date:
+          type: string
+          format: date
+          description: The date of the occurrence to modify or cancel
+        modified_title:
+          type: string
+          nullable: true
+          description: New title for the modified occurrence (if not cancelled)
+          maxLength: 255
+        modified_description:
+          type: string
+          nullable: true
+          description: New description for the modified occurrence (if not cancelled)
+        modified_start_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: New start time for the modified occurrence (if not cancelled)
+        modified_end_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: New end time for the modified occurrence (if not cancelled)
+        is_cancelled:
+          type: boolean
+          default: false
+          description: True if cancelling the occurrence, False if modifying
+      required:
+      - exception_date
     ResourceAllocation:
       type: object
       properties:
