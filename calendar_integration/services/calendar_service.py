@@ -1279,9 +1279,7 @@ class CalendarService(BaseCalendarService):
         )
 
         for representation_event in representation_events:
-            self.delete_event(
-                representation_event.calendar.external_id, representation_event.external_id
-            )
+            self.delete_event(representation_event.calendar.id, representation_event.id)
 
         # Delete all blocked time representations
         BlockedTime.objects.filter(
@@ -1634,8 +1632,6 @@ class CalendarService(BaseCalendarService):
         self, event: CalendarEventData, calendar: Calendar, changes: EventsSyncChanges
     ):
         """Process a new event by creating appropriate records."""
-        calendar = self._get_calendar_by_external_id(calendar.external_id)
-
         if event.recurring_event_id:
             # This is an instance of a recurring event from external service
             try:
