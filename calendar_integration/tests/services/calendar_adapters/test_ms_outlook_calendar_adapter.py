@@ -18,7 +18,7 @@ from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_clie
     MSGraphRoom,
     MSOutlookCalendarAPIClient,
 )
-from calendar_integration.services.calendar_service import (
+from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
     CalendarEventData,

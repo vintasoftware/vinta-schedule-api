@@ -83,6 +83,14 @@ class Calendar(OrganizationModel):
         through_fields=("calendar_fk", "user"),
         blank=True,
     )
+    bundle_children: "models.ManyToManyField[Calendar, ChildrenCalendarRelationship]" = (
+        models.ManyToManyField(
+            "self",
+            blank=True,
+            through="ChildrenCalendarRelationship",
+            through_fields=("bundle_calendar", "child_calendar"),
+        )
+    )
 
     objects: CalendarManager = CalendarManager()
 
@@ -127,6 +135,23 @@ class Calendar(OrganizationModel):
             return self._latest_sync[0]
 
         return self.syncs.filter(should_update_events=True).order_by("-start_datetime").first()
+
+
+class ChildrenCalendarRelationship(OrganizationModel):
+    bundle_calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        related_name="bundle_relationships",
+    )
+    child_calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        related_name="bundle_children_relationships",
+    )
+    is_primary = models.BooleanField(
+        default=False,
+        help_text="True if this child calendar is the primary calendar for the bundle",
+    )
 
 
 class CalendarOwnership(OrganizationModel):
@@ -476,6 +501,28 @@ class CalendarEvent(OrganizationModel):
     end_time = models.DateTimeField()
     external_id = models.CharField(max_length=255, unique=True, blank=True)
 
+    # Bundle calendar fields
+    bundle_calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="bundle_events",
+        help_text="If this event was created through a bundle calendar, references the bundle",
+    )
+    is_bundle_primary = models.BooleanField(
+        default=False,
+        help_text="True if this is the primary event in a bundle (hosts the actual event in external providers)",
+    )
+    bundle_primary_event = OrganizationForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="bundle_representations",
+        help_text="For bundle representations, points to the primary event that hosts the actual external event",
+    )
+
     # Recurrence fields
     recurrence_rule = OrganizationOneToOneField(
         RecurrenceRule,
@@ -549,6 +596,16 @@ class CalendarEvent(OrganizationModel):
         Returns the duration of the event as a timedelta.
         """
         return self.end_time - self.start_time
+
+    @property
+    def is_bundle_event(self) -> bool:
+        """Returns True if this event is part of a bundle calendar."""
+        return self.bundle_calendar is not None
+
+    @property
+    def is_bundle_representation(self) -> bool:
+        """Returns True if this event is a representation of a bundle primary event."""
+        return self.bundle_primary_event is not None
 
     def get_next_occurrence(
         self, after_date: datetime.datetime | None = None
@@ -780,8 +837,31 @@ class BlockedTime(OrganizationModel):
     reason = models.CharField(max_length=255, blank=True)
     external_id = models.CharField(max_length=255, blank=True)
 
+    # Bundle calendar fields
+    bundle_calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="bundle_blocked_times",
+        help_text="If this blocked time was created through a bundle calendar, references the bundle",
+    )
+    bundle_primary_event = OrganizationForeignKey(
+        CalendarEvent,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="bundle_blocked_time_representations",
+        help_text="For bundle representations, points to the primary event that this blocked time represents",
+    )
+
     def __str__(self):
         return f"Blocked from {self.start_time} to {self.end_time} ({self.reason})"
+
+    @property
+    def is_bundle_representation(self) -> bool:
+        """Returns True if this blocked time represents a bundle event."""
+        return self.bundle_primary_event is not None
 
     class Meta:
         unique_together = (("calendar_fk_id", "external_id"),)

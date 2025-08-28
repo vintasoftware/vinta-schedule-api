@@ -1,4 +1,5 @@
 import datetime
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Annotated, cast
 
 import django_virtual_models as v
@@ -6,7 +7,7 @@ from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
     BlockedTime,
     Calendar,
@@ -20,7 +21,7 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
-from calendar_integration.services.calendar_service import (
+from calendar_integration.services.dataclasses import (
     BlockedTimeData,
     CalendarEventData,
     CalendarEventInputData,
@@ -69,7 +70,7 @@ class CalendarSerializer(VirtualModelSerializer):
     class Meta:
         model = Calendar
         virtual_model = CalendarVirtualModel
-        field = (
+        fields = (
             "id",
             "name",
             "description",
@@ -81,13 +82,114 @@ class CalendarSerializer(VirtualModelSerializer):
             "manage_available_windows",
         )
         read_only_fields = (
-            "name",
-            "description",
             "email",
             "external_id",
             "provider",
             "calendar_type",
             "capacity",
+        )
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        self.calendar_service = calendar_service
+        super().__init__(*args, **kwargs)
+
+    def create(self, validated_data):
+        user = self.context["request"].user
+        organization = user.organization_membership.organization
+        self.calendar_service.initialize_without_provider(organization)
+        return self.calendar_service.create_virtual_calendar(
+            name=validated_data.get("name"),
+            description=validated_data.get("description"),
+        )
+
+
+class CalendarBundleCreateSerializer(VirtualModelSerializer):
+    class Meta:
+        model = Calendar
+        virtual_model = CalendarVirtualModel
+        fields = ("name",)
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        self.calendar_service = calendar_service
+        super().__init__(*args, **kwargs)
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+
+        self.fields["bundle_calendars"] = serializers.PrimaryKeyRelatedField(
+            many=True,
+            queryset=(
+                Calendar.objects.filter_by_organization(
+                    organization_id=user.organization_membership.organization_id
+                )
+                if user
+                and user.is_authenticated
+                and hasattr(user, "organization_membership")
+                and user.organization_membership
+                else Calendar.objects.none()
+            ),
+        )
+        self.fields["primary_calendar"] = serializers.PrimaryKeyRelatedField(
+            queryset=(
+                Calendar.objects.filter_by_organization(
+                    organization_id=user.organization_membership.organization_id
+                )
+                if user
+                and user.is_authenticated
+                and hasattr(user, "organization_membership")
+                and user.organization_membership
+                else Calendar.objects.none()
+            ),
+            allow_null=True,
+        )
+
+    def validate_bundle_calendars(self, bundle_calendars):
+        if len(bundle_calendars) < 2:
+            raise serializers.ValidationError(
+                "At least two calendars are required to create a bundle."
+            )
+        return bundle_calendars
+
+    def validate(self, attrs: dict) -> dict:
+        primary_calendar: Calendar | None = attrs.get("primary_calendar")
+        bundle_calendars: Iterable[Calendar] = attrs.get("bundle_calendars", [])
+
+        bundle_calendars_has_integration_calendars = any(
+            calendar.provider != CalendarProvider.INTERNAL for calendar in bundle_calendars
+        )
+
+        if bundle_calendars_has_integration_calendars and (
+            not primary_calendar or primary_calendar.provider == CalendarProvider.INTERNAL
+        ):
+            raise serializers.ValidationError(
+                "Primary calendar needs to be an integration calendar if one or more calendars "
+                "in the bundle are integration calendars."
+            )
+
+        return attrs
+
+    def create(self, validated_data):
+        user = self.context["request"].user
+        organization = user.organization_membership.organization
+        self.calendar_service.initialize_without_provider(organization)
+
+        return self.calendar_service.create_bundle_calendar(
+            name=validated_data.get("name"),
+            description=validated_data.get("description"),
+            child_calendars=validated_data.get("bundle_calendars"),
+            primary_calendar=validated_data.get("primary_calendar"),
         )
 
 
@@ -553,7 +655,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
             final_rrule_string = rrule_string
 
         event = self.calendar_service.create_event(
-            calendar_id=calendar.external_id,
+            calendar_id=calendar.id,
             event_data=CalendarEventInputData(
                 title=validated_data.get("title"),
                 description=validated_data.get("description"),
@@ -647,8 +749,8 @@ class CalendarEventSerializer(VirtualModelSerializer):
             final_rrule_string = instance.recurrence_rule.to_rrule_string()
 
         event = self.calendar_service.update_event(
-            calendar_id=calendar.external_id,
-            event_id=instance.external_id,
+            calendar_id=calendar.id,
+            event_id=instance.id,
             event_data=CalendarEventInputData(
                 title=validated_data.get("title", instance.title),
                 description=validated_data.get("description", instance.description),

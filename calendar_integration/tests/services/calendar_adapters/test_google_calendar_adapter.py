@@ -11,7 +11,7 @@ from calendar_integration.services.calendar_adapters.google_calendar_adapter imp
     GoogleCredentialTypedDict,
     GoogleServiceAccountCredentialsTypedDict,
 )
-from calendar_integration.services.calendar_service import (
+from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
     CalendarEventData,

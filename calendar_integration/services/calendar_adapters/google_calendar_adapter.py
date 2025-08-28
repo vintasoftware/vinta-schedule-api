@@ -14,15 +14,15 @@ from googleapiclient.discovery import build
 from pyrate_limiter import Duration, Limiter, Rate, RedisBucket
 
 from calendar_integration.constants import CalendarProvider
-from calendar_integration.services.calendar_service import (
+from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
-    CalendarAdapter,
     CalendarEventAdapterInputData,
     CalendarEventData,
     CalendarEventsSyncTypedDict,
     CalendarResourceData,
     EventAttendeeData,
 )
+from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
 from common.redis import redis_connection
 
 

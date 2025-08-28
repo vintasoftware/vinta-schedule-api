@@ -17,7 +17,7 @@ from calendar_integration.models import (
     CalendarOwnership,
     RecurrenceRule,
 )
-from calendar_integration.services.calendar_service import (
+from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     UnavailableTimeWindow,
 )
@@ -37,8 +37,9 @@ class CalendarIntegrationTestFactory:
     def create_calendar(
         organization=None,
         name="Test Calendar",
+        description="",
         email="test@calendar.com",
-        external_id="test_external_id",
+        external_id=None,
         provider=CalendarProvider.GOOGLE,
         calendar_type=CalendarType.PERSONAL,
         manage_available_windows=False,
@@ -46,10 +47,14 @@ class CalendarIntegrationTestFactory:
         if organization is None:
             organization = CalendarIntegrationTestFactory.create_organization()
 
+        if external_id is None:
+            external_id = f"test_external_id_{uuid.uuid4().hex[:8]}"
+
         return baker.make(
             Calendar,
             organization=organization,
             name=name,
+            description=description,
             email=email,
             external_id=external_id,
             provider=provider,
@@ -731,8 +736,8 @@ class TestRecurringCalendarEventViewSet:
 
 
 @pytest.mark.django_db
-class TestCalendarAvailabilityViewSet:
-    """Test suite for CalendarAvailabilityViewSet"""
+class TestCalendarViewSet:
+    """Test suite for CalendarViewSet"""
 
     def test_get_available_windows(self, auth_client, calendar, user):
         """Test getting available time windows for a calendar"""
@@ -761,7 +766,7 @@ class TestCalendarAvailabilityViewSet:
             ),
         ]
 
-        url = reverse("api:CalendarAvailability-available-windows", kwargs={"pk": calendar.id})
+        url = reverse("api:Calendars-available-windows", kwargs={"pk": calendar.id})
         params = {
             "start_datetime": (now + datetime.timedelta(hours=1)).isoformat(),
             "end_datetime": (now + datetime.timedelta(hours=5)).isoformat(),
@@ -780,7 +785,7 @@ class TestCalendarAvailabilityViewSet:
 
     def test_get_available_windows_missing_params(self, auth_client, calendar):
         """Test getting available windows without required parameters"""
-        url = reverse("api:CalendarAvailability-available-windows", kwargs={"pk": calendar.id})
+        url = reverse("api:Calendars-available-windows", kwargs={"pk": calendar.id})
 
         # Missing both parameters
         response = auth_client.get(url)
@@ -793,7 +798,7 @@ class TestCalendarAvailabilityViewSet:
 
     def test_get_available_windows_invalid_datetime(self, auth_client, calendar):
         """Test getting available windows with invalid datetime format"""
-        url = reverse("api:CalendarAvailability-available-windows", kwargs={"pk": calendar.id})
+        url = reverse("api:Calendars-available-windows", kwargs={"pk": calendar.id})
         params = {
             "start_datetime": "invalid-datetime",
             "end_datetime": "2024-01-01T00:00:00Z",
@@ -832,7 +837,7 @@ class TestCalendarAvailabilityViewSet:
             ),
         ]
 
-        url = reverse("api:CalendarAvailability-unavailable-windows", kwargs={"pk": calendar.id})
+        url = reverse("api:Calendars-unavailable-windows", kwargs={"pk": calendar.id})
         params = {
             "start_datetime": (now + datetime.timedelta(hours=1)).isoformat(),
             "end_datetime": (now + datetime.timedelta(hours=5)).isoformat(),
@@ -851,7 +856,7 @@ class TestCalendarAvailabilityViewSet:
 
     def test_get_unavailable_windows_unauthenticated(self, anonymous_client, calendar):
         """Test getting unavailable windows as unauthenticated user"""
-        url = reverse("api:CalendarAvailability-unavailable-windows", kwargs={"pk": calendar.id})
+        url = reverse("api:Calendars-unavailable-windows", kwargs={"pk": calendar.id})
         params = {
             "start_datetime": "2024-01-01T00:00:00Z",
             "end_datetime": "2024-01-01T23:59:59Z",
@@ -871,7 +876,7 @@ class TestCalendarAvailabilityViewSet:
         mock_calendar_service = Mock()
         mock_calendar_service.authenticate.side_effect = ValueError("Authentication failed")
 
-        url = reverse("api:CalendarAvailability-available-windows", kwargs={"pk": calendar.id})
+        url = reverse("api:Calendars-available-windows", kwargs={"pk": calendar.id})
         params = {
             "start_datetime": "2024-01-01T00:00:00Z",
             "end_datetime": "2024-01-01T23:59:59Z",
@@ -891,7 +896,7 @@ class TestCalendarAvailabilityViewSet:
         calendar_org = CalendarIntegrationTestFactory.create_organization()
         CalendarIntegrationTestFactory.create_organization_membership(user, calendar_org)
 
-        url = reverse("api:CalendarAvailability-available-windows", kwargs={"pk": 99999})
+        url = reverse("api:Calendars-available-windows", kwargs={"pk": 99999})
         params = {
             "start_datetime": "2024-01-01T00:00:00Z",
             "end_datetime": "2024-01-01T23:59:59Z",
@@ -899,6 +904,236 @@ class TestCalendarAvailabilityViewSet:
 
         response = auth_client.get(url, params)
         assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_list_calendars_authenticated(self, auth_client, calendar, user):
+        """Test listing calendars as authenticated user"""
+        # Create calendar ownership so user can access the calendar
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:Calendars-list")
+        response = auth_client.get(url)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert "results" in response.data
+        assert len(response.data["results"]) == 1
+        assert response.data["results"][0]["id"] == calendar.id
+
+    def test_list_calendars_unauthenticated(self, anonymous_client, calendar):
+        """Test listing calendars as unauthenticated user"""
+        url = reverse("api:Calendars-list")
+        response = anonymous_client.get(url)
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_retrieve_calendar(self, auth_client, calendar, user):
+        """Test retrieving a specific calendar"""
+        # Create calendar ownership so user can access the calendar
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        response = auth_client.get(url)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["id"] == calendar.id
+        assert response.data["name"] == calendar.name
+
+    def test_retrieve_nonexistent_calendar(self, auth_client, user, organization):
+        """Test retrieving a non-existent calendar"""
+        url = reverse("api:Calendars-detail", kwargs={"pk": 99999})
+        response = auth_client.get(url)
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_create_virtual_calendar(self, auth_client, organization, user):
+        """Test creating a virtual calendar"""
+        from di_core.containers import container
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+
+        # Create a real Calendar instance that will be saved to the database
+        created_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="New Virtual Calendar",
+            description="Test virtual calendar",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+
+        mock_calendar_service.create_virtual_calendar.return_value = created_calendar
+
+        url = reverse("api:Calendars-list")
+        data = {
+            "name": "New Virtual Calendar",
+            "description": "Test virtual calendar",
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data["name"] == "New Virtual Calendar"
+        assert response.data["description"] == "Test virtual calendar"
+
+        # Verify the mock was called
+        mock_calendar_service.initialize_without_provider.assert_called_once()
+        mock_calendar_service.create_virtual_calendar.assert_called_once()
+
+    def test_create_calendar_validation_errors(self, auth_client):
+        """Test creating calendar with validation errors"""
+        url = reverse("api:Calendars-list")
+
+        # Test missing required fields
+        response = auth_client.post(url, {}, format="json")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+        response = auth_client.post(url, {"bundle_children": []}, format="json")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+        response = auth_client.post(url, {"primary_calendar": None}, format="json")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_update_calendar(self, auth_client, calendar, user):
+        """Test updating a calendar"""
+        # Create calendar ownership so user can access the calendar
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        updated_data = {
+            "name": "Updated Calendar Name",
+            "description": "Updated description",
+        }
+
+        response = auth_client.patch(url, updated_data, format="json")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["name"] == "Updated Calendar Name"
+        assert response.data["description"] == "Updated description"
+
+    def test_delete_calendar(self, auth_client, calendar, user):
+        """Test deleting a calendar"""
+        # Create calendar ownership so user can access the calendar
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        response = auth_client.delete(url)
+
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+
+    def test_create_bundle_calendar(self, auth_client, organization, user):
+        """Test creating a bundle calendar"""
+        from di_core.containers import container
+
+        # Create mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+
+        # Create child calendars for the bundle
+        child_calendar_1 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Child Calendar 1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        child_calendar_2 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Child Calendar 2",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.PERSONAL,
+        )
+
+        # Create the bundle calendar that will be returned
+        bundle_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Bundle Calendar",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.BUNDLE,
+        )
+
+        mock_calendar_service.create_bundle_calendar.return_value = bundle_calendar
+
+        url = reverse("api:Calendars-bundle")
+        data = {
+            "name": "Bundle Calendar",
+            "bundle_calendars": [child_calendar_1.id, child_calendar_2.id],
+            "primary_calendar": child_calendar_2.id,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data["name"] == "Bundle Calendar"
+        assert response.data["calendar_type"] == CalendarType.BUNDLE
+
+        # Verify the mock was called
+        mock_calendar_service.initialize_without_provider.assert_called_once()
+        mock_calendar_service.create_bundle_calendar.assert_called_once()
+
+    def test_create_bundle_calendar_validation_errors(self, auth_client, organization, user):
+        """Test creating bundle calendar with validation errors"""
+        url = reverse("api:Calendars-bundle")
+
+        # Test missing required fields
+        response = auth_client.post(url, {}, format="json")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+        # Test with only one calendar (should require at least 2)
+        child_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+        )
+
+        data = {
+            "name": "Invalid Bundle",
+            "bundle_calendars": [child_calendar.id],
+            "primary_calendar": child_calendar.id,
+        }
+
+        response = auth_client.post(url, data, format="json")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_create_bundle_calendar_with_integration_calendars(
+        self, auth_client, organization, user
+    ):
+        """Test creating bundle calendar with integration calendars requires integration primary"""
+        # Create child calendars - one internal, one integration
+        internal_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+        )
+        integration_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.GOOGLE,
+        )
+
+        url = reverse("api:Calendars-bundle")
+
+        # Test with internal primary calendar when bundle has integration calendars (should fail)
+        data = {
+            "name": "Invalid Bundle",
+            "bundle_calendars": [internal_calendar.id, integration_calendar.id],
+            "primary_calendar": internal_calendar.id,
+        }
+
+        response = auth_client.post(url, data, format="json")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Primary calendar needs to be an integration calendar" in str(response.data)
+
+    def test_create_bundle_calendar_unauthenticated(self, anonymous_client):
+        """Test creating bundle calendar as unauthenticated user"""
+        url = reverse("api:Calendars-bundle")
+        data = {
+            "name": "Bundle Calendar",
+            "bundle_calendars": [1, 2],
+            "primary_calendar": 2,
+        }
+
+        response = anonymous_client.post(url, data, format="json")
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
 
 @pytest.mark.django_db
@@ -952,7 +1187,7 @@ class TestCalendarIntegrationPermissions:
             ),
         ]
 
-        url = reverse("api:CalendarAvailability-available-windows", kwargs={"pk": calendar.id})
+        url = reverse("api:Calendars-available-windows", kwargs={"pk": calendar.id})
         params = {
             "start_datetime": "2024-01-01T00:00:00Z",
             "end_datetime": "2024-01-01T23:59:59Z",
@@ -970,7 +1205,7 @@ class TestCalendarIntegrationPermissions:
 
     def test_calendar_availability_permission_unauthenticated(self, anonymous_client, calendar):
         """Test that unauthenticated users cannot check calendar availability"""
-        url = reverse("api:CalendarAvailability-available-windows", kwargs={"pk": calendar.id})
+        url = reverse("api:Calendars-available-windows", kwargs={"pk": calendar.id})
         params = {
             "start_datetime": "2024-01-01T00:00:00Z",
             "end_datetime": "2024-01-01T23:59:59Z",
