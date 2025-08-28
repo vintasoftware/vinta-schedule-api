@@ -2,6 +2,8 @@ import datetime
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Annotated, cast
 
+from django.core.exceptions import ValidationError as DjangoValidationError
+
 import django_virtual_models as v
 from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
@@ -321,7 +323,6 @@ class RecurrenceRuleSerializer(VirtualModelSerializer):
 
     def validate(self, attrs):
         """Validate the recurrence rule data using the model's validation."""
-        from django.core.exceptions import ValidationError as DjangoValidationError
 
         # Create a temporary RecurrenceRule instance for validation
         # We don't save it, just use it for validation
@@ -449,8 +450,7 @@ class ParentEventSerializer(VirtualModelSerializer):
 
 class CalendarEventSerializer(VirtualModelSerializer):
     provider = serializers.CharField(required=False, write_only=True)
-    recurrence_rule_data = RecurrenceRuleSerializer(
-        write_only=True,
+    recurrence_rule = RecurrenceRuleSerializer(
         required=False,
         help_text="Recurrence rule data for creating recurring events",
     )
@@ -486,7 +486,6 @@ class CalendarEventSerializer(VirtualModelSerializer):
             "resource_allocations",
             # Recurrence fields
             "recurrence_rule",
-            "recurrence_rule_data",
             "rrule_string",
             "parent_event_id",
             "parent_event",
@@ -499,10 +498,9 @@ class CalendarEventSerializer(VirtualModelSerializer):
             "id",
             "external_id",
             "is_recurring_instance",
-            "recurrence_rule",
             "recurrence_exceptions",
-            "next_occurrence",
         )
+        write_only_fields = ("recurrence_rule_id",)
 
     @inject
     def __init__(
@@ -523,9 +521,17 @@ class CalendarEventSerializer(VirtualModelSerializer):
         self.fields["external_attendances"] = EventExternalAttendanceSerializer(
             many=True, context=self.context
         )
-        self.fields["recurrence_rule"] = RecurrenceRuleSerializer(
-            read_only=True, context=self.context
-        )
+
+        if self.instance:
+            self.fields["recurrence_rule_id"] = serializers.PrimaryKeyRelatedField(
+                source="recurrence_rule_fk",
+                many=False,
+                required=False,
+                queryset=RecurrenceRule.objects.filter_by_organization(
+                    user.organization_membership.organization_id
+                ).all(),
+                write_only=True,
+            )
 
         # add google_calendar_service_account and calendar fields dynamically to filter by
         # organization_id
@@ -586,13 +592,13 @@ class CalendarEventSerializer(VirtualModelSerializer):
             raise serializers.ValidationError("End time must be after start time.")
 
         # Validate recurrence fields
-        recurrence_rule_data = attrs.get("recurrence_rule_data")
+        recurrence_rule_data = attrs.get("recurrence_rule")
         rrule_string = attrs.get("rrule_string")
         parent_event_id = attrs.get("parent_event_id")
 
         if recurrence_rule_data and rrule_string:
             raise serializers.ValidationError(
-                "Cannot specify both recurrence_rule_data and rrule_string. Use one or the other."
+                "Cannot specify both recurrence_rule and rrule_string. Use one or the other."
             )
 
         if (recurrence_rule_data or rrule_string) and parent_event_id:
@@ -639,7 +645,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
         external_attendances = validated_data.pop("external_attendances", [])
 
         # Handle recurrence fields
-        recurrence_rule_data = validated_data.pop("recurrence_rule_data", None)
+        recurrence_rule_data = validated_data.pop("recurrence_rule", None)
         rrule_string = validated_data.pop("rrule_string", None)
         parent_event_id = validated_data.pop("parent_event_id", None)
 
@@ -647,8 +653,6 @@ class CalendarEventSerializer(VirtualModelSerializer):
         final_rrule_string = None
         if recurrence_rule_data:
             # Convert recurrence_rule_data to RRULE string
-            from calendar_integration.models import RecurrenceRule
-
             temp_rule = RecurrenceRule(organization=calendar.organization, **recurrence_rule_data)
             final_rrule_string = temp_rule.to_rrule_string()
         elif rrule_string:
@@ -730,16 +734,16 @@ class CalendarEventSerializer(VirtualModelSerializer):
         )
 
         # Handle recurrence fields for updates
-        recurrence_rule_data = validated_data.pop("recurrence_rule_data", None)
+        recurrence_rule_instance = validated_data.pop("recurrence_rule_id", None)
+        recurrence_rule_data = validated_data.pop("recurrence_rule", None)
         rrule_string = validated_data.pop("rrule_string", None)
         parent_event_id = validated_data.pop("parent_event_id", None)
 
         # Prepare recurrence rule for calendar service
         final_rrule_string = None
-        if recurrence_rule_data:
-            # Convert recurrence_rule_data to RRULE string
-            from calendar_integration.models import RecurrenceRule
-
+        if recurrence_rule_instance:
+            final_rrule_string = recurrence_rule_instance.to_rrule_string()
+        elif recurrence_rule_data:
             temp_rule = RecurrenceRule(organization=calendar.organization, **recurrence_rule_data)
             final_rrule_string = temp_rule.to_rrule_string()
         elif rrule_string:

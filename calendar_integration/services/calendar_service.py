@@ -325,6 +325,7 @@ class CalendarService(BaseCalendarService):
             organization_id=self.organization.id,
         )
 
+    @transaction.atomic()
     def request_calendars_import(self) -> None:
         """
         Import calendars associated with the authenticated account and create them as Calendar
@@ -346,6 +347,7 @@ class CalendarService(BaseCalendarService):
             organization_id=self.organization.id,
         )
 
+    @transaction.atomic()
     def import_account_calendars(self):
         """
         Import calendars associated with the authenticated account and create them as Calendar
@@ -384,6 +386,7 @@ class CalendarService(BaseCalendarService):
                 should_update_events=True,
             )
 
+    @transaction.atomic()
     def create_virtual_calendar(
         self,
         name: str,
@@ -407,6 +410,7 @@ class CalendarService(BaseCalendarService):
             original_payload={},
         )
 
+    @transaction.atomic()
     def create_bundle_calendar(
         self,
         name: str,
@@ -587,6 +591,7 @@ class CalendarService(BaseCalendarService):
 
         return [EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids]
 
+    @transaction.atomic()
     def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
         """
         Create a new event in the calendar.
@@ -788,6 +793,7 @@ class CalendarService(BaseCalendarService):
 
         return updated_primary
 
+    @transaction.atomic()
     def update_event(
         self, calendar_id: int, event_id: int, event_data: CalendarEventInputData
     ) -> CalendarEvent:
@@ -881,6 +887,21 @@ class CalendarService(BaseCalendarService):
         calendar_event.end_time = event_data.end_time
         if self.calendar_adapter:
             calendar_event.meta["latest_original_payload"] = original_payload
+
+        # update recurrence rule
+        if event_data.recurrence_rule:
+            recurrence_rule = RecurrenceRule.from_rrule_string(
+                rrule_string=event_data.recurrence_rule,
+                organization=self.organization,
+            )
+            if calendar_event.recurrence_rule:
+                recurrence_rule.id = calendar_event.recurrence_rule.id
+            recurrence_rule.save()
+            calendar_event.recurrence_rule = recurrence_rule
+        elif calendar_event.recurrence_rule:
+            # turn recurring event into non-recurring
+            calendar_event.recurrence_rule.delete()
+            calendar_event.recurrence_rule = None
 
         calendar_event.save()
 
@@ -999,6 +1020,9 @@ class CalendarService(BaseCalendarService):
     ) -> CalendarEvent:
         """
         Create a recurring event with the specified recurrence rule.
+
+        This method is just a shortcut, the `create_event` method also supports the
+        creation of recurring events.
 
         :param calendar_id: Internal ID of the calendar
         :param title: Event title
@@ -1289,6 +1313,7 @@ class CalendarService(BaseCalendarService):
         # Delete the primary event
         self.delete_event(bundle_event.calendar.id, bundle_event.id)
 
+    @transaction.atomic()
     def delete_event(self, calendar_id: int, event_id: int, delete_series: bool = False) -> None:
         """
         Delete an event from the calendar.
@@ -2150,6 +2175,7 @@ class CalendarService(BaseCalendarService):
             for start, end in available_windows
         ]
 
+    @transaction.atomic()
     def bulk_create_availability_windows(
         self,
         calendar: Calendar,
@@ -2180,6 +2206,7 @@ class CalendarService(BaseCalendarService):
             ]
         )
 
+    @transaction.atomic()
     def bulk_create_manual_blocked_times(
         self,
         calendar: Calendar,

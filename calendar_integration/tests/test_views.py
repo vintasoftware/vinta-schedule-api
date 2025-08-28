@@ -501,10 +501,10 @@ class TestRecurringCalendarEventViewSet:
         mock_calendar_service.authenticate.assert_called_once()
         mock_calendar_service.create_event.assert_called_once()
 
-    def test_create_recurring_event_with_recurrence_rule_data(
+    def test_create_recurring_event_with_recurrence_rule(
         self, auth_client, calendar, user, social_account
     ):
-        """Test creating a recurring event with recurrence_rule_data"""
+        """Test creating a recurring event with recurrence_rule"""
         from di_core.containers import container
 
         # Create a mock calendar service
@@ -539,7 +539,7 @@ class TestRecurringCalendarEventViewSet:
             "resource_allocations": [],
             "attendances": [],
             "external_attendances": [],
-            "recurrence_rule_data": {
+            "recurrence_rule": {
                 "frequency": "DAILY",
                 "interval": 1,
                 "count": 30,
@@ -561,7 +561,7 @@ class TestRecurringCalendarEventViewSet:
         """Test validation errors when creating recurring events"""
         url = reverse("api:CalendarEvents-list")
 
-        # Test both rrule_string and recurrence_rule_data provided
+        # Test both rrule_string and recurrence_rule provided
         now = datetime.datetime.now(datetime.UTC)
         data = {
             "title": "Invalid Event",
@@ -573,12 +573,12 @@ class TestRecurringCalendarEventViewSet:
             "attendances": [],
             "external_attendances": [],
             "rrule_string": "FREQ=WEEKLY;COUNT=10",
-            "recurrence_rule_data": {"frequency": "DAILY", "interval": 1},
+            "recurrence_rule": {"frequency": "DAILY", "interval": 1},
         }
 
         response = auth_client.post(url, data, format="json")
         assert response.status_code == status.HTTP_400_BAD_REQUEST
-        assert "Cannot specify both recurrence_rule_data and rrule_string" in str(response.data)
+        assert "Cannot specify both recurrence_rule and rrule_string" in str(response.data)
 
     def _base_event_payload(self, calendar):
         now = datetime.datetime.now(datetime.UTC)
@@ -594,12 +594,12 @@ class TestRecurringCalendarEventViewSet:
             "external_attendances": [],
         }
 
-    def test_valid_recurrence_rule_data(self, auth_client, calendar, user, social_account):
+    def test_valid_recurrence_rule(self, auth_client, calendar, user, social_account):
         from di_core.containers import container
 
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
         payload = self._base_event_payload(calendar)
-        payload["recurrence_rule_data"] = {
+        payload["recurrence_rule"] = {
             "frequency": "WEEKLY",
             "interval": 2,
             "by_weekday": "MO,WE,FR",
@@ -621,7 +621,7 @@ class TestRecurringCalendarEventViewSet:
     def test_invalid_weekday(self, auth_client, calendar, user, social_account):
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
         payload = self._base_event_payload(calendar)
-        payload["recurrence_rule_data"] = {
+        payload["recurrence_rule"] = {
             "frequency": "DAILY",
             "interval": 1,
             "by_weekday": "MO,XX",
@@ -634,7 +634,7 @@ class TestRecurringCalendarEventViewSet:
     def test_invalid_month_day(self, auth_client, calendar, user, social_account):
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
         payload = self._base_event_payload(calendar)
-        payload["recurrence_rule_data"] = {
+        payload["recurrence_rule"] = {
             "frequency": "MONTHLY",
             "interval": 1,
             "by_month_day": "1,32",
@@ -647,7 +647,7 @@ class TestRecurringCalendarEventViewSet:
     def test_invalid_month(self, auth_client, calendar, user, social_account):
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
         payload = self._base_event_payload(calendar)
-        payload["recurrence_rule_data"] = {
+        payload["recurrence_rule"] = {
             "frequency": "YEARLY",
             "interval": 1,
             "by_month": "12,13",
@@ -660,7 +660,7 @@ class TestRecurringCalendarEventViewSet:
     def test_count_and_until_conflict(self, auth_client, calendar, user, social_account):
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
         payload = self._base_event_payload(calendar)
-        payload["recurrence_rule_data"] = {
+        payload["recurrence_rule"] = {
             "frequency": "DAILY",
             "interval": 1,
             "count": 5,
@@ -669,16 +669,16 @@ class TestRecurringCalendarEventViewSet:
         url = reverse("api:CalendarEvents-list")
         response = auth_client.post(url, payload, format="json")
         assert response.status_code == status.HTTP_400_BAD_REQUEST
-        # Error is nested under recurrence_rule_data.non_field_errors as an ErrorDetail whose string
+        # Error is nested under recurrence_rule.non_field_errors as an ErrorDetail whose string
         # value itself contains a JSON-style list string. Inspect the first error directly.
-        err = response.data["recurrence_rule_data"]["non_field_errors"][0]
+        err = response.data["recurrence_rule"]["non_field_errors"][0]
         err_text = str(err)
         assert "Cannot specify both 'count' and 'until' in a recurrence rule." in err_text
 
     def test_interval_less_than_one(self, auth_client, calendar, user, social_account):
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
         payload = self._base_event_payload(calendar)
-        payload["recurrence_rule_data"] = {
+        payload["recurrence_rule"] = {
             "frequency": "DAILY",
             "interval": 0,
         }

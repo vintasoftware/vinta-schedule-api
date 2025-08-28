@@ -1863,11 +1863,6 @@ components:
         recurrence_rule:
           allOf:
           - $ref: '#/components/schemas/RecurrenceRule'
-          readOnly: true
-        recurrence_rule_data:
-          allOf:
-          - $ref: '#/components/schemas/RecurrenceRule'
-          writeOnly: true
           description: Recurrence rule data for creating recurring events
         rrule_string:
           type: string
@@ -1916,7 +1911,6 @@ components:
       - is_recurring_instance
       - modified
       - parent_event
-      - recurrence_rule
       - resource_allocations
       - start_time
       - title
@@ -2267,11 +2261,6 @@ components:
         recurrence_rule:
           allOf:
           - $ref: '#/components/schemas/RecurrenceRule'
-          readOnly: true
-        recurrence_rule_data:
-          allOf:
-          - $ref: '#/components/schemas/RecurrenceRule'
-          writeOnly: true
           description: Recurrence rule data for creating recurring events
         rrule_string:
           type: string

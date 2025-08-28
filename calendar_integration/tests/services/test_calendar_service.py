@@ -323,6 +323,7 @@ def sample_event_input_data_with_resources(organization, db):
     )
 
 
+@pytest.mark.django_db
 def test_calendar_service_initialization_with_social_account(
     social_account, social_token, mock_google_adapter, organization
 ):
@@ -334,6 +335,7 @@ def test_calendar_service_initialization_with_social_account(
     assert service.calendar_adapter == mock_google_adapter
 
 
+@pytest.mark.django_db
 def test_calendar_service_initialization_with_service_account(
     google_service_account, mock_google_adapter
 ):
@@ -357,6 +359,7 @@ def test_calendar_service_initialization_with_none_account():
     assert service.organization is None  # Should be None before authentication
 
 
+@pytest.mark.django_db
 def test_calendar_service_initialization_with_account_without_adapter(
     social_account, social_token, organization
 ):
@@ -370,6 +373,7 @@ def test_calendar_service_initialization_with_account_without_adapter(
         service.authenticate(account=social_account, organization=organization)
 
 
+@pytest.mark.django_db
 def test_get_calendar_adapter_for_google_social_account(
     social_account, social_token, mock_google_adapter
 ):
@@ -379,6 +383,7 @@ def test_get_calendar_adapter_for_google_social_account(
     assert adapter == mock_google_adapter
 
 
+@pytest.mark.django_db
 def test_get_calendar_adapter_for_microsoft_social_account(
     social_account, social_token, mock_ms_adapter
 ):
@@ -391,6 +396,7 @@ def test_get_calendar_adapter_for_microsoft_social_account(
     assert adapter == mock_ms_adapter
 
 
+@pytest.mark.django_db
 def test_get_calendar_adapter_for_google_service_account(
     google_service_account, mock_google_adapter
 ):
@@ -400,6 +406,7 @@ def test_get_calendar_adapter_for_google_service_account(
     assert adapter == mock_google_adapter
 
 
+@pytest.mark.django_db
 def test_get_calendar_adapter_unsupported_provider(social_account, social_token):
     """Test error when provider is not supported."""
     social_account.provider = "unsupported"
@@ -411,6 +418,7 @@ def test_get_calendar_adapter_unsupported_provider(social_account, social_token)
         CalendarService.get_calendar_adapter_for_account(social_account)
 
 
+@pytest.mark.django_db
 def test_import_organization_calendar_resources(
     social_account,
     social_token,
@@ -445,6 +453,7 @@ def test_import_organization_calendar_resources(
     mock_execute.assert_called_once_with(start_time=start_time, end_time=end_time)
 
 
+@pytest.mark.django_db
 def test_import_account_calendars(social_account, social_token, mock_google_adapter, organization):
     """Test importing account calendars."""
     mock_calendar_resources = [
@@ -510,6 +519,7 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
     assert work_ownership.is_default is False
 
 
+@pytest.mark.django_db
 def test_import_account_calendars_updates_existing(
     social_account, social_token, mock_google_adapter, organization
 ):
@@ -556,6 +566,7 @@ def test_import_account_calendars_updates_existing(
     assert updated_calendar.email == "updated@example.com"
 
 
+@pytest.mark.django_db
 def test_import_account_calendars_no_calendars(
     social_account, social_token, mock_google_adapter, organization
 ):
@@ -574,6 +585,7 @@ def test_import_account_calendars_no_calendars(
     assert mock_subscribe.call_count == 0
 
 
+@pytest.mark.django_db
 def test_import_account_calendars_not_authenticated():
     """Test that import_account_calendars requires authentication."""
     service = CalendarService()
@@ -583,6 +595,7 @@ def test_import_account_calendars_not_authenticated():
         service.import_account_calendars()
 
 
+@pytest.mark.django_db
 def test_create_application_calendar(
     social_account, social_token, mock_google_adapter, patch_calendar_create, organization
 ):
@@ -626,6 +639,7 @@ def test_create_application_calendar(
     mock_task.assert_called_once()
 
 
+@pytest.mark.django_db
 def test_create_application_calendar_with_service_account(
     google_service_account, mock_google_adapter, patch_calendar_create, organization
 ):
@@ -663,6 +677,7 @@ def test_create_application_calendar_with_service_account(
     assert google_service_account.calendar.external_id == "service_cal_123"
 
 
+@pytest.mark.django_db
 def test_create_event(
     social_account,
     social_token,
@@ -703,6 +718,7 @@ def test_create_event(
     assert call_args.calendar_external_id == calendar.external_id
 
 
+@pytest.mark.django_db
 def test_create_recurring_event(
     social_account,
     social_token,
@@ -763,6 +779,7 @@ def test_create_recurring_event(
     assert call_args.calendar_external_id == calendar.external_id
 
 
+@pytest.mark.django_db
 def test_create_recurring_event_helper_method(
     social_account,
     social_token,
@@ -813,6 +830,7 @@ def test_create_recurring_event_helper_method(
     assert adapter_input.is_recurring_instance is False
 
 
+@pytest.mark.django_db
 def test_create_recurring_exception_modified(
     social_account,
     social_token,
@@ -927,6 +945,7 @@ def test_create_recurring_exception_modified(
     assert exception.exception_date == exception_date
 
 
+@pytest.mark.django_db
 def test_create_recurring_exception_cancelled(
     social_account,
     social_token,
@@ -991,6 +1010,7 @@ def test_create_recurring_exception_cancelled(
     assert exception.exception_date == exception_date
 
 
+@pytest.mark.django_db
 def test_create_recurring_exception_non_recurring_error(
     social_account,
     social_token,
@@ -1009,6 +1029,7 @@ def test_create_recurring_exception_non_recurring_error(
         )
 
 
+@pytest.mark.django_db
 def test_create_recurring_exception_on_master_event_with_future_occurrences(
     social_account,
     social_token,
@@ -1123,6 +1144,7 @@ def test_create_recurring_exception_on_master_event_with_future_occurrences(
     assert not RecurrenceRule.objects.filter(id=original_recurrence_rule_id).exists()
 
 
+@pytest.mark.django_db
 def test_create_recurring_exception_on_master_event_no_future_occurrences(
     social_account,
     social_token,
@@ -1207,6 +1229,7 @@ def test_create_recurring_exception_on_master_event_no_future_occurrences(
     assert parent_event.recurrence_exceptions.count() == 0
 
 
+@pytest.mark.django_db
 def test_create_recurring_exception_on_master_preserves_attendances_and_resources(
     social_account,
     social_token,
@@ -1351,6 +1374,7 @@ def test_create_recurring_exception_on_master_preserves_attendances_and_resource
     assert new_recurring_event.resource_allocations.count() == 1
 
 
+@pytest.mark.django_db
 def test_get_recurring_event_instances_non_recurring_in_and_out_of_range(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar, calendar_event
 ):
@@ -1374,6 +1398,7 @@ def test_get_recurring_event_instances_non_recurring_in_and_out_of_range(
     assert out_of_range == []
 
 
+@pytest.mark.django_db
 def test_get_recurring_event_instances_basic_recurring(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
 ):
@@ -1426,6 +1451,7 @@ def test_get_recurring_event_instances_basic_recurring(
     assert instances == sorted(instances, key=lambda e: e.start_time)
 
 
+@pytest.mark.django_db
 def test_get_recurring_event_instances_with_modified_exception(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
 ):
@@ -1527,6 +1553,7 @@ def test_get_recurring_event_instances_with_modified_exception(
     assert all(e.external_id != "modified_exception_123" for e in instances_without)
 
 
+@pytest.mark.django_db
 def test_get_recurring_event_instances_with_cancelled_exception(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
 ):
@@ -1595,6 +1622,7 @@ def test_get_recurring_event_instances_with_cancelled_exception(
     assert len(instances_without) == 4
 
 
+@pytest.mark.django_db
 def test_get_calendar_events_expanded_non_recurring(
     social_account,
     social_token,
@@ -1680,6 +1708,7 @@ def test_get_calendar_events_expanded_non_recurring(
     assert expanded[0].external_id == "inside_evt_123"
 
 
+@pytest.mark.django_db
 def test_get_calendar_events_expanded_recurring_expansion(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
 ):
@@ -1737,6 +1766,7 @@ def test_get_calendar_events_expanded_recurring_expansion(
     assert all(e.recurrence_id is not None for e in expanded)
 
 
+@pytest.mark.django_db
 def test_get_calendar_events_expanded_with_exceptions(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
 ):
@@ -1839,6 +1869,7 @@ def test_get_calendar_events_expanded_with_exceptions(
     assert all(e.start_time != cancelled_start for e in expanded)
 
 
+@pytest.mark.django_db
 def test_delete_recurring_event_series_deletes_all(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
 ):
@@ -1964,6 +1995,7 @@ def test_delete_recurring_event_series_deletes_all(
     )
 
 
+@pytest.mark.django_db
 def test_delete_recurring_modified_instance_creates_cancellation_exception(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
 ):
@@ -2057,6 +2089,7 @@ def test_delete_recurring_modified_instance_creates_cancellation_exception(
     assert CalendarEvent.objects.filter(id=modified_instance.id).exists()
 
 
+@pytest.mark.django_db
 def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
 ):
@@ -2147,6 +2180,7 @@ def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only
     assert CalendarEvent.objects.filter(id=parent_event.id).exists()
 
 
+@pytest.mark.django_db
 def test_create_event_with_resources(
     social_account,
     social_token,
@@ -2190,6 +2224,7 @@ def test_create_event_with_resources(
     assert call_args.title == "Event with Resources"
 
 
+@pytest.mark.django_db
 def test_update_event(social_account, social_token, mock_google_adapter, calendar_event):
     """Test updating an event."""
     updated_event_data = CalendarEventData(
@@ -2229,6 +2264,7 @@ def test_update_event(social_account, social_token, mock_google_adapter, calenda
     mock_google_adapter.update_event.assert_called_once()
 
 
+@pytest.mark.django_db
 def test_create_event_with_attendances(
     social_account,
     social_token,
@@ -2284,6 +2320,7 @@ def test_create_event_with_attendances(
     mock_google_adapter.create_event.assert_called_once()
 
 
+@pytest.mark.django_db
 def test_update_event_with_attendances(
     social_account, social_token, mock_google_adapter, calendar_event, db
 ):
@@ -2373,6 +2410,7 @@ def test_update_event_with_attendances(
     mock_google_adapter.update_event.assert_called_once()
 
 
+@pytest.mark.django_db
 def test_update_event_with_resource_allocations(
     social_account, social_token, mock_google_adapter, calendar_event, organization, db
 ):
@@ -2445,6 +2483,7 @@ def test_update_event_with_resource_allocations(
     mock_google_adapter.update_event.assert_called_once()
 
 
+@pytest.mark.django_db
 def test_delete_event(social_account, social_token, mock_google_adapter, calendar_event):
     """Test deleting an event."""
     service = CalendarService()
@@ -2460,6 +2499,7 @@ def test_delete_event(social_account, social_token, mock_google_adapter, calenda
     )
 
 
+@pytest.mark.django_db
 def test_transfer_event(
     social_account, social_token, mock_google_adapter, calendar_event, patch_get_calendar
 ):
@@ -2538,6 +2578,7 @@ def test_transfer_event(
         # For now, we just verify the method was called
 
 
+@pytest.mark.django_db
 def test_transfer_event_with_resources(
     social_account, social_token, mock_google_adapter, calendar_event, patch_get_calendar
 ):
@@ -2602,6 +2643,7 @@ def test_transfer_event_with_resources(
     # Note: The filtering of attendees vs resources would need to be implemented in transfer_event
 
 
+@pytest.mark.django_db
 def test_request_calendar_sync(social_account, social_token, mock_google_adapter, calendar):
     """Test requesting a calendar sync."""
     start_datetime = datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC)
@@ -2631,6 +2673,7 @@ def test_request_calendar_sync(social_account, social_token, mock_google_adapter
     )
 
 
+@pytest.mark.django_db
 def test_request_calendar_sync_with_service_account(
     google_service_account, mock_google_adapter, calendar
 ):
@@ -2657,6 +2700,7 @@ def test_request_calendar_sync_with_service_account(
     )
 
 
+@pytest.mark.django_db
 def test_sync_events_success(social_account, social_token, mock_google_adapter, calendar):
     """Test successful event synchronization."""
     calendar_sync = CalendarSync.objects.create(
@@ -2682,6 +2726,7 @@ def test_sync_events_success(social_account, social_token, mock_google_adapter, 
     assert calendar_sync.status == CalendarSyncStatus.SUCCESS
 
 
+@pytest.mark.django_db
 def test_sync_events_failure(social_account, social_token, mock_google_adapter, calendar):
     """Test event synchronization failure."""
     calendar_sync = CalendarSync.objects.create(
@@ -2705,6 +2750,7 @@ def test_sync_events_failure(social_account, social_token, mock_google_adapter, 
     assert calendar_sync.status == CalendarSyncStatus.FAILED
 
 
+@pytest.mark.django_db
 def test_execute_calendar_sync(
     social_account,
     social_token,
@@ -2744,6 +2790,7 @@ def test_execute_calendar_sync(
     assert blocked_times.exists()
 
 
+@pytest.mark.django_db
 def test_process_new_event(
     social_account,
     social_token,
@@ -2766,6 +2813,7 @@ def test_process_new_event(
     assert sample_event_data.external_id in changes.matched_event_ids
 
 
+@pytest.mark.django_db
 def test_process_new_event_recurring_master(
     social_account,
     social_token,
@@ -2799,6 +2847,7 @@ def test_process_new_event_recurring_master(
     assert "rec_master_123" in changes.matched_event_ids
 
 
+@pytest.mark.django_db
 def test_process_new_event_recurring_instance_with_parent(
     social_account,
     social_token,
@@ -2848,6 +2897,7 @@ def test_process_new_event_recurring_instance_with_parent(
     assert "instance_rec_123" in changes.matched_event_ids
 
 
+@pytest.mark.django_db
 def test_process_new_event_recurring_instance_parent_missing_creates_blocked_time(
     social_account,
     social_token,
@@ -2880,6 +2930,7 @@ def test_process_new_event_recurring_instance_parent_missing_creates_blocked_tim
     assert "orphan_instance_123" in changes.matched_event_ids
 
 
+@pytest.mark.django_db
 def test_process_existing_event_cancelled(
     social_account, social_token, mock_google_adapter, calendar_event
 ):
@@ -2907,6 +2958,7 @@ def test_process_existing_event_cancelled(
     assert "event_123" in changes.matched_event_ids
 
 
+@pytest.mark.django_db
 def test_process_existing_event_update(
     social_account, social_token, mock_google_adapter, calendar_event
 ):
@@ -2934,6 +2986,7 @@ def test_process_existing_event_update(
     assert "event_123" in changes.matched_event_ids
 
 
+@pytest.mark.django_db
 def test_process_existing_blocked_time(social_account, social_token, mock_google_adapter, calendar):
     """Test processing an existing blocked time updates it."""
     blocked_time = BlockedTime.objects.create(
@@ -2968,6 +3021,7 @@ def test_process_existing_blocked_time(social_account, social_token, mock_google
     assert "block_123" in changes.matched_event_ids
 
 
+@pytest.mark.django_db
 def test_process_event_attendees_new_user(
     social_account, social_token, mock_google_adapter, calendar_event
 ):
@@ -3001,6 +3055,7 @@ def test_process_event_attendees_new_user(
     assert attendance.status == "accepted"
 
 
+@pytest.mark.django_db
 def test_process_event_attendees_external_user(
     social_account, social_token, mock_google_adapter, calendar_event
 ):
@@ -3037,6 +3092,7 @@ def test_process_event_attendees_external_user(
     assert external_attendee.name == "External Attendee"
 
 
+@pytest.mark.django_db
 def test_handle_deletions_for_full_sync(
     social_account, social_token, mock_google_adapter, calendar
 ):
@@ -3081,6 +3137,7 @@ def test_handle_deletions_for_full_sync(
     assert not CalendarEvent.objects.filter(id=event2.id).exists()
 
 
+@pytest.mark.django_db
 def test_apply_sync_changes(social_account, social_token, mock_google_adapter, calendar):
     """Test applying sync changes to the database."""
     # Create test changes
@@ -3121,6 +3178,7 @@ def test_apply_sync_changes(social_account, social_token, mock_google_adapter, c
     assert existing_event.title == "Updated Title"
 
 
+@pytest.mark.django_db
 def test_apply_sync_changes_with_recurrence_rules_and_events(
     social_account, social_token, mock_google_adapter, calendar
 ):
@@ -3165,6 +3223,7 @@ def test_apply_sync_changes_with_recurrence_rules_and_events(
     assert created_event.recurrence_rule.count == 3
 
 
+@pytest.mark.django_db
 def test_remove_available_time_windows_overlap(
     social_account, social_token, mock_google_adapter, calendar
 ):
@@ -3218,6 +3277,7 @@ def test_remove_available_time_windows_overlap(
     assert not AvailableTime.objects.filter(id=available_time2.id).exists()
 
 
+@pytest.mark.django_db
 def test_get_existing_calendar_data(social_account, social_token, mock_google_adapter, calendar):
     """Test getting existing calendar data for a date range."""
     # Create test data
@@ -3885,6 +3945,7 @@ def test_resource_data_creation():
     assert resource.status == "accepted"
 
 
+@pytest.mark.django_db
 def test_unavailable_time_window_creation():
     """Test creating UnavailableTimeWindow instance."""
     event_data = CalendarEventData(
@@ -3911,6 +3972,7 @@ def test_unavailable_time_window_creation():
     assert isinstance(window.data, CalendarEventData)
 
 
+@pytest.mark.django_db
 def test_google_adapter_event_creation_with_resources(mock_google_adapter):
     """Test Google adapter creates events with resources in attendees."""
     # This tests the changes to GoogleCalendarAdapter where resources
@@ -3947,6 +4009,7 @@ def test_google_adapter_event_creation_with_resources(mock_google_adapter):
     mock_google_adapter.create_event.assert_called_once_with(event_data)
 
 
+@pytest.mark.django_db
 def test_calendar_event_data_with_resources():
     """Test CalendarEventData creation with new fields."""
     event_data = CalendarEventData(
@@ -3966,6 +4029,7 @@ def test_calendar_event_data_with_resources():
     assert event_data.resources == ["resource@example.com"]
 
 
+@pytest.mark.django_db
 def test_calendar_event_input_data_with_resources():
     """Test CalendarEventInputData creation with resources field."""
     event_input = CalendarEventAdapterInputData(
@@ -3983,6 +4047,7 @@ def test_calendar_event_input_data_with_resources():
     assert event_input.resources[0].title == "Room"
 
 
+@pytest.mark.django_db
 def test_calendar_event_input_data_with_recurrence_rule():
     """Test CalendarEventInputData creation with recurrence rule."""
     event_input = CalendarEventInputData(
@@ -4000,6 +4065,7 @@ def test_calendar_event_input_data_with_recurrence_rule():
     assert event_input.title == "Recurring Event"
 
 
+@pytest.mark.django_db
 def test_calendar_event_adapter_input_data_with_recurrence_rule():
     """Test CalendarEventAdapterInputData creation with recurrence rule."""
     event_input = CalendarEventAdapterInputData(
@@ -4016,6 +4082,7 @@ def test_calendar_event_adapter_input_data_with_recurrence_rule():
     assert event_input.title == "Recurring Event"
 
 
+@pytest.mark.django_db
 def test_calendar_event_data_with_recurrence_rule():
     """Test CalendarEventData creation with recurrence rule."""
     event_data = CalendarEventData(
@@ -4035,6 +4102,7 @@ def test_calendar_event_data_with_recurrence_rule():
     assert event_data.id == 123
 
 
+@pytest.mark.django_db
 def test_get_unavailable_time_windows_in_range_with_recurring_events_outside_master_range(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
 ):
@@ -4134,6 +4202,7 @@ def test_events_sync_changes_initialization():
     assert changes.recurrence_rules_to_create == []
 
 
+@pytest.mark.django_db
 def test_events_sync_changes_with_data(calendar, organization, db):
     """Test EventsSyncChanges with actual data."""
     from calendar_integration.models import RecurrenceRule
@@ -4185,6 +4254,7 @@ def test_events_sync_changes_with_data(calendar, organization, db):
     assert "old_event_123" in changes.events_to_delete
 
 
+@pytest.mark.django_db
 def test_apply_sync_changes_events_to_create(
     social_account, social_token, mock_google_adapter, calendar
 ):
@@ -4217,6 +4287,7 @@ def test_apply_sync_changes_events_to_create(
     assert created_event.organization == calendar.organization
 
 
+@pytest.mark.django_db
 def test_apply_sync_changes_events_to_delete(
     social_account, social_token, mock_google_adapter, calendar
 ):
@@ -4244,6 +4315,7 @@ def test_apply_sync_changes_events_to_delete(
     ).exists()
 
 
+@pytest.mark.django_db
 def test_apply_sync_changes_blocked_times_to_create(
     social_account, social_token, mock_google_adapter, calendar
 ):
@@ -4274,6 +4346,7 @@ def test_apply_sync_changes_blocked_times_to_create(
     assert created_block.organization == calendar.organization
 
 
+@pytest.mark.django_db
 def test_apply_sync_changes_blocked_times_to_update(
     social_account, social_token, mock_google_adapter, calendar
 ):
@@ -4305,6 +4378,7 @@ def test_apply_sync_changes_blocked_times_to_update(
     assert existing_block.start_time == datetime.datetime(2025, 6, 22, 18, 30, tzinfo=datetime.UTC)
 
 
+@pytest.mark.django_db
 def test_apply_sync_changes_blocks_to_delete(
     social_account, social_token, mock_google_adapter, calendar
 ):
@@ -4332,6 +4406,7 @@ def test_apply_sync_changes_blocks_to_delete(
     ).exists()
 
 
+@pytest.mark.django_db
 def test_apply_sync_changes_attendances_to_create(
     social_account, social_token, mock_google_adapter, calendar, db
 ):
@@ -4372,6 +4447,7 @@ def test_apply_sync_changes_attendances_to_create(
     assert created_attendance.organization == calendar.organization
 
 
+@pytest.mark.django_db
 def test_apply_sync_changes_external_attendances_to_create(
     social_account, social_token, mock_google_adapter, calendar, db
 ):
@@ -4414,6 +4490,7 @@ def test_apply_sync_changes_external_attendances_to_create(
     assert created_external_attendance.organization == calendar.organization
 
 
+@pytest.mark.django_db
 def test_handle_deletions_for_full_sync_no_organization(
     social_account, social_token, mock_google_adapter, calendar
 ):
@@ -4433,6 +4510,7 @@ def test_handle_deletions_for_full_sync_no_organization(
     assert result is None
 
 
+@pytest.mark.django_db
 def test_apply_sync_changes_comprehensive(
     social_account, social_token, mock_google_adapter, calendar, db
 ):
