@@ -294,7 +294,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
             )
             calendar_service.delete_event(
                 calendar_id=instance.calendar.id,
-                event_id=instance.external_id,
+                event_id=instance.id,
             )
             return Response(status=status.HTTP_204_NO_CONTENT)
         except ValueError as e:

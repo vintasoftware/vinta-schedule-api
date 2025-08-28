@@ -115,7 +115,6 @@ class CalendarResourceData:
 
 
 @dataclass
-@dataclass
 class EventsSyncChanges:
     events_to_update: list[CalendarEvent] = dataclass_field(default_factory=list)
     events_to_create: list[CalendarEvent] = dataclass_field(default_factory=list)
