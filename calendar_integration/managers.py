@@ -112,3 +112,21 @@ class CalendarSyncManager(BaseOrganizationModelManager):
         :return: CalendarSync instance if found, otherwise None.
         """
         return self.get_queryset().get_not_started_calendar_sync(calendar_sync_id=calendar_sync_id)
+
+
+class BlockedTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
+    """Custom manager for BlockedTime model to handle specific queries."""
+
+    def get_queryset(self):
+        from calendar_integration.querysets import BlockedTimeQuerySet
+
+        return BlockedTimeQuerySet(self.model, using=self._db)
+
+
+class AvailableTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
+    """Custom manager for AvailableTime model to handle specific queries."""
+
+    def get_queryset(self):
+        from calendar_integration.querysets import AvailableTimeQuerySet
+
+        return AvailableTimeQuerySet(self.model, using=self._db)

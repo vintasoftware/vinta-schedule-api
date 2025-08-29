@@ -1,4 +1,5 @@
 import datetime
+import json
 from typing import TYPE_CHECKING, Self
 
 from django.conf import settings
@@ -18,6 +19,8 @@ from calendar_integration.constants import (
     RSVPStatus,
 )
 from calendar_integration.managers import (
+    AvailableTimeManager,
+    BlockedTimeManager,
     CalendarEventManager,
     CalendarManager,
     CalendarSyncManager,
@@ -496,6 +499,7 @@ class RecurringMixin(models.Model):
         on_delete=models.CASCADE,
         null=True,
         blank=True,
+        related_name="%(class)s_instance",  # This creates unique related names for each model
         help_text="The recurrence rule for this object. If set, this object is recurring.",
     )
     recurrence_id = models.DateTimeField(
@@ -508,7 +512,7 @@ class RecurringMixin(models.Model):
         on_delete=models.CASCADE,
         null=True,
         blank=True,
-        related_name="recurring_instances",
+        related_name="%(class)s_recurring_instances",  # This creates unique related names for each model
         help_text="If this is an instance of a recurring object, points to the parent object",
     )
     is_recurring_exception = models.BooleanField(
@@ -869,7 +873,7 @@ class RecurrenceException(OrganizationModel):
         return f"Exception for {self.parent_event.title} on {self.exception_date} ({status})"
 
 
-class BlockedTime(OrganizationModel):
+class BlockedTime(OrganizationModel, RecurringMixin):
     """
     Represents a blocked time period in a calendar.
     """
@@ -903,6 +907,11 @@ class BlockedTime(OrganizationModel):
         help_text="For bundle representations, points to the primary event that this blocked time represents",
     )
 
+    objects: "BlockedTimeManager" = BlockedTimeManager()
+
+    class Meta:
+        unique_together = (("calendar_fk_id", "external_id"),)
+
     def __str__(self):
         return f"Blocked from {self.start_time} to {self.end_time} ({self.reason})"
 
@@ -911,11 +920,137 @@ class BlockedTime(OrganizationModel):
         """Returns True if this blocked time represents a bundle event."""
         return self.bundle_primary_event is not None
 
-    class Meta:
-        unique_together = (("calendar_fk_id", "external_id"),)
+    def get_occurrences_in_range(
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        include_self=True,
+        include_exceptions=True,
+        max_occurrences=10000,
+    ) -> list["BlockedTime"]:
+        """Get occurrences of this recurring blocked time in a date range."""
+        if not self.is_recurring:
+            # Non-recurring blocked time
+            if include_self and self.start_time >= start_date and self.start_time <= end_date:
+                return [self]
+            return []
+
+        occurrences = []
+
+        # Add self if it's in range and include_self is True
+        if include_self and self.start_time >= start_date and self.start_time <= end_date:
+            occurrences.append(self)
+
+        # Get generated occurrences
+        generated_occurrences = self.get_generated_occurrences_in_range(start_date, end_date)
+        occurrences.extend(generated_occurrences)
+
+        # Get exceptions if include_exceptions is True
+        if include_exceptions:
+            exceptions = self.blockedtime_recurring_instances.filter(
+                start_time__gte=start_date,
+                start_time__lte=end_date,
+                is_recurring_exception=True,
+            )
+            occurrences.extend(exceptions)
+
+        return occurrences[:max_occurrences]
+
+    def get_generated_occurrences_in_range(
+        self, start_date: datetime.datetime, end_date: datetime.datetime
+    ) -> list["BlockedTime"]:
+        """Get generated occurrences using the BlockedTime database function."""
+        from .database_functions import GetBlockedTimeOccurrencesJSON
+
+        # Use the database function to get occurrences
+        blocked_times_with_occurrences = BlockedTime.objects.filter(id=self.id).annotate(
+            occurrences=GetBlockedTimeOccurrencesJSON("id", start_date, end_date, 10000)
+        )
+
+        if not blocked_times_with_occurrences:
+            return []
+
+        blocked_time = blocked_times_with_occurrences.first()
+        if not blocked_time.occurrences:
+            return []
+
+        # Convert JSON occurrences to BlockedTime instances
+        instances = []
+        for occurrence_json in blocked_time.occurrences:
+            occurrence = json.loads(occurrence_json)
+            instance = self._create_recurring_instance(
+                start_time=datetime.datetime.fromisoformat(
+                    occurrence["start_time"].replace("Z", "+00:00")
+                ),
+                end_time=datetime.datetime.fromisoformat(
+                    occurrence["end_time"].replace("Z", "+00:00")
+                ),
+                recurrence_id=datetime.datetime.fromisoformat(
+                    occurrence["start_time"].replace("Z", "+00:00")
+                ),
+                is_exception=occurrence["is_exception"],
+            )
+            instances.append(instance)
+
+        return instances
+
+    def create_exception(self, exception_date, is_cancelled=True, modified_blocked_time=None):
+        """Create an exception for a recurring blocked time."""
+        if not self.is_recurring:
+            raise ValueError("Cannot create exception for non-recurring blocked time")
+
+        if is_cancelled:
+            # Create a cancelled instance
+            exception = self._create_recurring_instance(
+                start_time=exception_date,
+                end_time=exception_date + self.duration,
+                recurrence_id=exception_date,
+                is_exception=True,
+            )
+            exception.is_recurring_exception = True
+            exception.save()
+            return exception
+        elif modified_blocked_time:
+            # Create a modified instance
+            exception = self._create_recurring_instance(
+                start_time=modified_blocked_time.start_time,
+                end_time=modified_blocked_time.end_time,
+                recurrence_id=exception_date,
+                is_exception=True,
+            )
+            exception.is_recurring_exception = True
+            exception.reason = modified_blocked_time.reason
+            exception.save()
+            return exception
+        else:
+            raise ValueError(
+                "Must specify either is_cancelled=True or provide modified_blocked_time"
+            )
+
+    def _create_recurring_instance(
+        self,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        recurrence_id: datetime.datetime,
+        is_exception: bool = False,
+    ) -> "BlockedTime":
+        """Create a BlockedTime instance for recurring occurrences."""
+        return BlockedTime(
+            calendar_fk=self.calendar_fk,  # type: ignore
+            organization=self.organization,
+            start_time=start_time,
+            end_time=end_time,
+            reason=self.reason,
+            external_id="",  # Recurring instances don't have external IDs
+            bundle_calendar_fk=self.bundle_calendar_fk,  # type: ignore
+            bundle_primary_event_fk=self.bundle_primary_event_fk,  # type: ignore
+            parent_recurring_object=self,
+            recurrence_id=recurrence_id,
+            is_recurring_exception=is_exception,
+        )
 
 
-class AvailableTime(OrganizationModel):
+class AvailableTime(OrganizationModel, RecurringMixin):
     """
     Represents available time slots in a calendar.
     """
@@ -929,8 +1064,134 @@ class AvailableTime(OrganizationModel):
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
 
+    objects: "AvailableTimeManager" = AvailableTimeManager()
+
     def __str__(self):
         return f"Available from {self.start_time} to {self.end_time}"
+
+    def get_occurrences_in_range(
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        include_self=True,
+        include_exceptions=True,
+        max_occurrences=10000,
+    ) -> list["AvailableTime"]:
+        """Get occurrences of this recurring available time in a date range."""
+        if not self.is_recurring:
+            # Non-recurring available time
+            if include_self and self.start_time >= start_date and self.start_time <= end_date:
+                return [self]
+            return []
+
+        occurrences = []
+
+        # Add self if it's in range and include_self is True
+        if include_self and self.start_time >= start_date and self.start_time <= end_date:
+            occurrences.append(self)
+
+        # Get generated occurrences
+        generated_occurrences = self.get_generated_occurrences_in_range(start_date, end_date)
+        occurrences.extend(generated_occurrences)
+
+        # Get exceptions if include_exceptions is True
+        if include_exceptions:
+            exceptions = self.availabletime_recurring_instances.filter(
+                start_time__gte=start_date,
+                start_time__lte=end_date,
+                is_recurring_exception=True,
+            )
+            occurrences.extend(exceptions)
+
+        return occurrences[:max_occurrences]
+
+    def get_generated_occurrences_in_range(
+        self, start_date: datetime.datetime, end_date: datetime.datetime
+    ) -> list["AvailableTime"]:
+        """Get generated occurrences using the AvailableTime database function."""
+        from .database_functions import GetAvailableTimeOccurrencesJSON
+
+        # Use the database function to get occurrences
+        available_times_with_occurrences = AvailableTime.objects.filter(id=self.id).annotate(
+            occurrences=GetAvailableTimeOccurrencesJSON("id", start_date, end_date, 10000)
+        )
+
+        if not available_times_with_occurrences:
+            return []
+
+        available_time = available_times_with_occurrences.first()
+        if not available_time.occurrences:
+            return []
+
+        # Convert JSON occurrences to AvailableTime instances
+        instances = []
+        for occurrence_json in available_time.occurrences:
+            occurrence = json.loads(occurrence_json)
+            instance = self._create_recurring_instance(
+                start_time=datetime.datetime.fromisoformat(
+                    occurrence["start_time"].replace("Z", "+00:00")
+                ),
+                end_time=datetime.datetime.fromisoformat(
+                    occurrence["end_time"].replace("Z", "+00:00")
+                ),
+                recurrence_id=datetime.datetime.fromisoformat(
+                    occurrence["start_time"].replace("Z", "+00:00")
+                ),
+                is_exception=occurrence["is_exception"],
+            )
+            instances.append(instance)
+
+        return instances
+
+    def create_exception(self, exception_date, is_cancelled=True, modified_available_time=None):
+        """Create an exception for a recurring available time."""
+        if not self.is_recurring:
+            raise ValueError("Cannot create exception for non-recurring available time")
+
+        if is_cancelled:
+            # Create a cancelled instance
+            exception = self._create_recurring_instance(
+                start_time=exception_date,
+                end_time=exception_date + self.duration,
+                recurrence_id=exception_date,
+                is_exception=True,
+            )
+            exception.is_recurring_exception = True
+            exception.save()
+            return exception
+        elif modified_available_time:
+            # Create a modified instance
+            exception = self._create_recurring_instance(
+                start_time=modified_available_time.start_time,
+                end_time=modified_available_time.end_time,
+                recurrence_id=exception_date,
+                is_exception=True,
+            )
+            exception.is_recurring_exception = True
+            exception.save()
+            return exception
+        else:
+            raise ValueError(
+                "Must specify either is_cancelled=True or provide modified_available_time"
+            )
+
+    def _create_recurring_instance(
+        self,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        recurrence_id: datetime.datetime,
+        is_exception: bool = False,
+    ) -> "AvailableTime":
+        """Create an AvailableTime instance for recurring occurrences."""
+        return AvailableTime(
+            calendar_fk=self.calendar_fk,  # type: ignore
+            organization=self.organization,
+            start_time=start_time,
+            end_time=end_time,
+            parent_recurring_object=self,
+            recurrence_id=recurrence_id,
+            is_recurring_exception=is_exception,
+        )
 
 
 class CalendarSync(OrganizationModel):

@@ -5,7 +5,11 @@ from typing import TYPE_CHECKING
 from django.db.models import OuterRef, Prefetch, Q, Subquery
 
 from calendar_integration.constants import CalendarSyncStatus, CalendarType
-from calendar_integration.database_functions import GetEventOccurrencesJSON
+from calendar_integration.database_functions import (
+    GetAvailableTimeOccurrencesJSON,
+    GetBlockedTimeOccurrencesJSON,
+    GetEventOccurrencesJSON,
+)
 from organizations.querysets import BaseOrganizationModelQuerySet
 
 
@@ -32,7 +36,7 @@ class RecurringQuerySetMixin:
 
     def filter_master_recurring_objects(self):
         """Filter to get only master recurring objects (not instances)."""
-        return self.filter(parent_recurring_object__isnull=True)
+        return self.filter(parent_recurring_object__isnull=True, recurrence_rule__isnull=False)
 
     def filter_recurring_instances(self):
         """Filter to get only recurring instances (not masters)."""
@@ -236,3 +240,39 @@ class CalendarSyncQuerySet(BaseOrganizationModelQuerySet):
         :return: CalendarSync instance if found, otherwise None.
         """
         return self.filter(id=calendar_sync_id, status=CalendarSyncStatus.NOT_STARTED).first()
+
+
+class BlockedTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin):
+    """
+    Custom QuerySet for BlockedTime model to handle specific queries.
+    """
+
+    def annotate_recurring_occurrences_on_date_range(
+        self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000
+    ):
+        """
+        Annotated an Array aggregating all occurrences of a recurring blocked time within the specified date range.
+        The occurrences are calculated dynamically based on the master blocked time's recurrence rule.
+        Each occurrence will be a JSON containing the start_datetime and the end_datetime in UTC.
+        """
+        return self.annotate(
+            recurring_occurrences=GetBlockedTimeOccurrencesJSON("id", start, end, max_occurrences)
+        )
+
+
+class AvailableTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin):
+    """
+    Custom QuerySet for AvailableTime model to handle specific queries.
+    """
+
+    def annotate_recurring_occurrences_on_date_range(
+        self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000
+    ):
+        """
+        Annotated an Array aggregating all occurrences of a recurring available time within the specified date range.
+        The occurrences are calculated dynamically based on the master available time's recurrence rule.
+        Each occurrence will be a JSON containing the start_datetime and the end_datetime in UTC.
+        """
+        return self.annotate(
+            recurring_occurrences=GetAvailableTimeOccurrencesJSON("id", start, end, max_occurrences)
+        )

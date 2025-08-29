@@ -1351,7 +1351,7 @@ class CalendarService(BaseCalendarService):
 
         if event.is_recurring and delete_series:
             # Delete the entire series including all instances and exceptions
-            event.recurring_instances.all().delete()
+            event.calendarevent_recurring_instances.all().delete()
             event.recurrence_exceptions.all().delete()
             if event.recurrence_rule:
                 event.recurrence_rule.delete()
@@ -1956,6 +1956,7 @@ class CalendarService(BaseCalendarService):
 
         AvailableTime.objects.filter(
             id__in=available_time_windows_to_delete,
+            organization_id=self.organization.id,
             calendar_fk_id=calendar_id,
         ).delete()
 

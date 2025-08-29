@@ -3273,8 +3273,12 @@ def test_remove_available_time_windows_overlap(
     )
 
     # Verify both available time windows were deleted due to overlaps
-    assert not AvailableTime.objects.filter(id=available_time1.id).exists()
-    assert not AvailableTime.objects.filter(id=available_time2.id).exists()
+    assert not AvailableTime.objects.filter(
+        organization_id=calendar.organization_id, id=available_time1.id
+    ).exists()
+    assert not AvailableTime.objects.filter(
+        organization_id=calendar.organization_id, id=available_time2.id
+    ).exists()
 
 
 @pytest.mark.django_db
