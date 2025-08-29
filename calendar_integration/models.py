@@ -1,5 +1,5 @@
 import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -484,7 +484,101 @@ class RecurrenceRule(OrganizationModel):
         super().save(*args, **kwargs)
 
 
-class CalendarEvent(OrganizationModel):
+class RecurringMixin(models.Model):
+    """
+    Abstract mixin that provides recurring functionality to any model.
+    Models that inherit from this mixin must have 'start_time' and 'end_time' fields.
+    """
+
+    # Recurrence fields
+    recurrence_rule = OrganizationOneToOneField(
+        "RecurrenceRule",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="The recurrence rule for this object. If set, this object is recurring.",
+    )
+    recurrence_id = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="For recurring instances, this identifies which occurrence this is",
+    )
+    parent_recurring_object = OrganizationForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="recurring_instances",
+        help_text="If this is an instance of a recurring object, points to the parent object",
+    )
+    is_recurring_exception = models.BooleanField(
+        default=False,
+        help_text="True if this object is an exception to the recurrence rule (modified occurrence)",
+    )
+
+    class Meta:
+        abstract = True
+
+    @property
+    def is_recurring(self) -> bool:
+        """Returns True if this object has a recurrence rule."""
+        return self.recurrence_rule is not None
+
+    @property
+    def is_recurring_instance(self) -> bool:
+        """Returns True if this object is an instance of a recurring object."""
+        return self.parent_recurring_object is not None
+
+    @property
+    def duration(self):
+        """Returns the duration of the object as a timedelta."""
+        return self.end_time - self.start_time
+
+    def get_occurrences_in_range(
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        include_self=True,
+        include_exceptions=True,
+        max_occurrences=10000,
+    ) -> list[Self]:
+        """
+        Get occurrences of this recurring object in a date range.
+        This method should be overridden by concrete models to provide model-specific logic.
+        """
+        raise NotImplementedError("Subclasses must implement get_occurrences_in_range")
+
+    def get_generated_occurrences_in_range(
+        self, start_date: datetime.datetime, end_date: datetime.datetime
+    ) -> list[Self]:
+        """
+        Get generated occurrences using database function.
+        This method should be overridden by concrete models to use their specific database function.
+        """
+        raise NotImplementedError("Subclasses must implement get_generated_occurrences_in_range")
+
+    def create_exception(self, exception_date, is_cancelled=True, modified_object=None):
+        """
+        Create an exception for a recurring object.
+        This method should be overridden by concrete models to provide model-specific logic.
+        """
+        raise NotImplementedError("Subclasses must implement create_exception")
+
+    def _create_recurring_instance(
+        self,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        recurrence_id: datetime.datetime,
+        is_exception: bool = False,
+    ):
+        """
+        Helper method to create a recurring instance.
+        This should be overridden by concrete models to set model-specific fields.
+        """
+        raise NotImplementedError("Subclasses must implement _create_recurring_instance")
+
+
+class CalendarEvent(OrganizationModel, RecurringMixin):
     """
     Represents an event in a calendar.
     """
@@ -524,31 +618,6 @@ class CalendarEvent(OrganizationModel):
     )
 
     # Recurrence fields
-    recurrence_rule = OrganizationOneToOneField(
-        RecurrenceRule,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="event",
-        help_text="The recurrence rule for this event. If set, this event is recurring.",
-    )
-    recurrence_id = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="For recurring event instances, this identifies which occurrence this is",
-    )
-    parent_event = OrganizationForeignKey(
-        "self",
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="recurring_instances",
-        help_text="If this is an instance of a recurring event, points to the parent event",
-    )
-    is_recurring_exception = models.BooleanField(
-        default=False,
-        help_text="True if this event is an exception to the recurrence rule (modified occurrence)",
-    )
 
     attendees = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
@@ -575,27 +644,6 @@ class CalendarEvent(OrganizationModel):
 
     def __str__(self):
         return f"{self.title} ({self.start_time} - {self.end_time})"
-
-    @property
-    def is_recurring(self) -> bool:
-        """
-        Returns True if this event has a recurrence rule.
-        """
-        return self.recurrence_rule is not None
-
-    @property
-    def is_recurring_instance(self) -> bool:
-        """
-        Returns True if this event is an instance of a recurring event.
-        """
-        return self.parent_event is not None
-
-    @property
-    def duration(self):
-        """
-        Returns the duration of the event as a timedelta.
-        """
-        return self.end_time - self.start_time
 
     @property
     def is_bundle_event(self) -> bool:
@@ -655,7 +703,7 @@ class CalendarEvent(OrganizationModel):
         include_self=True,
         include_exceptions=True,
         max_occurrences=10000,
-    ) -> list["CalendarEvent"]:
+    ) -> list[Self]:
         """
         Get all occurrences of this event in the given date range.
         This includes both generated instances and any saved exceptions.
@@ -683,7 +731,7 @@ class CalendarEvent(OrganizationModel):
                 .first()
             )
 
-        all_exception_events_by_id: dict[int, CalendarEvent] = {
+        all_exception_events_by_id: dict[int, Self] = {
             e.pk: e
             for e in self.__class__.objects.filter(
                 organization_id=self.organization_id,
@@ -691,7 +739,7 @@ class CalendarEvent(OrganizationModel):
             )
         }
 
-        events: list[CalendarEvent] = []
+        events: list[Self] = []
         for occurrence in occurrences:
             occurrence_start_time = datetime.datetime.fromisoformat(occurrence["start_time"])
             occurrence_end_time = datetime.datetime.fromisoformat(occurrence["end_time"])
@@ -714,7 +762,7 @@ class CalendarEvent(OrganizationModel):
                 continue
 
             events.append(
-                CalendarEvent(
+                self.__class__(
                     calendar_fk=self.calendar,
                     organization=self.organization,
                     title=self.title,
@@ -730,7 +778,7 @@ class CalendarEvent(OrganizationModel):
 
     def get_generated_occurrences_in_range(
         self, start_date: datetime.datetime, end_date: datetime.datetime
-    ) -> list["CalendarEvent"]:
+    ) -> list[Self]:
         """
         Generate recurring event instances between start_date and end_date.
         Returns a list of CalendarEvent instances (not saved to database).

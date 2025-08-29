@@ -691,7 +691,7 @@ class CalendarService(BaseCalendarService):
             end_time=event_data.end_time,
             external_id=external_id,
             meta={"latest_original_payload": original_payload} if self.calendar_adapter else {},
-            parent_event_fk=parent_event,
+            parent_recurring_object_fk=parent_event,
             is_recurring_exception=event_data.is_recurring_exception,
             recurrence_id=event_data.start_time if parent_event else None,
         )
@@ -1223,7 +1223,7 @@ class CalendarService(BaseCalendarService):
             CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
             .select_related("recurrence_rule")
             .filter(
-                parent_event__isnull=True,  # Master events only
+                parent_recurring_object__isnull=True,  # Master events only
             )
         )
         if calendar.calendar_type == CalendarType.BUNDLE:
@@ -1341,8 +1341,10 @@ class CalendarService(BaseCalendarService):
                 self.calendar_adapter.delete_event(event.calendar.external_id, event.external_id)
             elif event.is_recurring_instance and not delete_series:
                 # Create a cancellation exception instead of deleting
-                if event.parent_event:
-                    event.parent_event.create_exception(event.recurrence_id, is_cancelled=True)
+                if event.parent_recurring_object:
+                    event.parent_recurring_object.create_exception(
+                        event.recurrence_id, is_cancelled=True
+                    )
             else:
                 # Delete single event or instance
                 self.calendar_adapter.delete_event(event.calendar.external_id, event.external_id)
@@ -1356,8 +1358,10 @@ class CalendarService(BaseCalendarService):
             event.delete()
         elif event.is_recurring_instance and not delete_series:
             # For instances, we create an exception rather than delete
-            if event.parent_event and event.recurrence_id:
-                event.parent_event.create_exception(event.recurrence_id, is_cancelled=True)
+            if event.parent_recurring_object and event.recurrence_id:
+                event.parent_recurring_object.create_exception(
+                    event.recurrence_id, is_cancelled=True
+                )
         else:
             # Delete single non-recurring event
             event.delete()
@@ -1675,7 +1679,7 @@ class CalendarService(BaseCalendarService):
                     external_id=event.external_id,
                     meta={"latest_original_payload": event.original_payload or {}},
                     organization_id=calendar.organization_id,
-                    parent_event_fk=parent_event,
+                    parent_recurring_object_fk=parent_event,
                     recurrence_id=event.start_time,
                     is_recurring_exception=True,
                 )
@@ -1857,7 +1861,7 @@ class CalendarService(BaseCalendarService):
         orphaned_instances = CalendarEvent.objects.filter(
             calendar_fk_id=calendar_id,
             organization_id=self.organization.id,
-            parent_event__isnull=True,
+            parent_recurring_object__isnull=True,
             meta__pending_parent_external_id__isnull=False,
         )
 
@@ -1878,11 +1882,13 @@ class CalendarService(BaseCalendarService):
                         organization_id=self.organization.id,
                     )
                     # Link the instance to its parent
-                    instance.parent_event_fk = parent_event
+                    instance.parent_recurring_object_fk = parent_event
                     instance.recurrence_id = instance.start_time
                     # Clear the pending parent ID
                     instance.meta.pop("pending_parent_external_id", None)
-                    instance.save(update_fields=["parent_event_fk", "recurrence_id", "meta"])
+                    instance.save(
+                        update_fields=["parent_recurring_object_fk", "recurrence_id", "meta"]
+                    )
                 except CalendarEvent.DoesNotExist:
                     # Parent still not synced, leave it for next sync
                     continue
@@ -2041,8 +2047,8 @@ class CalendarService(BaseCalendarService):
                             )
                             # For recurring instances, get attendances from the parent event; for regular events, use their own
                             for attendance in (
-                                event.parent_event.attendances.all()
-                                if event.parent_event
+                                event.parent_recurring_object.attendances.all()
+                                if event.parent_recurring_object
                                 else (event.attendances.all() if event.id else [])
                             )
                         ]
@@ -2057,8 +2063,8 @@ class CalendarService(BaseCalendarService):
                             )
                             # For recurring instances, get external attendances from the parent event; for regular events, use their own
                             for external_attendance in (
-                                event.parent_event.external_attendances.all()
-                                if event.parent_event
+                                event.parent_recurring_object.external_attendances.all()
+                                if event.parent_recurring_object
                                 else (event.external_attendances.all() if event.id else [])
                             )
                         ],
@@ -2074,8 +2080,8 @@ class CalendarService(BaseCalendarService):
                             )
                             # For recurring instances, get resource allocations from the parent event; for regular events, use their own
                             for resource_allocation in (
-                                event.parent_event.resource_allocations.all()
-                                if event.parent_event
+                                event.parent_recurring_object.resource_allocations.all()
+                                if event.parent_recurring_object
                                 else (event.resource_allocations.all() if event.id else [])
                             )
                         ],

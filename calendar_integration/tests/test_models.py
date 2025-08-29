@@ -203,7 +203,7 @@ def test_calendar_event_get_occurrences_in_range_with_modified_exception():
         title="Parent (Modified)",
         start_time=_dt(2025, 1, 2, 10),  # changed time
         end_time=_dt(2025, 1, 2, 11),
-        parent_event=parent,
+        parent_recurring_object=parent,
         is_recurring_exception=True,
         external_id="modified",
     )
@@ -252,7 +252,7 @@ def test_calendar_event_create_exception_updates_existing():
         title="Daily (Modified)",
         start_time=_dt(2025, 1, 2, 11),
         end_time=_dt(2025, 1, 2, 11, 30),
-        parent_event=event,
+        parent_recurring_object=event,
         is_recurring_exception=True,
         external_id="daily-mod",
     )
@@ -939,7 +939,7 @@ def test_get_next_occurrence_with_modified_exception_before_range():
         title="Modified Occurrence",
         start_time=_dt(2025, 1, 2, 15),  # moved to 3 PM
         end_time=_dt(2025, 1, 2, 16),
-        parent_event=event,
+        parent_recurring_object=event,
         is_recurring_exception=True,
         external_id="modified-jan-2",
     )
@@ -1118,7 +1118,7 @@ def test_get_next_occurrence_mixed_exceptions_before_range():
         title="Modified Jan 2",
         start_time=_dt(2025, 1, 2, 15),
         end_time=_dt(2025, 1, 2, 16),
-        parent_event=event,
+        parent_recurring_object=event,
         is_recurring_exception=True,
         external_id="modified-jan-2-mixed",
     )

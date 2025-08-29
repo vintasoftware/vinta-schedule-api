@@ -13,6 +13,40 @@ if TYPE_CHECKING:
     from calendar_integration.models import CalendarSync as CalendarSyncType
 
 
+class RecurringQuerySetMixin:
+    """
+    Mixin for querysets that provides recurring functionality.
+    Should be used with querysets that inherit from BaseOrganizationModelQuerySet.
+    """
+
+    def annotate_recurring_occurrences_on_date_range(
+        self, start_date: datetime.datetime, end_date: datetime.datetime, max_occurrences=10000
+    ):
+        """
+        Annotate objects with their recurring occurrences in the date range.
+        This method should be overridden by concrete querysets to use their specific database function.
+        """
+        raise NotImplementedError(
+            "Concrete querysets must implement annotate_recurring_occurrences_on_date_range"
+        )
+
+    def filter_master_recurring_objects(self):
+        """Filter to get only master recurring objects (not instances)."""
+        return self.filter(parent_recurring_object__isnull=True)
+
+    def filter_recurring_instances(self):
+        """Filter to get only recurring instances (not masters)."""
+        return self.filter(parent_recurring_object__isnull=False)
+
+    def filter_recurring_objects(self):
+        """Filter to get objects that have recurrence rules."""
+        return self.filter(recurrence_rule__isnull=False)
+
+    def filter_non_recurring_objects(self):
+        """Filter to get objects that don't have recurrence rules."""
+        return self.filter(recurrence_rule__isnull=True)
+
+
 class CalendarQuerySet(BaseOrganizationModelQuerySet):
     """
     Custom QuerySet for Calendar model to handle specific queries.
@@ -172,7 +206,7 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
         return self.filter(combined_query)
 
 
-class CalendarEventQuerySet(BaseOrganizationModelQuerySet):
+class CalendarEventQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin):
     """
     Custom QuerySet for CalendarEvent model to handle specific queries.
     """

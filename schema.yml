@@ -1951,11 +1951,11 @@ components:
           type: string
           writeOnly: true
           description: RRULE string for creating recurring events
-        parent_event_id:
+        parent_recurring_object_id:
           type: integer
           writeOnly: true
           description: ID of parent event for recurring instances
-        parent_event:
+        parent_recurring_object:
           allOf:
           - $ref: '#/components/schemas/ParentEvent'
           readOnly: true
@@ -1969,14 +1969,14 @@ components:
           readOnly: true
         is_recurring_exception:
           type: boolean
-          description: True if this event is an exception to the recurrence rule (modified
-            occurrence)
+          description: True if this object is an exception to the recurrence rule
+            (modified occurrence)
         recurrence_id:
           type: string
           format: date-time
           nullable: true
-          description: For recurring event instances, this identifies which occurrence
-            this is
+          description: For recurring instances, this identifies which occurrence this
+            is
         google_calendar_service_account:
           type: integer
           writeOnly: true
@@ -1993,7 +1993,7 @@ components:
       - is_recurring
       - is_recurring_instance
       - modified
-      - parent_event
+      - parent_recurring_object
       - resource_allocations
       - start_time
       - title
@@ -2349,11 +2349,11 @@ components:
           type: string
           writeOnly: true
           description: RRULE string for creating recurring events
-        parent_event_id:
+        parent_recurring_object_id:
           type: integer
           writeOnly: true
           description: ID of parent event for recurring instances
-        parent_event:
+        parent_recurring_object:
           allOf:
           - $ref: '#/components/schemas/ParentEvent'
           readOnly: true
@@ -2367,14 +2367,14 @@ components:
           readOnly: true
         is_recurring_exception:
           type: boolean
-          description: True if this event is an exception to the recurrence rule (modified
-            occurrence)
+          description: True if this object is an exception to the recurrence rule
+            (modified occurrence)
         recurrence_id:
           type: string
           format: date-time
           nullable: true
-          description: For recurring event instances, this identifies which occurrence
-            this is
+          description: For recurring instances, this identifies which occurrence this
+            is
         google_calendar_service_account:
           type: integer
           writeOnly: true

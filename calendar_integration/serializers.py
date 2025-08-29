@@ -567,7 +567,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
     rrule_string = serializers.CharField(
         write_only=True, required=False, help_text="RRULE string for creating recurring events"
     )
-    parent_event_id = serializers.IntegerField(
+    parent_recurring_object_id = serializers.IntegerField(
         write_only=True, required=False, help_text="ID of parent event for recurring instances"
     )
     is_recurring_instance = serializers.SerializerMethodField(
@@ -576,7 +576,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
     is_recurring = serializers.SerializerMethodField(
         read_only=True, help_text="True if this is a recurring event"
     )
-    parent_event = ParentEventSerializer(read_only=True)
+    parent_recurring_object = ParentEventSerializer(read_only=True)
 
     class Meta:
         model = CalendarEvent
@@ -597,8 +597,8 @@ class CalendarEventSerializer(VirtualModelSerializer):
             # Recurrence fields
             "recurrence_rule",
             "rrule_string",
-            "parent_event_id",
-            "parent_event",
+            "parent_recurring_object_id",
+            "parent_recurring_object",
             "is_recurring_instance",
             "is_recurring",
             "is_recurring_exception",
@@ -710,14 +710,14 @@ class CalendarEventSerializer(VirtualModelSerializer):
         # Validate recurrence fields
         recurrence_rule_data = attrs.get("recurrence_rule")
         rrule_string = attrs.get("rrule_string")
-        parent_event_id = attrs.get("parent_event_id")
+        parent_recurring_object_id = attrs.get("parent_recurring_object_id")
 
         if recurrence_rule_data and rrule_string:
             raise serializers.ValidationError(
                 "Cannot specify both recurrence_rule and rrule_string. Use one or the other."
             )
 
-        if (recurrence_rule_data or rrule_string) and parent_event_id:
+        if (recurrence_rule_data or rrule_string) and parent_recurring_object_id:
             raise serializers.ValidationError(
                 "Cannot specify recurrence rule for event instances. Recurrence rules are only for master events."
             )
@@ -763,7 +763,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
         # Handle recurrence fields
         recurrence_rule_data = validated_data.pop("recurrence_rule", None)
         rrule_string = validated_data.pop("rrule_string", None)
-        parent_event_id = validated_data.pop("parent_event_id", None)
+        parent_recurring_object_id = validated_data.pop("parent_recurring_object_id", None)
 
         # Prepare recurrence rule for calendar service
         final_rrule_string = None
@@ -800,7 +800,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 ],
                 # Recurrence fields
                 recurrence_rule=final_rrule_string,
-                parent_event_id=parent_event_id,
+                parent_event_id=parent_recurring_object_id,
                 is_recurring_exception=validated_data.get("is_recurring_exception", False),
             ),
         )
@@ -853,7 +853,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
         recurrence_rule_instance = validated_data.pop("recurrence_rule_id", None)
         recurrence_rule_data = validated_data.pop("recurrence_rule", None)
         rrule_string = validated_data.pop("rrule_string", None)
-        parent_event_id = validated_data.pop("parent_event_id", None)
+        parent_recurring_object_id = validated_data.pop("parent_recurring_object_id", None)
 
         # Prepare recurrence rule for calendar service
         final_rrule_string = None
@@ -895,8 +895,12 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 ],
                 # Recurrence fields
                 recurrence_rule=final_rrule_string,
-                parent_event_id=parent_event_id
-                or (instance.parent_event.id if instance.parent_event else None),
+                parent_event_id=parent_recurring_object_id
+                or (
+                    instance.parent_recurring_object.id
+                    if instance.parent_recurring_object
+                    else None
+                ),
                 is_recurring_exception=validated_data.get(
                     "is_recurring_exception", instance.is_recurring_exception
                 ),

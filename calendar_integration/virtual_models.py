@@ -73,7 +73,7 @@ class CalendarEventVirtualModel(v.VirtualModel):
     attendances = EventAttendanceVirtualModel(many=True)
     resource_allocations = ResourceAllocationVirtualModel(many=True)
     recurrence_rule = RecurrenceRuleVirtualModel()
-    parent_event = NestedCalendarEventVirtualModel()
+    parent_recurring_object = NestedCalendarEventVirtualModel()
 
     class Meta:
         model = CalendarEvent

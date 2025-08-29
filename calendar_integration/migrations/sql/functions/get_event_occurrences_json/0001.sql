@@ -31,7 +31,7 @@ BEGIN
                 'is_exception', occurrence_row.is_exception,
                 'exception_type', occurrence_row.exception_type,
                 'modified_event_id', occurrence_row.modified_event_id,
-                'parent_event_id', p_event_id
+                'parent_recurring_object_id', p_event_id
             )::TEXT
         );
     END LOOP;

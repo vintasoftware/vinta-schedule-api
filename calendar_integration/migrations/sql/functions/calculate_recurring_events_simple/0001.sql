@@ -11,7 +11,7 @@ RETURNS TABLE(
     is_exception BOOLEAN,
     exception_type TEXT,
     modified_event_id BIGINT,
-    parent_event_id BIGINT
+    parent_recurring_object_id BIGINT
 ) AS $$
 BEGIN
     RETURN QUERY
@@ -42,7 +42,7 @@ BEGIN
             ed.count,
             ed.until,
             ed.by_weekday,
-            ed.id as parent_event_id,
+            ed.id as parent_recurring_object_id,
             1 as occurrence_num
         FROM event_data ed
         WHERE ed.frequency IS NOT NULL -- Only for recurring events
@@ -79,7 +79,7 @@ BEGIN
             og.count,
             og.until,
             og.by_weekday,
-            COALESCE(og.parent_event_id, NULL) AS parent_event_id,
+            COALESCE(og.parent_recurring_object_id, NULL) AS parent_recurring_object_id,
             og.occurrence_num + 1
         FROM occurrence_generator og
         WHERE 
@@ -93,13 +93,13 @@ BEGIN
         SELECT 
             occurrence_start,
             occurrence_end,
-            parent_event_id
+            parent_recurring_object_id
         FROM occurrence_generator
         WHERE occurrence_start >= p_start_date 
         AND occurrence_start <= p_end_date
         AND NOT EXISTS (
             SELECT 1 FROM calendar_integration_recurrenceexception re
-            WHERE re.parent_event_fk_id = p_event_id 
+            WHERE re.parent_recurring_object_fk_id = p_event_id 
             AND re.exception_date = occurrence_start
         )
     )
@@ -111,7 +111,7 @@ BEGIN
         FALSE as is_exception,
         NULL::TEXT as exception_type,
         NULL::INTEGER as modified_event_id,
-        ed.id as parent_event_id
+        ed.id as parent_recurring_object_id
     FROM filtered_occurrences fo
     
     UNION ALL
@@ -123,7 +123,7 @@ BEGIN
         FALSE as is_exception,
         NULL::TEXT as exception_type,
         NULL::INTEGER as modified_event_id,
-        ed.id as parent_event_id
+        ed.id as parent_recurring_object_id
     FROM event_data ed
     WHERE ed.frequency IS NULL 
     AND ed.start_time >= p_start_date 
@@ -138,10 +138,10 @@ BEGIN
         TRUE as is_exception,
         'modified' as exception_type,
         me.id as modified_event_id,
-        re.parent_event_fk_id as parent_event_id
+        re.parent_recurring_object_fk_id as parent_recurring_object_id
     FROM calendar_integration_recurrenceexception re
     JOIN calendar_integration_calendarevent me ON re.modified_event_fk_id = me.id
-    WHERE re.parent_event_fk_id = p_event_id
+    WHERE re.parent_recurring_object_fk_id = p_event_id
     AND NOT re.is_cancelled
     AND me.start_time >= p_start_date 
     AND me.start_time <= p_end_date

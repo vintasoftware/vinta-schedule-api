@@ -929,7 +929,7 @@ def test_create_recurring_exception_modified(
 
     # Assertions for modified instance
     assert modified_event is not None
-    assert modified_event.parent_event == parent_event
+    assert modified_event.parent_recurring_object == parent_event
     assert modified_event.is_recurring_exception is True
     assert modified_event.title == modified_title
     assert modified_event.description == modified_description
@@ -2891,7 +2891,7 @@ def test_process_new_event_recurring_instance_with_parent(
 
     assert len(changes.events_to_create) == 1
     inst = changes.events_to_create[0]
-    assert inst.parent_event == parent_event
+    assert inst.parent_recurring_object == parent_event
     assert inst.is_recurring_exception is True
     assert inst.recurrence_id == instance_event_data.start_time
     assert "instance_rec_123" in changes.matched_event_ids
