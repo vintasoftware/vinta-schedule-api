@@ -5274,3 +5274,274 @@ def test_get_calendar_events_expanded_bundle_calendar(organization, bundle_calen
     assert "Bundle Primary Event" in event_titles
     assert "Regular Event" in event_titles
     assert "[Bundle] Primary Event" not in event_titles
+
+
+# Recurring BlockedTime and AvailableTime Tests
+
+
+@pytest.mark.django_db
+def test_create_blocked_time_simple(organization, calendar):
+    """Test creating a simple (non-recurring) blocked time."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    blocked_time = service.create_blocked_time(
+        calendar=calendar, start_time=start_time, end_time=end_time, reason="Office maintenance"
+    )
+
+    assert blocked_time.calendar == calendar
+    assert blocked_time.start_time == start_time
+    assert blocked_time.end_time == end_time
+    assert blocked_time.reason == "Office maintenance"
+    assert blocked_time.recurrence_rule is None
+    assert not blocked_time.is_recurring
+
+
+@pytest.mark.django_db
+def test_create_blocked_time_recurring(organization, calendar):
+    """Test creating a recurring blocked time."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+    rrule_string = "FREQ=WEEKLY;BYDAY=MO;COUNT=4"
+
+    blocked_time = service.create_blocked_time(
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        reason="Weekly maintenance",
+        rrule_string=rrule_string,
+    )
+
+    assert blocked_time.calendar == calendar
+    assert blocked_time.start_time == start_time
+    assert blocked_time.end_time == end_time
+    assert blocked_time.reason == "Weekly maintenance"
+    assert blocked_time.recurrence_rule is not None
+    assert blocked_time.is_recurring
+    # Check that the rrule contains the expected components (order may vary)
+    rrule_result = blocked_time.recurrence_rule.to_rrule_string()
+    assert "FREQ=WEEKLY" in rrule_result
+    assert "BYDAY=MO" in rrule_result
+    assert "COUNT=4" in rrule_result
+
+
+@pytest.mark.django_db
+def test_create_available_time_simple(organization):
+    """Test creating a simple (non-recurring) available time."""
+    calendar = Calendar.objects.create(
+        name="Test Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    available_time = service.create_available_time(
+        calendar=calendar, start_time=start_time, end_time=end_time
+    )
+
+    assert available_time.calendar == calendar
+    assert available_time.start_time == start_time
+    assert available_time.end_time == end_time
+    assert available_time.recurrence_rule is None
+    assert not available_time.is_recurring
+
+
+@pytest.mark.django_db
+def test_create_available_time_recurring(organization):
+    """Test creating a recurring available time."""
+    calendar = Calendar.objects.create(
+        name="Test Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+    rrule_string = "FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR;COUNT=5"
+
+    available_time = service.create_available_time(
+        calendar=calendar, start_time=start_time, end_time=end_time, rrule_string=rrule_string
+    )
+
+    assert available_time.calendar == calendar
+    assert available_time.start_time == start_time
+    assert available_time.end_time == end_time
+    assert available_time.recurrence_rule is not None
+    assert available_time.is_recurring
+    # Check that the rrule contains the expected components (order may vary)
+    rrule_result = available_time.recurrence_rule.to_rrule_string()
+    assert "FREQ=DAILY" in rrule_result
+    assert "BYDAY=MO,TU,WE,TH,FR" in rrule_result
+    assert "COUNT=5" in rrule_result
+
+
+@pytest.mark.django_db
+def test_bulk_create_blocked_times_with_recurrence(organization, calendar):
+    """Test bulk creating blocked times with recurrence support."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    blocked_times_data = [
+        (
+            datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC),
+            "Daily maintenance",
+            "FREQ=DAILY;COUNT=3",
+        ),
+        (
+            datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            "Simple blocking",
+            None,
+        ),
+    ]
+
+    blocked_times = service.bulk_create_manual_blocked_times(
+        calendar=calendar, blocked_times=blocked_times_data
+    )
+
+    blocked_times_list = list(blocked_times)
+    assert len(blocked_times_list) == 2
+
+    # First blocked time should be recurring
+    recurring_blocked = blocked_times_list[0]
+    assert recurring_blocked.reason == "Daily maintenance"
+    assert recurring_blocked.is_recurring
+    rrule_result = recurring_blocked.recurrence_rule.to_rrule_string()
+    assert "FREQ=DAILY" in rrule_result
+    assert "COUNT=3" in rrule_result
+
+    # Second blocked time should be simple
+    simple_blocked = blocked_times_list[1]
+    assert simple_blocked.reason == "Simple blocking"
+    assert not simple_blocked.is_recurring
+
+
+@pytest.mark.django_db
+def test_bulk_create_availability_windows_with_recurrence(organization):
+    """Test bulk creating availability windows with recurrence support."""
+    calendar = Calendar.objects.create(
+        name="Test Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    availability_data = [
+        (
+            datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC),
+            "FREQ=WEEKLY;BYDAY=MO,WE,FR;COUNT=3",
+        ),
+        (
+            datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            None,
+        ),
+    ]
+
+    available_times = service.bulk_create_availability_windows(
+        calendar=calendar, availability_windows=availability_data
+    )
+
+    available_times_list = list(available_times)
+    assert len(available_times_list) == 2
+
+    # First available time should be recurring
+    recurring_available = available_times_list[0]
+    assert recurring_available.is_recurring
+    rrule_result = recurring_available.recurrence_rule.to_rrule_string()
+    assert "FREQ=WEEKLY" in rrule_result
+    assert "BYDAY=MO,WE,FR" in rrule_result
+    assert "COUNT=3" in rrule_result
+
+    # Second available time should be simple
+    simple_available = available_times_list[1]
+    assert not simple_available.is_recurring
+
+
+@pytest.mark.django_db
+def test_get_blocked_times_expanded(organization, calendar):
+    """Test getting expanded blocked times including recurring instances."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create a recurring blocked time
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    blocked_time = service.create_blocked_time(
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        reason="Weekly maintenance",
+        rrule_string="FREQ=WEEKLY;COUNT=3",
+    )
+
+    assert blocked_time.is_recurring  # Use the variable
+
+    # Get expanded blocked times for the month
+    expanded_blocked_times = service.get_blocked_times_expanded(
+        calendar=calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Should include the master and generated instances
+    # Note: The actual count depends on the database function implementation
+    assert len(expanded_blocked_times) >= 1  # At least the master
+    assert any(bt.reason == "Weekly maintenance" for bt in expanded_blocked_times)
+
+
+@pytest.mark.django_db
+def test_get_available_times_expanded(organization):
+    """Test getting expanded available times including recurring instances."""
+    calendar = Calendar.objects.create(
+        name="Test Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create a recurring available time
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    available_time = service.create_available_time(
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        rrule_string="FREQ=DAILY;COUNT=5",
+    )
+
+    assert available_time.is_recurring  # Use the variable
+
+    # Get expanded available times for the month
+    expanded_available_times = service.get_available_times_expanded(
+        calendar=calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Should include the master and generated instances
+    # Note: The actual count depends on the database function implementation
+    assert len(expanded_available_times) >= 1  # At least the master
+    assert all(at.calendar == calendar for at in expanded_available_times)

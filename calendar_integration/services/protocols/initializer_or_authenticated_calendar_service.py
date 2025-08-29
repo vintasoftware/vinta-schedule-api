@@ -11,6 +11,7 @@ from calendar_integration.models import (
     CalendarEvent,
     GoogleCalendarServiceAccount,
     Organization,
+    RecurrenceRule,
 )
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
@@ -122,4 +123,23 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
     def _collect_bundle_attendees(
         self, child_calendars: list[Calendar], event_data: "CalendarEventInputData"
     ) -> list["EventAttendanceInputData"]:
+        ...
+
+    def _create_recurrence_rule_if_needed(self, rrule_string: str | None) -> RecurrenceRule | None:
+        ...
+
+    def get_blocked_times_expanded(
+        self,
+        calendar: Calendar,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+    ) -> list[BlockedTime]:
+        ...
+
+    def get_available_times_expanded(
+        self,
+        calendar: Calendar,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+    ) -> list[AvailableTime]:
         ...

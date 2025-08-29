@@ -1,5 +1,4 @@
 import datetime
-import json
 from typing import TYPE_CHECKING, Self
 
 from django.conf import settings
@@ -960,24 +959,24 @@ class BlockedTime(OrganizationModel, RecurringMixin):
         self, start_date: datetime.datetime, end_date: datetime.datetime
     ) -> list["BlockedTime"]:
         """Get generated occurrences using the BlockedTime database function."""
-        from .database_functions import GetBlockedTimeOccurrencesJSON
-
-        # Use the database function to get occurrences
-        blocked_times_with_occurrences = BlockedTime.objects.filter(id=self.id).annotate(
-            occurrences=GetBlockedTimeOccurrencesJSON("id", start_date, end_date, 10000)
+        blocked_times_with_occurrences = (
+            BlockedTime.objects.annotate_recurring_occurrences_on_date_range(
+                start_date,
+                end_date,
+                max_occurrences=1000,
+            ).filter(id=self.id, organization=self.organization)
         )
 
         if not blocked_times_with_occurrences:
             return []
 
         blocked_time = blocked_times_with_occurrences.first()
-        if not blocked_time.occurrences:
+        if not blocked_time.recurring_occurrences:
             return []
 
         # Convert JSON occurrences to BlockedTime instances
         instances = []
-        for occurrence_json in blocked_time.occurrences:
-            occurrence = json.loads(occurrence_json)
+        for occurrence in blocked_time.recurring_occurrences:
             instance = self._create_recurring_instance(
                 start_time=datetime.datetime.fromisoformat(
                     occurrence["start_time"].replace("Z", "+00:00")
@@ -1109,24 +1108,25 @@ class AvailableTime(OrganizationModel, RecurringMixin):
         self, start_date: datetime.datetime, end_date: datetime.datetime
     ) -> list["AvailableTime"]:
         """Get generated occurrences using the AvailableTime database function."""
-        from .database_functions import GetAvailableTimeOccurrencesJSON
-
         # Use the database function to get occurrences
-        available_times_with_occurrences = AvailableTime.objects.filter(id=self.id).annotate(
-            occurrences=GetAvailableTimeOccurrencesJSON("id", start_date, end_date, 10000)
+        available_times_with_occurrences = (
+            AvailableTime.objects.annotate_recurring_occurrences_on_date_range(
+                start_date,
+                end_date,
+                max_occurrences=1000,
+            ).filter(id=self.id, organization=self.organization)
         )
 
         if not available_times_with_occurrences:
             return []
 
         available_time = available_times_with_occurrences.first()
-        if not available_time.occurrences:
+        if not available_time.recurring_occurrences:
             return []
 
         # Convert JSON occurrences to AvailableTime instances
         instances = []
-        for occurrence_json in available_time.occurrences:
-            occurrence = json.loads(occurrence_json)
+        for occurrence in available_time.recurring_occurrences:
             instance = self._create_recurring_instance(
                 start_time=datetime.datetime.fromisoformat(
                     occurrence["start_time"].replace("Z", "+00:00")

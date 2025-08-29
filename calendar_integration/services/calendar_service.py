@@ -1415,6 +1415,63 @@ class CalendarService(BaseCalendarService):
 
         return new_event
 
+    def _create_recurrence_rule_if_needed(self, rrule_string: str | None) -> RecurrenceRule | None:
+        """Helper method to create recurrence rule from RRULE string if provided."""
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        if not rrule_string:
+            return None
+
+        recurrence_rule = RecurrenceRule.from_rrule_string(rrule_string, self.organization)
+        recurrence_rule.save()
+        return recurrence_rule
+
+    def _get_recurring_objects_expanded(
+        self,
+        model_class,
+        calendar: Calendar,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        calendar_filter_field: str = "calendar",
+    ):
+        """Generic method for getting expanded recurring objects."""
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        base_qs = model_class.objects.annotate_recurring_occurrences_on_date_range(
+            start_date, end_date
+        )
+
+        # Apply calendar filter
+        base_qs = base_qs.filter(**{calendar_filter_field: calendar})
+
+        # Get non-recurring objects within the date range
+        non_recurring_objects = base_qs.filter(
+            Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
+            recurrence_rule__isnull=True,  # Non-recurring only
+        )
+
+        # Get recurring master objects and generate their instances
+        recurring_objects = base_qs.filter(
+            recurrence_rule__isnull=False,  # Recurring only
+        ).filter(
+            Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start_date),
+            start_time__lte=end_date,
+        )
+
+        objects = list(non_recurring_objects)
+
+        for master_object in recurring_objects:
+            instances = master_object.get_occurrences_in_range(
+                start_date, end_date, include_self=False
+            )
+            objects.extend(instances)
+
+        # Sort by start time
+        objects.sort(key=lambda x: x.start_time)
+        return objects
+
     def request_calendar_sync(
         self,
         calendar: Calendar,
@@ -1987,12 +2044,13 @@ class CalendarService(BaseCalendarService):
             end_date=end_datetime,
         )
 
-        # Get blocked times that overlap with the time range
-        # Using overlap logic: blocked_time.start_time < end_datetime AND blocked_time.end_time > start_datetime
-        blocked_times = calendar.blocked_times.filter(
-            start_time__lt=end_datetime,
-            end_time__gt=start_datetime,
-        ).order_by("start_time")
+        # Get expanded blocked times (including recurring instances)
+        # Replace the current blocked_times query with:
+        blocked_times = self.get_blocked_times_expanded(
+            calendar=calendar,
+            start_date=start_datetime,
+            end_date=end_datetime,
+        )
 
         # If this calendar is part of any bundles, include bundle events
         bundle_calendars = Calendar.objects.filter(
@@ -2126,6 +2184,13 @@ class CalendarService(BaseCalendarService):
             raise
 
         if calendar.manage_available_windows:
+            # Replace the current query with:
+            available_times = self.get_available_times_expanded(
+                calendar=calendar,
+                start_date=start_datetime,
+                end_date=end_datetime,
+            )
+
             return [
                 AvailableTimeWindow(
                     start_time=available_time.start_time,
@@ -2133,11 +2198,7 @@ class CalendarService(BaseCalendarService):
                     id=available_time.id,
                     can_book_partially=False,
                 )
-                for available_time in AvailableTime.objects.filter(
-                    calendar=calendar,
-                    start_time__gte=start_datetime,
-                    end_time__lte=end_datetime,
-                )
+                for available_time in available_times
             ]
 
         unavailable_windows_sorted_by_start_datetime = self.get_unavailable_time_windows_in_range(
@@ -2183,17 +2244,17 @@ class CalendarService(BaseCalendarService):
         ]
 
     @transaction.atomic()
+    @transaction.atomic()
     def bulk_create_availability_windows(
         self,
         calendar: Calendar,
-        availability_windows: Iterable[tuple[datetime.datetime, datetime.datetime]],
+        availability_windows: Iterable[tuple[datetime.datetime, datetime.datetime, str | None]],
     ) -> Iterable[AvailableTime]:
         """
-        Create a new availability window for a calendar.
-        :param calendar: The calendar to create the availability window for.
-        :param start_time: Start time of the availability window.
-        :param end_time: End time of the availability window.
-        :return: Created AvailableTime instance.
+        Create availability windows for a calendar (with optional recurrence support).
+        :param calendar: The calendar to create the availability windows for.
+        :param availability_windows: Iterable of tuples containing (start_time, end_time, rrule_string).
+        :return: List of created AvailableTime instances.
         """
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
@@ -2201,42 +2262,106 @@ class CalendarService(BaseCalendarService):
         if not calendar.manage_available_windows:
             raise ValueError("This calendar does not manage available windows.")
 
-        return AvailableTime.objects.bulk_create(
-            [
-                AvailableTime(
-                    calendar=calendar,
-                    start_time=start_time,
-                    end_time=end_time,
-                    organization_id=calendar.organization_id,
-                )
-                for start_time, end_time in availability_windows
-            ]
-        )
+        availability_windows_to_create = []
+
+        for start_time, end_time, rrule_string in availability_windows:
+            # Create recurrence rule if provided
+            recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
+
+            available_time = AvailableTime(
+                calendar=calendar,
+                start_time=start_time,
+                end_time=end_time,
+                organization_id=calendar.organization_id,
+                recurrence_rule=recurrence_rule,
+            )
+            availability_windows_to_create.append(available_time)
+
+        return AvailableTime.objects.bulk_create(availability_windows_to_create)
 
     @transaction.atomic()
     def bulk_create_manual_blocked_times(
         self,
         calendar: Calendar,
-        blocked_times: Iterable[tuple[datetime.datetime, datetime.datetime, str]],
+        blocked_times: Iterable[tuple[datetime.datetime, datetime.datetime, str, str | None]],
     ) -> Iterable[BlockedTime]:
         """
-        Create new blocked times for a calendar.
+        Create new blocked times for a calendar (with optional recurrence support).
         :param calendar: The calendar to create the blocked times for.
-        :param blocked_times: Iterable of tuples containing start time, end time, and reason.
+        :param blocked_times: Iterable of tuples containing (start_time, end_time, reason, rrule_string).
         :return: List of created BlockedTime instances.
         """
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
 
-        return BlockedTime.objects.bulk_create(
-            [
-                BlockedTime(
-                    calendar=calendar,
-                    start_time=start_time,
-                    end_time=end_time,
-                    reason=reason,
-                    organization_id=calendar.organization_id,
-                )
-                for start_time, end_time, reason in blocked_times
-            ]
+        blocked_times_to_create = []
+
+        for i, (start_time, end_time, reason, rrule_string) in enumerate(blocked_times):
+            # Create recurrence rule if provided
+            recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
+
+            # Generate unique external_id to avoid constraint violations
+            external_id = f"manual-{start_time.isoformat()}-{i}"
+
+            blocked_time = BlockedTime(
+                calendar=calendar,
+                start_time=start_time,
+                end_time=end_time,
+                reason=reason,
+                external_id=external_id,
+                organization_id=calendar.organization_id,
+                recurrence_rule=recurrence_rule,
+            )
+            blocked_times_to_create.append(blocked_time)
+
+        return BlockedTime.objects.bulk_create(blocked_times_to_create)
+
+    # Convenience methods for single object creation
+    @transaction.atomic()
+    def create_blocked_time(
+        self,
+        calendar: Calendar,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        reason: str = "",
+        rrule_string: str | None = None,
+    ) -> BlockedTime:
+        """Create a single blocked time (optionally recurring)."""
+        result = self.bulk_create_manual_blocked_times(
+            calendar=calendar, blocked_times=[(start_time, end_time, reason, rrule_string)]
         )
+        return next(iter(result))
+
+    @transaction.atomic()
+    def create_available_time(
+        self,
+        calendar: Calendar,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        rrule_string: str | None = None,
+    ) -> AvailableTime:
+        """Create a single available time (optionally recurring)."""
+        result = self.bulk_create_availability_windows(
+            calendar=calendar, availability_windows=[(start_time, end_time, rrule_string)]
+        )
+        return next(iter(result))
+
+    # Expanded Retrieval Methods for Recurring Objects
+
+    def get_blocked_times_expanded(
+        self,
+        calendar: Calendar,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+    ) -> list[BlockedTime]:
+        """Get all blocked times in a date range with recurring blocked times expanded to instances."""
+        return self._get_recurring_objects_expanded(BlockedTime, calendar, start_date, end_date)
+
+    def get_available_times_expanded(
+        self,
+        calendar: Calendar,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+    ) -> list[AvailableTime]:
+        """Get all available times in a date range with recurring available times expanded to instances."""
+        return self._get_recurring_objects_expanded(AvailableTime, calendar, start_date, end_date)
