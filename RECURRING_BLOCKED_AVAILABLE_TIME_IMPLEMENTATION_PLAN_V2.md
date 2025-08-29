@@ -532,7 +532,7 @@ class AvailableTime(OrganizationModel, RecurringMixin):
         )
 ```
 
-### Phase 5: Update Managers and QuerySets
+### Phase 4: Update Managers and QuerySets
 
 #### 4.1 Create Specific QuerySets Using Mixin
 
@@ -621,6 +621,10 @@ class AvailableTime(OrganizationModel, RecurringMixin):
     # ... fields ...
     objects: AvailableTimeManager = AvailableTimeManager()
 ```
+
+#### 4.4 Test the annotations in the new querysets
+
+Create tests to cover all methods of the newly introduced querysets in `calendar_integration/tests/test_querysets.py`
 
 ### Phase 5: Service Layer with Generic Approach
 
@@ -833,7 +837,7 @@ class CalendarService(BaseCalendarService):
         )
 ```
 
-### Phase 7: Input Data Classes (Simplified)
+### Phase 6: Input Data Classes (Simplified)
 
 #### 6.1 Create Generic Input Data Classes
 
@@ -864,7 +868,7 @@ class AvailableTimeInputData(RecurringObjectInputData):
     calendar_id: int
 ```
 
-### Phase 8: Update Existing Methods
+### Phase 7: Update Existing Methods
 
 #### 7.1 Update get_unavailable_time_windows_in_range
 
@@ -920,9 +924,9 @@ def get_availability_windows_in_range(
     # ... rest of the method remains the same ...
 ```
 
-### Phase 9: Migration Strategy
+### Phase 8: Migration Strategy
 
-#### 9.1 Database Migration Order
+#### 8.1 Database Migration Order
 
 **⚠️ IMPORTANT: Follow this exact order to ensure test stability and minimize downtime:**
 
@@ -938,7 +942,7 @@ def get_availability_windows_in_range(
 6. **Migration 6**: Create `calculate_recurring_available_times` database function
 7. **Migration 7**: Create `get_available_time_occurrences_json` database function
 
-#### 9.2 Data Migration (if needed)
+#### 8.2 Data Migration (if needed)
 
 If we need to rename the `CalendarEvent.parent_event` field to `parent_recurring_object`:
 
@@ -961,7 +965,7 @@ class Migration(migrations.Migration):
     ]
 ```
 
-### Phase 10: Testing (Enhanced)
+### Phase 9: Testing (Enhanced)
 
 #### 9.1 Test Generic Recurring Functionality
 
@@ -1000,7 +1004,7 @@ Test the generic service methods work with different model types.
 
 Add more tests to the availability/unavailability methods of the calendar service to cover recurring BlockedTimes and AvailableTimes
 
-### Phase 11: REST API Endpoints
+### Phase 10: REST API Endpoints
 
 #### 10.1 Create Serializers for BlockedTime and AvailableTime
 
@@ -1985,7 +1989,7 @@ class AvailableTimePermission(BasePermission):
             return False
 ```
 
-### Phase 12: API Testing
+### Phase 11: API Testing
 
 #### 11.1 Create API Tests for BlockedTime
 
@@ -2109,41 +2113,3 @@ This abstract mixin approach provides a much more maintainable and extensible so
 
 The key improvement is that recurring logic is implemented once in the `RecurringMixin` and then specialized by each concrete model, rather than duplicating similar code across multiple models.
 
-## Implementation Status
-
-✅ **Phase 1: RecurringMixin and Patterns (Complete)**
-- Created abstract `RecurringMixin` model with recurring fields
-- Implemented `RecurringQuerySetMixin` for queryset method chaining  
-- Implemented `RecurringManagerMixin` for manager delegation
-- All querysets and managers properly inherit mixins
-
-✅ **Phase 2: Database Functions (Complete)**
-- Created `calculate_recurring_blocked_times` PostgreSQL function
-- Created `calculate_recurring_available_times` PostgreSQL function
-- Created `get_blocked_time_occurrences_json` PostgreSQL function
-- Created `get_available_time_occurrences_json` PostgreSQL function
-- Added Django ORM database function classes: `GetBlockedTimeOccurrencesJSON`, `GetAvailableTimeOccurrencesJSON`
-- Created migration managers for all new functions
-- Applied migration `0006_add_recurring_blocked_available_times_functions`
-
-✅ **Phase 3: CalendarEvent Migration (Complete - Done Manually)**
-- CalendarEvent model successfully migrated to inherit from `RecurringMixin`
-- All existing tests passing
-- Proper related names configured to avoid conflicts
-
-✅ **Phase 4: BlockedTime and AvailableTime Models (Complete)**
-- Updated `BlockedTime` to inherit from `RecurringMixin`
-- Updated `AvailableTime` to inherit from `RecurringMixin`
-- Implemented required abstract methods: `get_occurrences_in_range`, `get_generated_occurrences_in_range`, `create_exception`, `_create_recurring_instance`
-- Created `BlockedTimeManager` and `AvailableTimeManager` with recurring functionality
-- Created `BlockedTimeQuerySet` and `AvailableTimeQuerySet` with database function integration
-- Added unique `related_name` arguments to prevent field conflicts
-- Applied migration `0007_availabletime_is_recurring_exception_and_more`
-- System check passes with 0 issues
-
-## Next Steps
-
-1. **Testing**: Write comprehensive tests for recurring BlockedTime and AvailableTime functionality
-2. **Integration**: Update services and views to use the new recurring functionality
-3. **Documentation**: Update API documentation to reflect new recurring capabilities
-4. **Performance**: Monitor and optimize database function performance with real data
