@@ -1,6 +1,11 @@
 from common.types import RouteDict
 
-from .views import CalendarEventViewSet, CalendarViewSet
+from .views import (
+    AvailableTimeViewSet,
+    BlockedTimeViewSet,
+    CalendarEventViewSet,
+    CalendarViewSet,
+)
 
 
 routes: list[RouteDict] = [
@@ -13,5 +18,15 @@ routes: list[RouteDict] = [
         "regex": r"calendar",
         "viewset": CalendarViewSet,
         "basename": "Calendars",
+    },
+    {
+        "regex": r"blocked-times",
+        "viewset": BlockedTimeViewSet,
+        "basename": "BlockedTimes",
+    },
+    {
+        "regex": r"available-times",
+        "viewset": AvailableTimeViewSet,
+        "basename": "AvailableTimes",
     },
 ]

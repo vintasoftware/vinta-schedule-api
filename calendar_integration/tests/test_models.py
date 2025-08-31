@@ -6,7 +6,7 @@ import pytest
 from model_bakery import baker
 
 from calendar_integration.constants import RecurrenceFrequency, RecurrenceWeekday
-from calendar_integration.models import CalendarEvent, RecurrenceException, RecurrenceRule
+from calendar_integration.models import CalendarEvent, EventRecurrenceException, RecurrenceRule
 
 
 # Helpers
@@ -208,7 +208,7 @@ def test_calendar_event_get_occurrences_in_range_with_modified_exception():
         external_id="modified",
     )
     parent.create_exception(
-        exception_date=_dt(2025, 1, 2), is_cancelled=False, modified_event=modified
+        exception_date=_dt(2025, 1, 2), is_cancelled=False, modified_object=modified
     )
     occurrences = parent.get_occurrences_in_range(_dt(2025, 1, 1), _dt(2025, 1, 5))
     # Expect three occurrences: Jan1 (generated), Jan2 (modified), Jan3 (generated)
@@ -257,7 +257,7 @@ def test_calendar_event_create_exception_updates_existing():
         external_id="daily-mod",
     )
     exc2 = event.create_exception(
-        exception_date=_dt(2025, 1, 2), is_cancelled=False, modified_event=modified
+        exception_date=_dt(2025, 1, 2), is_cancelled=False, modified_object=modified
     )
     assert exc2.id == exc1.id  # updated, not new
     assert exc2.is_cancelled is False
@@ -849,7 +849,7 @@ def test_generate_instances_with_exceptions():
         end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
         recurrence_rule=rule,
     )
-    RecurrenceException.objects.create(
+    EventRecurrenceException.objects.create(
         organization=org,
         parent_event=event,
         exception_date=datetime.datetime(2025, 1, 3, 9, 0, tzinfo=datetime.UTC),
@@ -944,7 +944,7 @@ def test_get_next_occurrence_with_modified_exception_before_range():
         external_id="modified-jan-2",
     )
     event.create_exception(
-        exception_date=_dt(2025, 1, 2), is_cancelled=False, modified_event=modified
+        exception_date=_dt(2025, 1, 2), is_cancelled=False, modified_object=modified
     )
 
     # Search for next occurrence after Jan 2 - should find Jan 3
@@ -1123,7 +1123,7 @@ def test_get_next_occurrence_mixed_exceptions_before_range():
         external_id="modified-jan-2-mixed",
     )
     event.create_exception(
-        exception_date=_dt(2025, 1, 2), is_cancelled=False, modified_event=modified
+        exception_date=_dt(2025, 1, 2), is_cancelled=False, modified_object=modified
     )
 
     # Search for next occurrence after Jan 3

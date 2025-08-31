@@ -218,7 +218,7 @@ class Migration(migrations.Migration):
             },
         ),
         migrations.CreateModel(
-            name='RecurrenceException',
+            name='EventRecurrenceException',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('created', model_utils.fields.AutoCreatedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='created')),
@@ -317,5 +317,43 @@ class Migration(migrations.Migration):
         migrations.AlterUniqueTogether(
             name='calendar',
             unique_together={('external_id', 'provider', 'organization_id')},
+        ),
+        migrations.CreateModel(
+            name='AvailableTimeRecurrenceException',
+            fields=[
+                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                ('created', model_utils.fields.AutoCreatedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='created')),
+                ('modified', model_utils.fields.AutoLastModifiedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='modified')),
+                ('meta', models.JSONField(blank=True, default=dict, verbose_name='meta')),
+                ('exception_date', models.DateTimeField(help_text='The original start time of the occurrence being excepted')),
+                ('is_cancelled', models.BooleanField(default=False, help_text="True if this occurrence is cancelled, False if it's modified")),
+                ('modified_available_time', models.ForeignObject(editable=False, from_fields=['modified_available_time_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.CASCADE, related_name='exception_for', to='calendar_integration.availabletime', to_fields=['id', 'organization_id'])),
+                ('modified_available_time_fk', models.ForeignKey(blank=True, help_text='If the occurrence is modified (not cancelled), points to the modified event', null=True, on_delete=django.db.models.deletion.CASCADE, related_name='exception_for_fk_rel', to='calendar_integration.availabletime')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('parent_available_time', models.ForeignObject(editable=False, from_fields=['parent_available_time_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.CASCADE, related_name='recurrence_exceptions', to='calendar_integration.availabletime', to_fields=['id', 'organization_id'])),
+                ('parent_available_time_fk', models.ForeignKey(help_text='The recurring event this exception applies to', null=True, on_delete=django.db.models.deletion.CASCADE, related_name='recurrence_exceptions_fk_rel', to='calendar_integration.availabletime')),
+            ],
+            options={
+                'abstract': False,
+            },
+        ),
+        migrations.CreateModel(
+            name='BlockedTimeRecurrenceException',
+            fields=[
+                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                ('created', model_utils.fields.AutoCreatedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='created')),
+                ('modified', model_utils.fields.AutoLastModifiedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='modified')),
+                ('meta', models.JSONField(blank=True, default=dict, verbose_name='meta')),
+                ('exception_date', models.DateTimeField(help_text='The original start time of the occurrence being excepted')),
+                ('is_cancelled', models.BooleanField(default=False, help_text="True if this occurrence is cancelled, False if it's modified")),
+                ('modified_blocked_time', models.ForeignObject(editable=False, from_fields=['modified_blocked_time_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.CASCADE, related_name='exception_for', to='calendar_integration.blockedtime', to_fields=['id', 'organization_id'])),
+                ('modified_blocked_time_fk', models.ForeignKey(blank=True, help_text='If the occurrence is modified (not cancelled), points to the modified event', null=True, on_delete=django.db.models.deletion.CASCADE, related_name='exception_for_fk_rel', to='calendar_integration.blockedtime')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('parent_blocked_time', models.ForeignObject(editable=False, from_fields=['parent_blocked_time_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.CASCADE, related_name='recurrence_exceptions', to='calendar_integration.blockedtime', to_fields=['id', 'organization_id'])),
+                ('parent_blocked_time_fk', models.ForeignKey(help_text='The recurring event this exception applies to', null=True, on_delete=django.db.models.deletion.CASCADE, related_name='recurrence_exceptions_fk_rel', to='calendar_integration.blockedtime')),
+            ],
+            options={
+                'abstract': False,
+            },
         ),
     ]

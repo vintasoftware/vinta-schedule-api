@@ -1,6 +1,6 @@
 import datetime
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 
@@ -11,15 +11,16 @@ from rest_framework import serializers
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
     CalendarOwnership,
     EventAttendance,
     EventExternalAttendance,
+    EventRecurrenceException,
     ExternalAttendee,
     GoogleCalendarServiceAccount,
-    RecurrenceException,
     RecurrenceRule,
     ResourceAllocation,
 )
@@ -34,14 +35,15 @@ from calendar_integration.services.dataclasses import (
     UnavailableTimeWindow,
 )
 from calendar_integration.virtual_models import (
+    AvailableTimeVirtualModel,
     BlockedTimeVirtualModel,
     CalendarEventVirtualModel,
     CalendarOwnershipVirtualModel,
     CalendarVirtualModel,
     EventAttendanceVirtualModel,
     EventExternalAttendanceVirtualModel,
+    EventRecurrenceExceptionVirtualModel,
     ExternalAttendeeVirtualModel,
-    RecurrenceExceptionVirtualModel,
     RecurrenceRuleVirtualModel,
     ResourceAllocationVirtualModel,
 )
@@ -140,7 +142,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
                 and user.is_authenticated
                 and hasattr(user, "organization_membership")
                 and user.organization_membership
-                else Calendar.objects.none()
+                else Calendar.original_manager.none()
             ),
         )
         self.fields["primary_calendar"] = serializers.PrimaryKeyRelatedField(
@@ -152,7 +154,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
                 and user.is_authenticated
                 and hasattr(user, "organization_membership")
                 and user.organization_membership
-                else Calendar.objects.none()
+                else Calendar.original_manager.none()
             ),
             allow_null=True,
         )
@@ -195,7 +197,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
         )
 
 
-class RecurringExceptionSerializer(serializers.Serializer):
+class EventRecurringExceptionSerializer(serializers.Serializer):
     """Serializer for creating recurring event exceptions."""
 
     exception_date = serializers.DateField(
@@ -288,15 +290,9 @@ class RecurringExceptionSerializer(serializers.Serializer):
 
         # Convert date to datetime for the exception_date
         exception_date = self.validated_data["exception_date"]
-        exception_datetime = datetime.datetime.combine(
-            exception_date,
-            parent_event.start_time.time(),
-            tzinfo=parent_event.start_time.tzinfo,
-        )
-
-        self.instance = self.calendar_service.create_recurring_exception(
+        self.instance = self.calendar_service.create_recurring_event_exception(
             parent_event=parent_event,
-            exception_date=exception_datetime,
+            exception_date=exception_date,
             modified_title=self.validated_data.get("modified_title"),
             modified_description=self.validated_data.get("modified_description"),
             modified_start_time=self.validated_data.get("modified_start_time"),
@@ -396,7 +392,7 @@ class ResourceAllocationSerializer(VirtualModelSerializer):
                     calendar_type=CalendarType.RESOURCE,
                 )
                 if user and user.is_authenticated
-                else Calendar.objects.none()
+                else Calendar.original_manager.none()
             ),
         )
 
@@ -504,8 +500,8 @@ class RecurrenceRuleSerializer(VirtualModelSerializer):
 
 class RecurrenceExceptionSerializer(VirtualModelSerializer):
     class Meta:
-        model = RecurrenceException
-        virtual_model = RecurrenceExceptionVirtualModel
+        model = EventRecurrenceException
+        virtual_model = EventRecurrenceExceptionVirtualModel
         fields = (
             "id",
             "exception_date",
@@ -524,7 +520,7 @@ class RecurrenceExceptionSerializer(VirtualModelSerializer):
                     user.organization_membership.organization_id
                 ).all()
                 if user.is_authenticated
-                else CalendarEvent.objects.none()
+                else CalendarEvent.original_manager.none()
             ),
             required=False,
             allow_null=True,
@@ -535,7 +531,7 @@ class RecurrenceExceptionSerializer(VirtualModelSerializer):
                     user.organization_membership.organization_id
                 ).all()
                 if user.is_authenticated
-                else CalendarEvent.objects.none()
+                else CalendarEvent.original_manager.none()
             ),
             required=False,
             allow_null=True,
@@ -644,7 +640,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
                         user.organization_membership.organization_id
                     ).all()
                     if user and user.is_authenticated and user.organization_membership
-                    else RecurrenceRule.objects.none()
+                    else RecurrenceRule.original_manager.none()
                 ),
                 write_only=True,
             )
@@ -657,7 +653,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
                     user.organization_membership.organization_id
                 ).all()
                 if user and user.is_authenticated and user.organization_membership
-                else GoogleCalendarServiceAccount.objects.none()
+                else GoogleCalendarServiceAccount.original_manager.none()
             ),
             required=False,
             write_only=True,
@@ -668,7 +664,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
                     user.organization_membership.organization_id
                 ).all()
                 if user and user.is_authenticated and user.organization_membership
-                else Calendar.objects.none()
+                else Calendar.original_manager.none()
             ),
             required=False,
             write_only=True,
@@ -924,19 +920,425 @@ class CalendarEventSerializer(VirtualModelSerializer):
         return obj.is_recurring
 
 
+class SerializedParentBlockedTimeTypedDict(TypedDict):
+    id: int
+    reason: str | None
+
+
 class BlockedTimeSerializer(VirtualModelSerializer):
+    """Serializer for BlockedTime model with recurring support."""
+
+    recurrence_rule = RecurrenceRuleSerializer(
+        required=False,
+        help_text="Recurrence rule data for creating recurring blocked times",
+    )
+    rrule_string = serializers.CharField(
+        write_only=True,
+        required=False,
+        help_text="RRULE string for creating recurring blocked times",
+    )
+    is_recurring_instance = serializers.SerializerMethodField(
+        read_only=True, help_text="True if this is an instance of a recurring blocked time"
+    )
+    is_recurring = serializers.SerializerMethodField(
+        read_only=True, help_text="True if this is a recurring blocked time"
+    )
+    parent_blocked_time = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = BlockedTime
         virtual_model = BlockedTimeVirtualModel
         fields = (
             "id",
-            "calendar",
             "start_time",
             "end_time",
             "reason",
+            "recurrence_rule",
+            "rrule_string",
+            "external_id",
+            "is_recurring_instance",
+            "is_recurring",
+            "parent_blocked_time",
             "created",
             "modified",
         )
+        read_only_fields = (
+            "id",
+            "external_id",
+            "is_recurring_instance",
+            "is_recurring",
+            "parent_blocked_time",
+            "recurrence_id",
+            "is_recurring_exception",
+            "created",
+            "modified",
+        )
+        write_only_fields = ("recurrence_rule_id",)
+
+    @v.hints.no_deferred_fields()
+    def get_is_recurring(self, obj: BlockedTime) -> bool:
+        """Check if blocked time is recurring."""
+        return obj.is_recurring
+
+    @v.hints.no_deferred_fields()
+    def get_is_recurring_instance(self, obj: BlockedTime) -> bool:
+        """Check if blocked time is a recurring instance."""
+        return obj.is_recurring_instance
+
+    @v.hints.no_deferred_fields()
+    def get_parent_blocked_time(
+        self, obj: BlockedTime
+    ) -> SerializedParentBlockedTimeTypedDict | None:
+        """Get parent blocked time for instances."""
+        if obj.parent_recurring_object:
+            return {
+                "id": obj.parent_recurring_object.id,
+                "reason": obj.parent_recurring_object.reason,
+            }
+        return None
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        self.calendar_service = calendar_service
+        super().__init__(*args, **kwargs)
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+
+        if self.instance:
+            self.fields["recurrence_rule_id"] = serializers.PrimaryKeyRelatedField(
+                source="recurrence_rule_fk",
+                many=False,
+                required=False,
+                queryset=(
+                    RecurrenceRule.objects.filter_by_organization(
+                        user.organization_membership.organization_id
+                    ).all()
+                    if user and user.is_authenticated and user.organization_membership
+                    else RecurrenceRule.original_manager.none()
+                ),
+                write_only=True,
+            )
+
+        self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
+            queryset=(
+                Calendar.objects.filter_by_organization(
+                    organization_id=user.organization_membership.organization_id
+                )
+                if user
+                and user.is_authenticated
+                and hasattr(user, "organization_membership")
+                and user.organization_membership
+                else Calendar.original_manager.none()
+            ),
+            allow_null=True,
+        )
+
+    def create(self, validated_data: dict):
+        if not self.calendar_service:
+            raise ValueError(
+                "calendar_service is not defined, please configure your DI container correctly"
+            )
+
+        user: User | None = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError(
+                {
+                    "non_field_errors": [
+                        "Only authenticated users can create Blocked Times",
+                    ]
+                }
+            )
+
+        calendar = validated_data.pop("calendar")
+        self.calendar_service.initialize_without_provider(user.organization_membership.organization)
+
+        # Handle recurrence fields
+        recurrence_rule_data = validated_data.pop("recurrence_rule", None)
+        rrule_string = validated_data.pop("rrule_string", None)
+
+        # Prepare recurrence rule for calendar service
+        final_rrule_string = None
+        if recurrence_rule_data:
+            # Convert recurrence_rule_data to RRULE string
+            temp_rule = RecurrenceRule(organization=calendar.organization, **recurrence_rule_data)
+            final_rrule_string = temp_rule.to_rrule_string()
+        elif rrule_string:
+            final_rrule_string = rrule_string
+
+        return self.calendar_service.create_blocked_time(
+            calendar=calendar,
+            reason=cast(str, validated_data.get("reason", "")),
+            start_time=validated_data["start_time"],
+            end_time=validated_data["end_time"],
+            rrule_string=final_rrule_string,
+        )
+
+    def update(self, instance: BlockedTime, validated_data: dict) -> BlockedTime:
+        # Handle recurrence fields for updates
+        recurrence_rule_instance = validated_data.pop("recurrence_rule_id", None)
+        recurrence_rule_data = validated_data.pop("recurrence_rule", None)
+        rrule_string = validated_data.pop("rrule_string", None)
+
+        # Prepare recurrence rule
+        if recurrence_rule_instance:
+            instance.recurrence_rule = recurrence_rule_instance
+        elif recurrence_rule_data:
+            calendar = validated_data.get("calendar", instance.calendar)
+            temp_rule = RecurrenceRule(organization=calendar.organization, **recurrence_rule_data)
+            temp_rule.save()
+            instance.recurrence_rule = temp_rule
+        elif rrule_string:
+            # Parse rrule_string and create/update RecurrenceRule
+            calendar = validated_data.get("calendar", instance.calendar)
+            recurrence_rule = RecurrenceRule.from_rrule_string(rrule_string, calendar.organization)
+            recurrence_rule.save()
+            instance.recurrence_rule = recurrence_rule
+
+        # Update other fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        instance.save()
+        return instance
+
+    def validate(self, attrs):
+        """Validate blocked time data."""
+        if attrs.get("start_time") and attrs.get("end_time"):
+            if attrs["start_time"] >= attrs["end_time"]:
+                raise serializers.ValidationError("start_time must be before end_time")
+
+        # Validate recurrence fields
+        recurrence_rule_data = attrs.get("recurrence_rule")
+        rrule_string = attrs.get("rrule_string")
+        parent_blocked_time_id = attrs.get("parent_blocked_time_id")
+
+        if recurrence_rule_data and rrule_string:
+            raise serializers.ValidationError(
+                "Cannot specify both recurrence_rule and rrule_string. Use one or the other."
+            )
+
+        if (recurrence_rule_data or rrule_string) and parent_blocked_time_id:
+            raise serializers.ValidationError(
+                "Cannot specify recurrence rule for blocked time instances. Recurrence rules are only for master blocked times."
+            )
+
+        return attrs
+
+
+class SerializedParentAvailableTimeTypedDict(TypedDict):
+    id: int
+
+
+class AvailableTimeSerializer(VirtualModelSerializer):
+    """Serializer for AvailableTime model with recurring support."""
+
+    recurrence_rule = RecurrenceRuleSerializer(
+        required=False,
+        help_text="Recurrence rule data for creating recurring available times",
+    )
+    rrule_string = serializers.CharField(
+        write_only=True,
+        required=False,
+        help_text="RRULE string for creating recurring available times",
+    )
+    is_recurring_instance = serializers.SerializerMethodField(
+        read_only=True, help_text="True if this is an instance of a recurring available time"
+    )
+    is_recurring = serializers.SerializerMethodField(
+        read_only=True, help_text="True if this is a recurring available time"
+    )
+    parent_available_time = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = AvailableTime
+        virtual_model = AvailableTimeVirtualModel
+        fields = (
+            "id",
+            "start_time",
+            "end_time",
+            "recurrence_rule",
+            "rrule_string",
+            "is_recurring_instance",
+            "is_recurring",
+            "parent_available_time",
+            "recurrence_id",
+            "created",
+            "modified",
+        )
+        read_only_fields = (
+            "id",
+            "is_recurring_instance",
+            "is_recurring",
+            "parent_available_time",
+            "is_recurring_exception",
+            "recurrence_id",
+            "created",
+            "modified",
+        )
+        write_only_fields = ("recurrence_rule_id",)
+
+    @v.hints.no_deferred_fields()
+    def get_is_recurring(self, obj: AvailableTime) -> bool:
+        """Check if available time is recurring."""
+        return obj.is_recurring
+
+    @v.hints.no_deferred_fields()
+    def get_is_recurring_instance(self, obj: AvailableTime) -> bool:
+        """Check if available time is a recurring instance."""
+        return obj.is_recurring_instance
+
+    @v.hints.no_deferred_fields()
+    def get_parent_available_time(
+        self, obj: AvailableTime
+    ) -> SerializedParentAvailableTimeTypedDict | None:
+        """Get parent available time for instances."""
+        if obj.parent_recurring_object:
+            return {
+                "id": obj.parent_recurring_object.id,
+            }
+        return None
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        self.calendar_service = calendar_service
+        super().__init__(*args, **kwargs)
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+
+        if self.instance:
+            self.fields["recurrence_rule_id"] = serializers.PrimaryKeyRelatedField(
+                source="recurrence_rule_fk",
+                many=False,
+                required=False,
+                queryset=(
+                    RecurrenceRule.objects.filter_by_organization(
+                        user.organization_membership.organization_id
+                    ).all()
+                    if user and user.is_authenticated and user.organization_membership
+                    else RecurrenceRule.original_manager.none()
+                ),
+                write_only=True,
+            )
+
+        self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
+            queryset=(
+                Calendar.objects.filter_by_organization(
+                    organization_id=user.organization_membership.organization_id
+                )
+                if user
+                and user.is_authenticated
+                and hasattr(user, "organization_membership")
+                and user.organization_membership
+                else Calendar.original_manager.none()
+            ),
+            allow_null=True,
+        )
+
+    def create(self, validated_data: dict):
+        if not self.calendar_service:
+            raise ValueError(
+                "calendar_service is not defined, please configure your DI container correctly"
+            )
+
+        user: User | None = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError(
+                {
+                    "non_field_errors": [
+                        "Only authenticated users can create Available Times",
+                    ]
+                }
+            )
+
+        calendar = validated_data.pop("calendar")
+        self.calendar_service.initialize_without_provider(user.organization_membership.organization)
+
+        # Handle recurrence fields
+        recurrence_rule_data = validated_data.pop("recurrence_rule", None)
+        rrule_string = validated_data.pop("rrule_string", None)
+
+        # Prepare recurrence rule for calendar service
+        final_rrule_string = None
+        if recurrence_rule_data:
+            # Convert recurrence_rule_data to RRULE string
+            temp_rule = RecurrenceRule(organization=calendar.organization, **recurrence_rule_data)
+            final_rrule_string = temp_rule.to_rrule_string()
+        elif rrule_string:
+            final_rrule_string = rrule_string
+
+        return self.calendar_service.create_available_time(
+            calendar=calendar,
+            start_time=validated_data["start_time"],
+            end_time=validated_data["end_time"],
+            rrule_string=final_rrule_string,
+        )
+
+    def update(self, instance: AvailableTime, validated_data: dict) -> AvailableTime:
+        # Handle recurrence fields for updates
+        recurrence_rule_instance = validated_data.pop("recurrence_rule_id", None)
+        recurrence_rule_data = validated_data.pop("recurrence_rule", None)
+        rrule_string = validated_data.pop("rrule_string", None)
+
+        # Prepare recurrence rule
+        if recurrence_rule_instance:
+            instance.recurrence_rule = recurrence_rule_instance
+        elif recurrence_rule_data:
+            calendar = validated_data.get("calendar", instance.calendar)
+            temp_rule = RecurrenceRule(organization=calendar.organization, **recurrence_rule_data)
+            temp_rule.save()
+            instance.recurrence_rule = temp_rule
+        elif rrule_string:
+            # Parse rrule_string and create/update RecurrenceRule
+            calendar = validated_data.get("calendar", instance.calendar)
+            recurrence_rule = RecurrenceRule.from_rrule_string(rrule_string, calendar.organization)
+            recurrence_rule.save()
+            instance.recurrence_rule = recurrence_rule
+
+        # Update other fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        instance.save()
+        return instance
+
+    def validate(self, attrs):
+        """Validate available time data."""
+        if attrs.get("start_time") and attrs.get("end_time"):
+            if attrs["start_time"] >= attrs["end_time"]:
+                raise serializers.ValidationError("start_time must be before end_time")
+
+        # Validate recurrence fields
+        recurrence_rule_data = attrs.get("recurrence_rule")
+        rrule_string = attrs.get("rrule_string")
+        parent_available_time_id = attrs.get("parent_available_time_id")
+
+        if recurrence_rule_data and rrule_string:
+            raise serializers.ValidationError(
+                "Cannot specify both recurrence_rule and rrule_string. Use one or the other."
+            )
+
+        if (recurrence_rule_data or rrule_string) and parent_available_time_id:
+            raise serializers.ValidationError(
+                "Cannot specify recurrence rule for available time instances. Recurrence rules are only for master available times."
+            )
+
+        return attrs
 
 
 class AvailableTimeWindowSerializer(serializers.Serializer):
@@ -960,3 +1362,289 @@ class UnavailableTimeWindowSerializer(serializers.Serializer):
 
         blocked_time_data = cast(BlockedTimeData, obj.data)
         return blocked_time_data.reason
+
+
+class BulkBlockedTimeSerializer(serializers.Serializer):
+    """Serializer for creating multiple blocked times."""
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.calendar_service = calendar_service
+
+        self.fields["blocked_times"] = BlockedTimeSerializer(many=True, context=self.context)
+
+    def validate_blocked_times(self, blocked_times_data):
+        """Validate bulk blocked times data."""
+        if not blocked_times_data:
+            raise serializers.ValidationError("At least one blocked time must be provided")
+
+        # check all blocked time instances are for the same calendar
+        first_blocked_time_calendar = blocked_times_data[0].get("calendar")
+        for blocked_time in blocked_times_data[1:]:
+            if blocked_time.get("calendar") != first_blocked_time_calendar:
+                raise serializers.ValidationError("All blocked times must be for the same calendar")
+
+        return blocked_times_data
+
+    def save(self, **kwargs):
+        """Create multiple blocked times using calendar service."""
+        if not self.calendar_service:
+            raise ValueError(
+                "calendar_service is not defined, please configure your DI container correctly"
+            )
+
+        user = self.context["request"].user
+        organization = user.organization_membership.organization
+
+        self.calendar_service.initialize_without_provider(organization)
+
+        # Convert to the format expected by bulk_create_manual_blocked_times
+        blocked_times_tuples = [
+            (bt["start_time"], bt["end_time"], bt["reason"], bt.get("rrule_string"))
+            for bt in self.validated_data["blocked_times"]
+        ]
+        calendar = self.validated_data["blocked_times"][0]["calendar"]
+
+        blocked_times = self.calendar_service.bulk_create_manual_blocked_times(
+            calendar=calendar, blocked_times=blocked_times_tuples
+        )
+        return list(blocked_times)
+
+
+class BulkAvailableTimeSerializer(serializers.Serializer):
+    """Serializer for creating multiple available times."""
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.calendar_service = calendar_service
+
+        self.fields["available_times"] = AvailableTimeSerializer(many=True, context=self.context)
+
+    def validate_available_times(self, available_times_data):
+        """Validate bulk available times data."""
+        if not available_times_data:
+            raise serializers.ValidationError("At least one available time must be provided")
+
+        # check all available time instances are for the same calendar
+        first_available_time_calendar = available_times_data[0].get("calendar")
+        for available_time in available_times_data[1:]:
+            if available_time.get("calendar") != first_available_time_calendar:
+                raise serializers.ValidationError(
+                    "All available times must be for the same calendar"
+                )
+
+        return available_times_data
+
+    def save(self, **kwargs):
+        """Create multiple available times using calendar service."""
+        if not self.calendar_service:
+            raise ValueError(
+                "calendar_service is not defined, please configure your DI container correctly"
+            )
+
+        user = self.context["request"].user
+        organization = user.organization_membership.organization
+        calendar = self.validated_data["available_times"][0]["calendar"]
+
+        self.calendar_service.initialize_without_provider(organization)
+
+        # Convert to the format expected by bulk_create_availability_windows
+        availability_tuples = [
+            (at["start_time"], at["end_time"], at.get("rrule_string"))
+            for at in self.validated_data["available_times"]
+        ]
+
+        available_times = self.calendar_service.bulk_create_availability_windows(
+            calendar=calendar, availability_windows=availability_tuples
+        )
+        return list(available_times)
+
+
+class BlockedTimeRecurringExceptionSerializer(serializers.Serializer):
+    """Serializer for creating recurring blocked time exceptions."""
+
+    exception_date = serializers.DateField(
+        required=True, help_text="The date of the occurrence to modify or cancel"
+    )
+    modified_reason = serializers.CharField(
+        required=False,
+        allow_null=True,
+        max_length=255,
+        help_text="New reason for the modified occurrence (if not cancelled)",
+    )
+    modified_start_time = serializers.DateTimeField(
+        required=False,
+        allow_null=True,
+        help_text="New start time for the modified occurrence (if not cancelled)",
+    )
+    modified_end_time = serializers.DateTimeField(
+        required=False,
+        allow_null=True,
+        help_text="New end time for the modified occurrence (if not cancelled)",
+    )
+    is_cancelled = serializers.BooleanField(
+        default=False, help_text="True if cancelling the occurrence, False if modifying"
+    )
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        self.calendar_service = calendar_service
+        super().__init__(*args, **kwargs)
+
+    def validate(self, attrs: dict) -> dict:
+        """Validate the exception data."""
+        is_cancelled = attrs.get("is_cancelled", False)
+
+        if not is_cancelled:
+            # If not cancelled, at least one modification field should be provided
+            has_modifications = any(
+                [
+                    attrs.get("modified_reason"),
+                    attrs.get("modified_start_time"),
+                    attrs.get("modified_end_time"),
+                ]
+            )
+
+            if not has_modifications:
+                raise serializers.ValidationError(
+                    "For non-cancelled exceptions, at least one modification field must be provided."
+                )
+
+        # Validate that start_time is before end_time if both are provided
+        start_time = attrs.get("modified_start_time")
+        end_time = attrs.get("modified_end_time")
+
+        if start_time and end_time and start_time >= end_time:
+            raise serializers.ValidationError(
+                "modified_start_time must be before modified_end_time."
+            )
+
+        return attrs
+
+    def save(self, **kwargs) -> None:
+        """Create a recurring event exception."""
+        parent_blocked_time = self.context["parent_blocked_time"]
+
+        if not self.calendar_service:
+            raise ValueError(
+                "calendar_service is not defined, please configure your DI container correctly"
+            )
+
+        # Initialize calendar service
+        self.calendar_service.initialize_without_provider(
+            organization=parent_blocked_time.organization,
+        )
+
+        # Convert date to datetime for the exception_date
+        exception_date = self.validated_data["exception_date"]
+
+        self.instance = self.calendar_service.create_recurring_blocked_time_exception(
+            parent_blocked_time=parent_blocked_time,
+            exception_date=exception_date,
+            modified_reason=self.validated_data.get("modified_reason"),
+            modified_start_time=self.validated_data.get("modified_start_time"),
+            modified_end_time=self.validated_data.get("modified_end_time"),
+            is_cancelled=self.validated_data.get("is_cancelled", False),
+        )
+
+
+class AvailableTimeRecurringExceptionSerializer(serializers.Serializer):
+    """Serializer for creating recurring available time exceptions."""
+
+    exception_date = serializers.DateField(
+        required=True, help_text="The date of the occurrence to modify or cancel"
+    )
+    modified_start_time = serializers.DateTimeField(
+        required=False,
+        allow_null=True,
+        help_text="New start time for the modified occurrence (if not cancelled)",
+    )
+    modified_end_time = serializers.DateTimeField(
+        required=False,
+        allow_null=True,
+        help_text="New end time for the modified occurrence (if not cancelled)",
+    )
+    is_cancelled = serializers.BooleanField(
+        default=False, help_text="True if cancelling the occurrence, False if modifying"
+    )
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        self.calendar_service = calendar_service
+        super().__init__(*args, **kwargs)
+
+    def validate(self, attrs: dict) -> dict:
+        """Validate the exception data."""
+        is_cancelled = attrs.get("is_cancelled", False)
+
+        if not is_cancelled:
+            # If not cancelled, at least one modification field should be provided
+            has_modifications = any(
+                [
+                    attrs.get("modified_start_time"),
+                    attrs.get("modified_end_time"),
+                ]
+            )
+
+            if not has_modifications:
+                raise serializers.ValidationError(
+                    "For non-cancelled exceptions, at least one modification field must be provided."
+                )
+
+        # Validate that start_time is before end_time if both are provided
+        start_time = attrs.get("modified_start_time")
+        end_time = attrs.get("modified_end_time")
+
+        if start_time and end_time and start_time >= end_time:
+            raise serializers.ValidationError(
+                "modified_start_time must be before modified_end_time."
+            )
+
+        return attrs
+
+    def save(self, **kwargs) -> None:
+        """Create a recurring event exception."""
+        parent_available_time = self.context["parent_available_time"]
+
+        if not self.calendar_service:
+            raise ValueError(
+                "calendar_service is not defined, please configure your DI container correctly"
+            )
+
+        # Initialize calendar service
+        self.calendar_service.initialize_without_provider(
+            organization=parent_available_time.organization,
+        )
+
+        # Convert date to datetime for the exception_date
+        exception_date = self.validated_data["exception_date"]
+
+        self.instance = self.calendar_service.create_recurring_available_time_exception(
+            parent_available_time=parent_available_time,
+            exception_date=exception_date,
+            modified_start_time=self.validated_data.get("modified_start_time"),
+            modified_end_time=self.validated_data.get("modified_end_time"),
+            is_cancelled=self.validated_data.get("is_cancelled", False),
+        )

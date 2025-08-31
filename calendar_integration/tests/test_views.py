@@ -1,4 +1,5 @@
 import datetime
+import json
 import uuid
 from unittest.mock import Mock
 
@@ -12,6 +13,8 @@ from rest_framework import status
 
 from calendar_integration.constants import CalendarProvider, CalendarType, RecurrenceFrequency
 from calendar_integration.models import (
+    AvailableTime,
+    BlockedTime,
     Calendar,
     CalendarEvent,
     CalendarOwnership,
@@ -27,7 +30,13 @@ from organizations.models import Organization, OrganizationMembership
 User = get_user_model()
 
 
-# Test Factories
+def assert_response_status_code(response, expected_status_code):
+    assert response.status_code == expected_status_code, (
+        f"The status error {response.status_code} != {expected_status_code}\n"
+        f"Response Payload: {json.dumps(response.json())}"
+    )
+
+
 class CalendarIntegrationTestFactory:
     @staticmethod
     def create_organization(name="Test Organization"):
@@ -161,6 +170,61 @@ class CalendarIntegrationTestFactory:
         )
 
     @staticmethod
+    def create_blocked_time(
+        calendar=None,
+        reason="Test blocked time",
+        start_time=None,
+        end_time=None,
+        external_id=None,
+        recurrence_rule=None,
+    ):
+        if calendar is None:
+            calendar = CalendarIntegrationTestFactory.create_calendar()
+
+        if start_time is None:
+            start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        if end_time is None:
+            end_time = start_time + datetime.timedelta(hours=1)
+
+        if external_id is None:
+            external_id = f"blocked_time_{uuid.uuid4().hex[:8]}"
+
+        return baker.make(
+            BlockedTime,
+            calendar=calendar,
+            organization=calendar.organization,
+            reason=reason,
+            start_time=start_time,
+            end_time=end_time,
+            external_id=external_id,
+            recurrence_rule=recurrence_rule,
+        )
+
+    @staticmethod
+    def create_available_time(
+        calendar=None,
+        start_time=None,
+        end_time=None,
+        recurrence_rule=None,
+    ):
+        if calendar is None:
+            calendar = CalendarIntegrationTestFactory.create_calendar()
+
+        if start_time is None:
+            start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        if end_time is None:
+            end_time = start_time + datetime.timedelta(hours=1)
+
+        return baker.make(
+            AvailableTime,
+            calendar=calendar,
+            organization=calendar.organization,
+            start_time=start_time,
+            end_time=end_time,
+            recurrence_rule=recurrence_rule,
+        )
+
+    @staticmethod
     def create_organization_membership(user, organization):
         return baker.make(
             OrganizationMembership,
@@ -227,7 +291,7 @@ class TestCalendarEventViewSet:
         url = reverse("api:CalendarEvents-list")
         response = auth_client.get(url)
 
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert "results" in response.data
         assert len(response.data["results"]) == 1
 
@@ -236,7 +300,7 @@ class TestCalendarEventViewSet:
         url = reverse("api:CalendarEvents-list")
         response = anonymous_client.get(url)
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
     def test_list_calendar_events_with_filters(self, auth_client, calendar, social_account, user):
         """Test listing calendar events with various filters"""
@@ -264,14 +328,14 @@ class TestCalendarEventViewSet:
 
         # Test title filter
         response = auth_client.get(url, {"title": "meeting"})
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert len(response.data["results"]) == 1
         assert response.data["results"][0]["title"] == "Meeting with client"
 
         # Test time range filter
         start_filter = (now + datetime.timedelta(hours=2, minutes=30)).isoformat()
         response = auth_client.get(url, {"start_time": start_filter})
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert len(response.data["results"]) == 1
         assert response.data["results"][0]["title"] == "Team standup"
 
@@ -283,7 +347,7 @@ class TestCalendarEventViewSet:
         url = reverse("api:CalendarEvents-detail", kwargs={"pk": calendar_event.id})
         response = auth_client.get(url)
 
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert response.data["id"] == calendar_event.id
         assert response.data["title"] == calendar_event.title
 
@@ -292,7 +356,7 @@ class TestCalendarEventViewSet:
         url = reverse("api:CalendarEvents-detail", kwargs={"pk": 99999})
         response = auth_client.get(url)
 
-        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
 
     def test_create_calendar_event(self, auth_client, calendar, user, social_account):
         """Test creating a calendar event"""
@@ -343,7 +407,7 @@ class TestCalendarEventViewSet:
             if response.status_code != status.HTTP_201_CREATED:
                 print(f"Response status: {response.status_code}")
                 print(f"Response data: {response.data}")
-            assert response.status_code == status.HTTP_201_CREATED
+            assert_response_status_code(response, status.HTTP_201_CREATED)
             assert response.data["title"] == "New Event"
 
         # Verify the mock was called
@@ -356,7 +420,7 @@ class TestCalendarEventViewSet:
 
         # Test missing required fields
         response = auth_client.post(url, {}, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
         # Test invalid time range (end before start)
         now = datetime.datetime.now(datetime.UTC)
@@ -370,7 +434,7 @@ class TestCalendarEventViewSet:
             "external_attendances": [],
         }
         response = auth_client.post(url, data, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
     def test_update_calendar_event(self, auth_client, calendar_event, user, social_account):
         """Test updating a calendar event"""
@@ -405,7 +469,7 @@ class TestCalendarEventViewSet:
         # Use container override to inject the mock service
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.put(url, updated_event_data, format="json")
-            assert response.status_code == status.HTTP_200_OK
+            assert_response_status_code(response, status.HTTP_200_OK)
             assert response.data["title"] == "Updated Meeting"
             assert response.data["description"] == "Updated important meeting"
 
@@ -431,7 +495,7 @@ class TestCalendarEventViewSet:
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.delete(url)
 
-            assert response.status_code == status.HTTP_204_NO_CONTENT
+            assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
 
         # Verify the mock was called
         mock_calendar_service.authenticate.assert_called_once()
@@ -442,7 +506,7 @@ class TestCalendarEventViewSet:
         url = reverse("api:CalendarEvents-detail", kwargs={"pk": calendar_event.id})
         response = anonymous_client.delete(url)
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
 
 @pytest.mark.django_db
@@ -493,7 +557,7 @@ class TestRecurringCalendarEventViewSet:
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.post(url, data, format="json")
 
-        assert response.status_code == status.HTTP_201_CREATED
+        assert_response_status_code(response, status.HTTP_201_CREATED)
         assert response.data["title"] == "Weekly Meeting"
         assert response.data["is_recurring"] is True
 
@@ -550,7 +614,7 @@ class TestRecurringCalendarEventViewSet:
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.post(url, data, format="json")
 
-        assert response.status_code == status.HTTP_201_CREATED
+        assert_response_status_code(response, status.HTTP_201_CREATED)
         assert response.data["title"] == "Daily Standup"
 
         # Verify the mock was called
@@ -577,7 +641,7 @@ class TestRecurringCalendarEventViewSet:
         }
 
         response = auth_client.post(url, data, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "Cannot specify both recurrence_rule and rrule_string" in str(response.data)
 
     def _base_event_payload(self, calendar):
@@ -614,7 +678,7 @@ class TestRecurringCalendarEventViewSet:
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.post(url, payload, format="json")
 
-        assert response.status_code == status.HTTP_201_CREATED
+        assert_response_status_code(response, status.HTTP_201_CREATED)
         assert response.data["is_recurring"] is True
         assert response.data["recurrence_rule"] is not None
 
@@ -628,7 +692,7 @@ class TestRecurringCalendarEventViewSet:
         }
         url = reverse("api:CalendarEvents-list")
         response = auth_client.post(url, payload, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "Invalid weekdays" in str(response.data)
 
     def test_invalid_month_day(self, auth_client, calendar, user, social_account):
@@ -641,7 +705,7 @@ class TestRecurringCalendarEventViewSet:
         }
         url = reverse("api:CalendarEvents-list")
         response = auth_client.post(url, payload, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "Invalid month days" in str(response.data)
 
     def test_invalid_month(self, auth_client, calendar, user, social_account):
@@ -654,7 +718,7 @@ class TestRecurringCalendarEventViewSet:
         }
         url = reverse("api:CalendarEvents-list")
         response = auth_client.post(url, payload, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "Invalid months" in str(response.data)
 
     def test_count_and_until_conflict(self, auth_client, calendar, user, social_account):
@@ -668,7 +732,7 @@ class TestRecurringCalendarEventViewSet:
         }
         url = reverse("api:CalendarEvents-list")
         response = auth_client.post(url, payload, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         # Error is nested under recurrence_rule.non_field_errors as an ErrorDetail whose string
         # value itself contains a JSON-style list string. Inspect the first error directly.
         err = response.data["recurrence_rule"]["non_field_errors"][0]
@@ -684,7 +748,7 @@ class TestRecurringCalendarEventViewSet:
         }
         url = reverse("api:CalendarEvents-list")
         response = auth_client.post(url, payload, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "Interval must be at least 1" in str(response.data)
 
     def test_list_recurring_events_shows_recurrence_info(
@@ -704,7 +768,7 @@ class TestRecurringCalendarEventViewSet:
         url = reverse("api:CalendarEvents-list")
         response = auth_client.get(url)
 
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert len(response.data["results"]) == 1
 
         event_data = response.data["results"][0]
@@ -728,13 +792,13 @@ class TestRecurringCalendarEventViewSet:
         url = reverse("api:CalendarEvents-detail", kwargs={"pk": recurring_event.id})
         response = auth_client.get(url)
 
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert response.data["id"] == recurring_event.id
         assert response.data["title"] == "Monthly Review"
         assert response.data["is_recurring"] is True
         assert response.data["recurrence_rule"] is not None
 
-    def test_create_recurring_exception_cancelled(
+    def test_create_recurring_event_exception_cancelled(
         self, auth_client, calendar, user, social_account
     ):
         """Test creating a cancelled exception for a recurring event"""
@@ -759,7 +823,9 @@ class TestRecurringCalendarEventViewSet:
         # Create a mock calendar service
         mock_calendar_service = Mock()
         mock_calendar_service.authenticate.return_value = None
-        mock_calendar_service.create_recurring_exception.return_value = None  # Cancelled event
+        mock_calendar_service.create_recurring_event_exception.return_value = (
+            None  # Cancelled event
+        )
 
         url = reverse("api:CalendarEvents-create-exception", kwargs={"pk": recurring_event.id})
         exception_date = (start_time + datetime.timedelta(days=7)).date()
@@ -772,15 +838,17 @@ class TestRecurringCalendarEventViewSet:
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.post(url, data, format="json")
 
-        assert response.status_code == status.HTTP_204_NO_CONTENT
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
 
         # Verify the mock was called with correct parameters
-        mock_calendar_service.create_recurring_exception.assert_called_once()
-        call_args = mock_calendar_service.create_recurring_exception.call_args
+        mock_calendar_service.create_recurring_event_exception.assert_called_once()
+        call_args = mock_calendar_service.create_recurring_event_exception.call_args
         assert call_args[1]["parent_event"] == recurring_event
         assert call_args[1]["is_cancelled"] is True
 
-    def test_create_recurring_exception_modified(self, auth_client, calendar, user, social_account):
+    def test_create_recurring_event_exception_modified(
+        self, auth_client, calendar, user, social_account
+    ):
         """Test creating a modified exception for a recurring event"""
         from di_core.containers import container
 
@@ -816,7 +884,7 @@ class TestRecurringCalendarEventViewSet:
         # Create a mock calendar service
         mock_calendar_service = Mock()
         mock_calendar_service.authenticate.return_value = None
-        mock_calendar_service.create_recurring_exception.return_value = modified_event
+        mock_calendar_service.create_recurring_event_exception.return_value = modified_event
 
         url = reverse("api:CalendarEvents-create-exception", kwargs={"pk": recurring_event.id})
         exception_date = (start_time + datetime.timedelta(days=7)).date()
@@ -833,18 +901,20 @@ class TestRecurringCalendarEventViewSet:
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.post(url, data, format="json")
 
-        assert response.status_code == status.HTTP_201_CREATED
+        assert_response_status_code(response, status.HTTP_201_CREATED)
         assert response.data["title"] == "Modified Weekly Meeting"
         assert response.data["description"] == "Modified weekly team meeting"
 
         # Verify the mock was called with correct parameters
-        mock_calendar_service.create_recurring_exception.assert_called_once()
-        call_args = mock_calendar_service.create_recurring_exception.call_args
+        mock_calendar_service.create_recurring_event_exception.assert_called_once()
+        call_args = mock_calendar_service.create_recurring_event_exception.call_args
         assert call_args[1]["parent_event"] == recurring_event
         assert call_args[1]["is_cancelled"] is False
         assert call_args[1]["modified_title"] == "Modified Weekly Meeting"
 
-    def test_create_recurring_exception_non_recurring_event(self, auth_client, calendar, user):
+    def test_create_recurring_event_exception_non_recurring_event(
+        self, auth_client, calendar, user
+    ):
         """Test creating an exception for a non-recurring event should fail"""
         # Create a non-recurring event
         start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
@@ -870,10 +940,10 @@ class TestRecurringCalendarEventViewSet:
 
         response = auth_client.post(url, data, format="json")
 
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "not a recurring event" in str(response.data)
 
-    def test_create_recurring_exception_validation_errors(self, auth_client, calendar, user):
+    def test_create_recurring_event_exception_validation_errors(self, auth_client, calendar, user):
         """Test validation errors when creating recurring exceptions"""
         # Create a recurring event
         start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
@@ -894,7 +964,7 @@ class TestRecurringCalendarEventViewSet:
 
         # Test missing required fields
         response = auth_client.post(url, {}, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
         # Test non-cancelled exception without modifications
         exception_date = (start_time + datetime.timedelta(days=7)).date()
@@ -903,7 +973,7 @@ class TestRecurringCalendarEventViewSet:
             "is_cancelled": False,
         }
         response = auth_client.post(url, data, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "modification field must be provided" in str(response.data)
 
         # Test invalid datetime range
@@ -914,7 +984,7 @@ class TestRecurringCalendarEventViewSet:
             "is_cancelled": False,
         }
         response = auth_client.post(url, data, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "must be before" in str(response.data)
 
 
@@ -958,7 +1028,7 @@ class TestCalendarViewSet:
         # Use container override to inject the mock service
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.get(url, params)
-            assert response.status_code == status.HTTP_200_OK
+            assert_response_status_code(response, status.HTTP_200_OK)
             assert len(response.data) == 2
             assert response.data[0]["can_book_partially"] is True
             assert response.data[1]["can_book_partially"] is False
@@ -972,12 +1042,12 @@ class TestCalendarViewSet:
 
         # Missing both parameters
         response = auth_client.get(url)
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "start_datetime and end_datetime are required" in str(response.data)
 
         # Missing end_datetime
         response = auth_client.get(url, {"start_datetime": "2024-01-01T00:00:00Z"})
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
     def test_get_available_windows_invalid_datetime(self, auth_client, calendar):
         """Test getting available windows with invalid datetime format"""
@@ -988,7 +1058,7 @@ class TestCalendarViewSet:
         }
 
         response = auth_client.get(url, params)
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "Invalid datetime format" in str(response.data)
 
     def test_get_unavailable_windows(self, auth_client, calendar, user):
@@ -1029,7 +1099,7 @@ class TestCalendarViewSet:
         # Use container override to inject the mock service
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.get(url, params)
-            assert response.status_code == status.HTTP_200_OK
+            assert_response_status_code(response, status.HTTP_200_OK)
             assert len(response.data) == 2
             assert response.data[0]["reason"] == "calendar_event"
             assert response.data[1]["reason"] == "blocked_time"
@@ -1046,7 +1116,7 @@ class TestCalendarViewSet:
         }
 
         response = anonymous_client.get(url, params)
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
     def test_service_error_handling(self, auth_client, calendar, user):
         """Test error handling when calendar service raises exceptions"""
@@ -1068,9 +1138,9 @@ class TestCalendarViewSet:
         # Use container override to inject the mock service
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.get(url, params)
-            assert response.status_code == status.HTTP_400_BAD_REQUEST
+            assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
             assert "Authentication failed" in str(response.data)
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "Authentication failed" in str(response.data)
 
     def test_nonexistent_calendar(self, auth_client, user):
@@ -1086,7 +1156,7 @@ class TestCalendarViewSet:
         }
 
         response = auth_client.get(url, params)
-        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
 
     def test_list_calendars_authenticated(self, auth_client, calendar, user):
         """Test listing calendars as authenticated user"""
@@ -1096,7 +1166,7 @@ class TestCalendarViewSet:
         url = reverse("api:Calendars-list")
         response = auth_client.get(url)
 
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert "results" in response.data
         assert len(response.data["results"]) == 1
         assert response.data["results"][0]["id"] == calendar.id
@@ -1106,7 +1176,7 @@ class TestCalendarViewSet:
         url = reverse("api:Calendars-list")
         response = anonymous_client.get(url)
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
     def test_retrieve_calendar(self, auth_client, calendar, user):
         """Test retrieving a specific calendar"""
@@ -1116,7 +1186,7 @@ class TestCalendarViewSet:
         url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
         response = auth_client.get(url)
 
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert response.data["id"] == calendar.id
         assert response.data["name"] == calendar.name
 
@@ -1125,7 +1195,7 @@ class TestCalendarViewSet:
         url = reverse("api:Calendars-detail", kwargs={"pk": 99999})
         response = auth_client.get(url)
 
-        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
 
     def test_create_virtual_calendar(self, auth_client, organization, user):
         """Test creating a virtual calendar"""
@@ -1156,7 +1226,7 @@ class TestCalendarViewSet:
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.post(url, data, format="json")
 
-        assert response.status_code == status.HTTP_201_CREATED
+        assert_response_status_code(response, status.HTTP_201_CREATED)
         assert response.data["name"] == "New Virtual Calendar"
         assert response.data["description"] == "Test virtual calendar"
 
@@ -1170,13 +1240,13 @@ class TestCalendarViewSet:
 
         # Test missing required fields
         response = auth_client.post(url, {}, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
         response = auth_client.post(url, {"bundle_children": []}, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
         response = auth_client.post(url, {"primary_calendar": None}, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
     def test_update_calendar(self, auth_client, calendar, user):
         """Test updating a calendar"""
@@ -1191,7 +1261,7 @@ class TestCalendarViewSet:
 
         response = auth_client.patch(url, updated_data, format="json")
 
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert response.data["name"] == "Updated Calendar Name"
         assert response.data["description"] == "Updated description"
 
@@ -1203,7 +1273,7 @@ class TestCalendarViewSet:
         url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
         response = auth_client.delete(url)
 
-        assert response.status_code == status.HTTP_204_NO_CONTENT
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
 
     def test_create_bundle_calendar(self, auth_client, organization, user):
         """Test creating a bundle calendar"""
@@ -1248,7 +1318,7 @@ class TestCalendarViewSet:
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.post(url, data, format="json")
 
-        assert response.status_code == status.HTTP_201_CREATED
+        assert_response_status_code(response, status.HTTP_201_CREATED)
         assert response.data["name"] == "Bundle Calendar"
         assert response.data["calendar_type"] == CalendarType.BUNDLE
 
@@ -1262,7 +1332,7 @@ class TestCalendarViewSet:
 
         # Test missing required fields
         response = auth_client.post(url, {}, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
         # Test with only one calendar (should require at least 2)
         child_calendar = CalendarIntegrationTestFactory.create_calendar(
@@ -1277,7 +1347,7 @@ class TestCalendarViewSet:
         }
 
         response = auth_client.post(url, data, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
     def test_create_bundle_calendar_with_integration_calendars(
         self, auth_client, organization, user
@@ -1303,7 +1373,7 @@ class TestCalendarViewSet:
         }
 
         response = auth_client.post(url, data, format="json")
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "Primary calendar needs to be an integration calendar" in str(response.data)
 
     def test_create_bundle_calendar_unauthenticated(self, anonymous_client):
@@ -1316,7 +1386,7 @@ class TestCalendarViewSet:
         }
 
         response = anonymous_client.post(url, data, format="json")
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
 
 @pytest.mark.django_db
@@ -1330,14 +1400,14 @@ class TestCalendarIntegrationPermissions:
 
         url = reverse("api:CalendarEvents-list")
         response = auth_client.get(url)
-        assert response.status_code == status.HTTP_200_OK
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert_response_status_code(response, status.HTTP_200_OK)
 
     def test_calendar_event_permission_unauthenticated(self, anonymous_client, calendar_event):
         """Test that unauthenticated users cannot access calendar events"""
         url = reverse("api:CalendarEvents-list")
         response = anonymous_client.get(url)
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
     def test_calendar_availability_permission_authenticated(self, auth_client, calendar, user):
         """Test that authenticated users can check calendar availability"""
@@ -1380,7 +1450,7 @@ class TestCalendarIntegrationPermissions:
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.get(url, params)
             # Should not be 401 (permission denied) - should return 200 with mocked data
-            assert response.status_code == status.HTTP_200_OK
+            assert_response_status_code(response, status.HTTP_200_OK)
 
         # Verify the service methods were called
         mock_calendar_service.authenticate.assert_called_once()
@@ -1394,7 +1464,7 @@ class TestCalendarIntegrationPermissions:
             "end_datetime": "2024-01-01T23:59:59Z",
         }
         response = anonymous_client.get(url, params)
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
 
 @pytest.mark.django_db
@@ -1430,7 +1500,7 @@ class TestCalendarEventFilters:
         filter_time = (now + datetime.timedelta(hours=2, minutes=30)).isoformat()
         response = auth_client.get(url, {"start_time": filter_time})
 
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert len(response.data["results"]) == 1
         assert response.data["results"][0]["title"] == "Late Event"
 
@@ -1463,7 +1533,7 @@ class TestCalendarEventFilters:
         filter_time = (now + datetime.timedelta(hours=3)).isoformat()
         response = auth_client.get(url, {"end_time": filter_time})
 
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert len(response.data["results"]) == 1
         assert response.data["results"][0]["title"] == "Short Event"
 
@@ -1506,6 +1576,1084 @@ class TestCalendarEventFilters:
 
         # Filter by calendar1
         response = auth_client.get(url, {"calendar": calendar1.id})
-        assert response.status_code == status.HTTP_200_OK
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert len(response.data["results"]) == 1
         assert response.data["results"][0]["title"] == "Event in Calendar 1"
+
+        # Filter by calendar2
+        response = auth_client.get(url, {"calendar": calendar2.id})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert len(response.data["results"]) == 1
+        assert response.data["results"][0]["title"] == "Event in Calendar 2"
+
+
+@pytest.mark.django_db
+class TestBlockedTimeViewSet:
+    """Test suite for BlockedTimeViewSet"""
+
+    def test_list_blocked_times_authenticated(self, auth_client, calendar, user):
+        """Test listing blocked times as authenticated user"""
+        # Create calendar ownership so user can access the blocked times
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create blocked time
+        CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Lunch break",
+        )
+
+        url = reverse("api:BlockedTimes-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert "results" in response.data
+        assert len(response.data["results"]) == 1
+        assert response.data["results"][0]["reason"] == "Lunch break"
+
+    def test_list_blocked_times_unauthenticated(self, anonymous_client):
+        """Test listing blocked times as unauthenticated user"""
+        url = reverse("api:BlockedTimes-list")
+        response = anonymous_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_create_blocked_time(self, auth_client, calendar, user):
+        """Test creating a blocked time"""
+        from di_core.containers import container
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+
+        created_blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Meeting preparation",
+        )
+
+        mock_calendar_service.create_blocked_time.return_value = created_blocked_time
+
+        url = reverse("api:BlockedTimes-list")
+        data = {
+            "calendar": calendar.id,
+            "reason": "Meeting preparation",
+            "start_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+            ).isoformat(),
+            "end_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+            ).isoformat(),
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.data["reason"] == "Meeting preparation"
+
+        # Verify the mock was called
+        mock_calendar_service.create_blocked_time.assert_called_once()
+
+    def test_create_recurring_blocked_time(self, auth_client, calendar, user):
+        """Test creating a recurring blocked time"""
+        from di_core.containers import container
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+
+        created_blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Weekly team sync",
+        )
+
+        mock_calendar_service.create_blocked_time.return_value = created_blocked_time
+
+        url = reverse("api:BlockedTimes-list")
+        data = {
+            "calendar": calendar.id,  # Fixed: use calendar_id instead of calendar
+            "reason": "Weekly team sync",
+            "start_time": (  # Fixed: use start_time (not start_datetime)
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+            ).isoformat(),
+            "end_time": (  # Fixed: use end_time (not end_datetime)
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+            ).isoformat(),
+            "rrule_string": "FREQ=WEEKLY;COUNT=10;BYDAY=MO",  # Fixed: use recurrence_rule instead of rrule
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.data["reason"] == "Weekly team sync"
+
+        # Verify the mock was called
+        mock_calendar_service.create_blocked_time.assert_called_once()
+
+    def test_bulk_create_blocked_times(self, auth_client, calendar, user):
+        """Test bulk creating blocked times"""
+        from di_core.containers import container
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+
+        created_blocked_times = [
+            CalendarIntegrationTestFactory.create_blocked_time(
+                calendar=calendar,
+                reason="Lunch break",
+            ),
+            CalendarIntegrationTestFactory.create_blocked_time(
+                calendar=calendar,
+                reason="Break time",
+            ),
+        ]
+
+        mock_calendar_service.bulk_create_manual_blocked_times.return_value = created_blocked_times
+
+        url = reverse("api:BlockedTimes-bulk-create")
+        data = {
+            "blocked_times": [
+                {
+                    "calendar": calendar.id,
+                    "reason": "Lunch break",
+                    "start_time": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+                    ).isoformat(),
+                    "end_time": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+                    ).isoformat(),
+                },
+                {
+                    "calendar": calendar.id,
+                    "reason": "Break time",
+                    "start_time": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)
+                    ).isoformat(),
+                    "end_time": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=4)
+                    ).isoformat(),
+                },
+            ],
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert len(response.data) == 2
+
+        # Verify the mock was called
+        mock_calendar_service.bulk_create_manual_blocked_times.assert_called_once()
+
+    def test_get_blocked_times_expanded(self, auth_client, calendar, user):
+        """Test getting expanded blocked times (including recurring occurrences)"""
+        from di_core.containers import container
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+
+        blocked_times = [
+            CalendarIntegrationTestFactory.create_blocked_time(
+                calendar=calendar,
+                reason="Daily standup",
+            ),
+            CalendarIntegrationTestFactory.create_blocked_time(
+                calendar=calendar,
+                reason="Another meeting",
+            ),
+        ]
+
+        mock_calendar_service.get_blocked_times_expanded.return_value = blocked_times
+
+        url = reverse("api:BlockedTimes-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": "2024-01-01T00:00:00Z",  # Fixed: use start_time (not start_datetime)
+            "end_time": "2024-01-31T23:59:59Z",  # Fixed: use end_time (not end_datetime)
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.get(url, params)
+
+        (assert_response_status_code(response, status.HTTP_200_OK),)
+        assert len(response.data) == 2
+
+        # Verify the mock was called
+        mock_calendar_service.get_blocked_times_expanded.assert_called_once()
+
+    def test_create_blocked_time_validation_errors(self, auth_client, calendar):
+        """Test creating blocked time with validation errors"""
+        url = reverse("api:BlockedTimes-list")
+
+        # Test missing required fields
+        response = auth_client.post(url, {}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Test invalid time range (end before start)
+        now = datetime.datetime.now(datetime.UTC)
+        data = {
+            "calendar": calendar.id,
+            "reason": "Invalid time range",
+            "start_time": (now + datetime.timedelta(hours=2)).isoformat(),
+            "end_time": (now + datetime.timedelta(hours=1)).isoformat(),
+        }
+        response = auth_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_retrieve_blocked_time(self, auth_client, calendar, user):
+        """Test retrieving a specific blocked time"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create blocked time
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Important meeting",
+        )
+
+        url = reverse("api:BlockedTimes-detail", kwargs={"pk": blocked_time.id})
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["id"] == blocked_time.id
+        assert response.data["reason"] == "Important meeting"
+
+    def test_update_blocked_time(self, auth_client, calendar, user):
+        """Test updating a blocked time"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create blocked time
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Original reason",
+        )
+
+        url = reverse("api:BlockedTimes-detail", kwargs={"pk": blocked_time.id})
+        updated_data = {
+            "reason": "Updated reason",
+            "start_time": blocked_time.start_time.isoformat(),
+            "end_time": blocked_time.end_time.isoformat(),
+            "calendar": calendar.id,
+        }
+
+        response = auth_client.put(url, updated_data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["reason"] == "Updated reason"
+
+    def test_delete_blocked_time(self, auth_client, calendar, user):
+        """Test deleting a blocked time"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create blocked time
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="To be deleted",
+        )
+
+        url = reverse("api:BlockedTimes-detail", kwargs={"pk": blocked_time.id})
+        response = auth_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+
+    def test_create_blocked_time_exception_cancelled(self, auth_client, calendar, user):
+        """Test creating a cancelled exception for a recurring blocked time"""
+        from di_core.containers import container
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring blocked time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Weekly team meeting",
+            recurrence_rule=recurrence_rule,
+        )
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.create_recurring_blocked_time_exception.return_value = (
+            None  # Cancelled exception
+        )
+
+        url = reverse("api:BlockedTimes-create-exception", kwargs={"pk": blocked_time.id})
+        data = {
+            "exception_date": "2024-02-15",  # A specific date to cancel
+            "is_cancelled": True,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+
+        # Verify the mock was called with correct parameters
+        mock_calendar_service.create_recurring_blocked_time_exception.assert_called_once()
+        call_args = mock_calendar_service.create_recurring_blocked_time_exception.call_args
+        assert call_args[1]["parent_blocked_time"] == blocked_time
+        assert call_args[1]["is_cancelled"] is True
+
+    def test_create_blocked_time_exception_modified(self, auth_client, calendar, user):
+        """Test creating a modified exception for a recurring blocked time"""
+        from di_core.containers import container
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring blocked time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Weekly team meeting",
+            recurrence_rule=recurrence_rule,
+        )
+
+        # Create a mock calendar service and mock exception instance
+        mock_calendar_service = Mock()
+        mock_exception_instance = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Modified team meeting",
+        )
+        mock_calendar_service.create_recurring_blocked_time_exception.return_value = (
+            mock_exception_instance
+        )
+
+        url = reverse("api:BlockedTimes-create-exception", kwargs={"pk": blocked_time.id})
+        data = {
+            "exception_date": "2024-02-15",  # A specific date to modify
+            "modified_reason": "Modified team meeting",
+            "modified_start_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)
+            ).isoformat(),
+            "modified_end_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=4)
+            ).isoformat(),
+            "is_cancelled": False,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert "reason" in response.data  # Response should contain the modified event data
+
+        # Verify the mock was called with correct parameters
+        mock_calendar_service.create_recurring_blocked_time_exception.assert_called_once()
+        call_args = mock_calendar_service.create_recurring_blocked_time_exception.call_args
+        assert call_args[1]["parent_blocked_time"] == blocked_time
+        assert call_args[1]["modified_reason"] == "Modified team meeting"
+        assert call_args[1]["is_cancelled"] is False
+
+    def test_create_blocked_time_exception_non_recurring(self, auth_client, calendar, user):
+        """Test creating an exception for a non-recurring blocked time (should fail)"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a non-recurring blocked time
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="One-time meeting",
+        )
+
+        url = reverse("api:BlockedTimes-create-exception", kwargs={"pk": blocked_time.id})
+        data = {
+            "exception_date": "2024-02-15",
+            "is_cancelled": True,
+        }
+
+        response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "Blocked time is not a recurring" in str(response.data)
+
+    def test_create_blocked_time_exception_validation_errors(self, auth_client, calendar, user):
+        """Test validation errors when creating blocked time exceptions"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring blocked time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Weekly team meeting",
+            recurrence_rule=recurrence_rule,
+        )
+
+        url = reverse("api:BlockedTimes-create-exception", kwargs={"pk": blocked_time.id})
+
+        # Test missing exception_date
+        response = auth_client.post(url, {}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Test invalid time range (modified_start_time after modified_end_time)
+        data = {
+            "exception_date": "2024-02-15",
+            "modified_start_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=4)
+            ).isoformat(),
+            "modified_end_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)
+            ).isoformat(),
+            "is_cancelled": False,
+        }
+        response = auth_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Test non-cancelled exception without modifications
+        data = {
+            "exception_date": "2024-02-15",
+            "is_cancelled": False,
+        }
+        response = auth_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+
+@pytest.mark.django_db
+class TestAvailableTimeViewSet:
+    """Test suite for AvailableTimeViewSet"""
+
+    def test_list_available_times_authenticated(self, auth_client, calendar, user):
+        """Test listing available times as authenticated user"""
+        # Create calendar ownership so user can access the available times
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create available time
+        CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+        )
+
+        url = reverse("api:AvailableTimes-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert "results" in response.data
+        assert len(response.data["results"]) == 1
+        # Note: AvailableTime model doesn't have can_book_partially field
+        # This field exists only in AvailableTimeWindow dataclass
+
+    def test_list_available_times_unauthenticated(self, anonymous_client):
+        """Test listing available times as unauthenticated user"""
+        url = reverse("api:AvailableTimes-list")
+        response = anonymous_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_create_available_time(self, auth_client, calendar, user):
+        """Test creating an available time"""
+        from di_core.containers import container
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+
+        created_available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+        )
+
+        mock_calendar_service.create_available_time.return_value = created_available_time
+
+        url = reverse("api:AvailableTimes-list")
+        data = {
+            "calendar": calendar.id,
+            "start_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+            ).isoformat(),
+            "end_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+            ).isoformat(),
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+
+        # Verify the mock was called
+        mock_calendar_service.create_available_time.assert_called_once()
+
+    def test_create_recurring_available_time(self, auth_client, calendar, user):
+        """Test creating a recurring available time"""
+        from di_core.containers import container
+
+        # Set up the calendar to allow available windows management
+        calendar.can_manage_available_windows = True
+        calendar.save()
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+
+        created_available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+        )
+
+        mock_calendar_service.create_available_time.return_value = created_available_time
+
+        url = reverse("api:AvailableTimes-list")
+        data = {
+            "calendar": calendar.id,
+            "start_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+            ).isoformat(),
+            "end_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+            ).isoformat(),
+            "rrule_string": "FREQ=DAILY;COUNT=5;BYDAY=MO,TU,WE,TH,FR",
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        # Note: can_book_partially field doesn't exist in AvailableTime model, only in AvailableTimeWindow
+
+        # Verify the mock was called
+        mock_calendar_service.create_available_time.assert_called_once()
+
+    def test_bulk_create_available_times(self, auth_client, calendar, user):
+        """Test bulk creating available times"""
+        from di_core.containers import container
+
+        # Set up the calendar to allow available windows management
+        calendar.can_manage_available_windows = True
+        calendar.save()
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+
+        created_available_times = [
+            CalendarIntegrationTestFactory.create_available_time(
+                calendar=calendar,
+            ),
+            CalendarIntegrationTestFactory.create_available_time(
+                calendar=calendar,
+            ),
+        ]
+
+        mock_calendar_service.bulk_create_availability_windows.return_value = (
+            created_available_times
+        )
+
+        url = reverse("api:AvailableTimes-bulk-create")
+        data = {
+            "available_times": [
+                {
+                    "calendar": calendar.id,
+                    "start_time": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+                    ).isoformat(),
+                    "end_time": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+                    ).isoformat(),
+                },
+                {
+                    "calendar": calendar.id,
+                    "start_time": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)
+                    ).isoformat(),
+                    "end_time": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=4)
+                    ).isoformat(),
+                },
+            ],
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert len(response.data) == 2
+
+        # Verify the mock was called
+        mock_calendar_service.bulk_create_availability_windows.assert_called_once()
+
+    def test_get_available_times_expanded(self, auth_client, calendar, user):
+        """Test getting expanded available times (including recurring occurrences)"""
+        from di_core.containers import container
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+
+        available_times = [
+            CalendarIntegrationTestFactory.create_available_time(
+                calendar=calendar,
+            ),
+            CalendarIntegrationTestFactory.create_available_time(
+                calendar=calendar,
+            ),
+        ]
+
+        mock_calendar_service.get_available_times_expanded.return_value = available_times
+
+        url = reverse("api:AvailableTimes-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": "2024-01-01T00:00:00Z",  # Fixed: use start_time (not start_datetime)
+            "end_time": "2024-01-31T23:59:59Z",  # Fixed: use end_time (not end_datetime)
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.get(url, params)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert len(response.data) == 2
+
+        # Verify the mock was called
+        mock_calendar_service.get_available_times_expanded.assert_called_once()
+
+    def test_create_available_time_validation_errors(self, auth_client, calendar):
+        """Test creating available time with validation errors"""
+        # Set up the calendar to allow available windows management
+        calendar.can_manage_available_windows = True
+        calendar.save()
+
+        url = reverse("api:AvailableTimes-list")
+
+        # Test missing required fields
+        response = auth_client.post(url, {}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Test invalid time range (end before start)
+        now = datetime.datetime.now(datetime.UTC)
+        data = {
+            "calendar": calendar.id,
+            "start_time": (now + datetime.timedelta(hours=2)).isoformat(),
+            "end_time": (now + datetime.timedelta(hours=1)).isoformat(),
+        }
+        response = auth_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_retrieve_available_time(self, auth_client, calendar, user):
+        """Test retrieving a specific available time"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create available time
+        available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+        )
+
+        url = reverse("api:AvailableTimes-detail", kwargs={"pk": available_time.id})
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["id"] == available_time.id
+
+    def test_update_available_time(self, auth_client, calendar, user):
+        """Test updating an available time"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create available time
+        available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+        )
+
+        url = reverse("api:AvailableTimes-detail", kwargs={"pk": available_time.id})
+        updated_data = {
+            "start_time": available_time.start_time.isoformat(),
+            "end_time": available_time.end_time.isoformat(),
+            "calendar": calendar.id,
+        }
+
+        response = auth_client.put(url, updated_data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+    def test_delete_available_time(self, auth_client, calendar, user):
+        """Test deleting an available time"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create available time
+        available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+        )
+
+        url = reverse("api:AvailableTimes-detail", kwargs={"pk": available_time.id})
+        response = auth_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+
+    def test_create_available_time_exception_cancelled(self, auth_client, calendar, user):
+        """Test creating a cancelled exception for a recurring available time"""
+        from di_core.containers import container
+
+        # Set up the calendar to allow available windows management
+        calendar.can_manage_available_windows = True
+        calendar.save()
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring available time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+            recurrence_rule=recurrence_rule,
+        )
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.create_recurring_available_time_exception.return_value = (
+            None  # Cancelled exception
+        )
+
+        url = reverse("api:AvailableTimes-create-exception", kwargs={"pk": available_time.id})
+        data = {
+            "exception_date": "2024-02-15",  # A specific date to cancel
+            "is_cancelled": True,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+
+        # Verify the mock was called with correct parameters
+        mock_calendar_service.create_recurring_available_time_exception.assert_called_once()
+        call_args = mock_calendar_service.create_recurring_available_time_exception.call_args
+        assert call_args[1]["parent_available_time"] == available_time
+        assert call_args[1]["is_cancelled"] is True
+
+    def test_create_available_time_exception_modified(self, auth_client, calendar, user):
+        """Test creating a modified exception for a recurring available time"""
+        from di_core.containers import container
+
+        # Set up the calendar to allow available windows management
+        calendar.can_manage_available_windows = True
+        calendar.save()
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring available time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+            recurrence_rule=recurrence_rule,
+        )
+
+        # Create a mock calendar service and mock exception instance
+        mock_calendar_service = Mock()
+        mock_exception_instance = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+        )
+        mock_calendar_service.create_recurring_available_time_exception.return_value = (
+            mock_exception_instance
+        )
+
+        url = reverse("api:AvailableTimes-create-exception", kwargs={"pk": available_time.id})
+        data = {
+            "exception_date": "2024-02-15",  # A specific date to modify
+            "modified_start_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)
+            ).isoformat(),
+            "modified_end_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=4)
+            ).isoformat(),
+            "is_cancelled": False,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert "start_time" in response.data  # Response should contain the modified event data
+
+        # Verify the mock was called with correct parameters
+        mock_calendar_service.create_recurring_available_time_exception.assert_called_once()
+        call_args = mock_calendar_service.create_recurring_available_time_exception.call_args
+        assert call_args[1]["parent_available_time"] == available_time
+        assert call_args[1]["is_cancelled"] is False
+
+    def test_create_available_time_exception_non_recurring(self, auth_client, calendar, user):
+        """Test creating an exception for a non-recurring available time (should fail)"""
+        # Set up the calendar to allow available windows management
+        calendar.can_manage_available_windows = True
+        calendar.save()
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a non-recurring available time
+        available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+        )
+
+        url = reverse("api:AvailableTimes-create-exception", kwargs={"pk": available_time.id})
+        data = {
+            "exception_date": "2024-02-15",
+            "is_cancelled": True,
+        }
+
+        response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "Available time is not a recurring" in str(response.data)
+
+    def test_create_available_time_exception_validation_errors(self, auth_client, calendar, user):
+        """Test validation errors when creating available time exceptions"""
+        # Set up the calendar to allow available windows management
+        calendar.can_manage_available_windows = True
+        calendar.save()
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring available time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+            recurrence_rule=recurrence_rule,
+        )
+
+        url = reverse("api:AvailableTimes-create-exception", kwargs={"pk": available_time.id})
+
+        # Test missing exception_date
+        response = auth_client.post(url, {}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Test invalid time range (modified_start_time after modified_end_time)
+        data = {
+            "exception_date": "2024-02-15",
+            "modified_start_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=4)
+            ).isoformat(),
+            "modified_end_time": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)
+            ).isoformat(),
+            "is_cancelled": False,
+        }
+        response = auth_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Test non-cancelled exception without modifications
+        data = {
+            "exception_date": "2024-02-15",
+            "is_cancelled": False,
+        }
+        response = auth_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+
+@pytest.mark.django_db
+class TestRecurringBlockedAndAvailableTimeViewSets:
+    """Test suite for recurring functionality in BlockedTime and AvailableTime ViewSets"""
+
+    def test_create_recurring_blocked_time_with_recurrence_rule(self, auth_client, calendar, user):
+        """Test creating a recurring blocked time with recurrence_rule object"""
+        from di_core.containers import container
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+
+        created_blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Daily standup",
+        )
+
+        mock_calendar_service.create_blocked_time.return_value = created_blocked_time
+
+        url = reverse("api:BlockedTimes-list")
+        data = {
+            "calendar": calendar.id,  # Fixed: use calendar_id instead of calendar
+            "reason": "Daily standup",
+            "start_time": (  # Fixed: use start_time (not start_datetime)
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+            ).isoformat(),
+            "end_time": (  # Fixed: use end_time (not end_datetime)
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+            ).isoformat(),
+            "rrule_string": "FREQ=DAILY;INTERVAL=1;COUNT=20;BYDAY=MO,TU,WE,TH,FR",  # Fixed: use RRULE string instead of object
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.data["reason"] == "Daily standup"
+
+        # Verify the mock was called
+        mock_calendar_service.create_blocked_time.assert_called_once()
+
+    def test_create_recurring_available_time_with_recurrence_rule(
+        self, auth_client, calendar, user
+    ):
+        """Test creating a recurring available time with recurrence_rule object"""
+        from di_core.containers import container
+
+        # Set up the calendar to allow available windows management
+        calendar.can_manage_available_windows = True
+        calendar.save()
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+
+        created_available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+        )
+
+        mock_calendar_service.create_available_time.return_value = created_available_time
+
+        url = reverse("api:AvailableTimes-list")
+        data = {
+            "calendar": calendar.id,  # Fixed: use calendar_id instead of calendar
+            "start_time": (  # Fixed: use start_time (not start_datetime)
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+            ).isoformat(),
+            "end_time": (  # Fixed: use end_time (not end_datetime)
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+            ).isoformat(),
+            "rrule_string": "FREQ=WEEKLY;INTERVAL=1;COUNT=10;BYDAY=MO,WE,FR",  # Fixed: use RRULE string instead of object
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        # Note: can_book_partially field doesn't exist in AvailableTime model, only in AvailableTimeWindow
+
+        # Verify the mock was called
+        mock_calendar_service.create_available_time.assert_called_once()
+
+    def test_recurring_validation_errors(self, auth_client, calendar, user):
+        """Test validation errors when creating recurring items"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        blocked_time_url = reverse("api:BlockedTimes-list")
+        available_time_url = reverse("api:AvailableTimes-list")
+
+        now = datetime.datetime.now(datetime.UTC)
+
+        # Test missing required fields for blocked time
+        data = {
+            "calendar_id": calendar.id,
+            "reason": "Missing fields test",
+            # Missing start_time, end_time, and recurrence_rule
+        }
+
+        response = auth_client.post(blocked_time_url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "start_time" in response.data or "This field is required" in str(response.data)
+
+        # Test invalid recurrence rule format
+        data = {
+            "calendar_id": calendar.id,
+            "reason": "Invalid recurrence rule",
+            "start_time": (now + datetime.timedelta(hours=1)).isoformat(),
+            "end_time": (now + datetime.timedelta(hours=2)).isoformat(),
+            "recurrence_rule": "INVALID_RRULE_FORMAT",  # This should cause validation error
+        }
+
+        response = auth_client.post(blocked_time_url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Test for available times - set up calendar first
+        calendar.can_manage_available_windows = True
+        calendar.save()
+
+        # Test missing required fields for available time
+        data = {
+            "calendar_id": calendar.id,
+            # Missing start_time, end_time, and recurrence_rule
+        }
+
+        response = auth_client.post(available_time_url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "start_time" in response.data or "This field is required" in str(response.data)
+
+    def test_expanded_endpoints_missing_params(self, auth_client, calendar, user):
+        """Test expanded endpoints with missing required parameters"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        blocked_time_url = reverse("api:BlockedTimes-expanded")
+        available_time_url = reverse("api:AvailableTimes-expanded")
+
+        # Missing all parameters
+        response = auth_client.get(blocked_time_url)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        response = auth_client.get(available_time_url)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Missing end_date
+        params = {
+            "calendar_id": calendar.id,
+            "start_date": "2024-01-01",
+        }
+
+        response = auth_client.get(blocked_time_url, params)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        response = auth_client.get(available_time_url, params)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)

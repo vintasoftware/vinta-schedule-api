@@ -255,7 +255,7 @@ BEGIN
                 WHILE v_temp_date < p_start_date LOOP
                     -- Check if this occurrence was cancelled
                     SELECT EXISTS(
-                        SELECT 1 FROM calendar_integration_recurrenceexception
+                        SELECT 1 FROM calendar_integration_eventrecurrenceexception
                         WHERE parent_event_fk_id = p_event_id 
                         AND exception_date = v_temp_date
                         AND is_cancelled = true
@@ -286,7 +286,7 @@ BEGIN
                         IF EXTRACT(DOW FROM v_temp_date) = ANY(v_weekdays) THEN
                             -- Check if this occurrence was cancelled
                             SELECT EXISTS(
-                                SELECT 1 FROM calendar_integration_recurrenceexception
+                                SELECT 1 FROM calendar_integration_eventrecurrenceexception
                                 WHERE parent_event_fk_id = p_event_id 
                                 AND exception_date = v_temp_date
                                 AND is_cancelled = true
@@ -312,7 +312,7 @@ BEGIN
                     
                     -- Subtract cancelled exceptions that occurred before the search range
                     SELECT COUNT(*) INTO v_temp_occurrence_count
-                    FROM calendar_integration_recurrenceexception
+                    FROM calendar_integration_eventrecurrenceexception
                     WHERE parent_event_fk_id = p_event_id 
                     AND exception_date < p_start_date
                     AND is_cancelled = true;
@@ -326,7 +326,7 @@ BEGIN
                 
                 -- Subtract cancelled exceptions that occurred before the search range
                 SELECT COUNT(*) INTO v_temp_occurrence_count
-                FROM calendar_integration_recurrenceexception
+                FROM calendar_integration_eventrecurrenceexception
                 WHERE parent_event_fk_id = p_event_id 
                 AND exception_date < p_start_date
                 AND is_cancelled = true;
@@ -339,7 +339,7 @@ BEGIN
                 
                 -- Subtract cancelled exceptions that occurred before the search range
                 SELECT COUNT(*) INTO v_temp_occurrence_count
-                FROM calendar_integration_recurrenceexception
+                FROM calendar_integration_eventrecurrenceexception
                 WHERE parent_event_fk_id = p_event_id 
                 AND exception_date < p_start_date
                 AND is_cancelled = true;
@@ -394,7 +394,7 @@ BEGIN
             IF v_current_date >= p_start_date THEN
                 -- Check for any exceptions (cancelled or modified)
                 SELECT EXISTS(
-                    SELECT 1 FROM calendar_integration_recurrenceexception
+                    SELECT 1 FROM calendar_integration_eventrecurrenceexception
                     WHERE parent_event_fk_id = p_event_id 
                     AND exception_date = v_current_date
                 ) INTO v_exception_exists;
@@ -429,7 +429,7 @@ BEGIN
                     -- Exception exists (cancelled or modified)
                     -- Check if it's cancelled
                     SELECT is_cancelled INTO v_exception_exists
-                    FROM calendar_integration_recurrenceexception
+                    FROM calendar_integration_eventrecurrenceexception
                     WHERE parent_event_fk_id = p_event_id 
                     AND exception_date = v_current_date;
                     
@@ -452,7 +452,7 @@ BEGIN
                 -- Occurrence is outside the search range, but still counts toward total limit
                 -- Check if this occurrence is cancelled
                 SELECT EXISTS(
-                    SELECT 1 FROM calendar_integration_recurrenceexception
+                    SELECT 1 FROM calendar_integration_eventrecurrenceexception
                     WHERE parent_event_fk_id = p_event_id 
                     AND exception_date = v_current_date
                     AND is_cancelled = true
@@ -568,7 +568,7 @@ BEGIN
             TRUE,
             'modified',
             me.id
-        FROM calendar_integration_recurrenceexception re
+        FROM calendar_integration_eventrecurrenceexception re
         JOIN calendar_integration_calendarevent me ON re.modified_event_fk_id = me.id
         WHERE re.parent_event_fk_id = p_event_id
         AND NOT re.is_cancelled

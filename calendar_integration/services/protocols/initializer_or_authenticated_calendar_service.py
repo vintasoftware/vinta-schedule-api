@@ -143,3 +143,43 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
         end_date: datetime.datetime,
     ) -> list[AvailableTime]:
         ...
+
+    def create_recurring_blocked_time_exception(
+        self,
+        parent_blocked_time: BlockedTime,
+        exception_date: datetime.date,
+        modified_reason: str | None = None,
+        modified_start_time: datetime.datetime | None = None,
+        modified_end_time: datetime.datetime | None = None,
+        is_cancelled: bool = False,
+    ) -> BlockedTime | None:
+        ...
+
+    def create_recurring_available_time_exception(
+        self,
+        parent_available_time: AvailableTime,
+        exception_date: datetime.date,
+        modified_start_time: datetime.datetime | None = None,
+        modified_end_time: datetime.datetime | None = None,
+        is_cancelled: bool = False,
+    ) -> AvailableTime | None:
+        ...
+
+    def create_blocked_time(
+        self,
+        calendar: Calendar,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        reason: str = "",
+        rrule_string: str | None = None,
+    ) -> BlockedTime:
+        ...
+
+    def create_available_time(
+        self,
+        calendar: Calendar,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        rrule_string: str | None = None,
+    ) -> AvailableTime:
+        ...
