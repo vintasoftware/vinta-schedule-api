@@ -6,7 +6,16 @@ import pytest
 from model_bakery import baker
 
 from calendar_integration.constants import RecurrenceFrequency, RecurrenceWeekday
-from calendar_integration.models import CalendarEvent, EventRecurrenceException, RecurrenceRule
+from calendar_integration.models import (
+    AvailableTime,
+    AvailableTimeBulkModification,
+    BlockedTime,
+    BlockedTimeBulkModification,
+    CalendarEvent,
+    EventBulkModification,
+    EventRecurrenceException,
+    RecurrenceRule,
+)
 
 
 # Helpers
@@ -1141,3 +1150,161 @@ def test_get_next_occurrence_mixed_exceptions_before_range():
     # After Jan 4, limit should be reached
     after_last = _dt(2025, 1, 4, 12)
     assert event.get_next_occurrence(after_date=after_last) is None
+
+
+@pytest.mark.django_db
+def test_event_bulk_modification_create_and_linking():
+    org = baker.make("organizations.Organization")
+    cal = baker.make(
+        "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
+    )
+
+    parent = baker.make(
+        CalendarEvent,
+        calendar_fk=cal,
+        organization=org,
+        title="Parent",
+        start_time=_dt(2025, 1, 1),
+        external_id="evt-parent-1",
+        end_time=_dt(2025, 1, 1, 10),
+    )
+
+    # Continuation event referencing parent via bulk_modification_parent
+    continuation = baker.make(
+        CalendarEvent,
+        calendar_fk=cal,
+        organization=org,
+        title="Continuation",
+        start_time=_dt(2025, 2, 1),
+        external_id="evt-cont-1",
+        end_time=_dt(2025, 2, 1, 10),
+        bulk_modification_parent=parent,
+    )
+
+    assert continuation.bulk_modification_parent_fk_id == parent.id
+    # Parent should have the continuation in its reverse relation
+    assert continuation in list(parent.bulk_modifications.all())
+
+    # Create bulk modification records and link them
+    bulk1 = baker.make(
+        EventBulkModification,
+        organization=org,
+        parent_event=parent,
+        modification_start_date=_dt(2025, 2, 1),
+        is_bulk_cancelled=False,
+    )
+
+    bulk2 = baker.make(
+        EventBulkModification,
+        organization=org,
+        parent_event=parent,
+        modification_start_date=_dt(2025, 3, 1),
+        original_parent=bulk1,
+    )
+
+    # Link continuation
+    bulk1.modified_continuation = bulk2
+    bulk1.save()
+
+    assert bulk2.original_parent_fk_id == bulk1.id
+    assert bulk1.modified_continuation_fk_id == bulk2.id
+    # Parent event should reference its bulk records
+    assert bulk1 in list(parent.bulk_modification_records.all())
+
+
+@pytest.mark.django_db
+def test_blocked_and_available_bulk_modification_parent_fields():
+    org = baker.make("organizations.Organization")
+    cal = baker.make(
+        "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
+    )
+
+    parent_blocked = baker.make(
+        BlockedTime,
+        calendar_fk=cal,
+        organization=org,
+        reason="Original",
+        start_time=_dt(2025, 1, 1),
+        external_id="bt-parent-1",
+        end_time=_dt(2025, 1, 1, 1),
+    )
+
+    continuation_blocked = baker.make(
+        BlockedTime,
+        calendar_fk=cal,
+        organization=org,
+        reason="Continuation",
+        start_time=_dt(2025, 2, 1),
+        external_id="bt-cont-1",
+        end_time=_dt(2025, 2, 1, 1),
+        bulk_modification_parent=parent_blocked,
+    )
+
+    assert continuation_blocked.bulk_modification_parent_fk_id == parent_blocked.id
+    assert continuation_blocked in list(parent_blocked.bulk_modifications.all())
+
+    parent_available = baker.make(
+        AvailableTime,
+        calendar_fk=cal,
+        organization=org,
+        start_time=_dt(2025, 1, 5),
+        end_time=_dt(2025, 1, 5, 1),
+    )
+
+    continuation_available = baker.make(
+        AvailableTime,
+        calendar_fk=cal,
+        organization=org,
+        start_time=_dt(2025, 2, 5),
+        end_time=_dt(2025, 2, 5, 1),
+        bulk_modification_parent=parent_available,
+    )
+
+    assert continuation_available.bulk_modification_parent_fk_id == parent_available.id
+    assert continuation_available in list(parent_available.bulk_modifications.all())
+
+
+@pytest.mark.django_db
+def test_blockedtime_and_availabletime_bulk_modification_records():
+    org = baker.make("organizations.Organization")
+    cal = baker.make(
+        "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
+    )
+
+    parent_bt = baker.make(
+        BlockedTime,
+        calendar_fk=cal,
+        organization=org,
+        reason="Original BT",
+        start_time=_dt(2025, 1, 1),
+        external_id="bt-parent-2",
+        end_time=_dt(2025, 1, 1, 1),
+    )
+
+    bulk_bt = baker.make(
+        BlockedTimeBulkModification,
+        organization=org,
+        parent_blocked_time=parent_bt,
+        modification_start_date=_dt(2025, 2, 1),
+        is_bulk_cancelled=True,
+    )
+
+    assert bulk_bt.parent_blocked_time_fk_id == parent_bt.id
+    assert bulk_bt.is_bulk_cancelled is True
+
+    parent_av = baker.make(
+        AvailableTime,
+        calendar_fk=cal,
+        organization=org,
+        start_time=_dt(2025, 1, 10),
+        end_time=_dt(2025, 1, 10, 1),
+    )
+
+    bulk_av = baker.make(
+        AvailableTimeBulkModification,
+        organization=org,
+        parent_available_time=parent_av,
+        modification_start_date=_dt(2025, 2, 10),
+    )
+
+    assert bulk_av.parent_available_time_fk_id == parent_av.id
