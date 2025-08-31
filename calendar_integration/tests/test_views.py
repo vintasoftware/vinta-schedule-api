@@ -1789,7 +1789,7 @@ class TestBlockedTimeViewSet:
         with container.calendar_service.override(mock_calendar_service):
             response = auth_client.get(url, params)
 
-        (assert_response_status_code(response, status.HTTP_200_OK),)
+        assert_response_status_code(response, status.HTTP_200_OK)
         assert len(response.data) == 2
 
         # Verify the mock was called
