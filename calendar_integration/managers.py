@@ -31,6 +31,17 @@ class RecurringManagerMixin:
             start_date, end_date, max_occurrences
         )
 
+    def annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+        self, start_date: datetime.datetime, end_date: datetime.datetime, max_occurrences=10000
+    ):
+        """
+        Annotate objects with their recurring occurrences in the date range, including bulk modifications.
+        Delegates to the queryset implementation.
+        """
+        return self.get_queryset().annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+            start_date, end_date, max_occurrences
+        )
+
     def filter_master_recurring_objects(self):
         """Filter to get only master recurring objects (not instances)."""
         return self.get_queryset().filter_master_recurring_objects()
@@ -46,6 +57,21 @@ class RecurringManagerMixin:
     def filter_non_recurring_objects(self):
         """Filter to get objects that don't have recurrence rules."""
         return self.get_queryset().filter_non_recurring_objects()
+
+    def get_occurrences_in_range_with_bulk_modifications(
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        include_continuations: bool = True,
+        max_occurrences: int = 10000,
+    ):
+        """
+        Get occurrences considering bulk modifications.
+        Delegates to the queryset implementation.
+        """
+        return self.get_queryset().get_occurrences_in_range_with_bulk_modifications(
+            start_date, end_date, include_continuations, max_occurrences
+        )
 
 
 class CalendarManager(BaseOrganizationModelManager):

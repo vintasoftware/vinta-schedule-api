@@ -728,6 +728,63 @@ class RecurringMixin(OrganizationModel):
         exception.save()
         return exception
 
+    def get_occurrences_in_range_with_bulk_modifications(
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        include_continuations: bool = True,
+        max_occurrences: int = 10000,
+    ) -> list[Self]:
+        """
+        Get occurrences considering bulk modifications.
+
+        This method handles the proper aggregation of occurrences from:
+        1. The original recurring object (until its UNTIL date if truncated)
+        2. Any continuation objects created by bulk modifications
+
+        Args:
+            start_date: Start of the date range
+            end_date: End of the date range
+            include_continuations: Whether to include occurrences from continuation objects
+            max_occurrences: Maximum number of occurrences to return
+
+        Returns:
+            List of occurrence instances, properly sorted by start time
+        """
+        all_occurrences: list[Self] = []
+
+        # Get occurrences from this (potentially truncated) recurring object
+        original_occurrences = self.get_occurrences_in_range(
+            start_date=start_date,
+            end_date=end_date,
+            include_self=True,
+            include_exceptions=True,
+            max_occurrences=max_occurrences,
+        )
+        all_occurrences.extend(original_occurrences)
+
+        # If including continuations, get occurrences from bulk modification continuation objects
+        if include_continuations and hasattr(self, "bulk_modifications"):
+            for continuation in self.bulk_modifications.all():
+                # Each continuation is a separate recurring object starting from its modification date
+                continuation_occurrences = continuation.get_occurrences_in_range(
+                    start_date=start_date,
+                    end_date=end_date,
+                    include_self=True,
+                    include_exceptions=True,
+                    max_occurrences=max_occurrences,
+                )
+                all_occurrences.extend(continuation_occurrences)
+
+        # Sort all occurrences by start time
+        all_occurrences.sort(key=lambda occurrence: occurrence.start_time)
+
+        # Limit to max_occurrences if needed
+        if len(all_occurrences) > max_occurrences:
+            all_occurrences = all_occurrences[:max_occurrences]
+
+        return all_occurrences
+
     def _create_recurring_instance(
         self,
         start_time: datetime.datetime,
