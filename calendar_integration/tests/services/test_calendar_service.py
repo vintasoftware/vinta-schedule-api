@@ -15,7 +15,9 @@ from calendar_integration.constants import (
 )
 from calendar_integration.models import (
     AvailableTime,
+    AvailableTimeRecurrenceException,
     BlockedTime,
+    BlockedTimeRecurrenceException,
     Calendar,
     CalendarEvent,
     CalendarOrganizationResourcesImport,
@@ -917,7 +919,7 @@ def test_create_recurring_exception_modified(
             )
         ],
     ):
-        modified_event = service.create_recurring_exception(
+        modified_event = service.create_recurring_event_exception(
             parent_event=parent_event,
             exception_date=exception_date,
             modified_title=modified_title,
@@ -929,7 +931,7 @@ def test_create_recurring_exception_modified(
 
     # Assertions for modified instance
     assert modified_event is not None
-    assert modified_event.parent_event == parent_event
+    assert modified_event.parent_recurring_object == parent_event
     assert modified_event.is_recurring_exception is True
     assert modified_event.title == modified_title
     assert modified_event.description == modified_description
@@ -995,7 +997,7 @@ def test_create_recurring_exception_cancelled(
         )
 
     exception_date = parent_event.start_time + datetime.timedelta(weeks=1)
-    result = service.create_recurring_exception(
+    result = service.create_recurring_event_exception(
         parent_event=parent_event,
         exception_date=exception_date,
         is_cancelled=True,
@@ -1022,7 +1024,7 @@ def test_create_recurring_exception_non_recurring_error(
     service.authenticate(account=social_account, organization=calendar_event.organization)
 
     with pytest.raises(ValueError, match="Cannot create exception for non-recurring event"):
-        service.create_recurring_exception(
+        service.create_recurring_event_exception(
             parent_event=calendar_event,
             exception_date=calendar_event.start_time + datetime.timedelta(weeks=1),
             is_cancelled=True,
@@ -1121,7 +1123,7 @@ def test_create_recurring_exception_on_master_event_with_future_occurrences(
             )
         ],
     ):
-        result_event = service.create_recurring_exception(
+        result_event = service.create_recurring_event_exception(
             parent_event=parent_event,
             exception_date=exception_date,
             modified_title=modified_title,
@@ -1205,7 +1207,7 @@ def test_create_recurring_exception_on_master_event_no_future_occurrences(
 
     # Since there are no future occurrences, we shouldn't need to mock availability again
     # The service should just modify the original event and make it non-recurring
-    result_event = service.create_recurring_exception(
+    result_event = service.create_recurring_event_exception(
         parent_event=parent_event,
         exception_date=exception_date,
         modified_title=modified_title,
@@ -1345,7 +1347,7 @@ def test_create_recurring_exception_on_master_preserves_attendances_and_resource
             )
         ],
     ):
-        result_event = service.create_recurring_exception(
+        result_event = service.create_recurring_event_exception(
             parent_event=parent_event,
             exception_date=exception_date,
             modified_title="Modified Meeting",
@@ -1507,8 +1509,8 @@ def test_get_recurring_event_instances_with_modified_exception(
             recurrence_rule=recurrence_rule,
         )
 
-    exception_date = start + datetime.timedelta(weeks=1)
-    modified_start = exception_date + datetime.timedelta(minutes=30)
+    exception_datetime = start + datetime.timedelta(weeks=1)
+    modified_start = exception_datetime + datetime.timedelta(minutes=30)
     modified_end = modified_start + datetime.timedelta(hours=1)
     with patch.object(
         CalendarService,
@@ -1519,9 +1521,9 @@ def test_get_recurring_event_instances_with_modified_exception(
             )
         ],
     ):
-        modified_event = service.create_recurring_exception(
+        modified_event = service.create_recurring_event_exception(
             parent_event=parent_event,
-            exception_date=exception_date,
+            exception_date=exception_datetime,
             modified_title="Modified Weekly Sync",
             modified_description="Adjusted time",
             modified_start_time=modified_start,
@@ -1596,10 +1598,10 @@ def test_get_recurring_event_instances_with_cancelled_exception(
         )
 
     # Cancel 3rd occurrence (week 2 offset from start? choose week 1 or 2) cancel second week
-    exception_date = start + datetime.timedelta(weeks=1)
-    service.create_recurring_exception(
+    exception_datetime = start + datetime.timedelta(weeks=1)
+    service.create_recurring_event_exception(
         parent_event=parent_event,
-        exception_date=exception_date,
+        exception_date=exception_datetime,
         is_cancelled=True,
     )
 
@@ -1836,7 +1838,7 @@ def test_get_calendar_events_expanded_with_exceptions(
             )
         ],
     ):
-        service.create_recurring_exception(
+        service.create_recurring_event_exception(
             parent_event=parent_event,
             exception_date=exception_date_week1,
             modified_title="Modified Weekly Review",
@@ -1847,10 +1849,10 @@ def test_get_calendar_events_expanded_with_exceptions(
         )
 
     # Create cancelled exception for week 2
-    exception_date_week2 = start + datetime.timedelta(weeks=2)
-    service.create_recurring_exception(
+    exception_datetime_week2 = start + datetime.timedelta(weeks=2)
+    service.create_recurring_event_exception(
         parent_event=parent_event,
-        exception_date=exception_date_week2,
+        exception_date=exception_datetime_week2,
         is_cancelled=True,
     )
 
@@ -1927,8 +1929,8 @@ def test_delete_recurring_event_series_deletes_all(
         )
 
     # Create a modified exception (instance)
-    exception_date = start + datetime.timedelta(weeks=1)
-    mod_start = exception_date + datetime.timedelta(minutes=30)
+    exception_datetime = start + datetime.timedelta(weeks=1)
+    mod_start = exception_datetime + datetime.timedelta(minutes=30)
     mod_end = mod_start + datetime.timedelta(hours=1)
     with patch.object(
         CalendarService,
@@ -1939,9 +1941,9 @@ def test_delete_recurring_event_series_deletes_all(
             )
         ],
     ):
-        modified_instance = service.create_recurring_exception(
+        modified_instance = service.create_recurring_event_exception(
             parent_event=parent_event,
-            exception_date=exception_date,
+            exception_date=exception_datetime,
             modified_title="Modified Series Meeting",
             modified_description="Modified occurrence",
             modified_start_time=mod_start,
@@ -1985,10 +1987,10 @@ def test_delete_recurring_event_series_deletes_all(
         == 0
     )
     # Exceptions deleted
-    from calendar_integration.models import RecurrenceException
+    from calendar_integration.models import EventRecurrenceException
 
     assert (
-        RecurrenceException.objects.filter(
+        EventRecurrenceException.objects.filter(
             organization_id=calendar.organization_id, parent_event=parent_event
         ).count()
         == 0
@@ -2051,8 +2053,8 @@ def test_delete_recurring_modified_instance_creates_cancellation_exception(
             recurrence_rule=recurrence_rule,
         )
 
-    exc_date = start + datetime.timedelta(weeks=1)
-    mod_start = exc_date + datetime.timedelta(minutes=15)
+    exc_datetime = start + datetime.timedelta(weeks=1)
+    mod_start = exc_datetime + datetime.timedelta(minutes=15)
     mod_end = mod_start + datetime.timedelta(hours=1)
     with patch.object(
         CalendarService,
@@ -2063,9 +2065,9 @@ def test_delete_recurring_modified_instance_creates_cancellation_exception(
             )
         ],
     ):
-        modified_instance = service.create_recurring_exception(
+        modified_instance = service.create_recurring_event_exception(
             parent_event=parent_event,
-            exception_date=exc_date,
+            exception_date=exc_datetime,
             modified_title="Series Modified",
             modified_description="Modified occ",
             modified_start_time=mod_start,
@@ -2083,10 +2085,11 @@ def test_delete_recurring_modified_instance_creates_cancellation_exception(
     # Adapter should NOT be called for deleting instance (cancellation approach) under adapter branch
     mock_google_adapter.delete_event.assert_not_called()
 
-    # Two exceptions now: one for modification, one for cancellation of modified occurrence
-    assert parent_event.recurrence_exceptions.count() == pre_exception_count + 1
+    # One exception: for cancellation of modified occurrence, updated the existing exception
+    # for the modified event
+    assert parent_event.recurrence_exceptions.count() == pre_exception_count
     # The modified instance still exists (current implementation behavior)
-    assert CalendarEvent.objects.filter(id=modified_instance.id).exists()
+    assert not CalendarEvent.objects.filter(id=modified_instance.id).exists()
 
 
 @pytest.mark.django_db
@@ -2145,8 +2148,8 @@ def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only
             recurrence_rule=recurrence_rule,
         )
 
-    exc_date = start + datetime.timedelta(weeks=1)
-    mod_start = exc_date + datetime.timedelta(minutes=10)
+    exc_datetime = start + datetime.timedelta(weeks=1)
+    mod_start = exc_datetime + datetime.timedelta(minutes=10)
     mod_end = mod_start + datetime.timedelta(hours=1)
     with patch.object(
         CalendarService,
@@ -2157,9 +2160,9 @@ def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only
             )
         ],
     ):
-        modified_instance = service.create_recurring_exception(
+        modified_instance = service.create_recurring_event_exception(
             parent_event=parent_event,
-            exception_date=exc_date,
+            exception_date=exc_datetime,
             modified_title="Parent (Week 1 Mod)",
             modified_description="Modified occ",
             modified_start_time=mod_start,
@@ -2891,7 +2894,7 @@ def test_process_new_event_recurring_instance_with_parent(
 
     assert len(changes.events_to_create) == 1
     inst = changes.events_to_create[0]
-    assert inst.parent_event == parent_event
+    assert inst.parent_recurring_object == parent_event
     assert inst.is_recurring_exception is True
     assert inst.recurrence_id == instance_event_data.start_time
     assert "instance_rec_123" in changes.matched_event_ids
@@ -3273,8 +3276,12 @@ def test_remove_available_time_windows_overlap(
     )
 
     # Verify both available time windows were deleted due to overlaps
-    assert not AvailableTime.objects.filter(id=available_time1.id).exists()
-    assert not AvailableTime.objects.filter(id=available_time2.id).exists()
+    assert not AvailableTime.objects.filter(
+        organization_id=calendar.organization_id, id=available_time1.id
+    ).exists()
+    assert not AvailableTime.objects.filter(
+        organization_id=calendar.organization_id, id=available_time2.id
+    ).exists()
 
 
 @pytest.mark.django_db
@@ -5270,3 +5277,969 @@ def test_get_calendar_events_expanded_bundle_calendar(organization, bundle_calen
     assert "Bundle Primary Event" in event_titles
     assert "Regular Event" in event_titles
     assert "[Bundle] Primary Event" not in event_titles
+
+
+# Recurring BlockedTime and AvailableTime Tests
+
+
+@pytest.mark.django_db
+def test_create_blocked_time_simple(organization, calendar):
+    """Test creating a simple (non-recurring) blocked time."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    blocked_time = service.create_blocked_time(
+        calendar=calendar, start_time=start_time, end_time=end_time, reason="Office maintenance"
+    )
+
+    assert blocked_time.calendar == calendar
+    assert blocked_time.start_time == start_time
+    assert blocked_time.end_time == end_time
+    assert blocked_time.reason == "Office maintenance"
+    assert blocked_time.recurrence_rule is None
+    assert not blocked_time.is_recurring
+
+
+@pytest.mark.django_db
+def test_create_blocked_time_recurring(organization, calendar):
+    """Test creating a recurring blocked time."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+    rrule_string = "FREQ=WEEKLY;BYDAY=MO;COUNT=4"
+
+    blocked_time = service.create_blocked_time(
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        reason="Weekly maintenance",
+        rrule_string=rrule_string,
+    )
+
+    assert blocked_time.calendar == calendar
+    assert blocked_time.start_time == start_time
+    assert blocked_time.end_time == end_time
+    assert blocked_time.reason == "Weekly maintenance"
+    assert blocked_time.recurrence_rule is not None
+    assert blocked_time.is_recurring
+    # Check that the rrule contains the expected components (order may vary)
+    rrule_result = blocked_time.recurrence_rule.to_rrule_string()
+    assert "FREQ=WEEKLY" in rrule_result
+    assert "BYDAY=MO" in rrule_result
+    assert "COUNT=4" in rrule_result
+
+
+@pytest.mark.django_db
+def test_create_available_time_simple(organization):
+    """Test creating a simple (non-recurring) available time."""
+    calendar = Calendar.objects.create(
+        name="Test Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    available_time = service.create_available_time(
+        calendar=calendar, start_time=start_time, end_time=end_time
+    )
+
+    assert available_time.calendar == calendar
+    assert available_time.start_time == start_time
+    assert available_time.end_time == end_time
+    assert available_time.recurrence_rule is None
+    assert not available_time.is_recurring
+
+
+@pytest.mark.django_db
+def test_create_available_time_recurring(organization):
+    """Test creating a recurring available time."""
+    calendar = Calendar.objects.create(
+        name="Test Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+    rrule_string = "FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR;COUNT=5"
+
+    available_time = service.create_available_time(
+        calendar=calendar, start_time=start_time, end_time=end_time, rrule_string=rrule_string
+    )
+
+    assert available_time.calendar == calendar
+    assert available_time.start_time == start_time
+    assert available_time.end_time == end_time
+    assert available_time.recurrence_rule is not None
+    assert available_time.is_recurring
+    # Check that the rrule contains the expected components (order may vary)
+    rrule_result = available_time.recurrence_rule.to_rrule_string()
+    assert "FREQ=DAILY" in rrule_result
+    assert "BYDAY=MO,TU,WE,TH,FR" in rrule_result
+    assert "COUNT=5" in rrule_result
+
+
+@pytest.mark.django_db
+def test_bulk_create_blocked_times_with_recurrence(organization, calendar):
+    """Test bulk creating blocked times with recurrence support."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    blocked_times_data = [
+        (
+            datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC),
+            "Daily maintenance",
+            "FREQ=DAILY;COUNT=3",
+        ),
+        (
+            datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            "Simple blocking",
+            None,
+        ),
+    ]
+
+    blocked_times = service.bulk_create_manual_blocked_times(
+        calendar=calendar, blocked_times=blocked_times_data
+    )
+
+    blocked_times_list = list(blocked_times)
+    assert len(blocked_times_list) == 2
+
+    # First blocked time should be recurring
+    recurring_blocked = blocked_times_list[0]
+    assert recurring_blocked.reason == "Daily maintenance"
+    assert recurring_blocked.is_recurring
+    rrule_result = recurring_blocked.recurrence_rule.to_rrule_string()
+    assert "FREQ=DAILY" in rrule_result
+    assert "COUNT=3" in rrule_result
+
+    # Second blocked time should be simple
+    simple_blocked = blocked_times_list[1]
+    assert simple_blocked.reason == "Simple blocking"
+    assert not simple_blocked.is_recurring
+
+
+@pytest.mark.django_db
+def test_bulk_create_availability_windows_with_recurrence(organization):
+    """Test bulk creating availability windows with recurrence support."""
+    calendar = Calendar.objects.create(
+        name="Test Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    availability_data = [
+        (
+            datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC),
+            "FREQ=WEEKLY;BYDAY=MO,WE,FR;COUNT=3",
+        ),
+        (
+            datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            None,
+        ),
+    ]
+
+    available_times = service.bulk_create_availability_windows(
+        calendar=calendar, availability_windows=availability_data
+    )
+
+    available_times_list = list(available_times)
+    assert len(available_times_list) == 2
+
+    # First available time should be recurring
+    recurring_available = available_times_list[0]
+    assert recurring_available.is_recurring
+    rrule_result = recurring_available.recurrence_rule.to_rrule_string()
+    assert "FREQ=WEEKLY" in rrule_result
+    assert "BYDAY=MO,WE,FR" in rrule_result
+    assert "COUNT=3" in rrule_result
+
+    # Second available time should be simple
+    simple_available = available_times_list[1]
+    assert not simple_available.is_recurring
+
+
+@pytest.mark.django_db
+def test_get_blocked_times_expanded(organization, calendar):
+    """Test getting expanded blocked times including recurring instances."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create a recurring blocked time
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    blocked_time = service.create_blocked_time(
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        reason="Weekly maintenance",
+        rrule_string="FREQ=WEEKLY;COUNT=3",
+    )
+
+    assert blocked_time.is_recurring  # Use the variable
+
+    # Get expanded blocked times for the month
+    expanded_blocked_times = service.get_blocked_times_expanded(
+        calendar=calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Should include the master and generated instances
+    # Note: The actual count depends on the database function implementation
+    assert len(expanded_blocked_times) >= 1  # At least the master
+    assert any(bt.reason == "Weekly maintenance" for bt in expanded_blocked_times)
+
+
+@pytest.mark.django_db
+def test_get_available_times_expanded(organization):
+    """Test getting expanded available times including recurring instances."""
+    calendar = Calendar.objects.create(
+        name="Test Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create a recurring available time
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    available_time = service.create_available_time(
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        rrule_string="FREQ=DAILY;COUNT=5",
+    )
+
+    assert available_time.is_recurring  # Use the variable
+
+    # Get expanded available times for the month
+    expanded_available_times = service.get_available_times_expanded(
+        calendar=calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Should include the master and generated instances
+    # Note: The actual count depends on the database function implementation
+    assert len(expanded_available_times) >= 1  # At least the master
+    assert all(at.calendar == calendar for at in expanded_available_times)
+
+
+@pytest.mark.django_db
+def test_get_blocked_times_expanded_with_cancelled_exception(organization, calendar):
+    """Test that get_blocked_times_expanded properly handles cancelled exceptions."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create a weekly recurring blocked time for 4 weeks
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)  # Monday
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    blocked_time = service.create_blocked_time(
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        reason="Weekly maintenance",
+        rrule_string="FREQ=WEEKLY;COUNT=4",
+    )
+
+    # Cancel the second occurrence (Sept 8)
+    exception_date = datetime.date(2025, 9, 8)
+
+    # Create the cancelled exception record manually
+    BlockedTimeRecurrenceException.objects.create(
+        parent_blocked_time=blocked_time,
+        exception_date=datetime.datetime.combine(
+            exception_date, blocked_time.start_time.time(), tzinfo=blocked_time.start_time.tzinfo
+        ),
+        is_cancelled=True,
+        organization=blocked_time.organization,
+    )
+
+    # Get expanded blocked times for September
+    expanded_blocked_times = service.get_blocked_times_expanded(
+        calendar=calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Should include master and instances, but not the cancelled one
+    # Check that Sept 8 occurrence is not included
+    sept_8_occurrences = [
+        bt for bt in expanded_blocked_times if bt.start_time.date() == datetime.date(2025, 9, 8)
+    ]
+    assert len(sept_8_occurrences) == 0, "Cancelled occurrence should not appear"
+
+    # Verify the exception was created
+    exceptions = BlockedTimeRecurrenceException.objects.filter(
+        parent_blocked_time=blocked_time, organization=organization
+    )
+    assert exceptions.count() == 1
+    exception = exceptions.first()
+    assert exception.exception_date.date() == exception_date
+    assert exception.is_cancelled is True
+    assert exception.modified_blocked_time is None
+
+
+@pytest.mark.django_db
+def test_get_blocked_times_expanded_with_modified_exception(organization, calendar):
+    """Test that get_blocked_times_expanded properly handles modified exceptions."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create a daily recurring blocked time for 5 days
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    blocked_time = service.create_blocked_time(
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        reason="Daily maintenance",
+        rrule_string="FREQ=DAILY;COUNT=5",
+    )
+
+    # Modify the third occurrence (Sept 3) - change time and reason
+    exception_date = datetime.date(2025, 9, 3)
+    modified_start = datetime.datetime(2025, 9, 3, 10, 0, tzinfo=datetime.UTC)
+    modified_end = datetime.datetime(2025, 9, 3, 18, 0, tzinfo=datetime.UTC)
+
+    # Create the modified blocked time manually first
+    modified_blocked_time = service.create_blocked_time(
+        calendar=calendar,
+        start_time=modified_start,
+        end_time=modified_end,
+        reason="Extended maintenance",
+    )
+
+    # Mark it as an exception
+    modified_blocked_time.is_recurring_exception = True
+    modified_blocked_time.save()
+
+    # Create the exception record
+    BlockedTimeRecurrenceException.objects.create(
+        parent_blocked_time=blocked_time,
+        modified_blocked_time=modified_blocked_time,
+        exception_date=datetime.datetime.combine(
+            exception_date, blocked_time.start_time.time(), tzinfo=blocked_time.start_time.tzinfo
+        ),
+        is_cancelled=False,
+        organization=blocked_time.organization,
+    )
+    assert modified_blocked_time is not None
+    assert modified_blocked_time.reason == "Extended maintenance"
+    assert modified_blocked_time.start_time == modified_start
+    assert modified_blocked_time.end_time == modified_end
+
+    # Get expanded blocked times for September
+    expanded_blocked_times = service.get_blocked_times_expanded(
+        calendar=calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Find the Sept 3 occurrences - should include the modified one
+    sept_3_occurrences = [
+        bt for bt in expanded_blocked_times if bt.start_time.date() == datetime.date(2025, 9, 3)
+    ]
+
+    # Should have exactly one occurrence for Sept 3 (the modified one)
+    assert len(sept_3_occurrences) == 1
+    modified_occurrence = sept_3_occurrences[0]
+    assert modified_occurrence.reason == "Extended maintenance"
+    assert modified_occurrence.start_time == modified_start
+    assert modified_occurrence.end_time == modified_end
+    assert modified_occurrence.is_recurring_exception is True
+
+    # Verify the exception was created
+    exceptions = BlockedTimeRecurrenceException.objects.filter(
+        parent_blocked_time=blocked_time, organization=organization
+    )
+    assert exceptions.count() == 1
+    exception = exceptions.first()
+    assert exception.exception_date.date() == exception_date
+    assert exception.is_cancelled is False
+    assert exception.modified_blocked_time == modified_blocked_time
+
+
+@pytest.mark.django_db
+def test_get_available_times_expanded_with_cancelled_exception(organization):
+    """Test that get_available_times_expanded properly handles cancelled exceptions."""
+    calendar = Calendar.objects.create(
+        name="Test Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create a weekly recurring available time for 4 weeks
+    start_time = datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC)  # Tuesday
+    end_time = datetime.datetime(2025, 9, 2, 17, 0, tzinfo=datetime.UTC)
+
+    available_time = service.create_available_time(
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        rrule_string="FREQ=WEEKLY;COUNT=4",
+    )
+
+    # Cancel the second occurrence (Sept 9)
+    exception_date = datetime.date(2025, 9, 9)
+
+    # Create the cancelled exception record manually
+    AvailableTimeRecurrenceException.objects.create(
+        parent_available_time=available_time,
+        exception_date=datetime.datetime.combine(
+            exception_date,
+            available_time.start_time.time(),
+            tzinfo=available_time.start_time.tzinfo,
+        ),
+        is_cancelled=True,
+        organization=available_time.organization,
+    )
+
+    # Get expanded available times for September
+    expanded_available_times = service.get_available_times_expanded(
+        calendar=calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Check that Sept 9 occurrence is not included
+    sept_9_occurrences = [
+        at for at in expanded_available_times if at.start_time.date() == datetime.date(2025, 9, 9)
+    ]
+    assert len(sept_9_occurrences) == 0, "Cancelled occurrence should not appear"
+
+    # Verify the exception was created
+    exceptions = AvailableTimeRecurrenceException.objects.filter(
+        parent_available_time=available_time, organization=organization
+    )
+    assert exceptions.count() == 1
+    exception = exceptions.first()
+    assert exception.exception_date.date() == exception_date
+    assert exception.is_cancelled is True
+    assert exception.modified_available_time is None
+
+
+@pytest.mark.django_db
+def test_get_available_times_expanded_with_modified_exception(organization):
+    """Test that get_available_times_expanded properly handles modified exceptions."""
+    calendar = Calendar.objects.create(
+        name="Test Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create a daily recurring available time for 5 days
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    available_time = service.create_available_time(
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        rrule_string="FREQ=DAILY;COUNT=5",
+    )
+
+    # Modify the fourth occurrence (Sept 4) - change time
+    exception_date = datetime.date(2025, 9, 4)
+    modified_start = datetime.datetime(2025, 9, 4, 10, 0, tzinfo=datetime.UTC)
+    modified_end = datetime.datetime(2025, 9, 4, 16, 0, tzinfo=datetime.UTC)
+
+    # Create the modified available time manually first
+    modified_available_time = service.create_available_time(
+        calendar=calendar,
+        start_time=modified_start,
+        end_time=modified_end,
+    )
+
+    # Mark it as an exception
+    modified_available_time.is_recurring_exception = True
+    modified_available_time.save()
+
+    # Create the exception record
+    AvailableTimeRecurrenceException.objects.create(
+        parent_available_time=available_time,
+        modified_available_time=modified_available_time,
+        exception_date=datetime.datetime.combine(
+            exception_date,
+            available_time.start_time.time(),
+            tzinfo=available_time.start_time.tzinfo,
+        ),
+        is_cancelled=False,
+        organization=available_time.organization,
+    )
+    assert modified_available_time is not None
+    assert modified_available_time.start_time == modified_start
+    assert modified_available_time.end_time == modified_end
+
+    # Get expanded available times for September
+    expanded_available_times = service.get_available_times_expanded(
+        calendar=calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Find the Sept 4 occurrences - should include the modified one
+    sept_4_occurrences = [
+        at for at in expanded_available_times if at.start_time.date() == datetime.date(2025, 9, 4)
+    ]
+
+    # Should have exactly one occurrence for Sept 4 (the modified one)
+    assert len(sept_4_occurrences) == 1
+    modified_occurrence = sept_4_occurrences[0]
+    assert modified_occurrence.start_time == modified_start
+    assert modified_occurrence.end_time == modified_end
+    assert modified_occurrence.is_recurring_exception is True
+
+    # Verify the exception was created
+    exceptions = AvailableTimeRecurrenceException.objects.filter(
+        parent_available_time=available_time, organization=organization
+    )
+    assert exceptions.count() == 1
+    exception = exceptions.first()
+    assert exception.exception_date.date() == exception_date
+    assert exception.is_cancelled is False
+    assert exception.modified_available_time == modified_available_time
+
+
+@pytest.mark.django_db
+def test_get_blocked_times_expanded_with_multiple_exceptions(organization, calendar):
+    """Test that get_blocked_times_expanded handles multiple exceptions correctly."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create a daily recurring blocked time for 7 days
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    blocked_time = service.create_blocked_time(
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        reason="Daily maintenance",
+        rrule_string="FREQ=DAILY;COUNT=7",
+    )
+
+    # Cancel Sept 2 (second occurrence)
+    BlockedTimeRecurrenceException.objects.create(
+        parent_blocked_time=blocked_time,
+        exception_date=datetime.datetime.combine(
+            datetime.date(2025, 9, 2),
+            blocked_time.start_time.time(),
+            tzinfo=blocked_time.start_time.tzinfo,
+        ),
+        is_cancelled=True,
+        organization=blocked_time.organization,
+    )
+
+    # Modify Sept 4 (fourth occurrence)
+    modified_start = datetime.datetime(2025, 9, 4, 14, 0, tzinfo=datetime.UTC)
+    modified_end = datetime.datetime(2025, 9, 4, 18, 0, tzinfo=datetime.UTC)
+
+    # Create the modified blocked time manually
+    modified_blocked_time = service.create_blocked_time(
+        calendar=calendar,
+        start_time=modified_start,
+        end_time=modified_end,
+        reason="Afternoon maintenance",
+    )
+    modified_blocked_time.is_recurring_exception = True
+    modified_blocked_time.save()
+
+    # Create the exception record
+    BlockedTimeRecurrenceException.objects.create(
+        parent_blocked_time=blocked_time,
+        modified_blocked_time=modified_blocked_time,
+        exception_date=datetime.datetime.combine(
+            datetime.date(2025, 9, 4),
+            blocked_time.start_time.time(),
+            tzinfo=blocked_time.start_time.tzinfo,
+        ),
+        is_cancelled=False,
+        organization=blocked_time.organization,
+    )
+
+    # Cancel Sept 6 (sixth occurrence)
+    BlockedTimeRecurrenceException.objects.create(
+        parent_blocked_time=blocked_time,
+        exception_date=datetime.datetime.combine(
+            datetime.date(2025, 9, 6),
+            blocked_time.start_time.time(),
+            tzinfo=blocked_time.start_time.tzinfo,
+        ),
+        is_cancelled=True,
+        organization=blocked_time.organization,
+    )
+
+    # Get expanded blocked times
+    expanded_blocked_times = service.get_blocked_times_expanded(
+        calendar=calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Check Sept 2 is cancelled (should not appear)
+    sept_2_occurrences = [
+        bt for bt in expanded_blocked_times if bt.start_time.date() == datetime.date(2025, 9, 2)
+    ]
+    assert len(sept_2_occurrences) == 0
+
+    # Check Sept 4 is modified
+    sept_4_occurrences = [
+        bt for bt in expanded_blocked_times if bt.start_time.date() == datetime.date(2025, 9, 4)
+    ]
+    assert len(sept_4_occurrences) == 1
+    modified_occurrence = sept_4_occurrences[0]
+    assert modified_occurrence.reason == "Afternoon maintenance"
+    assert modified_occurrence.start_time == modified_start
+    assert modified_occurrence.end_time == modified_end
+
+    # Check Sept 6 is cancelled (should not appear)
+    sept_6_occurrences = [
+        bt for bt in expanded_blocked_times if bt.start_time.date() == datetime.date(2025, 9, 6)
+    ]
+    assert len(sept_6_occurrences) == 0
+
+    # Verify we have the expected number of exceptions
+    exceptions = BlockedTimeRecurrenceException.objects.filter(
+        parent_blocked_time=blocked_time, organization=organization
+    )
+    assert exceptions.count() == 3
+
+
+@pytest.mark.django_db
+def test_get_available_times_expanded_with_multiple_exceptions(organization):
+    """Test that get_available_times_expanded handles multiple exceptions correctly."""
+    calendar = Calendar.objects.create(
+        name="Test Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create a daily recurring available time for 6 days
+    start_time = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
+
+    available_time = service.create_available_time(
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        rrule_string="FREQ=DAILY;COUNT=6",
+    )
+
+    # Cancel Sept 3 (third occurrence)
+    AvailableTimeRecurrenceException.objects.create(
+        parent_available_time=available_time,
+        exception_date=datetime.datetime.combine(
+            datetime.date(2025, 9, 3),
+            available_time.start_time.time(),
+            tzinfo=available_time.start_time.tzinfo,
+        ),
+        is_cancelled=True,
+        organization=available_time.organization,
+    )
+
+    # Modify Sept 5 (fifth occurrence)
+    modified_start = datetime.datetime(2025, 9, 5, 8, 0, tzinfo=datetime.UTC)
+    modified_end = datetime.datetime(2025, 9, 5, 16, 0, tzinfo=datetime.UTC)
+
+    # Create the modified available time manually
+    modified_available_time = service.create_available_time(
+        calendar=calendar,
+        start_time=modified_start,
+        end_time=modified_end,
+    )
+    modified_available_time.is_recurring_exception = True
+    modified_available_time.save()
+
+    # Create the exception record
+    AvailableTimeRecurrenceException.objects.create(
+        parent_available_time=available_time,
+        modified_available_time=modified_available_time,
+        exception_date=datetime.datetime.combine(
+            datetime.date(2025, 9, 5),
+            available_time.start_time.time(),
+            tzinfo=available_time.start_time.tzinfo,
+        ),
+        is_cancelled=False,
+        organization=available_time.organization,
+    )
+
+    # Get expanded available times
+    expanded_available_times = service.get_available_times_expanded(
+        calendar=calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Check Sept 3 is cancelled (should not appear)
+    sept_3_occurrences = [
+        at for at in expanded_available_times if at.start_time.date() == datetime.date(2025, 9, 3)
+    ]
+    assert len(sept_3_occurrences) == 0
+
+    # Check Sept 5 is modified
+    sept_5_occurrences = [
+        at for at in expanded_available_times if at.start_time.date() == datetime.date(2025, 9, 5)
+    ]
+    assert len(sept_5_occurrences) == 1
+    modified_occurrence = sept_5_occurrences[0]
+    assert modified_occurrence.start_time == modified_start
+    assert modified_occurrence.end_time == modified_end
+
+    # Verify we have the expected number of exceptions
+    exceptions = AvailableTimeRecurrenceException.objects.filter(
+        parent_available_time=available_time, organization=organization
+    )
+    assert exceptions.count() == 2
+
+
+@pytest.mark.django_db
+def test_get_blocked_times_expanded_bundle_calendar(
+    organization, bundle_calendar, child_calendar_internal, child_calendar_google
+):
+    """Test that get_blocked_times_expanded includes blocked times from bundle children."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create blocked times on the bundle calendar itself
+    bundle_blocked_time = service.create_blocked_time(
+        calendar=bundle_calendar,
+        start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        reason="Bundle maintenance",
+    )
+
+    # Create blocked times on child calendars
+    child1_blocked_time = service.create_blocked_time(
+        calendar=child_calendar_internal,
+        start_time=datetime.datetime(2025, 9, 2, 14, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 2, 15, 0, tzinfo=datetime.UTC),
+        reason="Internal calendar maintenance",
+    )
+
+    child2_blocked_time = service.create_blocked_time(
+        calendar=child_calendar_google,
+        start_time=datetime.datetime(2025, 9, 3, 16, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 3, 17, 0, tzinfo=datetime.UTC),
+        reason="Google calendar maintenance",
+    )
+
+    # Get expanded blocked times for the bundle calendar
+    expanded_blocked_times = service.get_blocked_times_expanded(
+        calendar=bundle_calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Should include blocked times from bundle calendar and all children
+    assert len(expanded_blocked_times) == 3
+
+    # Check bundle calendar blocked time is included
+    bundle_times = [bt for bt in expanded_blocked_times if bt.reason == "Bundle maintenance"]
+    assert len(bundle_times) == 1
+    assert bundle_times[0].id == bundle_blocked_time.id
+
+    # Check child calendar blocked times are included
+    child1_times = [
+        bt for bt in expanded_blocked_times if bt.reason == "Internal calendar maintenance"
+    ]
+    assert len(child1_times) == 1
+    assert child1_times[0].id == child1_blocked_time.id
+
+    child2_times = [
+        bt for bt in expanded_blocked_times if bt.reason == "Google calendar maintenance"
+    ]
+    assert len(child2_times) == 1
+    assert child2_times[0].id == child2_blocked_time.id
+
+    # Verify times are sorted by start time
+    assert (
+        expanded_blocked_times[0].start_time
+        <= expanded_blocked_times[1].start_time
+        <= expanded_blocked_times[2].start_time
+    )
+
+
+@pytest.mark.django_db
+def test_get_blocked_times_expanded_bundle_calendar_with_recurring(
+    organization, bundle_calendar, child_calendar_internal, child_calendar_google
+):
+    """Test that get_blocked_times_expanded includes recurring blocked times from bundle children."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create recurring blocked time on bundle calendar
+    bundle_recurring_blocked = service.create_blocked_time(
+        calendar=bundle_calendar,
+        start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        reason="Weekly bundle maintenance",
+        rrule_string="FREQ=WEEKLY;COUNT=3",
+    )
+
+    # Create recurring blocked time on child calendar
+    child_recurring_blocked = service.create_blocked_time(
+        calendar=child_calendar_internal,
+        start_time=datetime.datetime(2025, 9, 2, 14, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 2, 15, 0, tzinfo=datetime.UTC),
+        reason="Daily child maintenance",
+        rrule_string="FREQ=DAILY;COUNT=5",
+    )
+
+    # Get expanded blocked times for the bundle calendar
+    expanded_blocked_times = service.get_blocked_times_expanded(
+        calendar=bundle_calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Should include expanded instances from both recurring blocked times
+    bundle_times = [bt for bt in expanded_blocked_times if bt.reason == "Weekly bundle maintenance"]
+    child_times = [bt for bt in expanded_blocked_times if bt.reason == "Daily child maintenance"]
+
+    # Bundle recurring should have at least the original instance
+    assert len(bundle_times) >= 1
+    assert bundle_recurring_blocked.is_recurring
+
+    # Child recurring should have at least the original instance
+    assert len(child_times) >= 1
+    assert child_recurring_blocked.is_recurring
+
+    # Total should include instances from both calendars
+    assert len(expanded_blocked_times) >= 2
+
+
+@pytest.mark.django_db
+def test_get_blocked_times_expanded_non_bundle_calendar_unchanged(
+    organization, child_calendar_internal
+):
+    """Test that get_blocked_times_expanded works unchanged for non-bundle calendars."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create blocked time on a regular (non-bundle) calendar
+    blocked_time = service.create_blocked_time(
+        calendar=child_calendar_internal,
+        start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        reason="Regular maintenance",
+    )
+
+    # Get expanded blocked times for the regular calendar
+    expanded_blocked_times = service.get_blocked_times_expanded(
+        calendar=child_calendar_internal,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Should only include the blocked time from this calendar
+    assert len(expanded_blocked_times) == 1
+    assert expanded_blocked_times[0].id == blocked_time.id
+    assert expanded_blocked_times[0].reason == "Regular maintenance"
+
+
+@pytest.mark.django_db
+def test_get_blocked_times_expanded_empty_bundle_calendar(organization, empty_bundle_calendar):
+    """Test that get_blocked_times_expanded works correctly for bundle calendars with no children."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create blocked time on the empty bundle calendar
+    blocked_time = service.create_blocked_time(
+        calendar=empty_bundle_calendar,
+        start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        reason="Empty bundle maintenance",
+    )
+
+    # Get expanded blocked times for the empty bundle calendar
+    expanded_blocked_times = service.get_blocked_times_expanded(
+        calendar=empty_bundle_calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Should only include the blocked time from the bundle calendar itself
+    assert len(expanded_blocked_times) == 1
+    assert expanded_blocked_times[0].id == blocked_time.id
+    assert expanded_blocked_times[0].reason == "Empty bundle maintenance"
+
+
+@pytest.mark.django_db
+def test_get_blocked_times_expanded_bundle_calendar_date_filtering(
+    organization, bundle_calendar, child_calendar_internal
+):
+    """Test that get_blocked_times_expanded properly filters by date range for bundle calendars."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Create blocked times in different date ranges
+    # This one should be included (within range)
+    included_blocked_time = service.create_blocked_time(
+        calendar=child_calendar_internal,
+        start_time=datetime.datetime(2025, 9, 15, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 15, 10, 0, tzinfo=datetime.UTC),
+        reason="Included maintenance",
+    )
+
+    # This one should be excluded (outside range)
+    _excluded_blocked_time = service.create_blocked_time(
+        calendar=child_calendar_internal,
+        start_time=datetime.datetime(2025, 10, 15, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 10, 15, 10, 0, tzinfo=datetime.UTC),
+        reason="Excluded maintenance",
+    )
+
+    # Get expanded blocked times for a specific date range
+    expanded_blocked_times = service.get_blocked_times_expanded(
+        calendar=bundle_calendar,
+        start_date=datetime.datetime(2025, 9, 1, 0, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 30, 23, 59, tzinfo=datetime.UTC),
+    )
+
+    # Should only include the blocked time within the date range
+    assert len(expanded_blocked_times) == 1
+    assert expanded_blocked_times[0].id == included_blocked_time.id
+    assert expanded_blocked_times[0].reason == "Included maintenance"
+
+    # Verify the excluded blocked time is not included
+    excluded_reasons = [
+        bt.reason for bt in expanded_blocked_times if bt.reason == "Excluded maintenance"
+    ]
+    assert len(excluded_reasons) == 0

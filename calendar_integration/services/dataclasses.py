@@ -176,3 +176,40 @@ class UnavailableTimeWindow:
     reason: Literal["blocked_time"] | Literal["calendar_event"]
     id: int  # noqa: A003
     data: BlockedTimeData | CalendarEventData
+
+
+@dataclass
+class RecurringObjectInputData:
+    """Base class for recurring object input data."""
+
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    recurrence_rule: str | None = None
+    parent_object_id: int | None = None
+    is_recurring_exception: bool = False
+
+
+@dataclass
+class BlockedTimeInputData:
+    """Input data for creating blocked times."""
+
+    calendar_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    reason: str = ""
+    external_id: str = ""
+    recurrence_rule: str | None = None
+    parent_object_id: int | None = None
+    is_recurring_exception: bool = False
+
+
+@dataclass
+class AvailableTimeInputData:
+    """Input data for creating available times."""
+
+    calendar_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    recurrence_rule: str | None = None
+    parent_object_id: int | None = None
+    is_recurring_exception: bool = False

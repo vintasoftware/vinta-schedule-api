@@ -11,8 +11,14 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from calendar_integration.filtersets import CalendarEventFilterSet
+from calendar_integration.filtersets import (
+    AvailableTimeFilterSet,
+    BlockedTimeFilterSet,
+    CalendarEventFilterSet,
+)
 from calendar_integration.models import (
+    AvailableTime,
+    BlockedTime,
     Calendar,
     CalendarEvent,
 )
@@ -21,11 +27,17 @@ from calendar_integration.permissions import (
     CalendarEventPermission,
 )
 from calendar_integration.serializers import (
+    AvailableTimeRecurringExceptionSerializer,
+    AvailableTimeSerializer,
     AvailableTimeWindowSerializer,
+    BlockedTimeRecurringExceptionSerializer,
+    BlockedTimeSerializer,
+    BulkAvailableTimeSerializer,
+    BulkBlockedTimeSerializer,
     CalendarBundleCreateSerializer,
     CalendarEventSerializer,
     CalendarSerializer,
-    RecurringExceptionSerializer,
+    EventRecurringExceptionSerializer,
     UnavailableTimeWindowSerializer,
 )
 from calendar_integration.services.calendar_service import CalendarService
@@ -304,7 +316,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
     @extend_schema(
         summary="Create recurring event exception",
         description="Create an exception for a recurring event (either cancelled or modified).",
-        request=RecurringExceptionSerializer,
+        request=EventRecurringExceptionSerializer,
         responses={
             201: CalendarEventSerializer,
             204: None,
@@ -331,7 +343,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
         if not parent_event.is_recurring:
             raise ValidationError({"non_field_errors": ["Event is not a recurring event"]})
 
-        serializer = RecurringExceptionSerializer(
+        serializer = EventRecurringExceptionSerializer(
             data=request.data,
             context={"request": request, "parent_event": parent_event},
         )
@@ -347,6 +359,362 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
                 # Event was modified
                 return Response(
                     CalendarEventSerializer(
+                        serializer.instance,
+                        context=self.get_serializer_context(),
+                    ).data,
+                    status=status.HTTP_201_CREATED,
+                )
+        except ValueError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+
+class BlockedTimeViewSet(VintaScheduleModelViewSet):
+    """
+    ViewSet for managing blocked times with recurring support.
+    """
+
+    permission_classes = (CalendarAvailabilityPermission,)
+    queryset = BlockedTime.objects.all()
+    serializer_class = BlockedTimeSerializer
+    filterset_class = BlockedTimeFilterSet
+
+    def get_queryset(self):
+        """Filter blocked times by user's accessible calendar organizations."""
+        user = self.request.user
+        if not user.is_authenticated:
+            return BlockedTime.objects.none()
+
+        membership = getattr(user, "organization_membership", None)
+        if not membership:
+            return BlockedTime.objects.none()
+
+        return BlockedTime.objects.filter_by_organization(membership.organization.id)
+
+    @extend_schema(
+        summary="Create bulk blocked times",
+        request=BulkBlockedTimeSerializer,
+        responses={201: BlockedTimeSerializer(many=True)},
+    )
+    @action(
+        methods=["POST"],
+        detail=False,
+        url_path="bulk-create",
+        url_name="bulk-create",
+    )
+    def bulk_create(self, request):
+        """Create multiple blocked times."""
+        serializer = BulkBlockedTimeSerializer(
+            data=request.data, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        blocked_times = serializer.save()
+
+        return Response(
+            BlockedTimeSerializer(
+                blocked_times, many=True, context=self.get_serializer_context()
+            ).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        summary="Get expanded blocked times",
+        parameters=[
+            OpenApiParameter(
+                name="calendar_id",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Calendar ID to get blocked times for",
+            ),
+            OpenApiParameter(
+                name="start_datetime",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Start datetime for the range (ISO format)",
+            ),
+            OpenApiParameter(
+                name="end_datetime",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="End datetime for the range (ISO format)",
+            ),
+        ],
+        responses={200: BlockedTimeSerializer(many=True)},
+    )
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path="expanded",
+        url_name="expanded",
+    )
+    @inject
+    def expanded(
+        self,
+        request,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
+    ):
+        """Get expanded blocked times including recurring instances."""
+        calendar_id = request.query_params.get("calendar_id")
+        start_datetime = request.query_params.get("start_time")
+        end_datetime = request.query_params.get("end_time")
+
+        if not all([calendar_id, start_datetime, end_datetime]):
+            raise ValidationError(
+                {"non_field_errors": ["calendar_id, start_time, and end_time are required"]}
+            )
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(
+                request.user.organization_membership.organization.id
+            ).get(id=calendar_id)
+        except Calendar.DoesNotExist as e:
+            raise Http404("Calendar not found") from e
+
+        try:
+            start_dt = datetime.datetime.fromisoformat(start_datetime.replace("Z", "+00:00"))
+            end_dt = datetime.datetime.fromisoformat(end_datetime.replace("Z", "+00:00"))
+        except ValueError as e:
+            raise ValidationError({"non_field_errors": ["Invalid datetime format"]}) from e
+
+        calendar_service.initialize_without_provider(
+            organization=request.user.organization_membership.organization
+        )
+
+        expanded_blocked_times = calendar_service.get_blocked_times_expanded(
+            calendar=calendar,
+            start_date=start_dt,
+            end_date=end_dt,
+        )
+
+        serializer = BlockedTimeSerializer(
+            expanded_blocked_times, many=True, context=self.get_serializer_context()
+        )
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="Create recurring blocked time exception",
+        description="Create an exception for a recurring blocked time (either cancelled or modified).",
+        request=BlockedTimeRecurringExceptionSerializer,
+        responses={
+            201: BlockedTimeSerializer,
+            204: None,
+        },
+    )
+    @action(
+        methods=["POST"],
+        detail=True,
+        url_path="create-exception",
+        url_name="create-exception",
+    )
+    def create_exception(
+        self,
+        request,
+        pk,
+    ):
+        """
+        Create an exception for a recurring blocked time.
+        """
+        parent_blocked_time = self.get_object()
+
+        if not parent_blocked_time.is_recurring:
+            raise ValidationError({"non_field_errors": ["Blocked time is not a recurring"]})
+
+        serializer = BlockedTimeRecurringExceptionSerializer(
+            data=request.data,
+            context={"request": request, "parent_blocked_time": parent_blocked_time},
+        )
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            serializer.save()
+
+            if serializer.instance is None:
+                # Blocked time was cancelled
+                return Response(status=status.HTTP_204_NO_CONTENT)
+            else:
+                # Blocked time was modified
+                return Response(
+                    BlockedTimeSerializer(
+                        serializer.instance,
+                        context=self.get_serializer_context(),
+                    ).data,
+                    status=status.HTTP_201_CREATED,
+                )
+        except ValueError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+
+class AvailableTimeViewSet(VintaScheduleModelViewSet):
+    """
+    ViewSet for managing available times with recurring support.
+    """
+
+    permission_classes = (CalendarAvailabilityPermission,)
+    queryset = AvailableTime.objects.all()
+    serializer_class = AvailableTimeSerializer
+    filterset_class = AvailableTimeFilterSet
+
+    def get_queryset(self):
+        """Filter available times by user's accessible calendar organizations."""
+        user = self.request.user
+        if not user.is_authenticated:
+            return AvailableTime.objects.none()
+
+        membership = getattr(user, "organization_membership", None)
+        if not membership:
+            return AvailableTime.objects.none()
+
+        return AvailableTime.objects.filter_by_organization(membership.organization.id)
+
+    @extend_schema(
+        summary="Create bulk available times",
+        request=BulkAvailableTimeSerializer,
+        responses={201: AvailableTimeSerializer(many=True)},
+    )
+    @action(
+        methods=["POST"],
+        detail=False,
+        url_path="bulk-create",
+        url_name="bulk-create",
+    )
+    def bulk_create(self, request):
+        """Create multiple available times."""
+        serializer = BulkAvailableTimeSerializer(
+            data=request.data, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        available_times = serializer.save()
+
+        return Response(
+            AvailableTimeSerializer(
+                available_times, many=True, context=self.get_serializer_context()
+            ).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        summary="Get expanded available times",
+        parameters=[
+            OpenApiParameter(
+                name="calendar_id",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Calendar ID to get available times for",
+            ),
+            OpenApiParameter(
+                name="start_datetime",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Start datetime for the range (ISO format)",
+            ),
+            OpenApiParameter(
+                name="end_datetime",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="End datetime for the range (ISO format)",
+            ),
+        ],
+        responses={200: AvailableTimeSerializer(many=True)},
+    )
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path="expanded",
+        url_name="expanded",
+    )
+    @inject
+    def expanded(
+        self,
+        request,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
+    ):
+        """Get expanded available times including recurring instances."""
+        calendar_id = request.query_params.get("calendar_id")
+        start_datetime = request.query_params.get("start_time")
+        end_datetime = request.query_params.get("end_time")
+
+        if not all([calendar_id, start_datetime, end_datetime]):
+            raise ValidationError(
+                {"non_field_errors": ["calendar_id, start_time, and end_time are required"]}
+            )
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(
+                request.user.organization_membership.organization.id
+            ).get(id=calendar_id)
+        except Calendar.DoesNotExist as e:
+            raise Http404("Calendar not found") from e
+
+        try:
+            start_dt = datetime.datetime.fromisoformat(start_datetime.replace("Z", "+00:00"))
+            end_dt = datetime.datetime.fromisoformat(end_datetime.replace("Z", "+00:00"))
+        except ValueError as e:
+            raise ValidationError({"non_field_errors": ["Invalid datetime format"]}) from e
+
+        calendar_service.initialize_without_provider(
+            organization=request.user.organization_membership.organization
+        )
+
+        expanded_available_times = calendar_service.get_available_times_expanded(
+            calendar=calendar,
+            start_date=start_dt,
+            end_date=end_dt,
+        )
+
+        serializer = AvailableTimeSerializer(
+            expanded_available_times, many=True, context=self.get_serializer_context()
+        )
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="Create recurring available time exception",
+        description="Create an exception for a recurring available time (either cancelled or modified).",
+        request=AvailableTimeRecurringExceptionSerializer,
+        responses={
+            201: AvailableTimeSerializer,
+            204: None,
+        },
+    )
+    @action(
+        methods=["POST"],
+        detail=True,
+        url_path="create-exception",
+        url_name="create-exception",
+    )
+    def create_exception(
+        self,
+        request,
+        pk,
+    ):
+        """
+        Create an exception for a recurring available time.
+        """
+        parent_available_time = self.get_object()
+
+        if not parent_available_time.is_recurring:
+            raise ValidationError({"non_field_errors": ["Available time is not a recurring"]})
+
+        serializer = AvailableTimeRecurringExceptionSerializer(
+            data=request.data,
+            context={"request": request, "parent_available_time": parent_available_time},
+        )
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            serializer.save()
+
+            if serializer.instance is None:
+                # Available time was cancelled
+                return Response(status=status.HTTP_204_NO_CONTENT)
+            else:
+                # Available time was modified
+                return Response(
+                    AvailableTimeSerializer(
                         serializer.instance,
                         context=self.get_serializer_context(),
                     ).data,

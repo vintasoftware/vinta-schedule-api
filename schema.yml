@@ -4,6 +4,718 @@ info:
   version: 1.0.0
   description: API for vinta_schedule project
 paths:
+  /available-times/:
+    get:
+      operationId: available_times_list
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - available-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAvailableTimeList'
+          description: ''
+    post:
+      operationId: available_times_create
+      description: ViewSet for managing available times with recurring support.
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+  /available-times{format}:
+    get:
+      operationId: available_times_formatted_list
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - available-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAvailableTimeList'
+          description: ''
+    post:
+      operationId: available_times_formatted_create
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+  /available-times/{id}/:
+    get:
+      operationId: available_times_retrieve
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+    put:
+      operationId: available_times_update
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+    patch:
+      operationId: available_times_partial_update
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedAvailableTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedAvailableTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedAvailableTime'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+    delete:
+      operationId: available_times_destroy
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /available-times/{id}{format}:
+    get:
+      operationId: available_times_formatted_retrieve
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+    put:
+      operationId: available_times_formatted_update
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+    patch:
+      operationId: available_times_formatted_partial_update
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedAvailableTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedAvailableTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedAvailableTime'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+    delete:
+      operationId: available_times_formatted_destroy
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /available-times/{id}/create-exception/:
+    post:
+      operationId: available_times_create_exception_create
+      description: Create an exception for a recurring available time (either cancelled
+        or modified).
+      summary: Create recurring available time exception
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeRecurringException'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeRecurringException'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeRecurringException'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+        '204':
+          description: No response body
+  /available-times/{id}/create-exception{format}:
+    post:
+      operationId: available_times_create_exception_formatted_create
+      description: Create an exception for a recurring available time (either cancelled
+        or modified).
+      summary: Create recurring available time exception
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeRecurringException'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeRecurringException'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeRecurringException'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+        '204':
+          description: No response body
+  /available-times/bulk-create/:
+    post:
+      operationId: available_times_bulk_create_create
+      description: Create multiple available times.
+      summary: Create bulk available times
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkAvailableTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BulkAvailableTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BulkAvailableTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAvailableTimeList'
+          description: ''
+  /available-times/bulk-create{format}:
+    post:
+      operationId: available_times_bulk_create_formatted_create
+      description: Create multiple available times.
+      summary: Create bulk available times
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkAvailableTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BulkAvailableTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BulkAvailableTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAvailableTimeList'
+          description: ''
+  /available-times/expanded/:
+    get:
+      operationId: available_times_expanded_list
+      description: Get expanded available times including recurring instances.
+      summary: Get expanded available times
+      parameters:
+      - in: query
+        name: calendar_id
+        schema:
+          type: integer
+        description: Calendar ID to get available times for
+        required: true
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - available-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAvailableTimeList'
+          description: ''
+  /available-times/expanded{format}:
+    get:
+      operationId: available_times_expanded_formatted_list
+      description: Get expanded available times including recurring instances.
+      summary: Get expanded available times
+      parameters:
+      - in: query
+        name: calendar_id
+        schema:
+          type: integer
+        description: Calendar ID to get available times for
+        required: true
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - available-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAvailableTimeList'
+          description: ''
   /billing-profile/create_billing_profile/:
     post:
       operationId: billing_profile_create_billing_profile_create
@@ -241,6 +953,748 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingProfile'
+          description: ''
+  /blocked-times/:
+    get:
+      operationId: blocked_times_list
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: reason
+        schema:
+          type: string
+        description: Filter by partial title match
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - blocked-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBlockedTimeList'
+          description: ''
+    post:
+      operationId: blocked_times_create
+      description: ViewSet for managing blocked times with recurring support.
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+  /blocked-times{format}:
+    get:
+      operationId: blocked_times_formatted_list
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: reason
+        schema:
+          type: string
+        description: Filter by partial title match
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - blocked-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBlockedTimeList'
+          description: ''
+    post:
+      operationId: blocked_times_formatted_create
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+  /blocked-times/{id}/:
+    get:
+      operationId: blocked_times_retrieve
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+    put:
+      operationId: blocked_times_update
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+    patch:
+      operationId: blocked_times_partial_update
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedBlockedTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedBlockedTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedBlockedTime'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+    delete:
+      operationId: blocked_times_destroy
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /blocked-times/{id}{format}:
+    get:
+      operationId: blocked_times_formatted_retrieve
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+    put:
+      operationId: blocked_times_formatted_update
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+    patch:
+      operationId: blocked_times_formatted_partial_update
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedBlockedTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedBlockedTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedBlockedTime'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+    delete:
+      operationId: blocked_times_formatted_destroy
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /blocked-times/{id}/create-exception/:
+    post:
+      operationId: blocked_times_create_exception_create
+      description: Create an exception for a recurring blocked time (either cancelled
+        or modified).
+      summary: Create recurring blocked time exception
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeRecurringException'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeRecurringException'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeRecurringException'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+        '204':
+          description: No response body
+  /blocked-times/{id}/create-exception{format}:
+    post:
+      operationId: blocked_times_create_exception_formatted_create
+      description: Create an exception for a recurring blocked time (either cancelled
+        or modified).
+      summary: Create recurring blocked time exception
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeRecurringException'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeRecurringException'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeRecurringException'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+        '204':
+          description: No response body
+  /blocked-times/bulk-create/:
+    post:
+      operationId: blocked_times_bulk_create_create
+      description: Create multiple blocked times.
+      summary: Create bulk blocked times
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: reason
+        schema:
+          type: string
+        description: Filter by partial title match
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkBlockedTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BulkBlockedTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BulkBlockedTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBlockedTimeList'
+          description: ''
+  /blocked-times/bulk-create{format}:
+    post:
+      operationId: blocked_times_bulk_create_formatted_create
+      description: Create multiple blocked times.
+      summary: Create bulk blocked times
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: reason
+        schema:
+          type: string
+        description: Filter by partial title match
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkBlockedTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BulkBlockedTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BulkBlockedTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBlockedTimeList'
+          description: ''
+  /blocked-times/expanded/:
+    get:
+      operationId: blocked_times_expanded_list
+      description: Get expanded blocked times including recurring instances.
+      summary: Get expanded blocked times
+      parameters:
+      - in: query
+        name: calendar_id
+        schema:
+          type: integer
+        description: Calendar ID to get blocked times for
+        required: true
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: reason
+        schema:
+          type: string
+        description: Filter by partial title match
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - blocked-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBlockedTimeList'
+          description: ''
+  /blocked-times/expanded{format}:
+    get:
+      operationId: blocked_times_expanded_formatted_list
+      description: Get expanded blocked times including recurring instances.
+      summary: Get expanded blocked times
+      parameters:
+      - in: query
+        name: calendar_id
+        schema:
+          type: integer
+        description: Calendar ID to get blocked times for
+        required: true
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: reason
+        schema:
+          type: string
+        description: Filter by partial title match
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - blocked-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBlockedTimeList'
           description: ''
   /calendar/:
     get:
@@ -844,13 +2298,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RecurringException'
+              $ref: '#/components/schemas/EventRecurringException'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/RecurringException'
+              $ref: '#/components/schemas/EventRecurringException'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/RecurringException'
+              $ref: '#/components/schemas/EventRecurringException'
         required: true
       security:
       - jwtAuth: []
@@ -889,13 +2343,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RecurringException'
+              $ref: '#/components/schemas/EventRecurringException'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/RecurringException'
+              $ref: '#/components/schemas/EventRecurringException'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/RecurringException'
+              $ref: '#/components/schemas/EventRecurringException'
         required: true
       security:
       - jwtAuth: []
@@ -1748,6 +3202,98 @@ paths:
           description: ''
 components:
   schemas:
+    AvailableTime:
+      type: object
+      description: Serializer for AvailableTime model with recurring support.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        recurrence_rule:
+          allOf:
+          - $ref: '#/components/schemas/RecurrenceRule'
+          description: Recurrence rule data for creating recurring available times
+        rrule_string:
+          type: string
+          writeOnly: true
+          description: RRULE string for creating recurring available times
+        is_recurring_instance:
+          type: boolean
+          description: True if this is an instance of a recurring available time
+          readOnly: true
+        is_recurring:
+          type: boolean
+          description: True if this is a recurring available time
+          readOnly: true
+        parent_available_time:
+          type: object
+          properties:
+            id:
+              type: integer
+          required:
+          - id
+          nullable: true
+          description: Get parent available time for instances.
+          readOnly: true
+        recurrence_id:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          description: For recurring instances, this identifies which occurrence this
+            is
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+        calendar:
+          type: integer
+          nullable: true
+      required:
+      - calendar
+      - created
+      - end_time
+      - id
+      - is_recurring
+      - is_recurring_instance
+      - modified
+      - parent_available_time
+      - recurrence_id
+      - start_time
+    AvailableTimeRecurringException:
+      type: object
+      description: Serializer for creating recurring available time exceptions.
+      properties:
+        exception_date:
+          type: string
+          format: date
+          description: The date of the occurrence to modify or cancel
+        modified_start_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: New start time for the modified occurrence (if not cancelled)
+        modified_end_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: New end time for the modified occurrence (if not cancelled)
+        is_cancelled:
+          type: boolean
+          default: false
+          description: True if cancelling the occurrence, False if modifying
+      required:
+      - exception_date
     AvailableTimeWindow:
       type: object
       properties:
@@ -1831,6 +3377,126 @@ components:
       - document_type
       - id
       - modified
+    BlockedTime:
+      type: object
+      description: Serializer for BlockedTime model with recurring support.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        reason:
+          type: string
+          maxLength: 255
+        recurrence_rule:
+          allOf:
+          - $ref: '#/components/schemas/RecurrenceRule'
+          description: Recurrence rule data for creating recurring blocked times
+        rrule_string:
+          type: string
+          writeOnly: true
+          description: RRULE string for creating recurring blocked times
+        external_id:
+          type: string
+          readOnly: true
+        is_recurring_instance:
+          type: boolean
+          description: True if this is an instance of a recurring blocked time
+          readOnly: true
+        is_recurring:
+          type: boolean
+          description: True if this is a recurring blocked time
+          readOnly: true
+        parent_blocked_time:
+          type: object
+          properties:
+            id:
+              type: integer
+            reason:
+              type: string
+              nullable: true
+          required:
+          - id
+          - reason
+          nullable: true
+          description: Get parent blocked time for instances.
+          readOnly: true
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+        calendar:
+          type: integer
+          nullable: true
+      required:
+      - calendar
+      - created
+      - end_time
+      - external_id
+      - id
+      - is_recurring
+      - is_recurring_instance
+      - modified
+      - parent_blocked_time
+      - start_time
+    BlockedTimeRecurringException:
+      type: object
+      description: Serializer for creating recurring blocked time exceptions.
+      properties:
+        exception_date:
+          type: string
+          format: date
+          description: The date of the occurrence to modify or cancel
+        modified_reason:
+          type: string
+          nullable: true
+          description: New reason for the modified occurrence (if not cancelled)
+          maxLength: 255
+        modified_start_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: New start time for the modified occurrence (if not cancelled)
+        modified_end_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: New end time for the modified occurrence (if not cancelled)
+        is_cancelled:
+          type: boolean
+          default: false
+          description: True if cancelling the occurrence, False if modifying
+      required:
+      - exception_date
+    BulkAvailableTime:
+      type: object
+      description: Serializer for creating multiple available times.
+      properties:
+        available_times:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableTime'
+      required:
+      - available_times
+    BulkBlockedTime:
+      type: object
+      description: Serializer for creating multiple blocked times.
+      properties:
+        blocked_times:
+          type: array
+          items:
+            $ref: '#/components/schemas/BlockedTime'
+      required:
+      - blocked_times
     Calendar:
       type: object
       properties:
@@ -1951,11 +3617,11 @@ components:
           type: string
           writeOnly: true
           description: RRULE string for creating recurring events
-        parent_event_id:
+        parent_recurring_object_id:
           type: integer
           writeOnly: true
           description: ID of parent event for recurring instances
-        parent_event:
+        parent_recurring_object:
           allOf:
           - $ref: '#/components/schemas/ParentEvent'
           readOnly: true
@@ -1969,14 +3635,14 @@ components:
           readOnly: true
         is_recurring_exception:
           type: boolean
-          description: True if this event is an exception to the recurrence rule (modified
-            occurrence)
+          description: True if this object is an exception to the recurrence rule
+            (modified occurrence)
         recurrence_id:
           type: string
           format: date-time
           nullable: true
-          description: For recurring event instances, this identifies which occurrence
-            this is
+          description: For recurring instances, this identifies which occurrence this
+            is
         google_calendar_service_account:
           type: integer
           writeOnly: true
@@ -1993,7 +3659,7 @@ components:
       - is_recurring
       - is_recurring_instance
       - modified
-      - parent_event
+      - parent_recurring_object
       - resource_allocations
       - start_time
       - title
@@ -2067,6 +3733,39 @@ components:
       - external_attendee
       - modified
       - status
+    EventRecurringException:
+      type: object
+      description: Serializer for creating recurring event exceptions.
+      properties:
+        exception_date:
+          type: string
+          format: date
+          description: The date of the occurrence to modify or cancel
+        modified_title:
+          type: string
+          nullable: true
+          description: New title for the modified occurrence (if not cancelled)
+          maxLength: 255
+        modified_description:
+          type: string
+          nullable: true
+          description: New description for the modified occurrence (if not cancelled)
+        modified_start_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: New start time for the modified occurrence (if not cancelled)
+        modified_end_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: New end time for the modified occurrence (if not cancelled)
+        is_cancelled:
+          type: boolean
+          default: false
+          description: True if cancelling the occurrence, False if modifying
+      required:
+      - exception_date
     ExternalAttendee:
       type: object
       properties:
@@ -2105,6 +3804,29 @@ components:
         * `WEEKLY` - Weekly
         * `MONTHLY` - Monthly
         * `YEARLY` - Yearly
+    PaginatedAvailableTimeList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableTime'
     PaginatedAvailableTimeWindowList:
       type: object
       required:
@@ -2128,6 +3850,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AvailableTimeWindow'
+    PaginatedBlockedTimeList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/BlockedTime'
     PaginatedCalendarEventList:
       type: object
       required:
@@ -2231,6 +3976,63 @@ components:
       - modified
       - start_time
       - title
+    PatchedAvailableTime:
+      type: object
+      description: Serializer for AvailableTime model with recurring support.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        recurrence_rule:
+          allOf:
+          - $ref: '#/components/schemas/RecurrenceRule'
+          description: Recurrence rule data for creating recurring available times
+        rrule_string:
+          type: string
+          writeOnly: true
+          description: RRULE string for creating recurring available times
+        is_recurring_instance:
+          type: boolean
+          description: True if this is an instance of a recurring available time
+          readOnly: true
+        is_recurring:
+          type: boolean
+          description: True if this is a recurring available time
+          readOnly: true
+        parent_available_time:
+          type: object
+          properties:
+            id:
+              type: integer
+          required:
+          - id
+          nullable: true
+          description: Get parent available time for instances.
+          readOnly: true
+        recurrence_id:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          description: For recurring instances, this identifies which occurrence this
+            is
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+        calendar:
+          type: integer
+          nullable: true
     PatchedBillingProfile:
       type: object
       description: Serializer for BillingProfile virtual model.
@@ -2254,6 +4056,66 @@ components:
           type: string
           format: date-time
           readOnly: true
+    PatchedBlockedTime:
+      type: object
+      description: Serializer for BlockedTime model with recurring support.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        reason:
+          type: string
+          maxLength: 255
+        recurrence_rule:
+          allOf:
+          - $ref: '#/components/schemas/RecurrenceRule'
+          description: Recurrence rule data for creating recurring blocked times
+        rrule_string:
+          type: string
+          writeOnly: true
+          description: RRULE string for creating recurring blocked times
+        external_id:
+          type: string
+          readOnly: true
+        is_recurring_instance:
+          type: boolean
+          description: True if this is an instance of a recurring blocked time
+          readOnly: true
+        is_recurring:
+          type: boolean
+          description: True if this is a recurring blocked time
+          readOnly: true
+        parent_blocked_time:
+          type: object
+          properties:
+            id:
+              type: integer
+            reason:
+              type: string
+              nullable: true
+          required:
+          - id
+          - reason
+          nullable: true
+          description: Get parent blocked time for instances.
+          readOnly: true
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+        calendar:
+          type: integer
+          nullable: true
     PatchedCalendar:
       type: object
       properties:
@@ -2349,11 +4211,11 @@ components:
           type: string
           writeOnly: true
           description: RRULE string for creating recurring events
-        parent_event_id:
+        parent_recurring_object_id:
           type: integer
           writeOnly: true
           description: ID of parent event for recurring instances
-        parent_event:
+        parent_recurring_object:
           allOf:
           - $ref: '#/components/schemas/ParentEvent'
           readOnly: true
@@ -2367,14 +4229,14 @@ components:
           readOnly: true
         is_recurring_exception:
           type: boolean
-          description: True if this event is an exception to the recurrence rule (modified
-            occurrence)
+          description: True if this object is an exception to the recurrence rule
+            (modified occurrence)
         recurrence_id:
           type: string
           format: date-time
           nullable: true
-          description: For recurring event instances, this identifies which occurrence
-            this is
+          description: For recurring instances, this identifies which occurrence this
+            is
         google_calendar_service_account:
           type: integer
           writeOnly: true
@@ -2525,39 +4387,6 @@ components:
       - id
       - modified
       - rrule_string
-    RecurringException:
-      type: object
-      description: Serializer for creating recurring event exceptions.
-      properties:
-        exception_date:
-          type: string
-          format: date
-          description: The date of the occurrence to modify or cancel
-        modified_title:
-          type: string
-          nullable: true
-          description: New title for the modified occurrence (if not cancelled)
-          maxLength: 255
-        modified_description:
-          type: string
-          nullable: true
-          description: New description for the modified occurrence (if not cancelled)
-        modified_start_time:
-          type: string
-          format: date-time
-          nullable: true
-          description: New start time for the modified occurrence (if not cancelled)
-        modified_end_time:
-          type: string
-          format: date-time
-          nullable: true
-          description: New end time for the modified occurrence (if not cancelled)
-        is_cancelled:
-          type: boolean
-          default: false
-          description: True if cancelling the occurrence, False if modifying
-      required:
-      - exception_date
     ResourceAllocation:
       type: object
       properties:

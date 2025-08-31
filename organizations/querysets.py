@@ -29,7 +29,9 @@ class BaseOrganizationModelQuerySet(QuerySet):
         required_field = "organization"
         where_str = str(self.query.where)
         if required_field not in where_str and f"{required_field}_id" not in where_str:
-            raise ImproperlyConfigured(f"QuerySet must be filtered by `{required_field}`")
+            raise ImproperlyConfigured(
+                f"QuerySet must be filtered by `{required_field}` on model {self.model}"
+            )
 
     def __iter__(self):
         self._check_required_tenant_filter()
@@ -46,7 +48,9 @@ class BaseOrganizationModelQuerySet(QuerySet):
             and "organization" not in kwargs
             and "organization" not in str(self.query.where)
         ):
-            raise ImproperlyConfigured("`organization_id` filter is required.")
+            raise ImproperlyConfigured(
+                f"`organization_id` filter is required when querying model {self.model}."
+            )
         return super().get(*args, **kwargs)
 
     def update(self, **kwargs):

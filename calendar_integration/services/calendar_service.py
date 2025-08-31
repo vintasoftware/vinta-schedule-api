@@ -1,8 +1,8 @@
 import copy
 import datetime
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from functools import lru_cache
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
@@ -18,7 +18,9 @@ from calendar_integration.constants import (
 )
 from calendar_integration.models import (
     AvailableTime,
+    AvailableTimeRecurrenceException,
     BlockedTime,
+    BlockedTimeRecurrenceException,
     Calendar,
     CalendarEvent,
     CalendarOrganizationResourcesImport,
@@ -27,10 +29,11 @@ from calendar_integration.models import (
     ChildrenCalendarRelationship,
     EventAttendance,
     EventExternalAttendance,
+    EventRecurrenceException,
     ExternalAttendee,
     GoogleCalendarServiceAccount,
-    RecurrenceException,
     RecurrenceRule,
+    RecurringMixin,
     ResourceAllocation,
 )
 from calendar_integration.services.dataclasses import (
@@ -691,7 +694,7 @@ class CalendarService(BaseCalendarService):
             end_time=event_data.end_time,
             external_id=external_id,
             meta={"latest_original_payload": original_payload} if self.calendar_adapter else {},
-            parent_event_fk=parent_event,
+            parent_recurring_object_fk=parent_event,
             is_recurring_exception=event_data.is_recurring_exception,
             recurrence_id=event_data.start_time if parent_event else None,
         )
@@ -1050,7 +1053,114 @@ class CalendarService(BaseCalendarService):
         )
         return self.create_event(calendar_id, event_data)
 
-    def create_recurring_exception(
+    def _create_recurring_exception_generic(
+        self,
+        object_type_name: str,
+        parent_object: RecurringMixin,
+        exception_date: datetime.date,
+        is_cancelled: bool,
+        modification_data: dict[str, Any] | None = None,
+        create_new_recurring_callback: Callable[
+            [RecurringMixin, RecurringMixin, RecurrenceRule], RecurringMixin
+        ]
+        | None = None,
+        create_modified_object_callback: Callable[
+            [RecurringMixin, datetime.datetime, dict[str, Any]], RecurringMixin
+        ]
+        | None = None,
+        exception_manager_update_callback: Callable[[RecurringMixin, RecurringMixin], None]
+        | None = None,
+        exception_manager_delete_callback: Callable[[RecurringMixin], None] | None = None,
+    ) -> RecurringMixin | None:
+        """
+        Generic method for creating exceptions for recurring objects (events, blocked times, available times).
+
+        :param parent_object: The recurring object to create an exception for
+        :param exception_date: The datetime of the occurrence to modify/cancel
+        :param is_cancelled: True if cancelling the occurrence, False if modifying
+        :param modification_data: Dictionary of fields to modify (if not cancelled)
+        :param create_new_recurring_callback: Callback to create new recurring object after master modification
+        :param create_modified_object_callback: Callback to create modified object for non-cancelled exceptions
+        :param exception_manager_update_callback: Callback to update exception manager references
+        :param exception_manager_delete_callback: Callback to delete exception manager references
+        :return: Created/modified object or None if cancelled
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        if not parent_object.is_recurring:
+            raise ValueError(f"Cannot create exception for non-recurring {object_type_name}")
+
+        exception_datetime = datetime.datetime.combine(
+            exception_date, parent_object.start_time.time(), tzinfo=parent_object.start_time.tzinfo
+        )
+
+        if exception_date == parent_object.start_time.date():
+            # Exception is on the master object date
+            second_occurrence = parent_object.get_next_occurrence(exception_datetime)
+            old_recurrence_rule = parent_object.recurrence_rule
+
+            if not second_occurrence:
+                # No future occurrences, make the object non-recurring
+                if exception_manager_delete_callback:
+                    exception_manager_delete_callback(parent_object)
+                if old_recurrence_rule:
+                    old_recurrence_rule.delete()
+            else:
+                # Create new recurring object starting from second occurrence
+                new_recurrence_rule: RecurrenceRule = copy.copy(old_recurrence_rule)
+                new_recurrence_rule.id = None
+                new_recurrence_rule.count = (
+                    new_recurrence_rule.count - 1 if new_recurrence_rule.count else None
+                )
+
+                if create_new_recurring_callback:
+                    new_recurring_object = create_new_recurring_callback(
+                        parent_object, second_occurrence, new_recurrence_rule
+                    )
+                    if exception_manager_update_callback:
+                        exception_manager_update_callback(parent_object, new_recurring_object)
+
+                if old_recurrence_rule:
+                    old_recurrence_rule.delete()
+
+            # Update the master object to be non-recurring
+            parent_object.recurrence_rule_fk_id = None
+            if modification_data:
+                for field, value in modification_data.items():
+                    if value is not None:
+                        setattr(parent_object, field, value)
+                    # Keep original value if modification is None (fallback behavior)
+            parent_object.save()
+
+            # Return the updated master object
+            from django.db import models
+
+            parent_model = cast(models.Model, parent_object)
+            return parent_object.__class__.objects.get(
+                organization_id=parent_object.organization_id, id=parent_model.pk
+            )
+
+        # Exception is on a future occurrence
+        if is_cancelled:
+            parent_object.create_exception(exception_datetime, is_cancelled=True)
+            return None
+        else:
+            # Create modified object for the specific occurrence
+            if create_modified_object_callback:
+                modified_object = create_modified_object_callback(
+                    parent_object, exception_datetime, modification_data or {}
+                )
+                modified_object.is_recurring_exception = True
+                modified_object.save()
+
+                parent_object.create_exception(
+                    exception_datetime, is_cancelled=False, modified_object=modified_object
+                )
+                return modified_object
+            return None
+
+    def create_recurring_event_exception(
         self,
         parent_event: CalendarEvent,
         exception_date: datetime.datetime,
@@ -1075,97 +1185,88 @@ class CalendarService(BaseCalendarService):
         :param is_cancelled: True if cancelling the occurrence, False if modifying
         :return: Created modified event or None if cancelled
         """
-        if not is_initialized_or_authenticated_calendar_service(self):
-            raise
 
-        if not parent_event.is_recurring:
-            raise ValueError("Cannot create exception for non-recurring event")
-
-        if exception_date == parent_event.start_time.date():
-            # Convert date to datetime for get_next_occurrence call
-            exception_datetime = datetime.datetime.combine(
-                exception_date,
-                parent_event.start_time.time(),
-                tzinfo=parent_event.start_time.tzinfo,
-            )
-            second_occurrence = parent_event.get_next_occurrence(exception_datetime)
-            old_recurrence_rule = parent_event.recurrence_rule
-            if not second_occurrence:
-                # there are no future occurrences, so make the event non-recurring
-
-                # Delete recurrence rule and exceptions
-                RecurrenceException.objects.filter(parent_event=parent_event).delete()
-                if old_recurrence_rule:
-                    old_recurrence_rule.delete()
-            else:
-                # make the parent_event non-recurring and create a separate event
-                # on the second occurrence date/time following same recurrence rules
-                new_recurrence_rule: RecurrenceRule = copy.copy(old_recurrence_rule)
-                new_recurrence_rule.id = None
-                new_recurrence_rule.count = (
-                    new_recurrence_rule.count - 1 if new_recurrence_rule.count else None
-                )
-                new_recurring_event = self.create_recurring_event(
-                    calendar_id=parent_event.calendar.id,
-                    title=parent_event.title,
-                    description=parent_event.description,
-                    start_time=second_occurrence.start_time,
-                    end_time=second_occurrence.end_time,
-                    recurrence_rule=new_recurrence_rule.to_rrule_string(),
-                    attendances=[
-                        EventAttendanceInputData(user_id=a.user_id)
-                        for a in parent_event.attendances.all()
-                    ],
-                    external_attendances=[
-                        EventExternalAttendanceInputData(
-                            external_attendee=ExternalAttendeeInputData(
-                                email=ea.external_attendee.email,
-                                name=ea.external_attendee.name,
-                                id=ea.external_attendee.id,
-                            )
+        def create_new_recurring_event(
+            parent_obj: RecurringMixin,
+            second_occurrence: RecurringMixin,
+            new_recurrence_rule: RecurrenceRule,
+        ) -> RecurringMixin:
+            parent_event = cast(CalendarEvent, parent_obj)
+            second_event = cast(CalendarEvent, second_occurrence)
+            new_recurring_event = self.create_recurring_event(
+                calendar_id=parent_event.calendar.id,
+                title=parent_event.title,
+                description=parent_event.description,
+                start_time=second_event.start_time,
+                end_time=second_event.end_time,
+                recurrence_rule=new_recurrence_rule.to_rrule_string(),
+                attendances=[
+                    EventAttendanceInputData(user_id=a.user_id)
+                    for a in parent_event.attendances.all()
+                ],
+                external_attendances=[
+                    EventExternalAttendanceInputData(
+                        external_attendee=ExternalAttendeeInputData(
+                            email=ea.external_attendee.email,
+                            name=ea.external_attendee.name,
+                            id=ea.external_attendee.id,
                         )
-                        for ea in parent_event.external_attendances.all()
-                    ],
-                    resource_allocations=[
-                        ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
-                        for r in parent_event.resource_allocations.all()
-                    ],
-                )
-                RecurrenceException.objects.filter(parent_event=parent_event).update(
-                    parent_event_fk=new_recurring_event
-                )
-                old_recurrence_rule.delete()
-
-            parent_event.recurrence_rule_fk_id = None
-            parent_event.title = modified_title or parent_event.title
-            parent_event.description = modified_description or parent_event.description
-            parent_event.start_time = modified_start_time or parent_event.start_time
-            parent_event.end_time = modified_end_time or parent_event.end_time
-            parent_event.save()
-            return CalendarEvent.objects.get(
-                organization_id=parent_event.organization_id, id=parent_event.id
+                    )
+                    for ea in parent_event.external_attendances.all()
+                ],
+                resource_allocations=[
+                    ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
+                    for r in parent_event.resource_allocations.all()
+                ],
             )
+            return new_recurring_event
 
-        if is_cancelled:
-            # Create a cancelled exception
-            parent_event.create_exception(exception_date, is_cancelled=True)
-            return None
-        else:
-            # Create a modified event
+        def create_modified_event(
+            parent_obj: RecurringMixin,
+            exception_datetime: datetime.datetime,
+            modification_data: dict[str, Any],
+        ) -> RecurringMixin:
+            parent_event = cast(CalendarEvent, parent_obj)
             modified_event_data = CalendarEventInputData(
-                title=modified_title or parent_event.title,
-                description=modified_description or parent_event.description,
-                start_time=modified_start_time or exception_date,
-                end_time=modified_end_time or (exception_date + parent_event.duration),
+                title=modification_data.get("title") or parent_event.title,
+                description=modification_data.get("description") or parent_event.description,
+                start_time=modification_data.get("start_time") or exception_datetime,
+                end_time=modification_data.get("end_time")
+                or (exception_datetime + parent_event.duration),
                 parent_event_id=parent_event.id,
                 is_recurring_exception=True,
             )
+            return self.create_event(parent_event.calendar.id, modified_event_data)
 
-            modified_event = self.create_event(parent_event.calendar.id, modified_event_data)
-            parent_event.create_exception(
-                exception_date, is_cancelled=False, modified_event=modified_event
+        def update_exception_manager(
+            parent_obj: RecurringMixin, new_recurring_obj: RecurringMixin
+        ) -> None:
+            EventRecurrenceException.objects.filter(parent_event=parent_obj).update(
+                parent_event_fk=new_recurring_obj
             )
-            return modified_event
+
+        def delete_exception_manager(parent_obj: RecurringMixin) -> None:
+            EventRecurrenceException.objects.filter(parent_event=parent_obj).delete()
+
+        modification_data = {
+            "title": modified_title,
+            "description": modified_description,
+            "start_time": modified_start_time,
+            "end_time": modified_end_time,
+        }
+
+        result = self._create_recurring_exception_generic(
+            object_type_name="event",
+            parent_object=parent_event,
+            exception_date=exception_date,
+            is_cancelled=is_cancelled,
+            modification_data=modification_data,
+            create_new_recurring_callback=create_new_recurring_event,
+            create_modified_object_callback=create_modified_event,
+            exception_manager_update_callback=update_exception_manager,
+            exception_manager_delete_callback=delete_exception_manager,
+        )
+        return cast(CalendarEvent, result) if result else None
 
     def get_recurring_event_instances(
         self,
@@ -1223,7 +1324,7 @@ class CalendarService(BaseCalendarService):
             CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
             .select_related("recurrence_rule")
             .filter(
-                parent_event__isnull=True,  # Master events only
+                parent_recurring_object__isnull=True,  # Master events only
             )
         )
         if calendar.calendar_type == CalendarType.BUNDLE:
@@ -1241,6 +1342,7 @@ class CalendarService(BaseCalendarService):
         non_recurring_events = base_qs.filter(
             Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
             recurrence_rule__isnull=True,  # Non-recurring only
+            is_recurring_exception=False,  # Exclude exception objects
         )
 
         # Get recurring master events and generate their instances
@@ -1341,26 +1443,28 @@ class CalendarService(BaseCalendarService):
                 self.calendar_adapter.delete_event(event.calendar.external_id, event.external_id)
             elif event.is_recurring_instance and not delete_series:
                 # Create a cancellation exception instead of deleting
-                if event.parent_event:
-                    event.parent_event.create_exception(event.recurrence_id, is_cancelled=True)
+                if event.parent_recurring_object:
+                    event.parent_recurring_object.create_exception(
+                        event.recurrence_id, is_cancelled=True
+                    )
             else:
                 # Delete single event or instance
                 self.calendar_adapter.delete_event(event.calendar.external_id, event.external_id)
 
         if event.is_recurring and delete_series:
             # Delete the entire series including all instances and exceptions
-            event.recurring_instances.all().delete()
+            event.calendarevent_recurring_instances.all().delete()
             event.recurrence_exceptions.all().delete()
             if event.recurrence_rule:
                 event.recurrence_rule.delete()
-            event.delete()
         elif event.is_recurring_instance and not delete_series:
             # For instances, we create an exception rather than delete
-            if event.parent_event and event.recurrence_id:
-                event.parent_event.create_exception(event.recurrence_id, is_cancelled=True)
-        else:
-            # Delete single non-recurring event
-            event.delete()
+            if event.parent_recurring_object and event.recurrence_id:
+                event.parent_recurring_object.create_exception(
+                    event.recurrence_id, is_cancelled=True
+                )
+
+        event.delete()
 
     def transfer_event(self, event: CalendarEvent, new_calendar: Calendar) -> CalendarEvent:
         """
@@ -1410,6 +1514,18 @@ class CalendarService(BaseCalendarService):
         self.delete_event(event.calendar.id, event.id)
 
         return new_event
+
+    def _create_recurrence_rule_if_needed(self, rrule_string: str | None) -> RecurrenceRule | None:
+        """Helper method to create recurrence rule from RRULE string if provided."""
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        if not rrule_string:
+            return None
+
+        recurrence_rule = RecurrenceRule.from_rrule_string(rrule_string, self.organization)
+        recurrence_rule.save()
+        return recurrence_rule
 
     def request_calendar_sync(
         self,
@@ -1675,7 +1791,7 @@ class CalendarService(BaseCalendarService):
                     external_id=event.external_id,
                     meta={"latest_original_payload": event.original_payload or {}},
                     organization_id=calendar.organization_id,
-                    parent_event_fk=parent_event,
+                    parent_recurring_object_fk=parent_event,
                     recurrence_id=event.start_time,
                     is_recurring_exception=True,
                 )
@@ -1857,7 +1973,7 @@ class CalendarService(BaseCalendarService):
         orphaned_instances = CalendarEvent.objects.filter(
             calendar_fk_id=calendar_id,
             organization_id=self.organization.id,
-            parent_event__isnull=True,
+            parent_recurring_object__isnull=True,
             meta__pending_parent_external_id__isnull=False,
         )
 
@@ -1878,11 +1994,13 @@ class CalendarService(BaseCalendarService):
                         organization_id=self.organization.id,
                     )
                     # Link the instance to its parent
-                    instance.parent_event_fk = parent_event
+                    instance.parent_recurring_object_fk = parent_event
                     instance.recurrence_id = instance.start_time
                     # Clear the pending parent ID
                     instance.meta.pop("pending_parent_external_id", None)
-                    instance.save(update_fields=["parent_event_fk", "recurrence_id", "meta"])
+                    instance.save(
+                        update_fields=["parent_recurring_object_fk", "recurrence_id", "meta"]
+                    )
                 except CalendarEvent.DoesNotExist:
                     # Parent still not synced, leave it for next sync
                     continue
@@ -1950,6 +2068,7 @@ class CalendarService(BaseCalendarService):
 
         AvailableTime.objects.filter(
             id__in=available_time_windows_to_delete,
+            organization_id=self.organization.id,
             calendar_fk_id=calendar_id,
         ).delete()
 
@@ -1980,12 +2099,13 @@ class CalendarService(BaseCalendarService):
             end_date=end_datetime,
         )
 
-        # Get blocked times that overlap with the time range
-        # Using overlap logic: blocked_time.start_time < end_datetime AND blocked_time.end_time > start_datetime
-        blocked_times = calendar.blocked_times.filter(
-            start_time__lt=end_datetime,
-            end_time__gt=start_datetime,
-        ).order_by("start_time")
+        # Get expanded blocked times (including recurring instances)
+        # Replace the current blocked_times query with:
+        blocked_times = self.get_blocked_times_expanded(
+            calendar=calendar,
+            start_date=start_datetime,
+            end_date=end_datetime,
+        )
 
         # If this calendar is part of any bundles, include bundle events
         bundle_calendars = Calendar.objects.filter(
@@ -2041,8 +2161,8 @@ class CalendarService(BaseCalendarService):
                             )
                             # For recurring instances, get attendances from the parent event; for regular events, use their own
                             for attendance in (
-                                event.parent_event.attendances.all()
-                                if event.parent_event
+                                event.parent_recurring_object.attendances.all()
+                                if event.parent_recurring_object
                                 else (event.attendances.all() if event.id else [])
                             )
                         ]
@@ -2057,8 +2177,8 @@ class CalendarService(BaseCalendarService):
                             )
                             # For recurring instances, get external attendances from the parent event; for regular events, use their own
                             for external_attendance in (
-                                event.parent_event.external_attendances.all()
-                                if event.parent_event
+                                event.parent_recurring_object.external_attendances.all()
+                                if event.parent_recurring_object
                                 else (event.external_attendances.all() if event.id else [])
                             )
                         ],
@@ -2074,8 +2194,8 @@ class CalendarService(BaseCalendarService):
                             )
                             # For recurring instances, get resource allocations from the parent event; for regular events, use their own
                             for resource_allocation in (
-                                event.parent_event.resource_allocations.all()
-                                if event.parent_event
+                                event.parent_recurring_object.resource_allocations.all()
+                                if event.parent_recurring_object
                                 else (event.resource_allocations.all() if event.id else [])
                             )
                         ],
@@ -2119,6 +2239,13 @@ class CalendarService(BaseCalendarService):
             raise
 
         if calendar.manage_available_windows:
+            # Replace the current query with:
+            available_times = self.get_available_times_expanded(
+                calendar=calendar,
+                start_date=start_datetime,
+                end_date=end_datetime,
+            )
+
             return [
                 AvailableTimeWindow(
                     start_time=available_time.start_time,
@@ -2126,11 +2253,7 @@ class CalendarService(BaseCalendarService):
                     id=available_time.id,
                     can_book_partially=False,
                 )
-                for available_time in AvailableTime.objects.filter(
-                    calendar=calendar,
-                    start_time__gte=start_datetime,
-                    end_time__lte=end_datetime,
-                )
+                for available_time in available_times
             ]
 
         unavailable_windows_sorted_by_start_datetime = self.get_unavailable_time_windows_in_range(
@@ -2176,17 +2299,17 @@ class CalendarService(BaseCalendarService):
         ]
 
     @transaction.atomic()
+    @transaction.atomic()
     def bulk_create_availability_windows(
         self,
         calendar: Calendar,
-        availability_windows: Iterable[tuple[datetime.datetime, datetime.datetime]],
+        availability_windows: Iterable[tuple[datetime.datetime, datetime.datetime, str | None]],
     ) -> Iterable[AvailableTime]:
         """
-        Create a new availability window for a calendar.
-        :param calendar: The calendar to create the availability window for.
-        :param start_time: Start time of the availability window.
-        :param end_time: End time of the availability window.
-        :return: Created AvailableTime instance.
+        Create availability windows for a calendar (with optional recurrence support).
+        :param calendar: The calendar to create the availability windows for.
+        :param availability_windows: Iterable of tuples containing (start_time, end_time, rrule_string).
+        :return: List of created AvailableTime instances.
         """
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
@@ -2194,42 +2317,350 @@ class CalendarService(BaseCalendarService):
         if not calendar.manage_available_windows:
             raise ValueError("This calendar does not manage available windows.")
 
-        return AvailableTime.objects.bulk_create(
-            [
-                AvailableTime(
-                    calendar=calendar,
-                    start_time=start_time,
-                    end_time=end_time,
-                    organization_id=calendar.organization_id,
-                )
-                for start_time, end_time in availability_windows
-            ]
-        )
+        availability_windows_to_create = []
+
+        for start_time, end_time, rrule_string in availability_windows:
+            # Create recurrence rule if provided
+            recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
+
+            available_time = AvailableTime(
+                calendar=calendar,
+                start_time=start_time,
+                end_time=end_time,
+                organization_id=calendar.organization_id,
+                recurrence_rule=recurrence_rule,
+            )
+            availability_windows_to_create.append(available_time)
+
+        return AvailableTime.objects.bulk_create(availability_windows_to_create)
 
     @transaction.atomic()
     def bulk_create_manual_blocked_times(
         self,
         calendar: Calendar,
-        blocked_times: Iterable[tuple[datetime.datetime, datetime.datetime, str]],
+        blocked_times: Iterable[tuple[datetime.datetime, datetime.datetime, str, str | None]],
     ) -> Iterable[BlockedTime]:
         """
-        Create new blocked times for a calendar.
+        Create new blocked times for a calendar (with optional recurrence support).
         :param calendar: The calendar to create the blocked times for.
-        :param blocked_times: Iterable of tuples containing start time, end time, and reason.
+        :param blocked_times: Iterable of tuples containing (start_time, end_time, reason, rrule_string).
         :return: List of created BlockedTime instances.
         """
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
 
-        return BlockedTime.objects.bulk_create(
-            [
-                BlockedTime(
-                    calendar=calendar,
-                    start_time=start_time,
-                    end_time=end_time,
-                    reason=reason,
-                    organization_id=calendar.organization_id,
-                )
-                for start_time, end_time, reason in blocked_times
-            ]
+        blocked_times_to_create = []
+
+        for i, (start_time, end_time, reason, rrule_string) in enumerate(blocked_times):
+            # Create recurrence rule if provided
+            recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
+
+            # Generate unique external_id to avoid constraint violations
+            external_id = f"manual-{start_time.isoformat()}-{i}"
+
+            blocked_time = BlockedTime(
+                calendar=calendar,
+                start_time=start_time,
+                end_time=end_time,
+                reason=reason,
+                external_id=external_id,
+                organization_id=calendar.organization_id,
+                recurrence_rule=recurrence_rule,
+            )
+            blocked_times_to_create.append(blocked_time)
+
+        return BlockedTime.objects.bulk_create(blocked_times_to_create)
+
+    # Convenience methods for single object creation
+    @transaction.atomic()
+    def create_blocked_time(
+        self,
+        calendar: Calendar,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        reason: str = "",
+        rrule_string: str | None = None,
+    ) -> BlockedTime:
+        """Create a single blocked time (optionally recurring)."""
+        result = self.bulk_create_manual_blocked_times(
+            calendar=calendar, blocked_times=[(start_time, end_time, reason, rrule_string)]
         )
+        return next(iter(result))
+
+    @transaction.atomic()
+    def create_available_time(
+        self,
+        calendar: Calendar,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        rrule_string: str | None = None,
+    ) -> AvailableTime:
+        """Create a single available time (optionally recurring)."""
+        result = self.bulk_create_availability_windows(
+            calendar=calendar, availability_windows=[(start_time, end_time, rrule_string)]
+        )
+        return next(iter(result))
+
+    def get_blocked_times_expanded(
+        self,
+        calendar: Calendar,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+    ) -> list[BlockedTime]:
+        """Get all blocked times in a date range with recurring blocked times expanded to instances."""
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        # Get calendars to query - includes the main calendar and bundle children if applicable
+        calendars_to_query = [calendar]
+        if calendar.calendar_type == CalendarType.BUNDLE:
+            # Add all bundle children calendars
+            bundle_children = calendar.bundle_children.all()
+            calendars_to_query.extend(bundle_children)
+
+        base_qs = (
+            BlockedTime.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
+            .select_related("recurrence_rule")
+            .filter(
+                organization_id=calendar.organization_id,
+                calendar__in=calendars_to_query,
+                parent_recurring_object__isnull=True,  # Master times only
+            )
+        )
+
+        # Get non-recurring times within the date range
+        non_recurring_times = base_qs.filter(
+            Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
+            recurrence_rule__isnull=True,  # Non-recurring only
+            is_recurring_exception=False,  # Exclude exception objects
+        )
+
+        # Get recurring master times and generate their instances
+        recurring_times = base_qs.filter(
+            recurrence_rule__isnull=False,  # Recurring only
+        ).filter(
+            Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start_date),
+            start_time__lte=end_date,
+        )
+
+        times: list[BlockedTime] = list(non_recurring_times)
+
+        for master_time in recurring_times:
+            instances = master_time.get_occurrences_in_range(
+                start_date, end_date, include_self=False, include_exceptions=True
+            )
+            times.extend(instances)
+
+        # Sort by start time
+        times.sort(key=lambda x: x.start_time)
+        return times
+
+    def get_available_times_expanded(
+        self,
+        calendar: Calendar,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+    ) -> list[AvailableTime]:
+        """Get all available times in a date range with recurring available times expanded to instances."""
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        base_qs = (
+            AvailableTime.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
+            .select_related("recurrence_rule")
+            .filter(
+                organization_id=calendar.organization_id,
+                calendar=calendar,
+                parent_recurring_object__isnull=True,  # Master times only
+            )
+        )
+
+        # Get non-recurring times within the date range
+        non_recurring_times = base_qs.filter(
+            Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
+            recurrence_rule__isnull=True,  # Non-recurring only
+            is_recurring_exception=False,  # Exclude exception objects
+        )
+
+        # Get recurring master times and generate their instances
+        recurring_times = base_qs.filter(
+            recurrence_rule__isnull=False,  # Recurring only
+        ).filter(
+            Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start_date),
+            start_time__lte=end_date,
+        )
+
+        times: list[AvailableTime] = list(non_recurring_times)
+
+        for master_time in recurring_times:
+            instances = master_time.get_occurrences_in_range(
+                start_date, end_date, include_self=False, include_exceptions=True
+            )
+            times.extend(instances)
+
+        # Sort by start time
+        times.sort(key=lambda x: x.start_time)
+        return times
+
+    def create_recurring_blocked_time_exception(
+        self,
+        parent_blocked_time: BlockedTime,
+        exception_date: datetime.date,
+        modified_reason: str | None = None,
+        modified_start_time: datetime.datetime | None = None,
+        modified_end_time: datetime.datetime | None = None,
+        is_cancelled: bool = False,
+    ) -> BlockedTime | None:
+        """
+        Create an exception for a recurring blocked time (either cancelled or modified).
+
+        :param parent_blocked_time: The recurring blocked time to create an exception for
+        :param exception_date: The date of the occurrence to modify/cancel
+        :param modified_reason: New reason for the modified occurrence (if not cancelled)
+        :param modified_start_time: New start time for the modified occurrence (if not cancelled)
+        :param modified_end_time: New end time for the modified occurrence (if not cancelled)
+        :param is_cancelled: True if cancelling the occurrence, False if modifying
+        :return: Created modified blocked time or None if cancelled
+        """
+
+        def create_new_recurring_blocked_time(
+            parent_obj: RecurringMixin,
+            second_occurrence: RecurringMixin,
+            new_recurrence_rule: RecurrenceRule,
+        ) -> RecurringMixin:
+            parent_blocked_time = cast(BlockedTime, parent_obj)
+            second_blocked_time = cast(BlockedTime, second_occurrence)
+            return self.create_blocked_time(
+                calendar=parent_blocked_time.calendar,
+                start_time=second_blocked_time.start_time,
+                end_time=second_blocked_time.end_time,
+                reason=second_blocked_time.reason,
+                rrule_string=new_recurrence_rule.to_rrule_string(),
+            )
+
+        def create_modified_blocked_time(
+            parent_obj: RecurringMixin,
+            exception_datetime: datetime.datetime,
+            modification_data: dict[str, Any],
+        ) -> RecurringMixin:
+            parent_blocked_time = cast(BlockedTime, parent_obj)
+            return self.create_blocked_time(
+                calendar=parent_blocked_time.calendar,
+                start_time=modification_data.get("start_time") or exception_datetime,
+                end_time=modification_data.get("end_time")
+                or (exception_datetime + parent_blocked_time.duration),
+                reason=modification_data.get("reason") or parent_blocked_time.reason,
+            )
+
+        def update_exception_manager(
+            parent_obj: RecurringMixin, new_recurring_obj: RecurringMixin
+        ) -> None:
+            BlockedTimeRecurrenceException.objects.filter(parent_blocked_time=parent_obj).update(
+                parent_blocked_time_fk=new_recurring_obj
+            )
+
+        def delete_exception_manager(parent_obj: RecurringMixin) -> None:
+            BlockedTimeRecurrenceException.objects.filter(parent_blocked_time=parent_obj).delete()
+
+        modification_data = {
+            "reason": modified_reason,
+            "start_time": modified_start_time,
+            "end_time": modified_end_time,
+        }
+
+        result = self._create_recurring_exception_generic(
+            object_type_name="blocked time",
+            parent_object=parent_blocked_time,
+            exception_date=datetime.datetime.combine(
+                exception_date,
+                parent_blocked_time.start_time.time(),
+                tzinfo=parent_blocked_time.start_time.tzinfo,
+            ),
+            is_cancelled=is_cancelled,
+            modification_data=modification_data,
+            create_new_recurring_callback=create_new_recurring_blocked_time,
+            create_modified_object_callback=create_modified_blocked_time,
+            exception_manager_update_callback=update_exception_manager,
+            exception_manager_delete_callback=delete_exception_manager,
+        )
+        return cast(BlockedTime, result) if result else None
+
+    def create_recurring_available_time_exception(
+        self,
+        parent_available_time: AvailableTime,
+        exception_date: datetime.date,
+        modified_start_time: datetime.datetime | None = None,
+        modified_end_time: datetime.datetime | None = None,
+        is_cancelled: bool = False,
+    ) -> AvailableTime | None:
+        """
+        Create an exception for a recurring available time (either cancelled or modified).
+
+        :param parent_available_time: The recurring available time to create an exception for
+        :param exception_date: The date of the occurrence to modify/cancel
+        :param modified_start_time: New start time for the modified occurrence (if not cancelled)
+        :param modified_end_time: New end time for the modified occurrence (if not cancelled)
+        :param is_cancelled: True if cancelling the occurrence, False if modifying
+        :return: Created modified available time or None if cancelled
+        """
+
+        def create_new_recurring_available_time(
+            parent_obj: RecurringMixin,
+            second_occurrence: RecurringMixin,
+            new_recurrence_rule: RecurrenceRule,
+        ) -> RecurringMixin:
+            parent_available_time = cast(AvailableTime, parent_obj)
+            second_available_time = cast(AvailableTime, second_occurrence)
+            return self.create_available_time(
+                calendar=parent_available_time.calendar,
+                start_time=second_available_time.start_time,
+                end_time=second_available_time.end_time,
+                rrule_string=new_recurrence_rule.to_rrule_string(),
+            )
+
+        def create_modified_available_time(
+            parent_obj: RecurringMixin,
+            exception_datetime: datetime.datetime,
+            modification_data: dict[str, Any],
+        ) -> RecurringMixin:
+            parent_available_time = cast(AvailableTime, parent_obj)
+            return self.create_available_time(
+                calendar=parent_available_time.calendar,
+                start_time=modification_data.get("start_time") or exception_datetime,
+                end_time=modification_data.get("end_time")
+                or (exception_datetime + parent_available_time.duration),
+            )
+
+        def update_exception_manager(
+            parent_obj: RecurringMixin, new_recurring_obj: RecurringMixin
+        ) -> None:
+            AvailableTimeRecurrenceException.objects.filter(
+                parent_available_time=parent_obj
+            ).update(parent_available_time_fk=new_recurring_obj)
+
+        def delete_exception_manager(parent_obj: RecurringMixin) -> None:
+            AvailableTimeRecurrenceException.objects.filter(
+                parent_available_time=parent_obj
+            ).delete()
+
+        modification_data = {
+            "start_time": modified_start_time,
+            "end_time": modified_end_time,
+        }
+
+        result = self._create_recurring_exception_generic(
+            object_type_name="available time",
+            parent_object=parent_available_time,
+            exception_date=datetime.datetime.combine(
+                exception_date,
+                parent_available_time.start_time.time(),
+                tzinfo=parent_available_time.start_time.tzinfo,
+            ),
+            is_cancelled=is_cancelled,
+            modification_data=modification_data,
+            create_new_recurring_callback=create_new_recurring_available_time,
+            create_modified_object_callback=create_modified_available_time,
+            exception_manager_update_callback=update_exception_manager,
+            exception_manager_delete_callback=delete_exception_manager,
+        )
+        return cast(AvailableTime, result) if result else None

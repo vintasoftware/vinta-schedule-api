@@ -5,13 +5,19 @@ from django.utils import timezone
 
 import pytest
 
-from calendar_integration.constants import CalendarProvider, CalendarSyncStatus, CalendarType
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarSyncStatus,
+    CalendarType,
+    RecurrenceFrequency,
+)
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
     CalendarSync,
+    RecurrenceRule,
 )
 from organizations.models import Organization
 
@@ -892,3 +898,528 @@ class TestCalendarAvailabilityQuerySet(TestCase):
         # - Managed calendars have no available times in this range
         # - Unmanaged calendar has conflicting event in this range
         assert available_calendars.count() == 0
+
+
+@pytest.mark.django_db
+class TestBlockedTimeQuerySet(TestCase):
+    """Test cases for BlockedTimeQuerySet recurring functionality."""
+
+    def setUp(self):
+        """Set up test data for BlockedTime recurring tests."""
+        self.organization = Organization.objects.create(
+            name="Test Organization",
+            should_sync_rooms=True,
+        )
+
+        self.calendar = Calendar.objects.create(
+            name="Test Calendar",
+            description="Test calendar for blocked times",
+            email="test@example.com",
+            external_id="test_123",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.PERSONAL,
+            organization=self.organization,
+        )
+
+        self.now = timezone.now().replace(second=0, microsecond=0)
+
+        # Create a daily recurrence rule
+        self.daily_rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY,
+            interval=1,
+            count=5,
+            organization=self.organization,
+        )
+
+        # Create a weekly recurrence rule
+        self.weekly_rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.WEEKLY,
+            interval=1,
+            by_weekday="MO,WE,FR",
+            count=3,
+            organization=self.organization,
+        )
+
+        # Create recurring blocked time (daily)
+        self.daily_blocked_time = BlockedTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=1),
+            end_time=self.now + timedelta(days=1, hours=2),
+            reason="Daily maintenance",
+            external_id="daily_blocked_time",
+            recurrence_rule=self.daily_rule,
+            organization=self.organization,
+        )
+
+        # Create recurring blocked time (weekly)
+        self.weekly_blocked_time = BlockedTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=7),
+            end_time=self.now + timedelta(days=7, hours=1),
+            reason="Weekly meeting",
+            external_id="weekly_blocked_time",
+            recurrence_rule=self.weekly_rule,
+            organization=self.organization,
+        )
+
+        # Create non-recurring blocked time
+        self.single_blocked_time = BlockedTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=2),
+            end_time=self.now + timedelta(days=2, hours=1),
+            reason="One-time block",
+            external_id="single_blocked_time",
+            organization=self.organization,
+        )
+
+    def test_filter_master_recurring_objects(self):
+        """Test filtering master recurring blocked times."""
+        masters = BlockedTime.objects.filter_by_organization(
+            organization_id=self.organization.id
+        ).filter_master_recurring_objects()
+
+        assert masters.count() == 2
+        master_ids = list(masters.values_list("id", flat=True))
+        assert self.daily_blocked_time.id in master_ids
+        assert self.weekly_blocked_time.id in master_ids
+        assert self.single_blocked_time.id not in master_ids
+
+    def test_filter_recurring_instances(self):
+        """Test filtering recurring instance blocked times."""
+        # Create a recurring instance
+        instance = BlockedTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=3),
+            end_time=self.now + timedelta(days=3, hours=2),
+            reason="Modified occurrence",
+            parent_recurring_object=self.daily_blocked_time,
+            recurrence_id=self.now + timedelta(days=3),
+            is_recurring_exception=True,
+            organization=self.organization,
+        )
+
+        instances = BlockedTime.objects.filter_by_organization(
+            organization_id=self.organization.id
+        ).filter_recurring_instances()
+
+        assert instances.count() == 1
+        assert instances.first().id == instance.id
+
+    def test_filter_non_recurring_objects(self):
+        """Test filtering non-recurring blocked times."""
+        non_recurring = BlockedTime.objects.filter_by_organization(
+            organization_id=self.organization.id
+        ).filter_non_recurring_objects()
+
+        assert non_recurring.count() == 1
+        assert non_recurring.first().id == self.single_blocked_time.id
+
+    def test_annotate_recurring_occurrences_on_date_range(self):
+        """Test annotating blocked times with their recurring occurrences."""
+        start_date = self.now
+        end_date = self.now + timedelta(days=10)
+
+        blocked_times_with_occurrences = (
+            BlockedTime.objects.filter_by_organization(organization_id=self.organization.id)
+            .filter_master_recurring_objects()
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date)
+        )
+
+        # Check that annotation exists
+        for blocked_time in blocked_times_with_occurrences:
+            assert hasattr(blocked_time, "recurring_occurrences")
+
+            if blocked_time.id == self.daily_blocked_time.id:
+                # Daily blocked time should have occurrences
+                assert blocked_time.recurring_occurrences is not None
+                # Should be a list/array of JSON strings
+                assert len(blocked_time.recurring_occurrences) > 0
+            elif blocked_time.id == self.weekly_blocked_time.id:
+                # Weekly blocked time might have occurrences depending on the date range
+                assert blocked_time.recurring_occurrences is not None
+
+    def test_recurring_objects_properties(self):
+        """Test recurring properties on BlockedTime objects."""
+        # Test master recurring object
+        assert self.daily_blocked_time.is_recurring is True
+        assert self.daily_blocked_time.is_recurring_instance is False
+
+        # Test non-recurring object
+        assert self.single_blocked_time.is_recurring is False
+        assert self.single_blocked_time.is_recurring_instance is False
+
+        # Create and test recurring instance
+        instance = BlockedTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=3),
+            end_time=self.now + timedelta(days=3, hours=2),
+            reason="Modified occurrence",
+            parent_recurring_object=self.daily_blocked_time,
+            recurrence_id=self.now + timedelta(days=3),
+            is_recurring_exception=True,
+            organization=self.organization,
+        )
+
+        assert instance.is_recurring is False
+        assert instance.is_recurring_instance is True
+
+    def test_manager_delegation_methods(self):
+        """Test that manager methods properly delegate to queryset."""
+        # Test manager methods delegate correctly
+        masters = BlockedTime.objects.filter_master_recurring_objects()
+        assert masters.count() >= 2
+
+        instances = BlockedTime.objects.filter_recurring_instances()
+        # Should be 0 initially since we haven't created any instances yet
+        assert instances.count() == 0
+
+        non_recurring = BlockedTime.objects.filter_non_recurring_objects()
+        assert non_recurring.count() >= 1
+
+
+@pytest.mark.django_db
+class TestAvailableTimeQuerySet(TestCase):
+    """Test cases for AvailableTimeQuerySet recurring functionality."""
+
+    def setUp(self):
+        """Set up test data for AvailableTime recurring tests."""
+        self.organization = Organization.objects.create(
+            name="Test Organization",
+            should_sync_rooms=True,
+        )
+
+        self.calendar = Calendar.objects.create(
+            name="Test Calendar",
+            description="Test calendar for available times",
+            email="test@example.com",
+            external_id="test_123",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.PERSONAL,
+            organization=self.organization,
+        )
+
+        self.now = timezone.now().replace(second=0, microsecond=0)
+
+        # Create a daily recurrence rule for work hours
+        self.daily_rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY,
+            interval=1,
+            by_weekday="MO,TU,WE,TH,FR",  # Weekdays only
+            count=10,
+            organization=self.organization,
+        )
+
+        # Create a weekly recurrence rule
+        self.weekly_rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.WEEKLY,
+            interval=2,  # Every 2 weeks
+            count=4,
+            organization=self.organization,
+        )
+
+        # Create recurring available time (daily work hours)
+        self.daily_available_time = AvailableTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now.replace(hour=9, minute=0) + timedelta(days=1),  # 9 AM
+            end_time=self.now.replace(hour=17, minute=0) + timedelta(days=1),  # 5 PM
+            recurrence_rule=self.daily_rule,
+            organization=self.organization,
+        )
+
+        # Create recurring available time (bi-weekly)
+        self.weekly_available_time = AvailableTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now.replace(hour=10, minute=0) + timedelta(days=7),  # 10 AM
+            end_time=self.now.replace(hour=12, minute=0) + timedelta(days=7),  # 12 PM
+            recurrence_rule=self.weekly_rule,
+            organization=self.organization,
+        )
+
+        # Create non-recurring available time
+        self.single_available_time = AvailableTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=2, hours=14),
+            end_time=self.now + timedelta(days=2, hours=16),
+            organization=self.organization,
+        )
+
+    def test_filter_master_recurring_objects(self):
+        """Test filtering master recurring available times."""
+        masters = AvailableTime.objects.filter_by_organization(
+            organization_id=self.organization.id
+        ).filter_master_recurring_objects()
+
+        assert masters.count() == 2
+        master_ids = list(masters.values_list("id", flat=True))
+        assert self.daily_available_time.id in master_ids
+        assert self.weekly_available_time.id in master_ids
+        assert self.single_available_time.id not in master_ids
+
+    def test_filter_recurring_instances(self):
+        """Test filtering recurring instance available times."""
+        # Create a recurring instance (exception)
+        instance = AvailableTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=3, hours=10),
+            end_time=self.now + timedelta(days=3, hours=18),  # Extended hours
+            parent_recurring_object=self.daily_available_time,
+            recurrence_id=self.now + timedelta(days=3, hours=9),
+            is_recurring_exception=True,
+            organization=self.organization,
+        )
+
+        instances = AvailableTime.objects.filter_by_organization(
+            organization_id=self.organization.id
+        ).filter_recurring_instances()
+
+        assert instances.count() == 1
+        assert instances.first().id == instance.id
+
+    def test_filter_non_recurring_objects(self):
+        """Test filtering non-recurring available times."""
+        non_recurring = AvailableTime.objects.filter_by_organization(
+            organization_id=self.organization.id
+        ).filter_non_recurring_objects()
+
+        assert non_recurring.count() == 1
+        assert non_recurring.first().id == self.single_available_time.id
+
+    def test_annotate_recurring_occurrences_on_date_range(self):
+        """Test annotating available times with their recurring occurrences."""
+        start_date = self.now
+        end_date = self.now + timedelta(days=14)
+
+        available_times_with_occurrences = (
+            AvailableTime.objects.filter_by_organization(organization_id=self.organization.id)
+            .filter_master_recurring_objects()
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date)
+        )
+
+        # Check that annotation exists
+        for available_time in available_times_with_occurrences:
+            assert hasattr(available_time, "recurring_occurrences")
+
+            if available_time.id == self.daily_available_time.id:
+                # Daily available time should have multiple occurrences
+                assert available_time.recurring_occurrences is not None
+                assert len(available_time.recurring_occurrences) > 0
+            elif available_time.id == self.weekly_available_time.id:
+                # Weekly available time should have fewer occurrences
+                assert available_time.recurring_occurrences is not None
+
+    def test_recurring_objects_properties(self):
+        """Test recurring properties on AvailableTime objects."""
+        # Test master recurring object
+        assert self.daily_available_time.is_recurring is True
+        assert self.daily_available_time.is_recurring_instance is False
+
+        # Test non-recurring object
+        assert self.single_available_time.is_recurring is False
+        assert self.single_available_time.is_recurring_instance is False
+
+        # Create and test recurring instance
+        instance = AvailableTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=5, hours=9),
+            end_time=self.now + timedelta(days=5, hours=17),
+            parent_recurring_object=self.daily_available_time,
+            recurrence_id=self.now + timedelta(days=5, hours=9),
+            is_recurring_exception=True,
+            organization=self.organization,
+        )
+
+        assert instance.is_recurring is False
+        assert instance.is_recurring_instance is True
+
+    def test_manager_delegation_methods(self):
+        """Test that manager methods properly delegate to queryset."""
+        # Test manager methods delegate correctly
+        masters = AvailableTime.objects.filter_master_recurring_objects()
+        assert masters.count() >= 2
+
+        instances = AvailableTime.objects.filter_recurring_instances()
+        # Should be 0 initially since we haven't created any instances yet
+        assert instances.count() == 0
+
+        non_recurring = AvailableTime.objects.filter_non_recurring_objects()
+        assert non_recurring.count() >= 1
+
+    def test_duration_property(self):
+        """Test duration property works correctly for AvailableTime."""
+        expected_duration = timedelta(hours=8)  # 9 AM to 5 PM
+        assert self.daily_available_time.duration == expected_duration
+
+        expected_weekly_duration = timedelta(hours=2)  # 10 AM to 12 PM
+        assert self.weekly_available_time.duration == expected_weekly_duration
+
+    def test_chaining_queryset_methods(self):
+        """Test chaining queryset methods for AvailableTime."""
+        # Test chaining filter methods
+        result = (
+            AvailableTime.objects.filter_by_organization(organization_id=self.organization.id)
+            .filter_master_recurring_objects()
+            .filter(start_time__hour=9)  # Only 9 AM start times
+        )
+
+        assert result.count() == 1
+        assert result.first().id == self.daily_available_time.id
+
+
+@pytest.mark.django_db
+class TestRecurringIntegration(TestCase):
+    """Integration tests for recurring functionality across BlockedTime and AvailableTime."""
+
+    def setUp(self):
+        """Set up test data for integration tests."""
+        self.organization = Organization.objects.create(
+            name="Test Organization",
+            should_sync_rooms=True,
+        )
+
+        self.calendar = Calendar.objects.create(
+            name="Test Calendar",
+            description="Test calendar for integration tests",
+            email="test@example.com",
+            external_id="test_123",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.PERSONAL,
+            organization=self.organization,
+        )
+
+        self.now = timezone.now().replace(second=0, microsecond=0)
+
+        # Create a shared recurrence rule
+        self.shared_rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY,
+            interval=1,
+            count=5,
+            organization=self.organization,
+        )
+
+    def test_blocked_and_available_time_with_same_rule(self):
+        """Test that both BlockedTime and AvailableTime can use the same recurrence rule."""
+        # Create recurring blocked time
+        blocked_time = BlockedTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=1, hours=12),
+            end_time=self.now + timedelta(days=1, hours=13),  # Lunch break
+            reason="Daily lunch break",
+            recurrence_rule=self.shared_rule,
+            organization=self.organization,
+        )
+
+        # Create recurring available time with same rule
+        available_time = AvailableTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=1, hours=9),
+            end_time=self.now + timedelta(days=1, hours=17),  # Work hours
+            recurrence_rule=self.shared_rule,
+            organization=self.organization,
+        )
+
+        # Both should be recurring
+        assert blocked_time.is_recurring is True
+        assert available_time.is_recurring is True
+
+        # Both should use the same rule
+        assert blocked_time.recurrence_rule == self.shared_rule
+        assert available_time.recurrence_rule == self.shared_rule
+
+    def test_master_objects_count_across_models(self):
+        """Test counting master recurring objects across both models."""
+        # Create different rules for each model
+        blocked_rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.WEEKLY,
+            interval=1,
+            count=3,
+            organization=self.organization,
+        )
+
+        available_rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY,
+            interval=1,
+            count=7,
+            organization=self.organization,
+        )
+
+        # Create recurring objects
+        BlockedTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=1),
+            end_time=self.now + timedelta(days=1, hours=1),
+            reason="Weekly block",
+            recurrence_rule=blocked_rule,
+            organization=self.organization,
+        )
+
+        AvailableTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=1),
+            end_time=self.now + timedelta(days=1, hours=2),
+            recurrence_rule=available_rule,
+            organization=self.organization,
+        )
+
+        # Count master objects in each model
+        blocked_masters = BlockedTime.objects.filter_by_organization(
+            organization_id=self.organization.id
+        ).filter_master_recurring_objects()
+
+        available_masters = AvailableTime.objects.filter_by_organization(
+            organization_id=self.organization.id
+        ).filter_master_recurring_objects()
+
+        assert blocked_masters.count() == 1
+        assert available_masters.count() == 1
+
+    def test_database_functions_work_independently(self):
+        """Test that database functions work independently for each model."""
+        # Create different recurring objects
+        daily_rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY,
+            interval=1,
+            count=3,
+            organization=self.organization,
+        )
+
+        blocked_time = BlockedTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=1, hours=10),
+            end_time=self.now + timedelta(days=1, hours=11),
+            reason="Daily block",
+            recurrence_rule=daily_rule,
+            organization=self.organization,
+        )
+
+        available_time = AvailableTime.objects.create(
+            calendar=self.calendar,
+            start_time=self.now + timedelta(days=1, hours=14),
+            end_time=self.now + timedelta(days=1, hours=16),
+            recurrence_rule=daily_rule,
+            organization=self.organization,
+        )
+
+        start_date = self.now
+        end_date = self.now + timedelta(days=5)
+
+        # Test BlockedTime database function
+        blocked_with_occurrences = (
+            BlockedTime.objects.filter_by_organization(organization_id=self.organization.id)
+            .filter(id=blocked_time.id)
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date)
+        )
+
+        blocked_result = blocked_with_occurrences.first()
+        assert hasattr(blocked_result, "recurring_occurrences")
+        assert blocked_result.recurring_occurrences is not None
+
+        # Test AvailableTime database function
+        available_with_occurrences = (
+            AvailableTime.objects.filter_by_organization(organization_id=self.organization.id)
+            .filter(id=available_time.id)
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date)
+        )
+
+        available_result = available_with_occurrences.first()
+        assert hasattr(available_result, "recurring_occurrences")
+        assert available_result.recurring_occurrences is not None

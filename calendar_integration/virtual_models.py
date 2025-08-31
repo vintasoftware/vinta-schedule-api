@@ -8,8 +8,8 @@ from calendar_integration.models import (
     CalendarOwnership,
     EventAttendance,
     EventExternalAttendance,
+    EventRecurrenceException,
     ExternalAttendee,
-    RecurrenceException,
     RecurrenceRule,
     ResourceAllocation,
 )
@@ -73,18 +73,18 @@ class CalendarEventVirtualModel(v.VirtualModel):
     attendances = EventAttendanceVirtualModel(many=True)
     resource_allocations = ResourceAllocationVirtualModel(many=True)
     recurrence_rule = RecurrenceRuleVirtualModel()
-    parent_event = NestedCalendarEventVirtualModel()
+    parent_recurring_object = NestedCalendarEventVirtualModel()
 
     class Meta:
         model = CalendarEvent
 
 
-class RecurrenceExceptionVirtualModel(v.VirtualModel):
+class EventRecurrenceExceptionVirtualModel(v.VirtualModel):
     parent_event = CalendarEventVirtualModel()
     modified_event = CalendarEventVirtualModel()
 
     class Meta:
-        model = RecurrenceException
+        model = EventRecurrenceException
 
 
 class BlockedTimeVirtualModel(v.VirtualModel):

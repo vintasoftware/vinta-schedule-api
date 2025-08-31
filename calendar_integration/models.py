@@ -1,5 +1,5 @@
 import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -18,6 +18,8 @@ from calendar_integration.constants import (
     RSVPStatus,
 )
 from calendar_integration.managers import (
+    AvailableTimeManager,
+    BlockedTimeManager,
     CalendarEventManager,
     CalendarManager,
     CalendarSyncManager,
@@ -484,132 +486,146 @@ class RecurrenceRule(OrganizationModel):
         super().save(*args, **kwargs)
 
 
-class CalendarEvent(OrganizationModel):
+class RecurringMixin(OrganizationModel):
     """
-    Represents an event in a calendar.
+    Abstract mixin that provides recurring functionality to any model.
+    Models that inherit from this mixin must have 'start_time' and 'end_time' fields.
     """
 
-    calendar = OrganizationForeignKey(  # type:ignore
-        Calendar,
-        on_delete=models.CASCADE,
-        null=True,
-        related_name="events",
-    )
-    title = models.CharField(max_length=255)
-    description = models.TextField(blank=True)
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
-    external_id = models.CharField(max_length=255, unique=True, blank=True)
-
-    # Bundle calendar fields
-    bundle_calendar = OrganizationForeignKey(
-        Calendar,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="bundle_events",
-        help_text="If this event was created through a bundle calendar, references the bundle",
-    )
-    is_bundle_primary = models.BooleanField(
-        default=False,
-        help_text="True if this is the primary event in a bundle (hosts the actual event in external providers)",
-    )
-    bundle_primary_event = OrganizationForeignKey(
-        "self",
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="bundle_representations",
-        help_text="For bundle representations, points to the primary event that hosts the actual external event",
-    )
 
     # Recurrence fields
     recurrence_rule = OrganizationOneToOneField(
-        RecurrenceRule,
+        "RecurrenceRule",
         on_delete=models.CASCADE,
         null=True,
         blank=True,
-        related_name="event",
-        help_text="The recurrence rule for this event. If set, this event is recurring.",
+        related_name="%(class)s_instance",  # This creates unique related names for each model
+        help_text="The recurrence rule for this object. If set, this object is recurring.",
     )
     recurrence_id = models.DateTimeField(
         null=True,
         blank=True,
-        help_text="For recurring event instances, this identifies which occurrence this is",
+        help_text="For recurring instances, this identifies which occurrence this is",
     )
-    parent_event = OrganizationForeignKey(
+    parent_recurring_object = OrganizationForeignKey(
         "self",
         on_delete=models.CASCADE,
         null=True,
         blank=True,
-        related_name="recurring_instances",
-        help_text="If this is an instance of a recurring event, points to the parent event",
+        related_name="%(class)s_recurring_instances",  # This creates unique related names for each model
+        help_text="If this is an instance of a recurring object, points to the parent object",
     )
     is_recurring_exception = models.BooleanField(
         default=False,
-        help_text="True if this event is an exception to the recurrence rule (modified occurrence)",
+        help_text="True if this object is an exception to the recurrence rule (modified occurrence)",
     )
 
-    attendees = models.ManyToManyField(
-        settings.AUTH_USER_MODEL,
-        related_name="calendar_events",
-        through=EventAttendance,
-        through_fields=("event", "user"),
-        blank=True,
-    )
-    external_attendees = models.ManyToManyField(ExternalAttendee, related_name="calendar_events")
-    resources = models.ManyToManyField(
-        Calendar,
-        related_name="allocated_events",
-        through=ResourceAllocation,
-        through_fields=("event", "calendar"),
-        blank=True,
-    )
-
-    resource_allocations: "RelatedManager[ResourceAllocation]"
-    attendances: "RelatedManager[EventAttendance]"
-    external_attendances: "RelatedManager[EventExternalAttendance]"
-    recurring_instances: "RelatedManager[CalendarEvent]"
-
-    objects: CalendarEventManager = CalendarEventManager()
-
-    def __str__(self):
-        return f"{self.title} ({self.start_time} - {self.end_time})"
+    class Meta:
+        abstract = True
 
     @property
     def is_recurring(self) -> bool:
-        """
-        Returns True if this event has a recurrence rule.
-        """
+        """Returns True if this object has a recurrence rule."""
         return self.recurrence_rule is not None
 
     @property
     def is_recurring_instance(self) -> bool:
-        """
-        Returns True if this event is an instance of a recurring event.
-        """
-        return self.parent_event is not None
+        """Returns True if this object is an instance of a recurring object."""
+        return self.parent_recurring_object is not None
 
     @property
     def duration(self):
-        """
-        Returns the duration of the event as a timedelta.
-        """
+        """Returns the duration of the object as a timedelta."""
         return self.end_time - self.start_time
 
-    @property
-    def is_bundle_event(self) -> bool:
-        """Returns True if this event is part of a bundle calendar."""
-        return self.bundle_calendar is not None
+    def _get_occurrences_in_range(
+        self,
+        modified_instance_id_field_name: str,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        include_self=True,
+        include_exceptions=True,
+        max_occurrences=10000,
+    ) -> list[Self]:
+        """Get occurrences of this recurring available time in a date range."""
+        if not self.is_recurring:
+            return []
 
-    @property
-    def is_bundle_representation(self) -> bool:
-        """Returns True if this event is a representation of a bundle primary event."""
-        return self.bundle_primary_event is not None
+        if hasattr(self, "recurring_occurrences"):
+            occurrences = self.recurring_occurrences
+        else:
+            occurrences = (
+                self.__class__.objects.annotate_recurring_occurrences_on_date_range(  # type: ignore
+                    start_date, end_date, max_occurrences
+                )
+                .filter(organization_id=self.organization_id, id=self.pk)
+                .values_list("recurring_occurrences", flat=True)
+                .first()
+            )
 
-    def get_next_occurrence(
-        self, after_date: datetime.datetime | None = None
-    ) -> "CalendarEvent | None":
+        all_exception_blocked_times_by_id: dict[int, Self] = {
+            e.pk: e
+            for e in self.__class__.objects.filter(
+                organization_id=self.organization_id,
+                id__in=[
+                    o[modified_instance_id_field_name]
+                    for o in occurrences
+                    if modified_instance_id_field_name in o
+                ],
+            )
+        }
+
+        instances: list[Self] = []
+        for occurrence in occurrences:
+            occurrence_start_time = datetime.datetime.fromisoformat(occurrence["start_time"])
+            occurrence_end_time = datetime.datetime.fromisoformat(occurrence["end_time"])
+            if (
+                include_self
+                and occurrence_start_time == self.start_time
+                and occurrence_end_time == self.end_time
+            ):
+                instances.append(self)
+                continue
+
+            if occurrence["exception_type"] == "cancelled":
+                continue
+
+            if occurrence[modified_instance_id_field_name] and (
+                exception_event := all_exception_blocked_times_by_id.get(
+                    occurrence[modified_instance_id_field_name]
+                )
+            ):
+                if include_exceptions:
+                    instances.append(exception_event)
+                continue
+
+            instances.append(
+                self.create_instance_from_occurrence(
+                    occurrence_start_time,
+                    occurrence_end_time,
+                )
+            )
+
+        return instances
+
+    def get_occurrences_in_range(
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        include_self=True,
+        include_exceptions=True,
+        max_occurrences=10000,
+    ) -> list[Self]:
+        raise NotImplementedError("Subclasses must implement get_occurrences_in_range")
+
+    def create_instance_from_occurrence(
+        self, occurrence_start_time: datetime.datetime, occurrence_end_time: datetime.datetime
+    ) -> Self:
+        raise NotImplementedError("Subclasses must implement create_instance_from_occurrence")
+
+    def get_next_occurrence(self, after_date: datetime.datetime | None = None) -> "Self | None":
         """
         Get the next occurrence of this recurring event after the given date.
         If no date is provided, uses the current time.
@@ -648,98 +664,23 @@ class CalendarEvent(OrganizationModel):
         except (IndexError, AttributeError):
             return None
 
-    def get_occurrences_in_range(
-        self,
-        start_date: datetime.datetime,
-        end_date: datetime.datetime,
-        include_self=True,
-        include_exceptions=True,
-        max_occurrences=10000,
-    ) -> list["CalendarEvent"]:
-        """
-        Get all occurrences of this event in the given date range.
-        This includes both generated instances and any saved exceptions.
-
-        Args:
-            start_date: Start of the date range
-            end_date: End of the date range
-            include_exceptions: Whether to include modified exceptions
-
-        Returns:
-            List of CalendarEvent instances (mix of generated and saved events)
-        """
-        if not self.is_recurring:
-            return []
-
-        if hasattr(self, "recurring_occurrences"):
-            occurrences = self.recurring_occurrences
-        else:
-            occurrences = (
-                self.__class__.objects.annotate_recurring_occurrences_on_date_range(
-                    start_date, end_date, max_occurrences
-                )
-                .filter(organization_id=self.organization_id, id=self.id)
-                .values_list("recurring_occurrences", flat=True)
-                .first()
-            )
-
-        all_exception_events_by_id: dict[int, CalendarEvent] = {
-            e.pk: e
-            for e in self.__class__.objects.filter(
-                organization_id=self.organization_id,
-                id__in=[o["modified_event_id"] for o in occurrences if "modified_event_id" in o],
-            )
-        }
-
-        events: list[CalendarEvent] = []
-        for occurrence in occurrences:
-            occurrence_start_time = datetime.datetime.fromisoformat(occurrence["start_time"])
-            occurrence_end_time = datetime.datetime.fromisoformat(occurrence["end_time"])
-            if (
-                include_self
-                and occurrence_start_time == self.start_time
-                and occurrence_end_time == self.end_time
-            ):
-                events.append(self)
-                continue
-
-            if occurrence["exception_type"] == "cancelled":
-                continue
-
-            if occurrence["modified_event_id"] and (
-                exception_event := all_exception_events_by_id.get(occurrence["modified_event_id"])
-            ):
-                if include_exceptions:
-                    events.append(exception_event)
-                continue
-
-            events.append(
-                CalendarEvent(
-                    calendar_fk=self.calendar,
-                    organization=self.organization,
-                    title=self.title,
-                    description=self.description,
-                    start_time=occurrence_start_time,
-                    end_time=occurrence_end_time,
-                    recurrence_rule_fk=self.recurrence_rule,
-                    recurrence_id=occurrence_start_time,
-                )
-            )
-
-        return events
-
     def get_generated_occurrences_in_range(
         self, start_date: datetime.datetime, end_date: datetime.datetime
-    ) -> list["CalendarEvent"]:
+    ) -> list[Self]:
         """
-        Generate recurring event instances between start_date and end_date.
-        Returns a list of CalendarEvent instances (not saved to database).
+        Get generated occurrences using database function.
+        This method should be overridden by concrete models to use their specific database function.
         """
         return self.get_occurrences_in_range(
             start_date, end_date, include_self=False, include_exceptions=False
         )
 
-    def create_exception(self, exception_date, is_cancelled=True, modified_event=None):
+    def create_exception(
+        self,
+        exception_date: datetime.datetime,
+        is_cancelled=True,
+        modified_object: Self | None = None,
+    ):
         """
         Create an exception for a specific occurrence of this recurring event.
 
@@ -760,36 +701,173 @@ class CalendarEvent(OrganizationModel):
         if org_id is None:
             raise ValueError("CalendarEvent is missing organization (cannot create exception)")
 
-        qs = RecurrenceException.objects.filter(
+        qs = self.recurrence_exceptions.filter(  # type: ignore
             organization_id=org_id,
-            parent_event_fk=self,
             exception_date=exception_date,
         )
         exception = qs.first()
         if exception:
             exception.is_cancelled = is_cancelled
-            # Assign underlying FK for modified_event if provided
-            if modified_event is not None:
-                exception.modified_event_fk = modified_event
+            # Assign underlying FK for modified_object if provided
+            if modified_object is not None:
+                exception.modified_object = modified_object
             else:
-                exception.modified_event_fk = None
-            exception.save(update_fields=["is_cancelled", "modified_event_fk", "modified"])
+                exception.modified_object = None
+            exception.save()
             return exception
 
         # Create new exception
-        exception = RecurrenceException(
+        exception = self.recurrence_exceptions.model(  # type: ignore
             organization_id=org_id,
-            parent_event_fk=self,
             exception_date=exception_date,
             is_cancelled=is_cancelled,
         )
-        if modified_event is not None:
-            exception.modified_event_fk = modified_event
+        exception.parent_object = self
+        if modified_object is not None:
+            exception.modified_object = modified_object
         exception.save()
         return exception
 
+    def _create_recurring_instance(
+        self,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        recurrence_id: datetime.datetime,
+        is_exception: bool = False,
+    ):
+        """
+        Helper method to create a recurring instance.
+        This should be overridden by concrete models to set model-specific fields.
+        """
+        raise NotImplementedError("Subclasses must implement _create_recurring_instance")
 
-class RecurrenceException(OrganizationModel):
+
+class CalendarEvent(RecurringMixin):
+    """
+    Represents an event in a calendar.
+    """
+
+    calendar = OrganizationForeignKey(  # type:ignore
+        Calendar,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="events",
+    )
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    external_id = models.CharField(max_length=255, unique=True, blank=True)
+
+    # Bundle calendar fields
+    bundle_calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="bundle_events",
+        help_text="If this event was created through a bundle calendar, references the bundle",
+    )
+    is_bundle_primary = models.BooleanField(
+        default=False,
+        help_text="True if this is the primary event in a bundle (hosts the actual event in external providers)",
+    )
+    bundle_primary_event = OrganizationForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="bundle_representations",
+        help_text="For bundle representations, points to the primary event that hosts the actual external event",
+    )
+
+    # Recurrence fields
+
+    attendees = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        related_name="calendar_events",
+        through=EventAttendance,
+        through_fields=("event", "user"),
+        blank=True,
+    )
+    external_attendees = models.ManyToManyField(ExternalAttendee, related_name="calendar_events")
+    resources = models.ManyToManyField(
+        Calendar,
+        related_name="allocated_events",
+        through=ResourceAllocation,
+        through_fields=("event", "calendar"),
+        blank=True,
+    )
+
+    resource_allocations: "RelatedManager[ResourceAllocation]"
+    attendances: "RelatedManager[EventAttendance]"
+    external_attendances: "RelatedManager[EventExternalAttendance]"
+    recurring_instances: "RelatedManager[CalendarEvent]"
+
+    objects: CalendarEventManager = CalendarEventManager()
+
+    def __str__(self):
+        return f"{self.title} ({self.start_time} - {self.end_time})"
+
+    @property
+    def is_bundle_event(self) -> bool:
+        """Returns True if this event is part of a bundle calendar."""
+        return self.bundle_calendar is not None
+
+    @property
+    def is_bundle_representation(self) -> bool:
+        """Returns True if this event is a representation of a bundle primary event."""
+        return self.bundle_primary_event is not None
+
+    def get_occurrences_in_range(
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        include_self=True,
+        include_exceptions=True,
+        max_occurrences=10000,
+    ) -> list[Self]:
+        return self._get_occurrences_in_range(
+            modified_instance_id_field_name="modified_event_id",
+            start_date=start_date,
+            end_date=end_date,
+            include_self=include_self,
+            include_exceptions=include_exceptions,
+            max_occurrences=max_occurrences,
+        )
+
+    def create_instance_from_occurrence(self, occurrence_start_time, occurrence_end_time):
+        return self.__class__(
+            calendar_fk=self.calendar,
+            organization=self.organization,
+            title=self.title,
+            description=self.description,
+            start_time=occurrence_start_time,
+            end_time=occurrence_end_time,
+            recurrence_rule_fk=self.recurrence_rule,
+            recurrence_id=occurrence_start_time,
+        )
+
+
+class RecurrenceExceptionMixin(OrganizationModel):
+    """
+    Represents an exception to a recurring event (cancelled or modified occurrence).
+    """
+
+    exception_date = models.DateTimeField(
+        help_text="The original start time of the occurrence being excepted"
+    )
+    is_cancelled = models.BooleanField(
+        default=False, help_text="True if this occurrence is cancelled, False if it's modified"
+    )
+
+    def __str__(self):
+        status = "cancelled" if self.is_cancelled else "modified"
+        return f"Exception for {self.parent_object} on {self.exception_date} ({status})"
+
+    class Meta:
+        abstract = True
+
+
+class EventRecurrenceException(RecurrenceExceptionMixin, OrganizationModel):
     """
     Represents an exception to a recurring event (cancelled or modified occurrence).
     """
@@ -801,12 +879,6 @@ class RecurrenceException(OrganizationModel):
         related_name="recurrence_exceptions",
         help_text="The recurring event this exception applies to",
     )
-    exception_date = models.DateTimeField(
-        help_text="The original start time of the occurrence being excepted"
-    )
-    is_cancelled = models.BooleanField(
-        default=False, help_text="True if this occurrence is cancelled, False if it's modified"
-    )
     modified_event = OrganizationForeignKey(
         CalendarEvent,
         on_delete=models.CASCADE,
@@ -816,12 +888,24 @@ class RecurrenceException(OrganizationModel):
         help_text="If the occurrence is modified (not cancelled), points to the modified event",
     )
 
-    def __str__(self):
-        status = "cancelled" if self.is_cancelled else "modified"
-        return f"Exception for {self.parent_event.title} on {self.exception_date} ({status})"
+    @property
+    def parent_object(self):
+        return self.parent_event
+
+    @parent_object.setter
+    def parent_object(self, parent_object):
+        self.parent_event_fk = parent_object
+
+    @property
+    def modified_object(self):
+        return self.modified_event
+
+    @modified_object.setter
+    def modified_object(self, modified_object):
+        self.modified_event_fk = modified_object
 
 
-class BlockedTime(OrganizationModel):
+class BlockedTime(RecurringMixin):
     """
     Represents a blocked time period in a calendar.
     """
@@ -832,8 +916,6 @@ class BlockedTime(OrganizationModel):
         null=True,
         related_name="blocked_times",
     )
-    start_time = models.DateTimeField()
-    end_time = models.DateTimeField()
     reason = models.CharField(max_length=255, blank=True)
     external_id = models.CharField(max_length=255, blank=True)
 
@@ -855,6 +937,11 @@ class BlockedTime(OrganizationModel):
         help_text="For bundle representations, points to the primary event that this blocked time represents",
     )
 
+    objects: "BlockedTimeManager" = BlockedTimeManager()
+
+    class Meta:
+        unique_together = (("calendar_fk_id", "external_id"),)
+
     def __str__(self):
         return f"Blocked from {self.start_time} to {self.end_time} ({self.reason})"
 
@@ -863,11 +950,36 @@ class BlockedTime(OrganizationModel):
         """Returns True if this blocked time represents a bundle event."""
         return self.bundle_primary_event is not None
 
-    class Meta:
-        unique_together = (("calendar_fk_id", "external_id"),)
+    def get_occurrences_in_range(
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        include_self=True,
+        include_exceptions=True,
+        max_occurrences=10000,
+    ) -> list[Self]:
+        return self._get_occurrences_in_range(
+            modified_instance_id_field_name="modified_blocked_time_id",
+            start_date=start_date,
+            end_date=end_date,
+            include_self=include_self,
+            include_exceptions=include_exceptions,
+            max_occurrences=max_occurrences,
+        )
+
+    def create_instance_from_occurrence(self, occurrence_start_time, occurrence_end_time):
+        return self.__class__(
+            calendar_fk=self.calendar,
+            organization=self.organization,
+            reason=self.reason,
+            start_time=occurrence_start_time,
+            end_time=occurrence_end_time,
+            recurrence_rule_fk=self.recurrence_rule,
+            recurrence_id=occurrence_start_time,
+        )
 
 
-class AvailableTime(OrganizationModel):
+class AvailableTime(RecurringMixin):
     """
     Represents available time slots in a calendar.
     """
@@ -878,11 +990,114 @@ class AvailableTime(OrganizationModel):
         null=True,
         related_name="available_times",
     )
-    start_time = models.DateTimeField()
-    end_time = models.DateTimeField()
+
+    objects: "AvailableTimeManager" = AvailableTimeManager()
 
     def __str__(self):
         return f"Available from {self.start_time} to {self.end_time}"
+
+    def get_occurrences_in_range(
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        include_self=True,
+        include_exceptions=True,
+        max_occurrences=10000,
+    ) -> list[Self]:
+        return self._get_occurrences_in_range(
+            modified_instance_id_field_name="modified_available_time_id",
+            start_date=start_date,
+            end_date=end_date,
+            include_self=include_self,
+            include_exceptions=include_exceptions,
+            max_occurrences=max_occurrences,
+        )
+
+    def create_instance_from_occurrence(self, occurrence_start_time, occurrence_end_time):
+        return self.__class__(
+            calendar_fk=self.calendar,
+            organization=self.organization,
+            start_time=occurrence_start_time,
+            end_time=occurrence_end_time,
+            recurrence_rule_fk=self.recurrence_rule,
+            recurrence_id=occurrence_start_time,
+        )
+
+
+class BlockedTimeRecurrenceException(RecurrenceExceptionMixin, OrganizationModel):
+    """
+    Represents an exception to a recurring blocked time (cancelled or modified occurrence).
+    """
+
+    parent_blocked_time = OrganizationForeignKey(
+        BlockedTime,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="recurrence_exceptions",
+        help_text="The recurring event this exception applies to",
+    )
+    modified_blocked_time = OrganizationForeignKey(
+        BlockedTime,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="exception_for",
+        help_text="If the occurrence is modified (not cancelled), points to the modified event",
+    )
+
+    @property
+    def parent_object(self):
+        return self.parent_blocked_time
+
+    @parent_object.setter
+    def parent_object(self, parent_object):
+        self.parent_blocked_time_fk = parent_object
+
+    @property
+    def modified_object(self):
+        return self.modified_blocked_time
+
+    @modified_object.setter
+    def modified_object(self, modified_object):
+        self.modified_blocked_time_fk = modified_object
+
+
+class AvailableTimeRecurrenceException(RecurrenceExceptionMixin, OrganizationModel):
+    """
+    Represents an exception to a recurring available time (cancelled or modified occurrence).
+    """
+
+    parent_available_time = OrganizationForeignKey(
+        AvailableTime,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="recurrence_exceptions",
+        help_text="The recurring event this exception applies to",
+    )
+    modified_available_time = OrganizationForeignKey(
+        AvailableTime,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="exception_for",
+        help_text="If the occurrence is modified (not cancelled), points to the modified event",
+    )
+
+    @property
+    def parent_object(self):
+        return self.parent_available_time
+
+    @parent_object.setter
+    def parent_object(self, parent_object):
+        self.parent_available_time_fk = parent_object
+
+    @property
+    def modified_object(self):
+        return self.modified_available_time
+
+    @modified_object.setter
+    def modified_object(self, modified_object):
+        self.modified_available_time_fk = modified_object
 
 
 class CalendarSync(OrganizationModel):

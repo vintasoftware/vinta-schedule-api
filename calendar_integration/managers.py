@@ -5,8 +5,47 @@ from calendar_integration.querysets import (
     CalendarEventQuerySet,
     CalendarQuerySet,
     CalendarSyncQuerySet,
+    RecurringQuerySetMixin,
 )
 from organizations.managers import BaseOrganizationModelManager
+
+
+class RecurringManagerMixin:
+    """
+    Mixin for managers that provides recurring functionality.
+    Should be used with managers that inherit from BaseOrganizationManager.
+    The QuerySet should also inherit from RecurringQuerySetMixin.
+    """
+
+    def get_queryset(self) -> RecurringQuerySetMixin:
+        raise NotImplementedError("Concrete managers must implement get_queryset")
+
+    def annotate_recurring_occurrences_on_date_range(
+        self, start_date: datetime.datetime, end_date: datetime.datetime, max_occurrences=10000
+    ):
+        """
+        Annotate objects with their recurring occurrences in the date range.
+        Delegates to the queryset implementation.
+        """
+        return self.get_queryset().annotate_recurring_occurrences_on_date_range(
+            start_date, end_date, max_occurrences
+        )
+
+    def filter_master_recurring_objects(self):
+        """Filter to get only master recurring objects (not instances)."""
+        return self.get_queryset().filter_master_recurring_objects()
+
+    def filter_recurring_instances(self):
+        """Filter to get only recurring instances (not masters)."""
+        return self.get_queryset().filter_recurring_instances()
+
+    def filter_recurring_objects(self):
+        """Filter to get objects that have recurrence rules."""
+        return self.get_queryset().filter_recurring_objects()
+
+    def filter_non_recurring_objects(self):
+        """Filter to get objects that don't have recurrence rules."""
+        return self.get_queryset().filter_non_recurring_objects()
 
 
 class CalendarManager(BaseOrganizationModelManager):
@@ -53,18 +92,11 @@ class CalendarManager(BaseOrganizationModelManager):
         return self.get_queryset().only_calendars_available_in_ranges(ranges=ranges)
 
 
-class CalendarEventManager(BaseOrganizationModelManager):
+class CalendarEventManager(BaseOrganizationModelManager, RecurringManagerMixin):
     """Custom manager for CalendarEvent model to handle specific queries."""
 
     def get_queryset(self) -> CalendarEventQuerySet:
         return CalendarEventQuerySet(self.model, using=self._db)
-
-    def annotate_recurring_occurrences_on_date_range(
-        self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000
-    ):
-        return self.get_queryset().annotate_recurring_occurrences_on_date_range(
-            start, end, max_occurrences
-        )
 
 
 class CalendarSyncManager(BaseOrganizationModelManager):
@@ -80,3 +112,21 @@ class CalendarSyncManager(BaseOrganizationModelManager):
         :return: CalendarSync instance if found, otherwise None.
         """
         return self.get_queryset().get_not_started_calendar_sync(calendar_sync_id=calendar_sync_id)
+
+
+class BlockedTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
+    """Custom manager for BlockedTime model to handle specific queries."""
+
+    def get_queryset(self):
+        from calendar_integration.querysets import BlockedTimeQuerySet
+
+        return BlockedTimeQuerySet(self.model, using=self._db)
+
+
+class AvailableTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
+    """Custom manager for AvailableTime model to handle specific queries."""
+
+    def get_queryset(self):
+        from calendar_integration.querysets import AvailableTimeQuerySet
+
+        return AvailableTimeQuerySet(self.model, using=self._db)
