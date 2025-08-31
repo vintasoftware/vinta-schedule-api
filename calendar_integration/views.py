@@ -531,10 +531,10 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
             serializer.save()
 
             if serializer.instance is None:
-                # Event was cancelled
+                # Blocked time was cancelled
                 return Response(status=status.HTTP_204_NO_CONTENT)
             else:
-                # Event was modified
+                # Blocked time was modified
                 return Response(
                     BlockedTimeSerializer(
                         serializer.instance,
@@ -709,10 +709,10 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
             serializer.save()
 
             if serializer.instance is None:
-                # Event was cancelled
+                # Available time was cancelled
                 return Response(status=status.HTTP_204_NO_CONTENT)
             else:
-                # Event was modified
+                # Available time was modified
                 return Response(
                     AvailableTimeSerializer(
                         serializer.instance,
