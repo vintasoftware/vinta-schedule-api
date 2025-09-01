@@ -1648,3 +1648,230 @@ class AvailableTimeRecurringExceptionSerializer(serializers.Serializer):
             modified_end_time=self.validated_data.get("modified_end_time"),
             is_cancelled=self.validated_data.get("is_cancelled", False),
         )
+
+
+class EventBulkModificationSerializer(serializers.Serializer):
+    """Serializer for creating bulk modifications on recurring events from a given date."""
+
+    modification_start_date = serializers.DateField(required=True)
+    modified_title = serializers.CharField(required=False, allow_null=True)
+    modified_description = serializers.CharField(required=False, allow_null=True)
+    recurrence_rule = RecurrenceRuleSerializer(
+        required=False,
+        help_text="Recurrence rule data for the modification range",
+    )
+    rrule_string = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_null=True,
+        help_text="RRULE string for the modification range",
+    )
+    modified_start_time_offset = serializers.DurationField(required=False, allow_null=True)
+    modified_end_time_offset = serializers.DurationField(required=False, allow_null=True)
+    is_cancelled = serializers.BooleanField(default=False)
+
+    def validate(self, attrs):
+        """Validate bulk modification data."""
+        # Validate recurrence fields
+        recurrence_rule_data = attrs.get("recurrence_rule")
+        rrule_string = attrs.get("rrule_string")
+
+        if recurrence_rule_data and rrule_string:
+            raise serializers.ValidationError(
+                "Cannot specify both recurrence_rule and rrule_string. Use one or the other."
+            )
+
+        return attrs
+
+    def save(self, **kwargs):
+        parent_event = self.context["parent_event"]
+        calendar_service = self.context.get("calendar_service")
+        if not calendar_service:
+            raise ValueError("calendar_service not provided in context")
+
+        # Handle recurrence fields
+        recurrence_rule_data = self.validated_data.get("recurrence_rule")
+        rrule_string = self.validated_data.get("rrule_string")
+
+        # Prepare final rrule string
+        final_rrule_string = None
+        if recurrence_rule_data:
+            # Convert recurrence_rule_data to RRULE string
+            temp_rule = RecurrenceRule(
+                organization=parent_event.organization, **recurrence_rule_data
+            )
+            final_rrule_string = temp_rule.to_rrule_string()
+        elif rrule_string:
+            final_rrule_string = rrule_string
+
+        # Build modification datetime from date and parent_event start_time timezone
+        start_date = self.validated_data["modification_start_date"]
+        modification_start_dt = datetime.datetime.combine(
+            start_date, parent_event.start_time.time(), tzinfo=parent_event.start_time.tzinfo
+        )
+
+        return (
+            calendar_service.modify_recurring_event_from_date(
+                parent_event=parent_event,
+                modification_start_date=modification_start_dt,
+                modified_title=self.validated_data.get("modified_title"),
+                modified_description=self.validated_data.get("modified_description"),
+                modified_start_time_offset=self.validated_data.get("modified_start_time_offset"),
+                modified_end_time_offset=self.validated_data.get("modified_end_time_offset"),
+                modification_rrule_string=final_rrule_string,
+            )
+            if not self.validated_data.get("is_cancelled", False)
+            else calendar_service.cancel_recurring_event_from_date(
+                parent_event=parent_event,
+                modification_start_date=modification_start_dt,
+                modification_rrule_string=final_rrule_string,
+            )
+        )
+
+
+class BlockedTimeBulkModificationSerializer(serializers.Serializer):
+    modification_start_date = serializers.DateField(required=True)
+    modified_reason = serializers.CharField(required=False, allow_null=True)
+    recurrence_rule = RecurrenceRuleSerializer(
+        required=False,
+        help_text="Recurrence rule data for the modification range",
+    )
+    rrule_string = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_null=True,
+        help_text="RRULE string for the modification range",
+    )
+    modified_start_time_offset = serializers.DurationField(required=False, allow_null=True)
+    modified_end_time_offset = serializers.DurationField(required=False, allow_null=True)
+    is_cancelled = serializers.BooleanField(default=False)
+
+    def validate(self, attrs):
+        """Validate bulk modification data."""
+        # Validate recurrence fields
+        recurrence_rule_data = attrs.get("recurrence_rule")
+        rrule_string = attrs.get("rrule_string")
+
+        if recurrence_rule_data and rrule_string:
+            raise serializers.ValidationError(
+                "Cannot specify both recurrence_rule and rrule_string. Use one or the other."
+            )
+
+        return attrs
+
+    def save(self, **kwargs):
+        parent_blocked_time = self.context["parent_blocked_time"]
+        calendar_service = self.context.get("calendar_service")
+        if not calendar_service:
+            raise ValueError("calendar_service not provided in context")
+
+        # Handle recurrence fields
+        recurrence_rule_data = self.validated_data.get("recurrence_rule")
+        rrule_string = self.validated_data.get("rrule_string")
+
+        # Prepare final rrule string
+        final_rrule_string = None
+        if recurrence_rule_data:
+            # Convert recurrence_rule_data to RRULE string
+            temp_rule = RecurrenceRule(
+                organization=parent_blocked_time.organization, **recurrence_rule_data
+            )
+            final_rrule_string = temp_rule.to_rrule_string()
+        elif rrule_string:
+            final_rrule_string = rrule_string
+
+        start_date = self.validated_data["modification_start_date"]
+        modification_start_dt = datetime.datetime.combine(
+            start_date,
+            parent_blocked_time.start_time.time(),
+            tzinfo=parent_blocked_time.start_time.tzinfo,
+        )
+
+        if self.validated_data.get("is_cancelled", False):
+            return calendar_service.cancel_recurring_blocked_time_from_date(
+                parent_blocked_time=parent_blocked_time,
+                modification_start_date=modification_start_dt,
+                modification_rrule_string=final_rrule_string,
+            )
+
+        return calendar_service.modify_recurring_blocked_time_from_date(
+            parent_blocked_time=parent_blocked_time,
+            modification_start_date=modification_start_dt,
+            modified_reason=self.validated_data.get("modified_reason"),
+            modified_start_time_offset=self.validated_data.get("modified_start_time_offset"),
+            modified_end_time_offset=self.validated_data.get("modified_end_time_offset"),
+            modification_rrule_string=final_rrule_string,
+        )
+
+
+class AvailableTimeBulkModificationSerializer(serializers.Serializer):
+    modification_start_date = serializers.DateField(required=True)
+    recurrence_rule = RecurrenceRuleSerializer(
+        required=False,
+        help_text="Recurrence rule data for the modification range",
+    )
+    rrule_string = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_null=True,
+        help_text="RRULE string for the modification range",
+    )
+    modified_start_time_offset = serializers.DurationField(required=False, allow_null=True)
+    modified_end_time_offset = serializers.DurationField(required=False, allow_null=True)
+    is_cancelled = serializers.BooleanField(default=False)
+
+    def validate(self, attrs):
+        """Validate bulk modification data."""
+        # Validate recurrence fields
+        recurrence_rule_data = attrs.get("recurrence_rule")
+        rrule_string = attrs.get("rrule_string")
+
+        if recurrence_rule_data and rrule_string:
+            raise serializers.ValidationError(
+                "Cannot specify both recurrence_rule and rrule_string. Use one or the other."
+            )
+
+        return attrs
+
+    def save(self, **kwargs):
+        parent_available_time = self.context["parent_available_time"]
+        calendar_service = self.context.get("calendar_service")
+        if not calendar_service:
+            raise ValueError("calendar_service not provided in context")
+
+        # Handle recurrence fields
+        recurrence_rule_data = self.validated_data.get("recurrence_rule")
+        rrule_string = self.validated_data.get("rrule_string")
+
+        # Prepare final rrule string
+        final_rrule_string = None
+        if recurrence_rule_data:
+            # Convert recurrence_rule_data to RRULE string
+            temp_rule = RecurrenceRule(
+                organization=parent_available_time.organization, **recurrence_rule_data
+            )
+            final_rrule_string = temp_rule.to_rrule_string()
+        elif rrule_string:
+            final_rrule_string = rrule_string
+
+        start_date = self.validated_data["modification_start_date"]
+        modification_start_dt = datetime.datetime.combine(
+            start_date,
+            parent_available_time.start_time.time(),
+            tzinfo=parent_available_time.start_time.tzinfo,
+        )
+
+        if self.validated_data.get("is_cancelled", False):
+            return calendar_service.cancel_recurring_available_time_from_date(
+                parent_available_time=parent_available_time,
+                modification_start_date=modification_start_dt,
+                modification_rrule_string=final_rrule_string,
+            )
+
+        return calendar_service.modify_recurring_available_time_from_date(
+            parent_available_time=parent_available_time,
+            modification_start_date=modification_start_dt,
+            modified_start_time_offset=self.validated_data.get("modified_start_time_offset"),
+            modified_end_time_offset=self.validated_data.get("modified_end_time_offset"),
+            modification_rrule_string=final_rrule_string,
+        )

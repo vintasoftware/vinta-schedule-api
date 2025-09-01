@@ -391,6 +391,87 @@ paths:
       responses:
         '204':
           description: No response body
+  /available-times/{id}/bulk-modify/:
+    post:
+      operationId: available_times_bulk_modify_create
+      description: ViewSet for managing available times with recurring support.
+      summary: Bulk modify or cancel recurring available time from a date
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBulkModification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBulkModification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBulkModification'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+        '204':
+          description: No response body
+  /available-times/{id}/bulk-modify{format}:
+    post:
+      operationId: available_times_bulk_modify_formatted_create
+      description: ViewSet for managing available times with recurring support.
+      summary: Bulk modify or cancel recurring available time from a date
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBulkModification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBulkModification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBulkModification'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+        '204':
+          description: No response body
   /available-times/{id}/create-exception/:
     post:
       operationId: available_times_create_exception_create
@@ -1351,6 +1432,87 @@ paths:
       responses:
         '204':
           description: No response body
+  /blocked-times/{id}/bulk-modify/:
+    post:
+      operationId: blocked_times_bulk_modify_create
+      description: ViewSet for managing blocked times with recurring support.
+      summary: Bulk modify or cancel recurring blocked time from a date
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeBulkModification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeBulkModification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeBulkModification'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+        '204':
+          description: No response body
+  /blocked-times/{id}/bulk-modify{format}:
+    post:
+      operationId: blocked_times_bulk_modify_formatted_create
+      description: ViewSet for managing blocked times with recurring support.
+      summary: Bulk modify or cancel recurring blocked time from a date
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeBulkModification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeBulkModification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeBulkModification'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+        '204':
+          description: No response body
   /blocked-times/{id}/create-exception/:
     post:
       operationId: blocked_times_create_exception_create
@@ -2278,6 +2440,87 @@ paths:
       - jwtAuth: []
       - cookieAuth: []
       responses:
+        '204':
+          description: No response body
+  /calendar-events/{id}/bulk-modify/:
+    post:
+      operationId: calendar_events_bulk_modify_create
+      description: ViewSet for managing calendar events.
+      summary: Bulk modify or cancel recurring event from a date
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventBulkModification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/EventBulkModification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/EventBulkModification'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+        '204':
+          description: No response body
+  /calendar-events/{id}/bulk-modify{format}:
+    post:
+      operationId: calendar_events_bulk_modify_formatted_create
+      description: ViewSet for managing calendar events.
+      summary: Bulk modify or cancel recurring event from a date
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventBulkModification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/EventBulkModification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/EventBulkModification'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
         '204':
           description: No response body
   /calendar-events/{id}/create-exception/:
@@ -3270,6 +3513,32 @@ components:
       - parent_available_time
       - recurrence_id
       - start_time
+    AvailableTimeBulkModification:
+      type: object
+      properties:
+        modification_start_date:
+          type: string
+          format: date
+        recurrence_rule:
+          allOf:
+          - $ref: '#/components/schemas/RecurrenceRule'
+          description: Recurrence rule data for the modification range
+        rrule_string:
+          type: string
+          writeOnly: true
+          nullable: true
+          description: RRULE string for the modification range
+        modified_start_time_offset:
+          type: string
+          nullable: true
+        modified_end_time_offset:
+          type: string
+          nullable: true
+        is_cancelled:
+          type: boolean
+          default: false
+      required:
+      - modification_start_date
     AvailableTimeRecurringException:
       type: object
       description: Serializer for creating recurring available time exceptions.
@@ -3448,6 +3717,35 @@ components:
       - modified
       - parent_blocked_time
       - start_time
+    BlockedTimeBulkModification:
+      type: object
+      properties:
+        modification_start_date:
+          type: string
+          format: date
+        modified_reason:
+          type: string
+          nullable: true
+        recurrence_rule:
+          allOf:
+          - $ref: '#/components/schemas/RecurrenceRule'
+          description: Recurrence rule data for the modification range
+        rrule_string:
+          type: string
+          writeOnly: true
+          nullable: true
+          description: RRULE string for the modification range
+        modified_start_time_offset:
+          type: string
+          nullable: true
+        modified_end_time_offset:
+          type: string
+          nullable: true
+        is_cancelled:
+          type: boolean
+          default: false
+      required:
+      - modification_start_date
     BlockedTimeRecurringException:
       type: object
       description: Serializer for creating recurring blocked time exceptions.
@@ -3707,6 +4005,40 @@ components:
       - status
       - user
       - user_id
+    EventBulkModification:
+      type: object
+      description: Serializer for creating bulk modifications on recurring events
+        from a given date.
+      properties:
+        modification_start_date:
+          type: string
+          format: date
+        modified_title:
+          type: string
+          nullable: true
+        modified_description:
+          type: string
+          nullable: true
+        recurrence_rule:
+          allOf:
+          - $ref: '#/components/schemas/RecurrenceRule'
+          description: Recurrence rule data for the modification range
+        rrule_string:
+          type: string
+          writeOnly: true
+          nullable: true
+          description: RRULE string for the modification range
+        modified_start_time_offset:
+          type: string
+          nullable: true
+        modified_end_time_offset:
+          type: string
+          nullable: true
+        is_cancelled:
+          type: boolean
+          default: false
+      required:
+      - modification_start_date
     EventExternalAttendance:
       type: object
       properties:

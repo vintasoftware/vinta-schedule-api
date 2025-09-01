@@ -1414,6 +1414,20 @@ def test_create_recurring_event_bulk_modification_creates_continuation_and_recor
         continuation_created_event_data,
     ]
 
+    # Mock update_event for the parent event truncation
+    mock_google_adapter.update_event.return_value = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="parent_bulk_event_123",
+        title="Parent Bulk",
+        description="Parent recurring",
+        start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule="FREQ=WEEKLY;COUNT=1;BYDAY=MO",  # Truncated rule
+    )
+
     service = CalendarService()
     service.authenticate(account=social_account, organization=calendar.organization)
 
@@ -1496,6 +1510,20 @@ def test_create_recurring_event_bulk_modification_cancelled_records_only(
         recurrence_rule="FREQ=WEEKLY;COUNT=5;BYDAY=MO",
     )
     mock_google_adapter.create_event.return_value = parent_created_event_data
+
+    # Mock update_event for the parent event truncation
+    mock_google_adapter.update_event.return_value = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="parent_bulk_event_cancel_123",
+        title="Parent Bulk Cancel",
+        description="Parent recurring",
+        start_time=datetime.datetime(2025, 10, 6, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 10, 6, 10, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule="FREQ=WEEKLY;COUNT=1;BYDAY=MO",  # Truncated rule
+    )
 
     service = CalendarService()
     service.authenticate(account=social_account, organization=calendar.organization)

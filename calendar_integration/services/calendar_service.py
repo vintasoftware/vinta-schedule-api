@@ -1137,6 +1137,9 @@ class CalendarService(BaseCalendarService):
                     # Keep original value if modification is None (fallback behavior)
             parent_object.save()
 
+            # NOTE: adapter sync intentionally omitted here. Bulk modifications
+            # will perform explicit adapter calls when truncating the master series.
+
             # Return the updated master object
             from django.db import models
 
@@ -2676,14 +2679,18 @@ class CalendarService(BaseCalendarService):
         modification_start_date: datetime.datetime,
         is_bulk_cancelled: bool = False,
         modification_data: dict[str, Any] | None = None,
+        truncate_parent_callback: Callable[[RecurringMixin, RecurrenceRule | None], RecurringMixin]
+        | None = None,
         create_continuation_callback: Callable[
-            [RecurringMixin, datetime.datetime, RecurrenceRule, dict[str, Any]], RecurringMixin
+            [RecurringMixin, datetime.datetime, RecurrenceRule | None, dict[str, Any]],
+            RecurringMixin,
         ]
         | None = None,
         bulk_modification_record_callback: Callable[
             [RecurringMixin, datetime.datetime, RecurringMixin | None, bool], None
         ]
         | None = None,
+        modification_rrule_string: str | None = None,
     ) -> RecurringMixin | None:
         """
         Generic method to apply a bulk modification (from modification_start_date onwards)
@@ -2731,24 +2738,21 @@ class CalendarService(BaseCalendarService):
         # Persist changes inside a transaction
         with transaction.atomic():
             # Update original's recurrence_rule to truncated (or remove recurrence_rule if None)
-            old_rr = parent_object.recurrence_rule
-            if truncated_rule:
-                # save truncated as a new RecurrenceRule instance
-                truncated_rule.organization = parent_object.organization
-                truncated_rule.save()
-                parent_object.recurrence_rule_fk = truncated_rule  # type: ignore
-            else:
-                # No previous occurrences remain, remove recurrence rule
-                if old_rr:
-                    old_rr.delete()
-                parent_object.recurrence_rule_fk = None  # type: ignore
-            parent_object.save()
+            if truncate_parent_callback:
+                parent_object = truncate_parent_callback(parent_object, truncated_rule)
 
             continuation_obj: RecurringMixin | None = None
-            if not is_bulk_cancelled and continuation_rule:
+            if not is_bulk_cancelled and (continuation_rule or modification_rrule_string):
                 # Create continuation recurrence rule and object via callback
-                continuation_rule.organization = parent_object.organization
-                continuation_rule.save()
+                # If caller provided an explicit recurrence string for the continuation,
+                # parse it and use that instead of the splitter-generated continuation_rule.
+                if modification_rrule_string:
+                    continuation_rule = RecurrenceRule.from_rrule_string(
+                        modification_rrule_string, parent_object.organization
+                    )
+                if continuation_rule:
+                    continuation_rule.organization = parent_object.organization
+                    continuation_rule.save()
 
                 if create_continuation_callback is None:
                     raise ValueError("create_continuation_callback is required when not cancelling")
@@ -2771,7 +2775,6 @@ class CalendarService(BaseCalendarService):
                 bulk_modification_record_callback(
                     parent_object, modification_start_date, continuation_obj, is_bulk_cancelled
                 )
-
             return continuation_obj
 
     def create_recurring_event_bulk_modification(
@@ -2783,13 +2786,58 @@ class CalendarService(BaseCalendarService):
         modified_start_time_offset: datetime.timedelta | None = None,
         modified_end_time_offset: datetime.timedelta | None = None,
         is_bulk_cancelled: bool = False,
+        modification_rrule_string: str | None = None,
     ) -> CalendarEvent | None:
         """Create a bulk modification for a recurring event from the specified date onwards."""
+
+        def truncate_parent(
+            parent_obj: RecurringMixin,
+            new_recurrence_rule: RecurrenceRule | None,
+        ):
+            parent = cast(CalendarEvent, parent_obj)
+            return self.update_event(
+                calendar_id=parent.calendar_fk_id,  # type: ignore
+                event_id=parent.id,
+                event_data=CalendarEventInputData(
+                    title=parent.title,
+                    description=parent.description,
+                    start_time=parent.start_time,
+                    end_time=parent_event.end_time,
+                    resource_allocations=[
+                        ResourceAllocationInputData(resource_id=ra.calendar_fk_id)  # type: ignore
+                        for ra in parent.resource_allocations.all()
+                    ],
+                    attendances=[
+                        EventAttendanceInputData(user_id=att.user_id)
+                        for att in parent.attendances.all()
+                    ],
+                    external_attendances=[
+                        EventExternalAttendanceInputData(
+                            external_attendee=ExternalAttendeeInputData(
+                                id=ext.external_attendee.id,
+                                email=ext.external_attendee.email,
+                                name=ext.external_attendee.name,
+                            )
+                        )
+                        for ext in parent.external_attendances.all()
+                    ],
+                    # Recurrence fields
+                    recurrence_rule=(
+                        new_recurrence_rule.to_rrule_string() if new_recurrence_rule else None
+                    ),
+                    parent_event_id=(
+                        parent.parent_recurring_object.id
+                        if parent.parent_recurring_object
+                        else None
+                    ),
+                    is_recurring_exception=parent.is_recurring_exception,
+                ),
+            )
 
         def create_continuation(
             parent_obj: RecurringMixin,
             start_dt: datetime.datetime,
-            recurrence_rule: RecurrenceRule,
+            recurrence_rule: RecurrenceRule | None,
             modification_data: dict[str, Any],
         ) -> RecurringMixin:
             parent = cast(CalendarEvent, parent_obj)
@@ -2805,30 +2853,34 @@ class CalendarService(BaseCalendarService):
                 if modification_data.get("end_time_offset")
                 else new_start + duration
             )
-            return self.create_recurring_event(
+
+            return self.create_event(
                 calendar_id=parent.calendar.id,
-                title=modification_data.get("title") or parent.title,
-                description=modification_data.get("description") or parent.description,
-                start_time=new_start,
-                end_time=new_end,
-                recurrence_rule=recurrence_rule.to_rrule_string(),
-                attendances=[
-                    EventAttendanceInputData(user_id=a.user_id) for a in parent.attendances.all()
-                ],
-                external_attendances=[
-                    EventExternalAttendanceInputData(
-                        external_attendee=ExternalAttendeeInputData(
-                            email=ea.external_attendee.email,
-                            name=ea.external_attendee.name,
-                            id=ea.external_attendee.id,
+                event_data=CalendarEventInputData(
+                    title=modification_data.get("title") or parent.title,
+                    description=modification_data.get("description") or parent.description,
+                    start_time=new_start,
+                    end_time=new_end,
+                    recurrence_rule=recurrence_rule.to_rrule_string() if recurrence_rule else None,
+                    attendances=[
+                        EventAttendanceInputData(user_id=a.user_id)
+                        for a in parent.attendances.all()
+                    ],
+                    external_attendances=[
+                        EventExternalAttendanceInputData(
+                            external_attendee=ExternalAttendeeInputData(
+                                email=ea.external_attendee.email,
+                                name=ea.external_attendee.name,
+                                id=ea.external_attendee.id,
+                            )
                         )
-                    )
-                    for ea in parent.external_attendances.all()
-                ],
-                resource_allocations=[
-                    ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
-                    for r in parent.resource_allocations.all()
-                ],
+                        for ea in parent.external_attendances.all()
+                    ],
+                    resource_allocations=[
+                        ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
+                        for r in parent.resource_allocations.all()
+                    ],
+                ),
             )
 
         def record_bulk(
@@ -2858,8 +2910,10 @@ class CalendarService(BaseCalendarService):
             modification_start_date=modification_start_date,
             is_bulk_cancelled=is_bulk_cancelled,
             modification_data=modification_data,
+            truncate_parent_callback=truncate_parent,
             create_continuation_callback=create_continuation,
             bulk_modification_record_callback=record_bulk,
+            modification_rrule_string=modification_rrule_string,
         )
         return cast(CalendarEvent, result) if result else None
 
@@ -2871,13 +2925,23 @@ class CalendarService(BaseCalendarService):
         modified_start_time_offset: datetime.timedelta | None = None,
         modified_end_time_offset: datetime.timedelta | None = None,
         is_bulk_cancelled: bool = False,
+        modification_rrule_string: str | None = None,
     ) -> BlockedTime | None:
         """Create a bulk modification for a recurring blocked time from the specified date onwards."""
+
+        def truncate_parent(
+            parent_obj: RecurringMixin,
+            new_recurrence_rule: RecurrenceRule | None,
+        ):
+            parent = cast(BlockedTime, parent_obj)
+            parent.recurrence_rule_fk = new_recurrence_rule  # type: ignore
+            parent.save()
+            return parent
 
         def create_continuation(
             parent_obj: RecurringMixin,
             start_dt: datetime.datetime,
-            recurrence_rule: RecurrenceRule,
+            recurrence_rule: RecurrenceRule | None,
             modification_data: dict[str, Any],
         ) -> RecurringMixin:
             parent = cast(BlockedTime, parent_obj)
@@ -2897,7 +2961,7 @@ class CalendarService(BaseCalendarService):
                 start_time=new_start,
                 end_time=new_end,
                 reason=modification_data.get("reason") or parent.reason,
-                rrule_string=recurrence_rule.to_rrule_string(),
+                rrule_string=recurrence_rule.to_rrule_string() if recurrence_rule else None,
             )
 
         def record_bulk(
@@ -2926,8 +2990,10 @@ class CalendarService(BaseCalendarService):
             modification_start_date=modification_start_date,
             is_bulk_cancelled=is_bulk_cancelled,
             modification_data=modification_data,
+            truncate_parent_callback=truncate_parent,
             create_continuation_callback=create_continuation,
             bulk_modification_record_callback=record_bulk,
+            modification_rrule_string=modification_rrule_string,
         )
         return cast(BlockedTime, result) if result else None
 
@@ -2938,13 +3004,23 @@ class CalendarService(BaseCalendarService):
         modified_start_time_offset: datetime.timedelta | None = None,
         modified_end_time_offset: datetime.timedelta | None = None,
         is_bulk_cancelled: bool = False,
+        modification_rrule_string: str | None = None,
     ) -> AvailableTime | None:
         """Create a bulk modification for a recurring available time from the specified date onwards."""
+
+        def truncate_parent(
+            parent_obj: RecurringMixin,
+            new_recurrence_rule: RecurrenceRule | None,
+        ):
+            parent = cast(AvailableTime, parent_obj)
+            parent.recurrence_rule_fk = new_recurrence_rule  # type: ignore
+            parent.save()
+            return parent
 
         def create_continuation(
             parent_obj: RecurringMixin,
             start_dt: datetime.datetime,
-            recurrence_rule: RecurrenceRule,
+            recurrence_rule: RecurrenceRule | None,
             modification_data: dict[str, Any],
         ) -> RecurringMixin:
             parent = cast(AvailableTime, parent_obj)
@@ -2963,7 +3039,7 @@ class CalendarService(BaseCalendarService):
                 calendar=parent.calendar,
                 start_time=new_start,
                 end_time=new_end,
-                rrule_string=recurrence_rule.to_rrule_string(),
+                rrule_string=recurrence_rule.to_rrule_string() if recurrence_rule else None,
             )
 
         def record_bulk(
@@ -2991,7 +3067,127 @@ class CalendarService(BaseCalendarService):
             modification_start_date=modification_start_date,
             is_bulk_cancelled=is_bulk_cancelled,
             modification_data=modification_data,
+            truncate_parent_callback=truncate_parent,
             create_continuation_callback=create_continuation,
             bulk_modification_record_callback=record_bulk,
+            modification_rrule_string=modification_rrule_string,
         )
         return cast(AvailableTime, result) if result else None
+
+    # Phase 6 - Integration helpers: expose clearer method names used by API
+    def modify_recurring_event_from_date(
+        self,
+        parent_event: CalendarEvent,
+        modification_start_date: datetime.datetime,
+        modified_title: str | None = None,
+        modified_description: str | None = None,
+        modified_start_time_offset: datetime.timedelta | None = None,
+        modified_end_time_offset: datetime.timedelta | None = None,
+        modification_rrule_string: str | None = None,
+    ) -> CalendarEvent | None:
+        """Modify recurring event series from the given date onwards."""
+        continuation = self.create_recurring_event_bulk_modification(
+            parent_event=parent_event,
+            modification_start_date=modification_start_date,
+            modified_title=modified_title,
+            modified_description=modified_description,
+            modified_start_time_offset=modified_start_time_offset,
+            modified_end_time_offset=modified_end_time_offset,
+            is_bulk_cancelled=False,
+            modification_rrule_string=modification_rrule_string,
+        )
+
+        # Adapter sync for truncated original + continuation is performed inside
+        # _create_recurring_bulk_modification_generic where possible.
+
+        return continuation
+
+    def cancel_recurring_event_from_date(
+        self,
+        parent_event: CalendarEvent,
+        modification_start_date: datetime.datetime,
+        modification_rrule_string: str | None = None,
+    ) -> None:
+        """Cancel all occurrences from modification_start_date onwards."""
+        self.create_recurring_event_bulk_modification(
+            parent_event=parent_event,
+            modification_start_date=modification_start_date,
+            is_bulk_cancelled=True,
+            modification_rrule_string=modification_rrule_string,
+        )
+
+    # Adapter sync handled during bulk modification transaction.
+
+    def modify_recurring_blocked_time_from_date(
+        self,
+        parent_blocked_time: BlockedTime,
+        modification_start_date: datetime.datetime,
+        modified_reason: str | None = None,
+        modified_start_time_offset: datetime.timedelta | None = None,
+        modified_end_time_offset: datetime.timedelta | None = None,
+        modification_rrule_string: str | None = None,
+    ) -> BlockedTime | None:
+        continuation = self.create_recurring_blocked_time_bulk_modification(
+            parent_blocked_time=parent_blocked_time,
+            modification_start_date=modification_start_date,
+            modified_reason=modified_reason,
+            modified_start_time_offset=modified_start_time_offset,
+            modified_end_time_offset=modified_end_time_offset,
+            is_bulk_cancelled=False,
+            modification_rrule_string=modification_rrule_string,
+        )
+
+        # Adapter sync handled during bulk modification transaction.
+
+        return continuation
+
+    def cancel_recurring_blocked_time_from_date(
+        self,
+        parent_blocked_time: BlockedTime,
+        modification_start_date: datetime.datetime,
+        modification_rrule_string: str | None = None,
+    ) -> None:
+        self.create_recurring_blocked_time_bulk_modification(
+            parent_blocked_time=parent_blocked_time,
+            modification_start_date=modification_start_date,
+            is_bulk_cancelled=True,
+            modification_rrule_string=modification_rrule_string,
+        )
+
+    # Adapter sync handled during bulk modification transaction.
+
+    def modify_recurring_available_time_from_date(
+        self,
+        parent_available_time: AvailableTime,
+        modification_start_date: datetime.datetime,
+        modified_start_time_offset: datetime.timedelta | None = None,
+        modified_end_time_offset: datetime.timedelta | None = None,
+        modification_rrule_string: str | None = None,
+    ) -> AvailableTime | None:
+        continuation = self.create_recurring_available_time_bulk_modification(
+            parent_available_time=parent_available_time,
+            modification_start_date=modification_start_date,
+            modified_start_time_offset=modified_start_time_offset,
+            modified_end_time_offset=modified_end_time_offset,
+            is_bulk_cancelled=False,
+            modification_rrule_string=modification_rrule_string,
+        )
+
+        # Adapter sync handled during bulk modification transaction.
+
+        return continuation
+
+    def cancel_recurring_available_time_from_date(
+        self,
+        parent_available_time: AvailableTime,
+        modification_start_date: datetime.datetime,
+        modification_rrule_string: str | None = None,
+    ) -> None:
+        self.create_recurring_available_time_bulk_modification(
+            parent_available_time=parent_available_time,
+            modification_start_date=modification_start_date,
+            is_bulk_cancelled=True,
+            modification_rrule_string=modification_rrule_string,
+        )
+
+    # Adapter sync handled during bulk modification transaction.

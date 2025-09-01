@@ -27,9 +27,11 @@ from calendar_integration.permissions import (
     CalendarEventPermission,
 )
 from calendar_integration.serializers import (
+    AvailableTimeBulkModificationSerializer,
     AvailableTimeRecurringExceptionSerializer,
     AvailableTimeSerializer,
     AvailableTimeWindowSerializer,
+    BlockedTimeBulkModificationSerializer,
     BlockedTimeRecurringExceptionSerializer,
     BlockedTimeSerializer,
     BulkAvailableTimeSerializer,
@@ -37,6 +39,7 @@ from calendar_integration.serializers import (
     CalendarBundleCreateSerializer,
     CalendarEventSerializer,
     CalendarSerializer,
+    EventBulkModificationSerializer,
     EventRecurringExceptionSerializer,
     UnavailableTimeWindowSerializer,
 )
@@ -367,6 +370,50 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
         except ValueError as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
+    @extend_schema(
+        summary="Bulk modify or cancel recurring event from a date",
+        request=EventBulkModificationSerializer,
+        responses={200: CalendarEventSerializer, 204: None},
+    )
+    @action(
+        methods=["POST"],
+        detail=True,
+        url_path="bulk-modify",
+        url_name="bulk-modify",
+    )
+    @inject
+    def bulk_modify(
+        self,
+        request,
+        pk,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
+    ):
+        parent_event = self.get_object()
+
+        if not parent_event.is_recurring:
+            raise ValidationError({"non_field_errors": ["Event is not a recurring event"]})
+
+        serializer = EventBulkModificationSerializer(
+            data=request.data,
+            context={
+                "request": request,
+                "parent_event": parent_event,
+                "calendar_service": calendar_service,
+            },
+        )
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            result = serializer.save()
+            if result is None:
+                return Response(status=status.HTTP_204_NO_CONTENT)
+            return Response(
+                CalendarEventSerializer(result, context=self.get_serializer_context()).data,
+                status=status.HTTP_200_OK,
+            )
+        except ValueError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
 
 class BlockedTimeViewSet(VintaScheduleModelViewSet):
     """
@@ -545,6 +592,50 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
         except ValueError as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
+    @extend_schema(
+        summary="Bulk modify or cancel recurring blocked time from a date",
+        request=BlockedTimeBulkModificationSerializer,
+        responses={200: BlockedTimeSerializer, 204: None},
+    )
+    @action(
+        methods=["POST"],
+        detail=True,
+        url_path="bulk-modify",
+        url_name="bulk-modify",
+    )
+    @inject
+    def bulk_modify(
+        self,
+        request,
+        pk,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
+    ):
+        parent_blocked_time = self.get_object()
+
+        if not parent_blocked_time.is_recurring:
+            raise ValidationError({"non_field_errors": ["Blocked time is not a recurring"]})
+
+        serializer = BlockedTimeBulkModificationSerializer(
+            data=request.data,
+            context={
+                "request": request,
+                "parent_blocked_time": parent_blocked_time,
+                "calendar_service": calendar_service,
+            },
+        )
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            result = serializer.save()
+            if result is None:
+                return Response(status=status.HTTP_204_NO_CONTENT)
+            return Response(
+                BlockedTimeSerializer(result, context=self.get_serializer_context()).data,
+                status=status.HTTP_200_OK,
+            )
+        except ValueError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
 
 class AvailableTimeViewSet(VintaScheduleModelViewSet):
     """
@@ -720,5 +811,49 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
                     ).data,
                     status=status.HTTP_201_CREATED,
                 )
+        except ValueError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+    @extend_schema(
+        summary="Bulk modify or cancel recurring available time from a date",
+        request=AvailableTimeBulkModificationSerializer,
+        responses={200: AvailableTimeSerializer, 204: None},
+    )
+    @action(
+        methods=["POST"],
+        detail=True,
+        url_path="bulk-modify",
+        url_name="bulk-modify",
+    )
+    @inject
+    def bulk_modify(
+        self,
+        request,
+        pk,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
+    ):
+        parent_available_time = self.get_object()
+
+        if not parent_available_time.is_recurring:
+            raise ValidationError({"non_field_errors": ["Available time is not a recurring"]})
+
+        serializer = AvailableTimeBulkModificationSerializer(
+            data=request.data,
+            context={
+                "request": request,
+                "parent_available_time": parent_available_time,
+                "calendar_service": calendar_service,
+            },
+        )
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            result = serializer.save()
+            if result is None:
+                return Response(status=status.HTTP_204_NO_CONTENT)
+            return Response(
+                AvailableTimeSerializer(result, context=self.get_serializer_context()).data,
+                status=status.HTTP_200_OK,
+            )
         except ValueError as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
