@@ -566,7 +566,7 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
         parent_blocked_time = self.get_object()
 
         if not parent_blocked_time.is_recurring:
-            raise ValidationError({"non_field_errors": ["Blocked time is not a recurring"]})
+            raise ValidationError({"non_field_errors": ["Blocked time is not recurring"]})
 
         serializer = BlockedTimeRecurringExceptionSerializer(
             data=request.data,
@@ -613,7 +613,7 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
         parent_blocked_time = self.get_object()
 
         if not parent_blocked_time.is_recurring:
-            raise ValidationError({"non_field_errors": ["Blocked time is not a recurring"]})
+            raise ValidationError({"non_field_errors": ["Blocked time is not recurring"]})
 
         serializer = BlockedTimeBulkModificationSerializer(
             data=request.data,
@@ -788,7 +788,7 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
         parent_available_time = self.get_object()
 
         if not parent_available_time.is_recurring:
-            raise ValidationError({"non_field_errors": ["Available time is not a recurring"]})
+            raise ValidationError({"non_field_errors": ["Available time is not recurring"]})
 
         serializer = AvailableTimeRecurringExceptionSerializer(
             data=request.data,
@@ -835,7 +835,7 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
         parent_available_time = self.get_object()
 
         if not parent_available_time.is_recurring:
-            raise ValidationError({"non_field_errors": ["Available time is not a recurring"]})
+            raise ValidationError({"non_field_errors": ["Available time is not recurring"]})
 
         serializer = AvailableTimeBulkModificationSerializer(
             data=request.data,

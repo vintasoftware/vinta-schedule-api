@@ -2201,7 +2201,7 @@ class TestBlockedTimeViewSet:
         response = auth_client.post(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        assert "Blocked time is not a recurring" in str(response.data)
+        assert "Blocked time is not recurring" in str(response.data)
 
     def test_create_blocked_time_exception_validation_errors(self, auth_client, calendar, user):
         """Test validation errors when creating blocked time exceptions"""
@@ -2855,7 +2855,7 @@ class TestAvailableTimeViewSet:
         response = auth_client.post(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        assert "Available time is not a recurring" in str(response.data)
+        assert "Available time is not recurring" in str(response.data)
 
     def test_create_available_time_exception_validation_errors(self, auth_client, calendar, user):
         """Test validation errors when creating available time exceptions"""

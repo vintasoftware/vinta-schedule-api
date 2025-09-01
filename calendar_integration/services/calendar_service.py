@@ -2802,7 +2802,7 @@ class CalendarService(BaseCalendarService):
                     title=parent.title,
                     description=parent.description,
                     start_time=parent.start_time,
-                    end_time=parent_event.end_time,
+                    end_time=parent.end_time,
                     resource_allocations=[
                         ResourceAllocationInputData(resource_id=ra.calendar_fk_id)  # type: ignore
                         for ra in parent.resource_allocations.all()
