@@ -37,6 +37,7 @@ INTERNAL_INSTALLED_APPS = [
     "payments",
     "notifications",
     "calendar_integration",
+    "webhooks",
 ]
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -143,17 +144,6 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_FILTER_BACKENDS": ("django_filters.rest_framework.DjangoFilterBackend",),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-}
-
-# drf-spectacular
-SPECTACULAR_SETTINGS = {
-    "TITLE": "Vinta Boilerplate API",
-    "DESCRIPTION": "A Django project boilerplate with Vinta's best practices",
-    "VERSION": "0.1.0",
-    "SERVE_INCLUDE_SCHEMA": False,
-    "ENUM_NAME_OVERRIDES": {
-        "FrequencyEnum": "calendar_integration.constants.RecurrenceFrequency",
-    },
 }
 
 LANGUAGE_CODE = "en-us"
@@ -343,13 +333,16 @@ ACCOUNT_SIGNUP_FORM_CLASS = "accounts.base_forms.BaseVintaScheduleSignupForm"
 
 
 SPECTACULAR_SETTINGS = {
-    "TITLE": "vinta_schedule API",
-    "DESCRIPTION": "API for vinta_schedule project",
+    "TITLE": "Vinta Schedule API",
+    "DESCRIPTION": "API for vinta-schedule-api project",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "PREPROCESSING_HOOKS": [],
     "ENUM_ADD_EXPLICIT_BLANK_NULL_CHOICE": False,
-    # OTHER SETTINGS
+    "ENUM_NAME_OVERRIDES": {
+        "FrequencyEnum": "calendar_integration.constants.RecurrenceFrequency.choices",
+        "RSVPStatusEnum": "calendar_integration.constants.RSVPStatus.choices",
+    },
 }
 
 

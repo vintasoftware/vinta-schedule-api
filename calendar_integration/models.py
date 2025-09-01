@@ -218,8 +218,8 @@ class EventExternalAttendance(OrganizationModel):
 
     status = models.CharField(
         max_length=50,
-        choices=[("accepted", "Accepted"), ("declined", "Declined"), ("pending", "Pending")],
-        default="pending",
+        choices=RSVPStatus,
+        default=RSVPStatus.PENDING,
     )
 
     def __str__(self):

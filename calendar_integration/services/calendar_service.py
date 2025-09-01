@@ -2,13 +2,14 @@ import copy
 import datetime
 from collections.abc import Callable, Iterable
 from functools import lru_cache
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Q
 
 from allauth.socialaccount.models import SocialAccount, SocialToken
+from dependency_injector.wiring import Provide, inject
 
 from calendar_integration.constants import (
     CalendarOrganizationResourceImportStatus,
@@ -64,6 +65,8 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from organizations.models import Organization
+from webhooks.constants import WebhookEventType
+from webhooks.services import WebhookService
 
 
 User = get_user_model()
@@ -73,12 +76,49 @@ class CalendarService(BaseCalendarService):
     organization: Organization | None
     account: SocialAccount | GoogleCalendarServiceAccount | None
     calendar_adapter: CalendarAdapter | None
+    webhook_service: WebhookService
 
-    def __init__(self) -> None:
+    @inject
+    def __init__(
+        self, webhook_service: Annotated[WebhookService, Provide["webhook_service"]]
+    ) -> None:
         """Initialize a CalendarService instance. Call authenticate() before using calendar operations."""
         self.organization = None
         self.account = None
         self.calendar_adapter = None
+        self.webhook_service = webhook_service
+
+    def _build_event_webhook_payload(self, event: CalendarEvent) -> dict[str, Any]:
+        """Build webhook payload for calendar event."""
+
+        return {
+            "id": event.id,
+            "calendar_id": event.calendar_fk_id,
+            "is_recurring": event.is_recurring,
+        }
+
+    def _build_attendee_webhook_payload(
+        self, event: CalendarEvent, user_id: int | None = None, external_email: str | None = None
+    ) -> dict[str, Any]:
+        """Build webhook payload for attendee operations."""
+        payload: dict[str, Any] = {
+            "event_id": event.id,
+            "calendar_id": event.calendar_fk_id,
+        }
+
+        if user_id:
+            payload["user_id"] = user_id
+        if external_email:
+            payload["external_attendee_email"] = external_email
+
+        return payload
+
+    def _send_webhook_event(self, event_type: WebhookEventType, payload: dict[str, Any]) -> None:
+        """Send webhook event if organization is available."""
+        if self.organization:
+            self.webhook_service.send_events(
+                organization=self.organization, event_type=event_type, payload=payload
+            )
 
     @staticmethod
     def get_calendar_adapter_for_account(
@@ -745,6 +785,12 @@ class CalendarService(BaseCalendarService):
             ]
         )
 
+        # Send webhook event for event creation
+        cast(CalendarService, self)._send_webhook_event(
+            WebhookEventType.CALENDAR_EVENT_CREATED,
+            cast(CalendarService, self)._build_event_webhook_payload(event),
+        )
+
         return event
 
     def _update_bundle_event(
@@ -1010,6 +1056,119 @@ class CalendarService(BaseCalendarService):
         ResourceAllocation.objects.filter_by_organization(self.organization.id).filter(
             calendar_fk_id__in=resources_to_delete
         ).delete()
+
+        # Send webhook events for attendee changes
+        added_attendees = set(maintained_attendees_ids) - set(existing_attendances.keys())
+        removed_attendees = set(existing_attendances.keys()) - set(maintained_attendees_ids)
+        existing_attendee_ids = set(existing_attendances.keys()) & set(maintained_attendees_ids)
+
+        for user_id in added_attendees:
+            cast(CalendarService, self)._send_webhook_event(
+                WebhookEventType.CALENDAR_EVENT_ATTENDEE_ADDED,
+                cast(CalendarService, self)._build_attendee_webhook_payload(
+                    calendar_event, user_id=user_id
+                ),
+            )
+
+        for user_id in removed_attendees:
+            cast(CalendarService, self)._send_webhook_event(
+                WebhookEventType.CALENDAR_EVENT_ATTENDEE_REMOVED,
+                cast(CalendarService, self)._build_attendee_webhook_payload(
+                    calendar_event, user_id=user_id
+                ),
+            )
+
+        # Check for status updates of existing attendees
+        for user_id in existing_attendee_ids:
+            old_attendance = existing_attendances[user_id]
+            # Reload to get current status after bulk operations
+            new_attendance = (
+                EventAttendance.objects.filter_by_organization(self.organization.id)
+                .filter(event=calendar_event, user_id=user_id)
+                .first()
+            )
+
+            if new_attendance and old_attendance.status != new_attendance.status:
+                payload = cast(CalendarService, self)._build_attendee_webhook_payload(
+                    calendar_event, user_id=user_id
+                )
+                payload.update(
+                    {
+                        "old_status": old_attendance.status,
+                        "new_status": new_attendance.status,
+                    }
+                )
+                cast(CalendarService, self)._send_webhook_event(
+                    WebhookEventType.CALENDAR_EVENT_ATTENDEE_UPDATED, payload
+                )
+
+        # Send webhook events for external attendee changes
+        added_external_attendees = set(maintained_external_attendees_ids) - set(
+            existing_external_attendances.keys()
+        )
+        removed_external_attendees = set(existing_external_attendances.keys()) - set(
+            maintained_external_attendees_ids
+        )
+        existing_external_attendee_ids = set(existing_external_attendances.keys()) & set(
+            maintained_external_attendees_ids
+        )
+
+        for external_attendee_id in added_external_attendees:
+            if external_attendee_id:  # Check for None values
+                try:
+                    external_attendee = ExternalAttendee.objects.get(
+                        organization_id=calendar_event.organization_id,
+                        id=external_attendee_id,
+                    )
+                    cast(CalendarService, self)._send_webhook_event(
+                        WebhookEventType.CALENDAR_EVENT_ATTENDEE_ADDED,
+                        cast(CalendarService, self)._build_attendee_webhook_payload(
+                            calendar_event, external_email=external_attendee.email
+                        ),
+                    )
+                except ExternalAttendee.DoesNotExist:
+                    pass
+
+        for external_attendee_id in removed_external_attendees:
+            # Get the external attendee before it's deleted
+            try:
+                external_attendee = ExternalAttendee.objects.get(
+                    organization_id=calendar_event.organization_id,
+                    id=external_attendee_id,
+                )
+                cast(CalendarService, self)._send_webhook_event(
+                    WebhookEventType.CALENDAR_EVENT_ATTENDEE_REMOVED,
+                    cast(CalendarService, self)._build_attendee_webhook_payload(
+                        calendar_event, external_email=external_attendee.email
+                    ),
+                )
+            except ExternalAttendee.DoesNotExist:
+                pass  # External attendee was already deleted
+
+        # Check for updates to existing external attendees (email/name changes)
+        for external_attendee_id in existing_external_attendee_ids:
+            if external_attendee_id:  # Check for None values
+                try:
+                    # Check if the external attendee was updated
+                    updated_attendee = ExternalAttendee.objects.get(id=external_attendee_id)
+                    # Since we just bulk_update above, any changes would be reflected
+                    # We can send an update event if this external attendee was in the update list
+                    if any(ea.id == external_attendee_id for ea in external_attendees_to_update):
+                        cast(CalendarService, self)._send_webhook_event(
+                            WebhookEventType.CALENDAR_EVENT_ATTENDEE_UPDATED,
+                            cast(CalendarService, self)._build_attendee_webhook_payload(
+                                calendar_event, external_email=updated_attendee.email
+                            ),
+                        )
+                except ExternalAttendee.DoesNotExist:
+                    pass
+
+        # Send webhook event for event update
+        webhook_service = cast(CalendarService, self)
+        webhook_service._send_webhook_event(
+            WebhookEventType.CALENDAR_EVENT_UPDATED,
+            webhook_service._build_event_webhook_payload(calendar_event),
+        )
 
         return calendar_event
 
@@ -1470,6 +1629,13 @@ class CalendarService(BaseCalendarService):
                 event.parent_recurring_object.create_exception(
                     event.recurrence_id, is_cancelled=True
                 )
+
+        # Send webhook event for event deletion (before actual deletion)
+        webhook_service = cast(CalendarService, self)
+        webhook_service._send_webhook_event(
+            WebhookEventType.CALENDAR_EVENT_DELETED,
+            webhook_service._build_event_webhook_payload(event),
+        )
 
         event.delete()
 

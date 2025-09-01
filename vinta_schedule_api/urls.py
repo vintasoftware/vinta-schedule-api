@@ -11,6 +11,7 @@ from rest_framework.routers import DefaultRouter
 from calendar_integration.routes import routes as calendar_integration_routes
 from payments.routes import routes as payments_routes
 from users.routes import routes as users_routes
+from webhooks.routes import routes as webhooks_routes
 
 
 router = DefaultRouter(use_regex_path=False)
@@ -19,6 +20,7 @@ routes = (
     *calendar_integration_routes,
     *payments_routes,
     *users_routes,
+    *webhooks_routes,
 )
 for route in routes:
     router.register(route["regex"], route["viewset"], basename=route["basename"])

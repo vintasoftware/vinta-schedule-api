@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
-  title: vinta_schedule API
+  title: Vinta Schedule API
   version: 1.0.0
-  description: API for vinta_schedule project
+  description: API for vinta-schedule-api project
 paths:
   /available-times/:
     get:
@@ -3443,6 +3443,592 @@ paths:
               schema:
                 $ref: '#/components/schemas/Profile'
           description: ''
+  /webhook-configurations/:
+    get:
+      operationId: webhook_configurations_list
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - webhook-configurations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWebhookConfigurationList'
+          description: ''
+    post:
+      operationId: webhook_configurations_create
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      tags:
+      - webhook-configurations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookConfiguration'
+          description: ''
+  /webhook-configurations{format}:
+    get:
+      operationId: webhook_configurations_formatted_list
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - webhook-configurations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWebhookConfigurationList'
+          description: ''
+    post:
+      operationId: webhook_configurations_formatted_create
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - webhook-configurations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookConfiguration'
+          description: ''
+  /webhook-configurations/{id}/:
+    get:
+      operationId: webhook_configurations_retrieve
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-configurations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookConfiguration'
+          description: ''
+    put:
+      operationId: webhook_configurations_update
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-configurations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookConfiguration'
+          description: ''
+    patch:
+      operationId: webhook_configurations_partial_update
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-configurations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedWebhookConfiguration'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedWebhookConfiguration'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedWebhookConfiguration'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookConfiguration'
+          description: ''
+    delete:
+      operationId: webhook_configurations_destroy
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-configurations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /webhook-configurations/{id}{format}:
+    get:
+      operationId: webhook_configurations_formatted_retrieve
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-configurations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookConfiguration'
+          description: ''
+    put:
+      operationId: webhook_configurations_formatted_update
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-configurations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookConfiguration'
+          description: ''
+    patch:
+      operationId: webhook_configurations_formatted_partial_update
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-configurations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedWebhookConfiguration'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedWebhookConfiguration'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedWebhookConfiguration'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookConfiguration'
+          description: ''
+    delete:
+      operationId: webhook_configurations_formatted_destroy
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-configurations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /webhook-events/:
+    get:
+      operationId: webhook_events_list
+      description: |-
+        ViewSet for webhook events.
+        Provides read-only operations (list, retrieve) and a custom retry action.
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - webhook-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWebhookEventList'
+          description: ''
+  /webhook-events{format}:
+    get:
+      operationId: webhook_events_formatted_list
+      description: |-
+        ViewSet for webhook events.
+        Provides read-only operations (list, retrieve) and a custom retry action.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - webhook-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWebhookEventList'
+          description: ''
+  /webhook-events/{id}/:
+    get:
+      operationId: webhook_events_retrieve
+      description: |-
+        ViewSet for webhook events.
+        Provides read-only operations (list, retrieve) and a custom retry action.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEvent'
+          description: ''
+  /webhook-events/{id}{format}:
+    get:
+      operationId: webhook_events_formatted_retrieve
+      description: |-
+        ViewSet for webhook events.
+        Provides read-only operations (list, retrieve) and a custom retry action.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEvent'
+          description: ''
+  /webhook-events/{id}/retry/:
+    post:
+      operationId: webhook_events_retry_create
+      description: Retry a failed webhook event
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEvent'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Bad request - event cannot be retried
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Event not found
+          description: ''
+  /webhook-events/{id}/retry{format}:
+    post:
+      operationId: webhook_events_retry_formatted_create
+      description: Retry a failed webhook event
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEvent'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Bad request - event cannot be retried
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Event not found
+          description: ''
 components:
   schemas:
     AvailableTime:
@@ -3989,7 +4575,7 @@ components:
           writeOnly: true
         status:
           allOf:
-          - $ref: '#/components/schemas/StatusEnum'
+          - $ref: '#/components/schemas/RSVPStatusEnum'
           readOnly: true
         created:
           type: string
@@ -4050,7 +4636,7 @@ components:
           $ref: '#/components/schemas/ExternalAttendee'
         status:
           allOf:
-          - $ref: '#/components/schemas/StatusEnum'
+          - $ref: '#/components/schemas/RSVPStatusEnum'
           readOnly: true
         created:
           type: string
@@ -4098,6 +4684,22 @@ components:
           description: True if cancelling the occurrence, False if modifying
       required:
       - exception_date
+    EventTypeEnum:
+      enum:
+      - calendar_event_created
+      - calendar_event_updated
+      - calendar_event_deleted
+      - calendar_event_attendee_added
+      - calendar_event_attendee_removed
+      - calendar_event_attendee_updated
+      type: string
+      description: |-
+        * `calendar_event_created` - Calendar Event Created
+        * `calendar_event_updated` - Calendar Event Updated
+        * `calendar_event_deleted` - Calendar Event Deleted
+        * `calendar_event_attendee_added` - Calendar Event Attendee Added
+        * `calendar_event_attendee_removed` - Calendar Event Attendee Removed
+        * `calendar_event_attendee_updated` - Calendar Event Attendee Updated
     ExternalAttendee:
       type: object
       properties:
@@ -4274,6 +4876,52 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/UnavailableTimeWindow'
+    PaginatedWebhookConfigurationList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookConfiguration'
+    PaginatedWebhookEventList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEvent'
     ParentEvent:
       type: object
       properties:
@@ -4591,6 +5239,19 @@ components:
           type: string
           format: uri
           nullable: true
+    PatchedWebhookConfiguration:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        event_type:
+          $ref: '#/components/schemas/EventTypeEnum'
+        url:
+          type: string
+          format: uri
+          maxLength: 2000
+        headers: {}
     Profile:
       type: object
       properties:
@@ -4623,6 +5284,16 @@ components:
         * `microsoft` - Microsoft Outlook Calendar
         * `apple` - Apple Calendar
         * `ics` - ICS
+    RSVPStatusEnum:
+      enum:
+      - accepted
+      - declined
+      - pending
+      type: string
+      description: |-
+        * `accepted` - Accepted
+        * `declined` - Declined
+        * `pending` - Pending
     RecurrenceRule:
       type: object
       properties:
@@ -4730,7 +5401,7 @@ components:
           type: integer
         status:
           allOf:
-          - $ref: '#/components/schemas/StatusEnum'
+          - $ref: '#/components/schemas/RSVPStatusEnum'
           readOnly: true
         created:
           type: string
@@ -4745,16 +5416,6 @@ components:
       - created
       - modified
       - status
-    StatusEnum:
-      enum:
-      - accepted
-      - declined
-      - pending
-      type: string
-      description: |-
-        * `accepted` - Accepted
-        * `declined` - Declined
-        * `pending` - Pending
     UnavailableTimeWindow:
       type: object
       properties:
@@ -4839,6 +5500,94 @@ components:
       - phone_number
       - profile
       - username
+    WebhookConfiguration:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        event_type:
+          $ref: '#/components/schemas/EventTypeEnum'
+        url:
+          type: string
+          format: uri
+          maxLength: 2000
+        headers: {}
+      required:
+      - id
+      - url
+    WebhookEvent:
+      type: object
+      properties:
+        configuration:
+          type: integer
+          readOnly: true
+        main_event:
+          type: integer
+          readOnly: true
+        event_type:
+          $ref: '#/components/schemas/EventTypeEnum'
+        url:
+          type: string
+          format: uri
+          maxLength: 2000
+        status:
+          allOf:
+          - $ref: '#/components/schemas/WebhookEventStatusEnum'
+          readOnly: true
+        headers: {}
+        payload: {}
+        response_status:
+          type: integer
+          readOnly: true
+          nullable: true
+        response_body:
+          readOnly: true
+          nullable: true
+        response_headers:
+          readOnly: true
+          nullable: true
+        retry_number:
+          type: integer
+          readOnly: true
+          nullable: true
+        send_after:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - configuration
+      - created
+      - event_type
+      - main_event
+      - modified
+      - payload
+      - response_body
+      - response_headers
+      - response_status
+      - retry_number
+      - send_after
+      - status
+      - url
+    WebhookEventStatusEnum:
+      enum:
+      - pending
+      - success
+      - failed
+      type: string
+      description: |-
+        * `pending` - Pending
+        * `success` - Success
+        * `failed` - Failed
     WeekStartEnum:
       enum:
       - MO
