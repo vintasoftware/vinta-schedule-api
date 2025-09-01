@@ -728,6 +728,63 @@ class RecurringMixin(OrganizationModel):
         exception.save()
         return exception
 
+    def get_occurrences_in_range_with_bulk_modifications(
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        include_continuations: bool = True,
+        max_occurrences: int = 10000,
+    ) -> list[Self]:
+        """
+        Get occurrences considering bulk modifications.
+
+        This method handles the proper aggregation of occurrences from:
+        1. The original recurring object (until its UNTIL date if truncated)
+        2. Any continuation objects created by bulk modifications
+
+        Args:
+            start_date: Start of the date range
+            end_date: End of the date range
+            include_continuations: Whether to include occurrences from continuation objects
+            max_occurrences: Maximum number of occurrences to return
+
+        Returns:
+            List of occurrence instances, properly sorted by start time
+        """
+        all_occurrences: list[Self] = []
+
+        # Get occurrences from this (potentially truncated) recurring object
+        original_occurrences = self.get_occurrences_in_range(
+            start_date=start_date,
+            end_date=end_date,
+            include_self=True,
+            include_exceptions=True,
+            max_occurrences=max_occurrences,
+        )
+        all_occurrences.extend(original_occurrences)
+
+        # If including continuations, get occurrences from bulk modification continuation objects
+        if include_continuations and hasattr(self, "bulk_modifications"):
+            for continuation in self.bulk_modifications.all():
+                # Each continuation is a separate recurring object starting from its modification date
+                continuation_occurrences = continuation.get_occurrences_in_range(
+                    start_date=start_date,
+                    end_date=end_date,
+                    include_self=True,
+                    include_exceptions=True,
+                    max_occurrences=max_occurrences,
+                )
+                all_occurrences.extend(continuation_occurrences)
+
+        # Sort all occurrences by start time
+        all_occurrences.sort(key=lambda occurrence: occurrence.start_time)
+
+        # Limit to max_occurrences if needed
+        if len(all_occurrences) > max_occurrences:
+            all_occurrences = all_occurrences[:max_occurrences]
+
+        return all_occurrences
+
     def _create_recurring_instance(
         self,
         start_time: datetime.datetime,
@@ -780,6 +837,17 @@ class CalendarEvent(RecurringMixin):
     )
 
     # Recurrence fields
+
+    # Bulk modification chain parent: if this event is a continuation created by a
+    # bulk modification split, this points to the original recurring event.
+    bulk_modification_parent = OrganizationForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="bulk_modifications",
+        help_text="If this is a continuation of a split series",
+    )
 
     attendees = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
@@ -939,6 +1007,17 @@ class BlockedTime(RecurringMixin):
 
     objects: "BlockedTimeManager" = BlockedTimeManager()
 
+    # Bulk modification chain parent: if this blocked time is a continuation created
+    # by a bulk modification split, this points to the original recurring blocked time.
+    bulk_modification_parent = OrganizationForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="bulk_modifications",
+        help_text="If this is a continuation of a split series",
+    )
+
     class Meta:
         unique_together = (("calendar_fk_id", "external_id"),)
 
@@ -992,6 +1071,17 @@ class AvailableTime(RecurringMixin):
     )
 
     objects: "AvailableTimeManager" = AvailableTimeManager()
+
+    # Bulk modification chain parent: if this available time is a continuation created
+    # by a bulk modification split, this points to the original recurring available time.
+    bulk_modification_parent = OrganizationForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="bulk_modifications",
+        help_text="If this is a continuation of a split series",
+    )
 
     def __str__(self):
         return f"Available from {self.start_time} to {self.end_time}"
@@ -1098,6 +1188,81 @@ class AvailableTimeRecurrenceException(RecurrenceExceptionMixin, OrganizationMod
     @modified_object.setter
     def modified_object(self, modified_object):
         self.modified_available_time_fk = modified_object
+
+
+class RecurrenceBulkModificationMixin(OrganizationModel):
+    """
+    Base mixin for tracking bulk modifications to recurring series.
+    """
+
+    modification_start_date = models.DateTimeField(
+        help_text="The date from which the modification applies"
+    )
+    original_parent = OrganizationForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Original recurring object before split",
+    )
+    modified_continuation = OrganizationForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="New recurring object for modified series",
+    )
+    is_bulk_cancelled = models.BooleanField(
+        default=False,
+        help_text="True if all occurrences from this date are cancelled",
+    )
+
+    class Meta:
+        abstract = True
+
+
+class EventBulkModification(RecurrenceBulkModificationMixin):
+    """
+    Record that tracks a bulk modification applied to a recurring event series.
+
+    Links the original recurring event to the modification metadata and any new continuation.
+    """
+
+    parent_event = OrganizationForeignKey(
+        CalendarEvent,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="bulk_modification_records",
+        help_text="The recurring event this bulk modification applies to",
+    )
+
+
+class BlockedTimeBulkModification(RecurrenceBulkModificationMixin):
+    """
+    Record that tracks a bulk modification applied to a recurring blocked-time series.
+    """
+
+    parent_blocked_time = OrganizationForeignKey(
+        BlockedTime,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="bulk_modification_records",
+        help_text="The recurring blocked time this bulk modification applies to",
+    )
+
+
+class AvailableTimeBulkModification(RecurrenceBulkModificationMixin):
+    """
+    Record that tracks a bulk modification applied to a recurring available-time series.
+    """
+
+    parent_available_time = OrganizationForeignKey(
+        AvailableTime,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="bulk_modification_records",
+        help_text="The recurring available time this bulk modification applies to",
+    )
 
 
 class CalendarSync(OrganizationModel):

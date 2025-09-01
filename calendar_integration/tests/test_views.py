@@ -987,6 +987,216 @@ class TestRecurringCalendarEventViewSet:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "must be before" in str(response.data)
 
+    def test_bulk_modify_recurring_event(self, auth_client, calendar, user, social_account):
+        """Test bulk modifying recurring events from a specific date"""
+        from di_core.containers import container
+
+        # Create a recurring event
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+
+        recurring_event = CalendarIntegrationTestFactory.create_recurring_event(
+            calendar=calendar,
+            title="Weekly Meeting",
+            description="Weekly team meeting",
+            start_time=start_time,
+            end_time=end_time,
+            external_id="recurring_weekly_meeting",
+        )
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock modified event for the continuation
+        modified_start_time = start_time + datetime.timedelta(days=7, hours=1)
+        modified_end_time = end_time + datetime.timedelta(days=7, hours=1)
+
+        continuation_event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Modified Weekly Meeting",
+            description="Modified weekly team meeting",
+            start_time=modified_start_time,
+            end_time=modified_end_time,
+            external_id="modified_weekly_meeting",
+        )
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.modify_recurring_event_from_date.return_value = continuation_event
+
+        url = reverse("api:CalendarEvents-bulk-modify", kwargs={"pk": recurring_event.id})
+        modification_date = (start_time + datetime.timedelta(days=7)).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "modified_title": "Modified Weekly Meeting",
+            "modified_description": "Modified weekly team meeting",
+            "modified_start_time_offset": "01:00:00",  # Move start time by 1 hour
+            "modified_end_time_offset": "01:00:00",  # Move end time by 1 hour
+            "is_cancelled": False,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["title"] == "Modified Weekly Meeting"
+        assert response.data["description"] == "Modified weekly team meeting"
+
+        # Verify the mock was called with correct parameters
+        mock_calendar_service.modify_recurring_event_from_date.assert_called_once()
+
+    def test_bulk_cancel_recurring_event(self, auth_client, calendar, user, social_account):
+        """Test bulk cancelling recurring events from a specific date"""
+        from di_core.containers import container
+
+        # Create a recurring event
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+
+        recurring_event = CalendarIntegrationTestFactory.create_recurring_event(
+            calendar=calendar,
+            title="Weekly Meeting",
+            description="Weekly team meeting",
+            start_time=start_time,
+            end_time=end_time,
+            external_id="recurring_weekly_meeting",
+        )
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.cancel_recurring_event_from_date.return_value = None
+
+        url = reverse("api:CalendarEvents-bulk-modify", kwargs={"pk": recurring_event.id})
+        modification_date = (start_time + datetime.timedelta(days=7)).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "is_cancelled": True,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+
+        # Verify the mock was called with correct parameters
+        mock_calendar_service.cancel_recurring_event_from_date.assert_called_once()
+
+    def test_bulk_modify_recurring_event_with_rrule(
+        self, auth_client, calendar, user, social_account
+    ):
+        """Test bulk modifying recurring events with custom recurrence rule"""
+        from di_core.containers import container
+
+        # Create a recurring event
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+
+        recurring_event = CalendarIntegrationTestFactory.create_recurring_event(
+            calendar=calendar,
+            title="Weekly Meeting",
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        continuation_event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Modified Weekly Meeting",
+            start_time=start_time + datetime.timedelta(days=7),
+            end_time=end_time + datetime.timedelta(days=7),
+        )
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.modify_recurring_event_from_date.return_value = continuation_event
+
+        url = reverse("api:CalendarEvents-bulk-modify", kwargs={"pk": recurring_event.id})
+        modification_date = (start_time + datetime.timedelta(days=7)).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "modified_title": "Modified Weekly Meeting",
+            "rrule_string": "FREQ=DAILY;COUNT=5",
+            "is_cancelled": False,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        mock_calendar_service.modify_recurring_event_from_date.assert_called_once()
+
+    def test_bulk_modify_non_recurring_event(self, auth_client, calendar, user):
+        """Test bulk modifying a non-recurring event should fail"""
+        # Create a non-recurring event
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+
+        non_recurring_event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Single Meeting",
+            start_time=start_time,
+            end_time=end_time,
+            external_id="single_meeting",
+        )
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:CalendarEvents-bulk-modify", kwargs={"pk": non_recurring_event.id})
+        modification_date = (start_time + datetime.timedelta(days=7)).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "is_cancelled": True,
+        }
+
+        response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "not a recurring event" in str(response.data)
+
+    def test_bulk_modify_validation_errors(self, auth_client, calendar, user):
+        """Test validation errors when bulk modifying recurring events"""
+        # Create a recurring event
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+
+        recurring_event = CalendarIntegrationTestFactory.create_recurring_event(
+            calendar=calendar,
+            title="Weekly Meeting",
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:CalendarEvents-bulk-modify", kwargs={"pk": recurring_event.id})
+
+        # Test missing required fields
+        response = auth_client.post(url, {}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Test conflicting recurrence rule fields
+        modification_date = (start_time + datetime.timedelta(days=7)).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "recurrence_rule": {"frequency": "DAILY", "interval": 1},
+            "rrule_string": "FREQ=WEEKLY;COUNT=5",
+            "is_cancelled": False,
+        }
+        response = auth_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "Cannot specify both recurrence_rule and rrule_string" in str(response.data)
+
 
 @pytest.mark.django_db
 class TestCalendarViewSet:
@@ -1991,7 +2201,7 @@ class TestBlockedTimeViewSet:
         response = auth_client.post(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        assert "Blocked time is not a recurring" in str(response.data)
+        assert "Blocked time is not recurring" in str(response.data)
 
     def test_create_blocked_time_exception_validation_errors(self, auth_client, calendar, user):
         """Test validation errors when creating blocked time exceptions"""
@@ -2037,6 +2247,206 @@ class TestBlockedTimeViewSet:
         }
         response = auth_client.post(url, data, format="json")
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_bulk_modify_recurring_blocked_time(self, auth_client, calendar, user):
+        """Test bulk modifying recurring blocked time from a specific date"""
+        from di_core.containers import container
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring blocked time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Weekly maintenance",
+            recurrence_rule=recurrence_rule,
+        )
+
+        # Create a mock calendar service and continuation blocked time
+        mock_calendar_service = Mock()
+        continuation_blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Modified weekly maintenance",
+        )
+        mock_calendar_service.modify_recurring_blocked_time_from_date.return_value = (
+            continuation_blocked_time
+        )
+
+        url = reverse("api:BlockedTimes-bulk-modify", kwargs={"pk": blocked_time.id})
+        modification_date = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=7)
+        ).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "modified_reason": "Modified weekly maintenance",
+            "modified_start_time_offset": "01:00:00",  # Move start time by 1 hour
+            "modified_end_time_offset": "01:00:00",  # Move end time by 1 hour
+            "is_cancelled": False,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["reason"] == "Modified weekly maintenance"
+
+        # Verify the mock was called with correct parameters
+        mock_calendar_service.modify_recurring_blocked_time_from_date.assert_called_once()
+
+    def test_bulk_cancel_recurring_blocked_time(self, auth_client, calendar, user):
+        """Test bulk cancelling recurring blocked time from a specific date"""
+        from di_core.containers import container
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring blocked time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Weekly maintenance",
+            recurrence_rule=recurrence_rule,
+        )
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.cancel_recurring_blocked_time_from_date.return_value = None
+
+        url = reverse("api:BlockedTimes-bulk-modify", kwargs={"pk": blocked_time.id})
+        modification_date = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=7)
+        ).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "is_cancelled": True,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+
+        # Verify the mock was called with correct parameters
+        mock_calendar_service.cancel_recurring_blocked_time_from_date.assert_called_once()
+
+    def test_bulk_modify_recurring_blocked_time_with_rrule(self, auth_client, calendar, user):
+        """Test bulk modifying recurring blocked time with custom recurrence rule"""
+        from di_core.containers import container
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring blocked time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Weekly maintenance",
+            recurrence_rule=recurrence_rule,
+        )
+
+        continuation_blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Modified maintenance",
+        )
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.modify_recurring_blocked_time_from_date.return_value = (
+            continuation_blocked_time
+        )
+
+        url = reverse("api:BlockedTimes-bulk-modify", kwargs={"pk": blocked_time.id})
+        modification_date = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=7)
+        ).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "modified_reason": "Modified maintenance",
+            "rrule_string": "FREQ=DAILY;COUNT=5",
+            "is_cancelled": False,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        mock_calendar_service.modify_recurring_blocked_time_from_date.assert_called_once()
+
+    def test_bulk_modify_non_recurring_blocked_time(self, auth_client, calendar, user):
+        """Test bulk modifying a non-recurring blocked time should fail"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a non-recurring blocked time
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="One-time maintenance",
+        )
+
+        url = reverse("api:BlockedTimes-bulk-modify", kwargs={"pk": blocked_time.id})
+        modification_date = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=7)
+        ).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "is_cancelled": True,
+        }
+
+        response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "not recurring" in str(response.data)
+
+    def test_bulk_modify_blocked_time_validation_errors(self, auth_client, calendar, user):
+        """Test validation errors when bulk modifying recurring blocked times"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring blocked time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Weekly maintenance",
+            recurrence_rule=recurrence_rule,
+        )
+
+        url = reverse("api:BlockedTimes-bulk-modify", kwargs={"pk": blocked_time.id})
+
+        # Test missing required fields
+        response = auth_client.post(url, {}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Test conflicting recurrence rule fields
+        modification_date = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=7)
+        ).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "recurrence_rule": {"frequency": "DAILY", "interval": 1},
+            "rrule_string": "FREQ=WEEKLY;COUNT=5",
+            "is_cancelled": False,
+        }
+        response = auth_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "Cannot specify both recurrence_rule and rrule_string" in str(response.data)
 
 
 @pytest.mark.django_db
@@ -2445,7 +2855,7 @@ class TestAvailableTimeViewSet:
         response = auth_client.post(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        assert "Available time is not a recurring" in str(response.data)
+        assert "Available time is not recurring" in str(response.data)
 
     def test_create_available_time_exception_validation_errors(self, auth_client, calendar, user):
         """Test validation errors when creating available time exceptions"""
@@ -2494,6 +2904,216 @@ class TestAvailableTimeViewSet:
         }
         response = auth_client.post(url, data, format="json")
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_bulk_modify_recurring_available_time(self, auth_client, calendar, user):
+        """Test bulk modifying recurring available time from a specific date"""
+        from di_core.containers import container
+
+        # Set up calendar to allow available windows management
+        calendar.manage_available_windows = True
+        calendar.save()
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring available time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+            recurrence_rule=recurrence_rule,
+        )
+
+        # Create a mock calendar service and continuation available time
+        mock_calendar_service = Mock()
+        continuation_available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+        )
+        mock_calendar_service.modify_recurring_available_time_from_date.return_value = (
+            continuation_available_time
+        )
+
+        url = reverse("api:AvailableTimes-bulk-modify", kwargs={"pk": available_time.id})
+        modification_date = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=7)
+        ).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "modified_start_time_offset": "01:00:00",  # Move start time by 1 hour
+            "modified_end_time_offset": "01:00:00",  # Move end time by 1 hour
+            "is_cancelled": False,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify the mock was called with correct parameters
+        mock_calendar_service.modify_recurring_available_time_from_date.assert_called_once()
+
+    def test_bulk_cancel_recurring_available_time(self, auth_client, calendar, user):
+        """Test bulk cancelling recurring available time from a specific date"""
+        from di_core.containers import container
+
+        # Set up calendar to allow available windows management
+        calendar.manage_available_windows = True
+        calendar.save()
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring available time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+            recurrence_rule=recurrence_rule,
+        )
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.cancel_recurring_available_time_from_date.return_value = None
+
+        url = reverse("api:AvailableTimes-bulk-modify", kwargs={"pk": available_time.id})
+        modification_date = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=7)
+        ).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "is_cancelled": True,
+        }
+
+        # Use container override to inject the mock service
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+
+        # Verify the mock was called with correct parameters
+        mock_calendar_service.cancel_recurring_available_time_from_date.assert_called_once()
+
+    def test_bulk_modify_recurring_available_time_with_rrule(self, auth_client, calendar, user):
+        """Test bulk modifying recurring available time with custom recurrence rule"""
+        from di_core.containers import container
+
+        # Set up calendar to allow available windows management
+        calendar.manage_available_windows = True
+        calendar.save()
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring available time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+            recurrence_rule=recurrence_rule,
+        )
+
+        continuation_available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+        )
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.modify_recurring_available_time_from_date.return_value = (
+            continuation_available_time
+        )
+
+        url = reverse("api:AvailableTimes-bulk-modify", kwargs={"pk": available_time.id})
+        modification_date = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=7)
+        ).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "rrule_string": "FREQ=DAILY;COUNT=5",
+            "is_cancelled": False,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        mock_calendar_service.modify_recurring_available_time_from_date.assert_called_once()
+
+    def test_bulk_modify_non_recurring_available_time(self, auth_client, calendar, user):
+        """Test bulk modifying a non-recurring available time should fail"""
+        # Set up calendar to allow available windows management
+        calendar.manage_available_windows = True
+        calendar.save()
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a non-recurring available time
+        available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+        )
+
+        url = reverse("api:AvailableTimes-bulk-modify", kwargs={"pk": available_time.id})
+        modification_date = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=7)
+        ).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "is_cancelled": True,
+        }
+
+        response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "not recurring" in str(response.data)
+
+    def test_bulk_modify_available_time_validation_errors(self, auth_client, calendar, user):
+        """Test validation errors when bulk modifying recurring available times"""
+        # Set up calendar to allow available windows management
+        calendar.manage_available_windows = True
+        calendar.save()
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurring available time
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.organization_membership.organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+
+        available_time = CalendarIntegrationTestFactory.create_available_time(
+            calendar=calendar,
+            recurrence_rule=recurrence_rule,
+        )
+
+        url = reverse("api:AvailableTimes-bulk-modify", kwargs={"pk": available_time.id})
+
+        # Test missing required fields
+        response = auth_client.post(url, {}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Test conflicting recurrence rule fields
+        modification_date = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=7)
+        ).date()
+        data = {
+            "modification_start_date": modification_date.isoformat(),
+            "recurrence_rule": {"frequency": "DAILY", "interval": 1},
+            "rrule_string": "FREQ=WEEKLY;COUNT=5",
+            "is_cancelled": False,
+        }
+        response = auth_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "Cannot specify both recurrence_rule and rrule_string" in str(response.data)
 
 
 @pytest.mark.django_db

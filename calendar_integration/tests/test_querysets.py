@@ -1,3 +1,4 @@
+import datetime
 from datetime import timedelta
 
 from django.test import TestCase
@@ -20,6 +21,10 @@ from calendar_integration.models import (
     RecurrenceRule,
 )
 from organizations.models import Organization
+
+
+def _dt(year, month, day, hour=9, minute=0):
+    return datetime.datetime(year, month, day, hour, minute, tzinfo=datetime.UTC)
 
 
 @pytest.mark.django_db
@@ -1423,3 +1428,260 @@ class TestRecurringIntegration(TestCase):
         available_result = available_with_occurrences.first()
         assert hasattr(available_result, "recurring_occurrences")
         assert available_result.recurring_occurrences is not None
+
+
+@pytest.mark.django_db
+class TestBulkModificationQuerySet:
+    def test_calendar_event_get_occurrences_with_bulk_modifications(self):
+        organization = Organization.objects.create(name="Test Organization", should_sync_rooms=True)
+        calendar = Calendar.objects.create(
+            name="Test Calendar",
+            email="test@example.com",
+            external_id="test_123",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.PERSONAL,
+            organization=organization,
+        )
+        rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY, interval=1, count=5, organization=organization
+        )
+        event = CalendarEvent.objects.create(
+            calendar=calendar,
+            title="Daily Standup",
+            description="Daily standup meeting",
+            start_time=_dt(2023, 10, 1, 9, 0),
+            end_time=_dt(2023, 10, 1, 9, 30),
+            external_id="event_123",
+            recurrence_rule=rule,
+            organization=organization,
+        )
+        # Create continuation event (bulk modification)
+        continuation_rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY, interval=1, count=2, organization=organization
+        )
+        _continuation = CalendarEvent.objects.create(
+            calendar=calendar,
+            title="Modified Standup",
+            description="Modified",
+            start_time=_dt(2023, 10, 6, 9, 0),
+            end_time=_dt(2023, 10, 6, 9, 30),
+            external_id="event_124",
+            recurrence_rule=continuation_rule,
+            organization=organization,
+            bulk_modification_parent=event,
+        )
+        occurrences = event.get_occurrences_in_range_with_bulk_modifications(
+            _dt(2023, 10, 1), _dt(2023, 10, 10), include_continuations=True
+        )
+        assert len(occurrences) == 7
+
+    def test_queryset_bulk_modification_annotation(self):
+        organization = Organization.objects.create(name="Test Organization", should_sync_rooms=True)
+        calendar = Calendar.objects.create(
+            name="Test Calendar",
+            email="test@example.com",
+            external_id="test_124",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.PERSONAL,
+            organization=organization,
+        )
+        rule1 = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY, interval=1, count=2, organization=organization
+        )
+        rule2 = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY, interval=1, count=2, organization=organization
+        )
+        _at1 = AvailableTime.objects.create(
+            calendar=calendar,
+            start_time=_dt(2023, 10, 1, 9, 0),
+            end_time=_dt(2023, 10, 1, 17, 0),
+            recurrence_rule=rule1,
+            organization=organization,
+        )
+        _at2 = AvailableTime.objects.create(
+            calendar=calendar,
+            start_time=_dt(2023, 10, 2, 9, 0),
+            end_time=_dt(2023, 10, 2, 17, 0),
+            recurrence_rule=rule2,
+            organization=organization,
+        )
+        available_times = AvailableTime.objects.filter(
+            calendar=calendar, organization=organization
+        ).annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+            _dt(2023, 10, 1), _dt(2023, 10, 3)
+        )
+        assert available_times.count() == 2
+        for obj in available_times:
+            assert hasattr(obj, "recurring_occurrences_with_bulk_modifications")
+
+    def test_blocked_time_bulk_modifications(self):
+        organization = Organization.objects.create(name="Test Organization", should_sync_rooms=True)
+        calendar = Calendar.objects.create(
+            name="Test Calendar",
+            email="test@example.com",
+            external_id="test_125",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.PERSONAL,
+            organization=organization,
+        )
+        rule1 = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY, interval=1, count=2, organization=organization
+        )
+        rule2 = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY, interval=1, count=2, organization=organization
+        )
+        _bt1 = BlockedTime.objects.create(
+            calendar=calendar,
+            start_time=_dt(2023, 10, 1, 10, 0),
+            end_time=_dt(2023, 10, 1, 11, 0),
+            reason="Daily meeting",
+            recurrence_rule=rule1,
+            organization=organization,
+            external_id="blocked_1",
+        )
+        _bt2 = BlockedTime.objects.create(
+            calendar=calendar,
+            start_time=_dt(2023, 10, 2, 10, 0),
+            end_time=_dt(2023, 10, 2, 11, 0),
+            reason="Weekly sync",
+            recurrence_rule=rule2,
+            organization=organization,
+            external_id="blocked_2",
+        )
+        blocked_times = BlockedTime.objects.filter(
+            calendar=calendar, organization=organization
+        ).annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+            _dt(2023, 10, 1), _dt(2023, 10, 3)
+        )
+        assert blocked_times.count() == 2
+        for obj in blocked_times:
+            assert hasattr(obj, "recurring_occurrences_with_bulk_modifications")
+
+    def test_available_time_bulk_modifications(self):
+        organization = Organization.objects.create(name="Test Organization", should_sync_rooms=True)
+        calendar = Calendar.objects.create(
+            name="Test Calendar",
+            email="test@example.com",
+            external_id="test_126",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.PERSONAL,
+            organization=organization,
+        )
+        rule1 = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.WEEKLY, interval=1, count=1, organization=organization
+        )
+        rule2 = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.WEEKLY, interval=1, count=1, organization=organization
+        )
+        at1 = AvailableTime.objects.create(
+            calendar=calendar,
+            start_time=_dt(2023, 10, 1, 9, 0),
+            end_time=_dt(2023, 10, 1, 17, 0),
+            recurrence_rule=rule1,
+            organization=organization,
+        )
+        _at2 = AvailableTime.objects.create(
+            calendar=calendar,
+            start_time=_dt(2023, 10, 8, 9, 0),
+            end_time=_dt(2023, 10, 8, 17, 0),
+            recurrence_rule=rule2,
+            organization=organization,
+            bulk_modification_parent=at1,
+        )
+        all_occurrences = at1.get_occurrences_in_range_with_bulk_modifications(
+            _dt(2023, 10, 1), _dt(2023, 10, 15), include_continuations=True
+        )
+        assert len(all_occurrences) == 2
+        available_times = AvailableTime.objects.filter(
+            calendar=calendar, organization=organization
+        ).annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+            _dt(2023, 10, 1), _dt(2023, 10, 15)
+        )
+        for obj in available_times:
+            assert hasattr(obj, "recurring_occurrences_with_bulk_modifications")
+
+    def test_manager_bulk_modification_methods(self):
+        organization = Organization.objects.create(name="Test Organization", should_sync_rooms=True)
+        calendar = Calendar.objects.create(
+            name="Test Calendar",
+            email="test@example.com",
+            external_id="test_127",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.PERSONAL,
+            organization=organization,
+        )
+        rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY, interval=1, count=2, organization=organization
+        )
+        _event = CalendarEvent.objects.create(
+            calendar=calendar,
+            title="Test Event",
+            start_time=_dt(2023, 10, 1, 9, 0),
+            end_time=_dt(2023, 10, 1, 10, 0),
+            recurrence_rule=rule,
+            organization=organization,
+            external_id="event_128",
+        )
+        events_with_bulk_occurrences = CalendarEvent.objects.filter(
+            organization=organization
+        ).annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+            _dt(2023, 10, 1), _dt(2023, 10, 5), 10
+        )
+        for obj in events_with_bulk_occurrences:
+            assert hasattr(obj, "recurring_occurrences")
+        blocked_rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY, interval=1, count=2, organization=organization
+        )
+        _blocked = BlockedTime.objects.create(
+            calendar=calendar,
+            start_time=_dt(2023, 10, 1, 10, 0),
+            end_time=_dt(2023, 10, 1, 11, 0),
+            recurrence_rule=blocked_rule,
+            organization=organization,
+            external_id="blocked_3",
+        )
+        blocked_with_bulk = BlockedTime.objects.filter(
+            organization=organization
+        ).annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+            _dt(2023, 10, 1), _dt(2023, 10, 5)
+        )
+        for obj in blocked_with_bulk:
+            assert hasattr(obj, "recurring_occurrences_with_bulk_modifications")
+
+    def test_bulk_cancellation_support(self):
+        organization = Organization.objects.create(name="Test Organization", should_sync_rooms=True)
+        calendar = Calendar.objects.create(
+            name="Test Calendar",
+            email="test@example.com",
+            external_id="test_128",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.PERSONAL,
+            organization=organization,
+        )
+        rule = RecurrenceRule.objects.create(
+            frequency=RecurrenceFrequency.DAILY, interval=1, count=5, organization=organization
+        )
+        event = CalendarEvent.objects.create(
+            calendar=calendar,
+            title="Event to Cancel",
+            start_time=_dt(2023, 10, 1, 9, 0),
+            end_time=_dt(2023, 10, 1, 10, 0),
+            recurrence_rule=rule,
+            organization=organization,
+            external_id="event_129",
+        )
+        # Simulate cancellation by creating a continuation event with recurrence_rule=None
+        _ = CalendarEvent.objects.create(
+            calendar=calendar,
+            title="Cancelled Event",
+            start_time=_dt(2023, 10, 3, 9, 0),
+            end_time=_dt(2023, 10, 3, 10, 0),
+            recurrence_rule=None,
+            organization=organization,
+            bulk_modification_parent=event,
+            external_id="event_130",
+        )
+        all_occurrences = event.get_occurrences_in_range_with_bulk_modifications(
+            _dt(2023, 10, 1), _dt(2023, 10, 10), include_continuations=True
+        )
+        assert len(all_occurrences) == 5
