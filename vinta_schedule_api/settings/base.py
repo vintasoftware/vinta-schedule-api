@@ -37,6 +37,7 @@ INTERNAL_INSTALLED_APPS = [
     "payments",
     "notifications",
     "calendar_integration",
+    "webhooks",
 ]
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -151,8 +152,10 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "A Django project boilerplate with Vinta's best practices",
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
     "ENUM_NAME_OVERRIDES": {
-        "FrequencyEnum": "calendar_integration.constants.RecurrenceFrequency",
+        "FrequencyEnum": "calendar_integration.constants.RecurrenceFrequency.choices",
+        "RSVPStatusEnum": "calendar_integration.constants.RSVPStatus.choices",
     },
 }
 

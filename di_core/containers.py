@@ -23,6 +23,7 @@ from vintasend_django_sms_template_renderer.services.notification_template_rende
 from vintasend_twilio.services.notification_adapters.twilio import (
     TwilioSMSNotificationAdapter,
 )
+from webhooks.services import WebhookService
 
 
 class AppContainer(containers.DeclarativeContainer):
@@ -66,6 +67,10 @@ class AppContainer(containers.DeclarativeContainer):
             ),
         ],
         notification_backend=DjangoDbNotificationBackend(),
+    )
+
+    webhook_service = providers.Factory(
+        WebhookService,
     )
 
     calendar_service = providers.Factory(
