@@ -75,6 +75,7 @@ class AppContainer(containers.DeclarativeContainer):
 
     calendar_service = providers.Factory(
         CalendarService,
+        webhook_service=webhook_service,
     )
 
 

@@ -6522,3 +6522,184 @@ def test_get_blocked_times_expanded_bundle_calendar_date_filtering(
         bt.reason for bt in expanded_blocked_times if bt.reason == "Excluded maintenance"
     ]
     assert len(excluded_reasons) == 0
+
+
+@pytest.mark.django_db
+def test_create_event_sends_webhook(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    patch_get_calendar,
+    sample_event_input_data,
+):
+    """Test that creating an event sends a webhook event."""
+    from unittest.mock import Mock
+
+    from webhooks.constants import WebhookEventType
+
+    created_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="event_new_123",
+        title="New Event",
+        description="A new event",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+    )
+    mock_google_adapter.create_event.return_value = created_event_data
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    # Mock the webhook service
+    mock_webhook_service = Mock()
+
+    service = CalendarService(webhook_service=mock_webhook_service)
+    service.authenticate(account=social_account, organization=calendar.organization)
+    result = service.create_event(calendar.id, sample_event_input_data)
+
+    # Verify webhook was called
+    mock_webhook_service.send_events.assert_called_once()
+    call_args = mock_webhook_service.send_events.call_args
+
+    # Check webhook call arguments
+    assert call_args[1]["organization"] == calendar.organization
+    assert call_args[1]["event_type"] == WebhookEventType.CALENDAR_EVENT_CREATED
+
+    # Check webhook payload
+    payload = call_args[1]["payload"]
+    assert payload["id"] == result.id
+    assert payload["calendar_id"] == calendar.id
+
+
+@pytest.mark.django_db
+def test_update_event_sends_webhook(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    patch_get_calendar,
+    sample_event_input_data,
+):
+    """Test that updating an event sends a webhook event."""
+    from unittest.mock import Mock
+
+    from webhooks.constants import WebhookEventType
+
+    # First create an event
+    created_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="event_new_123",
+        title="Original Event",
+        description="Original event",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+    )
+    mock_google_adapter.create_event.return_value = created_event_data
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    mock_webhook_service = Mock()
+
+    service = CalendarService(webhook_service=mock_webhook_service)
+    service.authenticate(account=social_account, organization=calendar.organization)
+    event = service.create_event(calendar.id, sample_event_input_data)
+
+    # Reset mock to clear create_event call
+    mock_webhook_service.reset_mock()
+
+    # Now update the event
+    updated_event_data = CalendarEventData(
+        id=event.id,
+        calendar_external_id="cal_123",
+        external_id="event_new_123",
+        title="Updated Event",
+        description="Updated event",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+    )
+    mock_google_adapter.update_event.return_value = updated_event_data
+
+    update_data = CalendarEventInputData(
+        title="Updated Event",
+        description="Updated event",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        attendances=[],
+        external_attendances=[],
+        resource_allocations=[],
+    )
+
+    result = service.update_event(calendar.id, event.id, update_data)
+
+    # Verify webhook was called
+    mock_webhook_service.send_events.assert_called_once()
+    call_args = mock_webhook_service.send_events.call_args
+
+    # Check webhook call arguments
+    assert call_args[1]["organization"] == calendar.organization
+    assert call_args[1]["event_type"] == WebhookEventType.CALENDAR_EVENT_UPDATED
+
+    # Check webhook payload
+    payload = call_args[1]["payload"]
+    assert payload["id"] == result.id
+
+
+@pytest.mark.django_db
+def test_delete_event_sends_webhook(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    patch_get_calendar,
+    sample_event_input_data,
+):
+    """Test that deleting an event sends a webhook event."""
+    from unittest.mock import Mock
+
+    from webhooks.constants import WebhookEventType
+
+    # First create an event
+    created_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="event_new_123",
+        title="Event to Delete",
+        description="Event to delete",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+    )
+    mock_google_adapter.create_event.return_value = created_event_data
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    mock_webhook_service = Mock()
+
+    service = CalendarService(webhook_service=mock_webhook_service)
+    service.authenticate(account=social_account, organization=calendar.organization)
+    event = service.create_event(calendar.id, sample_event_input_data)
+
+    # Reset mock to clear create_event call
+    mock_webhook_service.reset_mock()
+
+    # Now delete the event
+    service.delete_event(calendar.id, event.id)
+
+    # Verify webhook was called
+    mock_webhook_service.send_events.assert_called_once()
+    call_args = mock_webhook_service.send_events.call_args
+
+    # Check webhook call arguments
+    assert call_args[1]["organization"] == calendar.organization
+    assert call_args[1]["event_type"] == WebhookEventType.CALENDAR_EVENT_DELETED
+
+    # Check webhook payload
+    payload = call_args[1]["payload"]
+    assert payload["id"] == event.id
