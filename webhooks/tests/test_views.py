@@ -493,3 +493,14 @@ class TestWebhookEventViewSet:
         response = anonymous_client.post(url)
 
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_create_webhook_configuration_validation_errors(self, auth_client):
+        """Test webhook configuration creation with validation errors."""
+        url = reverse("api:WebhookConfigurations-list")
+        # Invalid event_type and url
+        data = {
+            "event_type": "invalid_event_type",
+            "url": "not-a-url",
+        }
+        response = auth_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)

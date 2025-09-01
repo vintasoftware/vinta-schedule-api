@@ -350,8 +350,9 @@ class TestWebhookService:
         # Mock request that raises an exception
         mock_post.side_effect = requests.exceptions.RequestException("Network error")
 
-        with pytest.raises(requests.exceptions.RequestException):
-            webhook_service.process_webhook_event(webhook_event)
+        event = webhook_service.process_webhook_event(webhook_event)
+        assert event.status == WebhookStatus.FAILED
+        assert event.response_body == {"error": "Network error"}
 
     def test_process_webhook_event_status_code_boundaries(self, webhook_event, webhook_service):
         """Test webhook status determination for various HTTP status codes."""

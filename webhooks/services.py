@@ -19,10 +19,9 @@ class WebhookService:
     def create_configuration(
         self, organization: Organization, event_type: WebhookEventType, url: str, headers: dict
     ) -> WebhookConfiguration:
-        configuration = WebhookConfiguration.objects.create(
+        return WebhookConfiguration.objects.create(
             organization=organization, event_type=event_type, url=url, headers=headers
         )
-        return configuration
 
     def update_configuration(
         self,
@@ -81,8 +80,8 @@ class WebhookService:
             event (WebhookEvent): The webhook event to retry.
             use_current_configuration (bool, optional): Whether to use the current configuration
                 for the retry. This is useful for manual retries and debugging. Defaults to False.
-            skip_backoff (bool, optional): Whether to skip the exponential backoff for the retry.
-                This is useful for manual retries. Defaults to False.
+            is_manual (bool, optional): Whether to skip the exponential backoff for the retry and
+                skips the retry count limit. Defaults to False.
 
         Returns:
             WebhookEvent: The scheduled retry event.
@@ -92,7 +91,7 @@ class WebhookService:
         if not is_manual and retry_number > MAX_WEBHOOK_RETRIES:
             return None
 
-        exponential_backoff = (2 ** (retry_number - 1)) if not is_manual else 0
+        exponential_backoff = 0 if is_manual else 2 ** (retry_number - 1)
         retry_event = WebhookEvent.objects.create(
             organization=event.organization,
             configuration=event.configuration,
@@ -131,12 +130,18 @@ class WebhookService:
             WebhookEvent: The processed webhook event.
         """
 
-        response = requests.post(
-            event.url,
-            headers=event.headers,
-            json=event.payload,
-            timeout=60,
-        )
+        try:
+            response = requests.post(
+                event.url,
+                headers=event.headers,
+                json=event.payload,
+                timeout=60,
+            )
+        except requests.RequestException as e:
+            event.status = WebhookStatus.FAILED
+            event.response_body = {"error": str(e)}
+            event.save()
+            return event
 
         event.status = (
             WebhookStatus.SUCCESS
@@ -146,9 +151,9 @@ class WebhookService:
         event.response_status = response.status_code
         try:
             event.response_body = {"body": response.json()}
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             event.response_body = {"body": response.text}
-        event.response_headers = response.headers
+        event.response_headers = dict(response.headers)
         event.save()
 
         if event.status == WebhookStatus.FAILED and (event.retry_number or 0) < MAX_WEBHOOK_RETRIES:
