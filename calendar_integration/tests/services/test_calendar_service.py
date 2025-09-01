@@ -1377,6 +1377,285 @@ def test_create_recurring_exception_on_master_preserves_attendances_and_resource
 
 
 @pytest.mark.django_db
+def test_create_recurring_event_bulk_modification_creates_continuation_and_record(
+    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+):
+    """Non-cancel bulk modification should create a continuation event and an EventBulkModification record."""
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    # Create parent recurring event
+    parent_created_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="parent_bulk_event_123",
+        title="Parent Bulk",
+        description="Parent recurring",
+        start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule="FREQ=WEEKLY;COUNT=5;BYDAY=MO",
+    )
+    # Adapter returns parent on first call and continuation event on second
+    continuation_created_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="continuation_bulk_event_123",
+        title="Continuation Bulk",
+        description="Continuation recurring",
+        start_time=datetime.datetime(2025, 9, 8, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 8, 10, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule="FREQ=WEEKLY;COUNT=4;BYDAY=MO",
+    )
+    mock_google_adapter.create_event.side_effect = [
+        parent_created_event_data,
+        continuation_created_event_data,
+    ]
+
+    # Mock update_event for the parent event truncation
+    mock_google_adapter.update_event.return_value = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="parent_bulk_event_123",
+        title="Parent Bulk",
+        description="Parent recurring",
+        start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule="FREQ=WEEKLY;COUNT=1;BYDAY=MO",  # Truncated rule
+    )
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=parent_created_event_data.start_time,
+                end_time=parent_created_event_data.end_time,
+                id=1,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        parent_event = service.create_recurring_event(
+            calendar.id,
+            title="Parent Bulk",
+            description="Parent recurring",
+            start_time=parent_created_event_data.start_time,
+            end_time=parent_created_event_data.end_time,
+            recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=5;BYDAY=MO",
+        )
+
+    # Apply bulk modification starting at second occurrence
+    modification_start = parent_event.start_time + datetime.timedelta(weeks=1)
+
+    # Mock availability for the continuation creation (second call to adapter)
+    continuation_start = modification_start
+    continuation_end = modification_start + (parent_event.end_time - parent_event.start_time)
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=continuation_start,
+                end_time=continuation_end,
+                id=2,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        result = service.create_recurring_event_bulk_modification(
+            parent_event=parent_event,
+            modification_start_date=modification_start,
+            modified_title="Modified Bulk",
+            is_bulk_cancelled=False,
+        )
+
+    # Continuation should be created and linked
+    assert result is not None
+    assert result.recurrence_rule is not None
+    # Parent should have a bulk modification record
+    from calendar_integration.models import EventBulkModification
+
+    assert parent_event.bulk_modification_records.count() == 1
+    bulk_record = parent_event.bulk_modification_records.first()
+    assert isinstance(bulk_record, EventBulkModification)
+    assert bulk_record.is_bulk_cancelled is False
+
+
+@pytest.mark.django_db
+def test_create_recurring_event_bulk_modification_cancelled_records_only(
+    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+):
+    """Cancelled bulk modification should not create a continuation but should create a bulk record."""
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    parent_created_event_data = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="parent_bulk_event_cancel_123",
+        title="Parent Bulk Cancel",
+        description="Parent recurring",
+        # Use a Monday to match BYDAY=MO in the recurrence rule
+        start_time=datetime.datetime(2025, 10, 6, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 10, 6, 10, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule="FREQ=WEEKLY;COUNT=5;BYDAY=MO",
+    )
+    mock_google_adapter.create_event.return_value = parent_created_event_data
+
+    # Mock update_event for the parent event truncation
+    mock_google_adapter.update_event.return_value = CalendarEventData(
+        calendar_external_id="cal_123",
+        external_id="parent_bulk_event_cancel_123",
+        title="Parent Bulk Cancel",
+        description="Parent recurring",
+        start_time=datetime.datetime(2025, 10, 6, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 10, 6, 10, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule="FREQ=WEEKLY;COUNT=1;BYDAY=MO",  # Truncated rule
+    )
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+
+    with patch.object(
+        CalendarService,
+        "get_availability_windows_in_range",
+        return_value=[
+            AvailableTimeWindow(
+                start_time=parent_created_event_data.start_time,
+                end_time=parent_created_event_data.end_time,
+                id=1,
+                can_book_partially=False,
+            )
+        ],
+    ):
+        parent_event = service.create_recurring_event(
+            calendar.id,
+            title="Parent Bulk Cancel",
+            description="Parent recurring",
+            start_time=parent_created_event_data.start_time,
+            end_time=parent_created_event_data.end_time,
+            recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=5;BYDAY=MO",
+        )
+
+    modification_start = parent_event.start_time + datetime.timedelta(weeks=1)
+    result = service.create_recurring_event_bulk_modification(
+        parent_event=parent_event,
+        modification_start_date=modification_start,
+        is_bulk_cancelled=True,
+    )
+
+    # Since cancelled, no continuation created
+    assert result is None
+
+    assert parent_event.bulk_modification_records.count() == 1
+    bulk_record = parent_event.bulk_modification_records.first()
+    assert bulk_record.is_bulk_cancelled is True
+
+
+@pytest.mark.django_db
+def test_create_recurring_blocked_time_bulk_modification_creates_continuation_and_record(
+    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+):
+    """Non-cancel blocked-time bulk modification should create a continuation and a BlockedTimeBulkModification."""
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    # Create a parent blocked time with a weekly RRULE
+    parent_start = datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+    parent_end = parent_start + datetime.timedelta(hours=1)
+
+    # Create parent blocked time in DB
+    from calendar_integration.models import BlockedTimeBulkModification, RecurrenceRule
+
+    rule_blocked = RecurrenceRule.from_rrule_string(
+        "FREQ=WEEKLY;COUNT=5;BYDAY=MO", organization=calendar.organization
+    )
+    rule_blocked.save()
+
+    parent_blocked = BlockedTime.objects.create(
+        calendar_fk=calendar,
+        start_time=parent_start,
+        end_time=parent_end,
+        reason="Original Block",
+        organization=calendar.organization,
+        recurrence_rule_fk=rule_blocked,
+    )
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+
+    # Apply bulk modification starting at second occurrence
+    modification_start = parent_blocked.start_time + datetime.timedelta(weeks=1)
+
+    result = service.create_recurring_blocked_time_bulk_modification(
+        parent_blocked_time=parent_blocked,
+        modification_start_date=modification_start,
+        modified_reason="Modified Block",
+        is_bulk_cancelled=False,
+    )
+
+    # Continuation should be created
+    assert result is not None
+    assert isinstance(result, BlockedTime)
+    # Parent should have a bulk modification record
+    assert parent_blocked.bulk_modification_records.count() == 1
+    br = parent_blocked.bulk_modification_records.first()
+    assert isinstance(br, BlockedTimeBulkModification)
+    assert br.is_bulk_cancelled is False
+
+
+@pytest.mark.django_db
+def test_create_recurring_available_time_bulk_modification_cancelled_records_only(
+    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+):
+    """Cancelled available-time bulk modification should not create a continuation but should create a record."""
+    # Create parent available time
+    parent_start = datetime.datetime(2025, 10, 6, 9, 0, tzinfo=datetime.UTC)
+    parent_end = parent_start + datetime.timedelta(hours=1)
+    from calendar_integration.models import AvailableTimeBulkModification, RecurrenceRule
+
+    rule_available = RecurrenceRule.from_rrule_string(
+        "FREQ=WEEKLY;COUNT=5;BYDAY=MO", organization=calendar.organization
+    )
+    rule_available.save()
+
+    parent_available = AvailableTime.objects.create(
+        calendar_fk=calendar,
+        start_time=parent_start,
+        end_time=parent_end,
+        organization=calendar.organization,
+        recurrence_rule_fk=rule_available,
+    )
+
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=calendar.organization)
+
+    modification_start = parent_available.start_time + datetime.timedelta(weeks=1)
+    result = service.create_recurring_available_time_bulk_modification(
+        parent_available_time=parent_available,
+        modification_start_date=modification_start,
+        is_bulk_cancelled=True,
+    )
+
+    assert result is None
+    assert parent_available.bulk_modification_records.count() == 1
+    ar = parent_available.bulk_modification_records.first()
+    assert isinstance(ar, AvailableTimeBulkModification)
+    assert ar.is_bulk_cancelled is True
+
+
+@pytest.mark.django_db
 def test_get_recurring_event_instances_non_recurring_in_and_out_of_range(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar, calendar_event
 ):
