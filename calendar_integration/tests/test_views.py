@@ -2409,7 +2409,7 @@ class TestBlockedTimeViewSet:
         response = auth_client.post(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        assert "not a recurring" in str(response.data)
+        assert "not recurring" in str(response.data)
 
     def test_bulk_modify_blocked_time_validation_errors(self, auth_client, calendar, user):
         """Test validation errors when bulk modifying recurring blocked times"""
@@ -3073,7 +3073,7 @@ class TestAvailableTimeViewSet:
         response = auth_client.post(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        assert "not a recurring" in str(response.data)
+        assert "not recurring" in str(response.data)
 
     def test_bulk_modify_available_time_validation_errors(self, auth_client, calendar, user):
         """Test validation errors when bulk modifying recurring available times"""
