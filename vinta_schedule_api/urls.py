@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.urls import include, path
+from django.views.decorators.csrf import csrf_exempt
 
 from drf_spectacular.views import (
     SpectacularAPIView,
@@ -7,9 +8,11 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 from rest_framework.routers import DefaultRouter
+from strawberry.django.views import GraphQLView
 
 from calendar_integration.routes import routes as calendar_integration_routes
 from payments.routes import routes as payments_routes
+from public_api.schema import schema
 from users.routes import routes as users_routes
 from webhooks.routes import routes as webhooks_routes
 
@@ -46,4 +49,5 @@ urlpatterns = [
         SpectacularRedocView.as_view(url_name="schema"),
         name="redoc",
     ),
+    path("graphql/", csrf_exempt(GraphQLView.as_view(schema=schema))),
 ]

@@ -38,6 +38,7 @@ INTERNAL_INSTALLED_APPS = [
     "notifications",
     "calendar_integration",
     "webhooks",
+    "public_api",
 ]
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -74,10 +75,10 @@ MIDDLEWARE = [
     "django_permissions_policy.PermissionsPolicyMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
-    # "vinta_schedule_api.session_middleware.SessionMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
+    "public_api.middlewares.PublicApiSystemUserMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -473,3 +474,9 @@ BASE_URL_PROTOCOL = config("BASE_URL_PROTOCOL", "http")
 NOTIFICATION_DEFAULT_BASE_URL_DOMAIN = BASE_URL_DOMAIN
 NOTIFICATION_DEFAULT_BASE_URL_PROTOCOL = BASE_URL_DOMAIN
 BASE_URL = f"{BASE_URL_PROTOCOL}://{BASE_URL_DOMAIN}"
+
+PUBLIC_API_REDIS_URL = config("PUBLIC_API_REDIS_URL", default=REDIS_URL)
+PUBLIC_API_REQUESTS_PER_SECOND_LIMIT = config("PUBLIC_API_REQUESTS_PER_SECOND_LIMIT", default=5)
+PUBLIC_API_REQUESTS_PER_MINUTE_LIMIT = config("PUBLIC_API_REQUESTS_PER_MINUTE_LIMIT", default=100)
+PUBLIC_API_REQUESTS_PER_HOUR_LIMIT = config("PUBLIC_API_REQUESTS_PER_HOUR_LIMIT", default=1000)
+PUBLIC_API_RATE_LIMITER_KEY = config("PUBLIC_API_RATE_LIMITER_KEY", default="public_api")

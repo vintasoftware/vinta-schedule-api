@@ -56,6 +56,8 @@ pyrate-limiter = "^3.7.1"
 redis = "^6.2.0"
 django-cors-headers = "^4.7.0"
 twilio = "^9.6.5"
+strawberry-graphql = "^0.281.0"
+strawberry-graphql-django = "^0.65.1"
 
 [tool.poetry.group.dev.dependencies]
 coverage = "^7.2.7"
