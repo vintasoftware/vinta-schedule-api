@@ -8,7 +8,7 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from calendar_integration.models import Calendar
+from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarEvent
 from calendar_integration.services.dataclasses import AvailableTimeWindow
 from organizations.models import Organization, OrganizationMembership
 from public_api.constants import PublicAPIResources
@@ -436,8 +436,6 @@ class TestGraphQLQueries:
         mock_rate_limiter.return_value = iter([None])
 
         # First create a calendar event
-        from calendar_integration.models import CalendarEvent
-
         event = baker.make(
             CalendarEvent,
             calendar=calendar,
@@ -449,8 +447,12 @@ class TestGraphQLQueries:
         )
 
         query = """
-            query GetCalendarEvents {
-                calendarEvents {
+            query GetCalendarEvents($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+                calendarEvents(
+                    calendarId: $calendarId,
+                    startDatetime: $startDatetime,
+                    endDatetime: $endDatetime
+                ) {
                     id
                     title
                     description
@@ -461,9 +463,15 @@ class TestGraphQLQueries:
             }
         """
 
+        variables = {
+            "calendarId": calendar.id,
+            "startDatetime": "2025-09-02T00:00:00Z",
+            "endDatetime": "2025-09-02T23:59:59Z",
+        }
+
         response = graphql_client.post(
             "/graphql/",
-            data=json.dumps({"query": query}),
+            data=json.dumps({"query": query, "variables": variables}),
             content_type="application/json",
         )
 
@@ -483,8 +491,6 @@ class TestGraphQLQueries:
         """Test basic blocked times query."""
         # Mock rate limiter to allow requests
         mock_rate_limiter.return_value = iter([None])
-
-        from calendar_integration.models import BlockedTime
 
         blocked_time = baker.make(
             BlockedTime,
@@ -524,8 +530,6 @@ class TestGraphQLQueries:
         """Test basic available times query."""
         # Mock rate limiter to allow requests
         mock_rate_limiter.return_value = iter([None])
-
-        from calendar_integration.models import AvailableTime
 
         available_time = baker.make(
             AvailableTime,

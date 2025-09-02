@@ -155,7 +155,7 @@ class CalendarEventGraphQLType:
 
     # Properties
     @strawberry.field
-    def get_is_recurring(self) -> bool:
+    def is_recurring(self) -> bool:
         return self.is_recurring  # type: ignore
 
     @strawberry.field
