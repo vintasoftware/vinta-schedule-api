@@ -11,7 +11,7 @@ from calendar_integration.graphql import (
     CalendarEventGraphQLType,
     CalendarGraphQLType,
 )
-from calendar_integration.models import AvailableTime, BlockedTime, Calendar
+from calendar_integration.models import Calendar
 from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
@@ -67,20 +67,76 @@ class Query:
         )
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def blocked_times(self, info: strawberry.Info) -> list[BlockedTimeGraphQLType]:
+    def blocked_times(
+        self,
+        info: strawberry.Info,
+        calendar_id: int,
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> list[BlockedTimeGraphQLType]:
         """Get blocked times filtered by user's organization."""
+        from di_core.containers import container
+
+        if not container:
+            raise ValueError("DI container is not yet initialized")
+
+        # Get the calendar service from the DI container
+        calendar_service = container.calendar_service()
+
+        # Get the user's organization from the GraphQL context
         organization = info.context.request.public_api_organization
         if not organization:
             raise ValueError("Organization not found in request context")
-        return BlockedTime.objects.filter_by_organization(organization.id)
+
+        # Initialize the calendar service
+        calendar_service.initialize_without_provider(organization)
+
+        calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
+
+        return cast(
+            list[BlockedTimeGraphQLType],
+            calendar_service.get_blocked_times_expanded(
+                calendar,
+                start_datetime,
+                end_datetime,
+            ),
+        )
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def available_times(self, info: strawberry.Info) -> list[AvailableTimeGraphQLType]:
+    def available_times(
+        self,
+        info: strawberry.Info,
+        calendar_id: int,
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> list[AvailableTimeGraphQLType]:
         """Get available times filtered by user's organization."""
+        from di_core.containers import container
+
+        if not container:
+            raise ValueError("DI container is not yet initialized")
+
+        # Get the calendar service from the DI container
+        calendar_service = container.calendar_service()
+
+        # Get the user's organization from the GraphQL context
         organization = info.context.request.public_api_organization
         if not organization:
             raise ValueError("Organization not found in request context")
-        return AvailableTime.objects.filter_by_organization(organization.id)
+
+        # Initialize the calendar service
+        calendar_service.initialize_without_provider(organization)
+
+        calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
+
+        return cast(
+            list[AvailableTimeGraphQLType],
+            calendar_service.get_available_times_expanded(
+                calendar,
+                start_datetime,
+                end_datetime,
+            ),
+        )
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def users(self, info: strawberry.Info) -> list[UserGraphQLType]:

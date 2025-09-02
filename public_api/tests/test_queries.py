@@ -501,8 +501,12 @@ class TestGraphQLQueries:
         )
 
         query = """
-            query GetBlockedTimes {
-                blockedTimes {
+            query GetBlockedTimes($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+                blockedTimes(
+                    calendarId: $calendarId,
+                    startDatetime: $startDatetime,
+                    endDatetime: $endDatetime
+                ) {
                     id
                     startTime
                     endTime
@@ -510,9 +514,15 @@ class TestGraphQLQueries:
             }
         """
 
+        variables = {
+            "calendarId": calendar.id,
+            "startDatetime": "2025-09-02T00:00:00Z",
+            "endDatetime": "2025-09-02T23:59:59Z",
+        }
+
         response = graphql_client.post(
             "/graphql/",
-            data=json.dumps({"query": query}),
+            data=json.dumps({"query": query, "variables": variables}),
             content_type="application/json",
         )
 
@@ -540,8 +550,12 @@ class TestGraphQLQueries:
         )
 
         query = """
-            query GetAvailableTimes {
-                availableTimes {
+            query GetAvailableTimes($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+                availableTimes(
+                    calendarId: $calendarId,
+                    startDatetime: $startDatetime,
+                    endDatetime: $endDatetime
+                ) {
                     id
                     startTime
                     endTime
@@ -549,9 +563,15 @@ class TestGraphQLQueries:
             }
         """
 
+        variables = {
+            "calendarId": calendar.id,
+            "startDatetime": "2025-09-02T00:00:00Z",
+            "endDatetime": "2025-09-02T23:59:59Z",
+        }
+
         response = graphql_client.post(
             "/graphql/",
-            data=json.dumps({"query": query}),
+            data=json.dumps({"query": query, "variables": variables}),
             content_type="application/json",
         )
 
