@@ -26,4 +26,5 @@ class PublicAPIResources(TextChoices):
         "Available Time Recurring Exception",
     )
     AVAILABILITY_WINDOWS = "availability_windows", "Availability Windows"
+    UNAVAILABLE_WINDOWS = "unavailable_windows", "Unavailable Windows"
     ORGANIZATION = "organization", "Organization"

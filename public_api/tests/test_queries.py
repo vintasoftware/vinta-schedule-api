@@ -9,7 +9,11 @@ from model_bakery import baker
 from rest_framework.test import APIClient
 
 from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarEvent
-from calendar_integration.services.dataclasses import AvailableTimeWindow
+from calendar_integration.services.dataclasses import (
+    AvailableTimeWindow,
+    BlockedTimeData,
+    UnavailableTimeWindow,
+)
 from organizations.models import Organization, OrganizationMembership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
@@ -65,6 +69,7 @@ def system_user_with_resources(organization):
         PublicAPIResources.BLOCKED_TIME,
         PublicAPIResources.AVAILABLE_TIME,
         PublicAPIResources.AVAILABILITY_WINDOWS,
+        PublicAPIResources.UNAVAILABLE_WINDOWS,
         PublicAPIResources.USER,
     ]
 
@@ -675,6 +680,169 @@ class TestGraphQLQueries:
             "calendarId": calendar.id,
             "startDatetime": "2025-09-02T08:00:00Z",
             "endDatetime": "2025-09-02T18:00:00Z",
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = graphql_client.post(
+                "/graphql/",
+                data=json.dumps({"query": query, "variables": variables}),
+                content_type="application/json",
+            )
+
+        assert_response_status_code(response, 200)
+
+        response_data = response.json()
+        assert "errors" in response_data
+        # Should contain the service error
+
+    def test_unavailable_windows_query_success(self, mock_rate_limiter, graphql_client, calendar):
+        """Test successful unavailable windows GraphQL query."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        from di_core.containers import container
+
+        # Create mock calendar service
+        mock_calendar_service = Mock()
+        mock_window = UnavailableTimeWindow(
+            start_time=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 9, 2, 13, 0, tzinfo=datetime.UTC),
+            reason="blocked_time",
+            id=1,
+            data=BlockedTimeData(
+                id=1,
+                calendar_external_id="ext-cal",
+                start_time=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+                end_time=datetime.datetime(2025, 9, 2, 13, 0, tzinfo=datetime.UTC),
+                reason="maintenance",
+                external_id=None,
+                meta={},
+            ),
+        )
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.get_unavailable_time_windows_in_range.return_value = [mock_window]
+
+        query = """
+            query GetUnavailableWindows($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+                unavailableWindows(
+                    calendarId: $calendarId,
+                    startDatetime: $startDatetime,
+                    endDatetime: $endDatetime
+                ) {
+                    startTime
+                    endTime
+                    id
+                    reason
+                }
+            }
+        """
+
+        variables = {
+            "calendarId": calendar.id,
+            "startDatetime": "2025-09-02T00:00:00Z",
+            "endDatetime": "2025-09-02T23:59:59Z",
+        }
+
+        # Execute GraphQL query with container override
+        with container.calendar_service.override(mock_calendar_service):
+            response = graphql_client.post(
+                "/graphql/",
+                data=json.dumps({"query": query, "variables": variables}),
+                content_type="application/json",
+            )
+
+        data = assert_graphql_success(response)
+        assert "unavailableWindows" in data
+
+        windows = data["unavailableWindows"]
+        assert len(windows) == 1
+
+        window = windows[0]
+        assert window["startTime"] == "2025-09-02T12:00:00+00:00"
+        assert window["endTime"] == "2025-09-02T13:00:00+00:00"
+        assert window["id"] == 1
+        assert window["reason"] == "blocked_time"
+
+        mock_calendar_service.initialize_without_provider.assert_called_once()
+        mock_calendar_service.get_unavailable_time_windows_in_range.assert_called_once()
+
+    def test_unavailable_windows_query_empty_result(
+        self, mock_rate_limiter, graphql_client, calendar
+    ):
+        """Test unavailable windows query with empty result."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.get_unavailable_time_windows_in_range.return_value = []
+
+        query = """
+            query GetUnavailableWindows($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+                unavailableWindows(
+                    calendarId: $calendarId,
+                    startDatetime: $startDatetime,
+                    endDatetime: $endDatetime
+                ) {
+                    startTime
+                    endTime
+                    id
+                    reason
+                }
+            }
+        """
+
+        variables = {
+            "calendarId": calendar.id,
+            "startDatetime": "2025-09-02T00:00:00Z",
+            "endDatetime": "2025-09-02T23:59:59Z",
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = graphql_client.post(
+                "/graphql/",
+                data=json.dumps({"query": query, "variables": variables}),
+                content_type="application/json",
+            )
+
+        data = assert_graphql_success(response)
+        assert "unavailableWindows" in data
+        assert data["unavailableWindows"] == []
+
+    def test_unavailable_windows_service_error(self, mock_rate_limiter, graphql_client, calendar):
+        """Test unavailable windows query when service raises an error."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.get_unavailable_time_windows_in_range.side_effect = Exception(
+            "Service error"
+        )
+
+        query = """
+            query GetUnavailableWindows($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+                unavailableWindows(
+                    calendarId: $calendarId,
+                    startDatetime: $startDatetime,
+                    endDatetime: $endDatetime
+                ) {
+                    startTime
+                    endTime
+                    id
+                    reason
+                }
+            }
+        """
+
+        variables = {
+            "calendarId": calendar.id,
+            "startDatetime": "2025-09-02T00:00:00Z",
+            "endDatetime": "2025-09-02T23:59:59Z",
         }
 
         with container.calendar_service.override(mock_calendar_service):

@@ -10,6 +10,7 @@ from calendar_integration.graphql import (
     BlockedTimeGraphQLType,
     CalendarEventGraphQLType,
     CalendarGraphQLType,
+    UnavailableTimeWindowGraphQLType,
 )
 from calendar_integration.models import Calendar
 from public_api.permissions import (
@@ -195,4 +196,43 @@ class Query:
                 can_book_partially=window.can_book_partially,
             )
             for window in availability_windows
+        ]
+
+    @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def unavailable_windows(
+        self,
+        info: strawberry.Info,
+        calendar_id: int,
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> list[UnavailableTimeWindowGraphQLType]:
+        """Get unavailable (blocked or event) windows for a calendar within a date range."""
+        from di_core.containers import container
+
+        if not container:
+            raise ValueError("DI container is not yet initialized")
+
+        # Get the calendar service from the DI container
+        calendar_service = container.calendar_service()
+
+        # Get the user's organization from the GraphQL context
+        organization = info.context.request.public_api_organization
+        if not organization:
+            raise ValueError("Organization not found in request context")
+
+        # Initialize the calendar service
+        calendar_service.initialize_without_provider(organization)
+
+        # Get the calendar
+        calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
+
+        unavailable_windows = calendar_service.get_unavailable_time_windows_in_range(
+            calendar=calendar, start_datetime=start_datetime, end_datetime=end_datetime
+        )
+
+        return [
+            UnavailableTimeWindowGraphQLType(
+                start_time=w.start_time, end_time=w.end_time, id=w.id, reason=w.reason
+            )
+            for w in unavailable_windows
         ]

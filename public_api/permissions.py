@@ -32,6 +32,7 @@ class OrganizationResourceAccess(BasePermission):
         "blockedTimes": PublicAPIResources.BLOCKED_TIME,
         "availableTimes": PublicAPIResources.AVAILABLE_TIME,
         "availabilityWindows": PublicAPIResources.AVAILABILITY_WINDOWS,
+        "unavailableWindows": PublicAPIResources.UNAVAILABLE_WINDOWS,
         "users": PublicAPIResources.USER,
     }
 

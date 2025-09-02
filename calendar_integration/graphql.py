@@ -237,3 +237,19 @@ class AvailableTimeWindowGraphQLType:
     end_time: datetime.datetime
     id: int | None  # noqa: A003
     can_book_partially: bool
+
+
+@strawberry.type
+class UnavailableTimeWindowGraphQLType:
+    """Minimal GraphQL representation for unavailable time windows.
+
+    The full unavailable window carries either a CalendarEventData or
+    BlockedTimeData payload. For the public API we expose the time range,
+    id and reason so clients can identify and fetch details separately if
+    required.
+    """
+
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    id: int  # noqa: A003
+    reason: str
