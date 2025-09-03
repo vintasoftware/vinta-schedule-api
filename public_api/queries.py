@@ -55,6 +55,8 @@ class Query:
         self,
         info: strawberry.Info,
         calendar_id: int | None = None,
+        user_id: int | None = None,
+        calendar_type: str | None = None,
         offset: int = 0,
         limit: int = 100,
     ) -> list[CalendarGraphQLType]:
@@ -72,6 +74,15 @@ class Query:
         queryset = Calendar.objects.filter_by_organization(organization.id)
         if calendar_id is not None:
             queryset = queryset.filter(id=calendar_id)
+
+        # Optional filter by owner user (via CalendarOwnership)
+        if user_id is not None:
+            # related_name on CalendarOwnership is `ownerships`
+            queryset = queryset.filter(ownerships__user_id=user_id)
+
+        # Optional filter by calendar type
+        if calendar_type is not None:
+            queryset = queryset.filter(calendar_type=calendar_type)
 
         # Apply ordering first, then pagination
         queryset = queryset.order_by("pk")[offset : offset + limit]

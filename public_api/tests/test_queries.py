@@ -996,6 +996,115 @@ class TestGraphQLQueries:
         # Should return both calendars
         assert len(response_data["data"]["calendars"]) == 2
 
+    def test_calendars_query_with_user_filter(self, mock_rate_limiter, graphql_client, calendar):
+        """Test calendars query filtered by owner user via CalendarOwnership."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create a user and make them owner of the calendar
+        user_model = get_user_model()
+        owner = baker.make(user_model, email="owner@example.com")
+        baker.make(
+            "calendar_integration.CalendarOwnership",
+            calendar=calendar,
+            user=owner,
+            is_default=True,
+            organization=calendar.organization,
+        )
+
+        # Create another calendar owned by a different user
+        other_calendar = baker.make(
+            Calendar,
+            organization=calendar.organization,
+            name="Other Calendar",
+            email="other@example.com",
+            external_id="other-cal-1",
+            provider="internal",
+        )
+        other_owner = baker.make(user_model, email="other_owner@example.com")
+        baker.make(
+            "calendar_integration.CalendarOwnership",
+            calendar=other_calendar,
+            user=other_owner,
+            organization=calendar.organization,
+        )
+
+        query = """
+            query GetCalendars($userId: Int) {
+                calendars(userId: $userId) {
+                    id
+                    name
+                    email
+                }
+            }
+        """
+
+        variables = {"userId": owner.id}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "calendars" in data
+
+        calendars = data["calendars"]
+        assert len(calendars) == 1
+        assert calendars[0]["email"] == "calendar@test.com"
+
+    def test_calendars_query_with_calendar_type_filter(
+        self, mock_rate_limiter, graphql_client, calendar
+    ):
+        """Test calendars query filtered by calendar_type."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create resource and virtual calendars
+        baker.make(
+            Calendar,
+            organization=calendar.organization,
+            name="Resource Calendar",
+            email="resource@example.com",
+            calendar_type="resource",
+            external_id="res-cal-1",
+            provider="internal",
+        )
+
+        baker.make(
+            Calendar,
+            organization=calendar.organization,
+            name="Virtual Calendar",
+            email="virtual@example.com",
+            calendar_type="virtual",
+            external_id="virt-cal-1",
+            provider="internal",
+        )
+
+        query = """
+            query GetCalendars($calendarType: String) {
+                calendars(calendarType: $calendarType) {
+                    id
+                    name
+                    calendarType
+                }
+            }
+        """
+
+        variables = {"calendarType": "resource"}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "calendars" in data
+
+        calendars = data["calendars"]
+        # Should only return resource calendars
+        assert all(c["calendarType"] == "resource" for c in calendars)
+
     def test_calendar_events_query_with_id_filter(
         self, mock_rate_limiter, graphql_client, calendar
     ):
