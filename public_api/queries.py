@@ -2,6 +2,9 @@ import datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, cast
 
+from django.db.models import Value
+from django.db.models.functions import Concat
+
 import strawberry
 import strawberry_django
 from dependency_injector.wiring import Provide, inject
@@ -221,7 +224,13 @@ class Query:
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def users(
-        self, info: strawberry.Info, user_id: int | None = None, offset: int = 0, limit: int = 100
+        self,
+        info: strawberry.Info,
+        user_id: int | None = None,
+        name: str | None = None,
+        email: str | None = None,
+        offset: int = 0,
+        limit: int = 100,
     ) -> list[UserGraphQLType]:
         """Get users filtered by user's organization."""
         organization = info.context.request.public_api_organization
@@ -237,6 +246,16 @@ class Query:
         queryset = User.objects.filter(organization_membership__organization=organization)
         if user_id is not None:
             queryset = queryset.filter(id=user_id)
+
+        # Filter by concatenated profile first + last name (case-insensitive contains)
+        if name is not None:
+            queryset = queryset.annotate(
+                full_name=Concat("profile__first_name", Value(" "), "profile__last_name")
+            ).filter(full_name__icontains=name)
+
+        # Filter by email (case-insensitive contains)
+        if email is not None:
+            queryset = queryset.filter(email__icontains=email)
 
         # Apply ordering first, then pagination
         queryset = queryset.order_by("pk")[offset : offset + limit]

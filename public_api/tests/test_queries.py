@@ -623,6 +623,88 @@ class TestGraphQLQueries:
         assert test_user is not None
         assert test_user["email"] == "test@example.com"
 
+    def test_users_query_name_filter(self, mock_rate_limiter, graphql_client, organization):
+        """Test users query filtering by concatenated profile name."""
+        mock_rate_limiter.return_value = iter([None])
+
+        user_model = get_user_model()
+        # Create user with profile first and last name
+        user = baker.make(user_model, email="alice@example.com", username="alice1")
+        baker.make(OrganizationMembership, user=user, organization=organization)
+        # Create profile for the user with given names
+        baker.make(
+            "users.Profile",
+            user=user,
+            first_name="Alice",
+            last_name="Smith",
+        )
+
+        # Create another user that should not match
+        other = baker.make(user_model, email="bob@example.com", username="bob1")
+        baker.make(OrganizationMembership, user=other, organization=organization)
+        baker.make(
+            "users.Profile",
+            user=other,
+            first_name="Bob",
+            last_name="Jones",
+        )
+
+        query = """
+            query GetUsers($name: String) {
+                users(name: $name) {
+                    id
+                    email
+                }
+            }
+        """
+
+        variables = {"name": "Alice Smith"}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "users" in data
+        users = data["users"]
+        assert len(users) == 1
+        assert users[0]["email"] == "alice@example.com"
+
+    def test_users_query_email_filter(self, mock_rate_limiter, graphql_client, organization):
+        """Test users query filtering by email substring."""
+        mock_rate_limiter.return_value = iter([None])
+
+        user_model = get_user_model()
+        user = baker.make(user_model, email="carol@example.com", username="carol1")
+        baker.make(OrganizationMembership, user=user, organization=organization)
+
+        baker.make(user_model, email="dave@other.com", username="dave1")
+
+        query = """
+            query GetUsers($email: String) {
+                users(email: $email) {
+                    id
+                    email
+                }
+            }
+        """
+
+        variables = {"email": "@example.com"}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "users" in data
+        users = data["users"]
+        # Should only include users with @example.com
+        assert all("@example.com" in u["email"] for u in users)
+
     def test_invalid_graphql_query(self, mock_rate_limiter, graphql_client):
         """Test GraphQL query with syntax errors."""
         # Mock rate limiter to allow requests
