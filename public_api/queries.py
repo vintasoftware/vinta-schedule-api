@@ -1,8 +1,10 @@
 import datetime
-from typing import cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Annotated, cast
 
 import strawberry
 import strawberry_django
+from dependency_injector.wiring import Provide, inject
 
 from calendar_integration.graphql import (
     AvailableTimeGraphQLType,
@@ -19,6 +21,30 @@ from public_api.permissions import (
 )
 from users.graphql import UserGraphQLType
 from users.models import User
+
+
+if TYPE_CHECKING:
+    from calendar_integration.services.calendar_service import CalendarService
+
+
+@dataclass
+class QueryDependencies:
+    calendar_service: "CalendarService"
+
+
+@inject
+def get_query_dependencies(
+    calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+) -> QueryDependencies:
+    required_dependencies = [calendar_service]
+    if any(dep is None for dep in required_dependencies):
+        raise ValueError(
+            f"Missing required dependency {', '.join([str(dep) for dep in required_dependencies if dep is None])}"
+        )
+
+    return QueryDependencies(
+        calendar_service=cast("CalendarService", calendar_service),
+    )
 
 
 @strawberry.type
@@ -40,27 +66,21 @@ class Query:
         end_datetime: datetime.datetime,
     ) -> list[CalendarEventGraphQLType]:
         """Get calendar events filtered by user's organization."""
-        from di_core.containers import container
-
-        if not container:
-            raise ValueError("DI container is not yet initialized")
-
-        # Get the calendar service from the DI container
-        calendar_service = container.calendar_service()
-
         # Get the user's organization from the GraphQL context
         organization = info.context.request.public_api_organization
         if not organization:
             raise ValueError("Organization not found in request context")
 
+        deps = get_query_dependencies()
+
         # Initialize the calendar service
-        calendar_service.initialize_without_provider(organization)
+        deps.calendar_service.initialize_without_provider(organization)
 
         calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
 
         return cast(
             list[CalendarEventGraphQLType],
-            calendar_service.get_calendar_events_expanded(
+            deps.calendar_service.get_calendar_events_expanded(
                 calendar,
                 start_datetime,
                 end_datetime,
@@ -76,27 +96,21 @@ class Query:
         end_datetime: datetime.datetime,
     ) -> list[BlockedTimeGraphQLType]:
         """Get blocked times filtered by user's organization."""
-        from di_core.containers import container
-
-        if not container:
-            raise ValueError("DI container is not yet initialized")
-
-        # Get the calendar service from the DI container
-        calendar_service = container.calendar_service()
-
         # Get the user's organization from the GraphQL context
         organization = info.context.request.public_api_organization
         if not organization:
             raise ValueError("Organization not found in request context")
 
+        deps = get_query_dependencies()
+
         # Initialize the calendar service
-        calendar_service.initialize_without_provider(organization)
+        deps.calendar_service.initialize_without_provider(organization)
 
         calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
 
         return cast(
             list[BlockedTimeGraphQLType],
-            calendar_service.get_blocked_times_expanded(
+            deps.calendar_service.get_blocked_times_expanded(
                 calendar,
                 start_datetime,
                 end_datetime,
@@ -112,27 +126,21 @@ class Query:
         end_datetime: datetime.datetime,
     ) -> list[AvailableTimeGraphQLType]:
         """Get available times filtered by user's organization."""
-        from di_core.containers import container
-
-        if not container:
-            raise ValueError("DI container is not yet initialized")
-
-        # Get the calendar service from the DI container
-        calendar_service = container.calendar_service()
-
         # Get the user's organization from the GraphQL context
         organization = info.context.request.public_api_organization
         if not organization:
             raise ValueError("Organization not found in request context")
 
+        deps = get_query_dependencies()
+
         # Initialize the calendar service
-        calendar_service.initialize_without_provider(organization)
+        deps.calendar_service.initialize_without_provider(organization)
 
         calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
 
         return cast(
             list[AvailableTimeGraphQLType],
-            calendar_service.get_available_times_expanded(
+            deps.calendar_service.get_available_times_expanded(
                 calendar,
                 start_datetime,
                 end_datetime,
@@ -161,27 +169,21 @@ class Query:
         end_datetime: datetime.datetime,
     ) -> list[AvailableTimeWindowGraphQLType]:
         """Get availability windows for a calendar within a date range."""
-        from di_core.containers import container
-
-        if not container:
-            raise ValueError("DI container is not yet initialized")
-
-        # Get the calendar service from the DI container
-        calendar_service = container.calendar_service()
-
         # Get the user's organization from the GraphQL context
         organization = info.context.request.public_api_organization
         if not organization:
             raise ValueError("Organization not found in request context")
 
+        deps = get_query_dependencies()
+
         # Initialize the calendar service
-        calendar_service.initialize_without_provider(organization)
+        deps.calendar_service.initialize_without_provider(organization)
 
         # Get the calendar
         calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
 
         # Get the availability windows
-        availability_windows = calendar_service.get_availability_windows_in_range(
+        availability_windows = deps.calendar_service.get_availability_windows_in_range(
             calendar=calendar,
             start_datetime=start_datetime,
             end_datetime=end_datetime,
@@ -207,26 +209,20 @@ class Query:
         end_datetime: datetime.datetime,
     ) -> list[UnavailableTimeWindowGraphQLType]:
         """Get unavailable (blocked or event) windows for a calendar within a date range."""
-        from di_core.containers import container
-
-        if not container:
-            raise ValueError("DI container is not yet initialized")
-
-        # Get the calendar service from the DI container
-        calendar_service = container.calendar_service()
-
         # Get the user's organization from the GraphQL context
         organization = info.context.request.public_api_organization
         if not organization:
             raise ValueError("Organization not found in request context")
 
+        deps = get_query_dependencies()
+
         # Initialize the calendar service
-        calendar_service.initialize_without_provider(organization)
+        deps.calendar_service.initialize_without_provider(organization)
 
         # Get the calendar
         calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
 
-        unavailable_windows = calendar_service.get_unavailable_time_windows_in_range(
+        unavailable_windows = deps.calendar_service.get_unavailable_time_windows_in_range(
             calendar=calendar, start_datetime=start_datetime, end_datetime=end_datetime
         )
 
