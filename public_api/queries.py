@@ -52,18 +52,31 @@ def get_query_dependencies(
 class Query:
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def calendars(
-        self, info: strawberry.Info, calendar_id: int | None = None
+        self,
+        info: strawberry.Info,
+        calendar_id: int | None = None,
+        offset: int = 0,
+        limit: int = 100,
     ) -> list[CalendarGraphQLType]:
         """Get calendars filtered by user's organization."""
         organization = info.context.request.public_api_organization
         if not organization:
             raise GraphQLError("Organization not found in request context")
 
+        # Validate pagination parameters
+        if offset < 0:
+            raise GraphQLError("Offset must be non-negative")
+        if limit <= 0 or limit > 100:
+            raise GraphQLError("Limit must be between 1 and 100")
+
         queryset = Calendar.objects.filter_by_organization(organization.id)
         if calendar_id is not None:
             queryset = queryset.filter(id=calendar_id)
 
-        return queryset
+        # Apply ordering first, then pagination
+        queryset = queryset.order_by("pk")[offset : offset + limit]
+
+        return list(queryset)
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def calendar_events(
@@ -196,15 +209,26 @@ class Query:
         )
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def users(self, info: strawberry.Info, user_id: int | None = None) -> list[UserGraphQLType]:
+    def users(
+        self, info: strawberry.Info, user_id: int | None = None, offset: int = 0, limit: int = 100
+    ) -> list[UserGraphQLType]:
         """Get users filtered by user's organization."""
         organization = info.context.request.public_api_organization
         if not organization:
             raise GraphQLError("Organization not found in request context")
 
+        # Validate pagination parameters
+        if offset < 0:
+            raise GraphQLError("Offset must be non-negative")
+        if limit <= 0 or limit > 100:
+            raise GraphQLError("Limit must be between 1 and 100")
+
         queryset = User.objects.filter(organization_membership__organization=organization)
         if user_id is not None:
             queryset = queryset.filter(id=user_id)
+
+        # Apply ordering first, then pagination
+        queryset = queryset.order_by("pk")[offset : offset + limit]
 
         # Return a concrete list and cast to the declared GraphQL return type so
         # mypy recognizes the return value matches the annotation.

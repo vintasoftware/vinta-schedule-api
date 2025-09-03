@@ -956,8 +956,8 @@ class TestGraphQLQueries:
         )
 
         query = """
-            query GetCalendars($calendarId: Int) {
-                calendars(calendarId: $calendarId) {
+            query GetCalendars($calendarId: Int, $offset: Int, $limit: Int) {
+                calendars(calendarId: $calendarId, offset: $offset, limit: $limit) {
                     id
                     name
                     email
@@ -966,7 +966,7 @@ class TestGraphQLQueries:
         """
 
         # Test filtering by ID
-        variables = {"calendarId": calendar.id}
+        variables = {"calendarId": calendar.id, "offset": 0, "limit": 100}
 
         response = graphql_client.post(
             "/graphql/",
@@ -1271,8 +1271,8 @@ class TestGraphQLQueries:
         )
 
         query = """
-            query GetUsers($userId: Int) {
-                users(userId: $userId) {
+            query GetUsers($userId: Int, $offset: Int, $limit: Int) {
+                users(userId: $userId, offset: $offset, limit: $limit) {
                     id
                     email
                     username
@@ -1280,7 +1280,7 @@ class TestGraphQLQueries:
             }
         """
 
-        variables = {"userId": user.id}
+        variables = {"userId": user.id, "offset": 0, "limit": 100}
 
         response = graphql_client.post(
             "/graphql/",
@@ -1302,15 +1302,15 @@ class TestGraphQLQueries:
         mock_rate_limiter.return_value = iter([None])
 
         query = """
-            query GetCalendars($calendarId: Int) {
-                calendars(calendarId: $calendarId) {
+            query GetCalendars($calendarId: Int, $offset: Int, $limit: Int) {
+                calendars(calendarId: $calendarId, offset: $offset, limit: $limit) {
                     id
                     name
                 }
             }
         """
 
-        variables = {"calendarId": 99999}  # Nonexistent ID
+        variables = {"calendarId": 99999, "offset": 0, "limit": 100}  # Nonexistent ID
 
         response = graphql_client.post(
             "/graphql/",
@@ -1329,15 +1329,15 @@ class TestGraphQLQueries:
         mock_rate_limiter.return_value = iter([None])
 
         query = """
-            query GetUsers($userId: Int) {
-                users(userId: $userId) {
+            query GetUsers($userId: Int, $offset: Int, $limit: Int) {
+                users(userId: $userId, offset: $offset, limit: $limit) {
                     id
                     email
                 }
             }
         """
 
-        variables = {"userId": 99999}  # Nonexistent ID
+        variables = {"userId": 99999, "offset": 0, "limit": 100}  # Nonexistent ID
 
         response = graphql_client.post(
             "/graphql/",
@@ -1349,3 +1349,295 @@ class TestGraphQLQueries:
         assert "users" in data
         users = data["users"]
         assert len(users) == 0  # Should return empty list
+
+    def test_calendars_pagination_default(self, mock_rate_limiter, graphql_client, organization):
+        """Test calendars query with default pagination."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create multiple calendars
+        calendars = []
+        for i in range(5):
+            calendar = baker.make(
+                Calendar,
+                organization=organization,
+                name=f"Calendar {i}",
+                email=f"calendar{i}@test.com",
+                external_id=f"external-id-{i}",
+            )
+            calendars.append(calendar)
+
+        query = """
+            query GetCalendars {
+                calendars {
+                    id
+                    name
+                    email
+                }
+            }
+        """
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "calendars" in data
+        result_calendars = data["calendars"]
+
+        # Should return all calendars (within the limit of 100)
+        assert len(result_calendars) == 5
+
+    def test_calendars_pagination_with_offset_and_limit(
+        self, mock_rate_limiter, graphql_client, organization
+    ):
+        """Test calendars query with custom offset and limit."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create multiple calendars
+        calendars = []
+        for i in range(10):
+            calendar = baker.make(
+                Calendar,
+                organization=organization,
+                name=f"Calendar {i}",
+                email=f"calendar{i}@test.com",
+                external_id=f"external-id-{i}",
+            )
+            calendars.append(calendar)
+
+        query = """
+            query GetCalendars($offset: Int, $limit: Int) {
+                calendars(offset: $offset, limit: $limit) {
+                    id
+                    name
+                    email
+                }
+            }
+        """
+
+        variables = {"offset": 2, "limit": 3}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "calendars" in data
+        result_calendars = data["calendars"]
+
+        # Should return 3 calendars starting from offset 2
+        assert len(result_calendars) == 3
+
+    def test_calendars_pagination_invalid_offset(self, mock_rate_limiter, graphql_client):
+        """Test calendars query with invalid negative offset."""
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query GetCalendars($offset: Int) {
+                calendars(offset: $offset) {
+                    id
+                    name
+                }
+            }
+        """
+
+        variables = {"offset": -1}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+        assert "Offset must be non-negative" in str(response_data["errors"])
+
+    def test_calendars_pagination_invalid_limit(self, mock_rate_limiter, graphql_client):
+        """Test calendars query with invalid limit."""
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query GetCalendars($limit: Int) {
+                calendars(limit: $limit) {
+                    id
+                    name
+                }
+            }
+        """
+
+        # Test with limit > 100
+        variables = {"limit": 101}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+        assert "Limit must be between 1 and 100" in str(response_data["errors"])
+
+        # Test with limit <= 0
+        variables = {"limit": 0}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+        assert "Limit must be between 1 and 100" in str(response_data["errors"])
+
+    def test_users_pagination_default(self, mock_rate_limiter, graphql_client, organization):
+        """Test users query with default pagination."""
+        mock_rate_limiter.return_value = iter([None])
+
+        user_model = get_user_model()
+        users = []
+
+        # Create multiple users
+        for i in range(5):
+            user = baker.make(user_model, email=f"user{i}@test.com", username=f"user{i}")
+            baker.make(OrganizationMembership, user=user, organization=organization)
+            users.append(user)
+
+        query = """
+            query GetUsers {
+                users {
+                    id
+                    email
+                    username
+                }
+            }
+        """
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "users" in data
+        result_users = data["users"]
+
+        # Should return all users (within the limit of 100)
+        assert len(result_users) == 5
+
+    def test_users_pagination_with_offset_and_limit(
+        self, mock_rate_limiter, graphql_client, organization
+    ):
+        """Test users query with custom offset and limit."""
+        mock_rate_limiter.return_value = iter([None])
+
+        user_model = get_user_model()
+        users = []
+
+        # Create multiple users
+        for i in range(10):
+            user = baker.make(user_model, email=f"user{i}@test.com", username=f"user{i}")
+            baker.make(OrganizationMembership, user=user, organization=organization)
+            users.append(user)
+
+        query = """
+            query GetUsers($offset: Int, $limit: Int) {
+                users(offset: $offset, limit: $limit) {
+                    id
+                    email
+                    username
+                }
+            }
+        """
+
+        variables = {"offset": 2, "limit": 3}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "users" in data
+        result_users = data["users"]
+
+        # Should return 3 users starting from offset 2
+        assert len(result_users) == 3
+
+    def test_users_pagination_invalid_offset(self, mock_rate_limiter, graphql_client):
+        """Test users query with invalid negative offset."""
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query GetUsers($offset: Int) {
+                users(offset: $offset) {
+                    id
+                    email
+                }
+            }
+        """
+
+        variables = {"offset": -1}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+        assert "Offset must be non-negative" in str(response_data["errors"])
+
+    def test_users_pagination_invalid_limit(self, mock_rate_limiter, graphql_client):
+        """Test users query with invalid limit."""
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query GetUsers($limit: Int) {
+                users(limit: $limit) {
+                    id
+                    email
+                }
+            }
+        """
+
+        # Test with limit > 100
+        variables = {"limit": 101}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+        assert "Limit must be between 1 and 100" in str(response_data["errors"])
+
+        # Test with limit <= 0
+        variables = {"limit": 0}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+        assert "Limit must be between 1 and 100" in str(response_data["errors"])
