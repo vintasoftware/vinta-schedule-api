@@ -15,7 +15,7 @@ from calendar_integration.graphql import (
     CalendarGraphQLType,
     UnavailableTimeWindowGraphQLType,
 )
-from calendar_integration.models import Calendar
+from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarEvent
 from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
@@ -51,20 +51,28 @@ def get_query_dependencies(
 @strawberry.type
 class Query:
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def calendars(self, info: strawberry.Info) -> list[CalendarGraphQLType]:
+    def calendars(
+        self, info: strawberry.Info, calendar_id: int | None = None
+    ) -> list[CalendarGraphQLType]:
         """Get calendars filtered by user's organization."""
         organization = info.context.request.public_api_organization
         if not organization:
             raise GraphQLError("Organization not found in request context")
-        return Calendar.objects.filter_by_organization(organization.id)
+
+        queryset = Calendar.objects.filter_by_organization(organization.id)
+        if calendar_id is not None:
+            queryset = queryset.filter(id=calendar_id)
+
+        return queryset
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def calendar_events(
         self,
         info: strawberry.Info,
-        calendar_id: int,
-        start_datetime: datetime.datetime,
-        end_datetime: datetime.datetime,
+        calendar_id: int | None = None,
+        start_datetime: datetime.datetime | None = None,
+        end_datetime: datetime.datetime | None = None,
+        event_id: int | None = None,
     ) -> list[CalendarEventGraphQLType]:
         """Get calendar events filtered by user's organization."""
         # Get the user's organization from the GraphQL context
@@ -72,6 +80,15 @@ class Query:
         if not organization:
             raise GraphQLError("Organization not found in request context")
 
+        if event_id is not None:
+            return CalendarEvent.objects.filter_by_organization(organization.id).filter(id=event_id)
+
+        if not calendar_id or not start_datetime or not end_datetime:
+            raise GraphQLError(
+                "Missing required parameters. If not filtered by id, querying events require "
+                "calendarId, startDatetime, and endDatetime. "
+            )
+
         deps = get_query_dependencies()
 
         # Initialize the calendar service
@@ -79,22 +96,25 @@ class Query:
 
         calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
 
+        events = deps.calendar_service.get_calendar_events_expanded(
+            calendar,
+            start_datetime,
+            end_datetime,
+        )
+
         return cast(
             list[CalendarEventGraphQLType],
-            deps.calendar_service.get_calendar_events_expanded(
-                calendar,
-                start_datetime,
-                end_datetime,
-            ),
+            events,
         )
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def blocked_times(
         self,
         info: strawberry.Info,
-        calendar_id: int,
-        start_datetime: datetime.datetime,
-        end_datetime: datetime.datetime,
+        calendar_id: int | None = None,
+        start_datetime: datetime.datetime | None = None,
+        end_datetime: datetime.datetime | None = None,
+        blocked_time_id: int | None = None,
     ) -> list[BlockedTimeGraphQLType]:
         """Get blocked times filtered by user's organization."""
         # Get the user's organization from the GraphQL context
@@ -102,6 +122,17 @@ class Query:
         if not organization:
             raise GraphQLError("Organization not found in request context")
 
+        if blocked_time_id is not None:
+            return BlockedTime.objects.filter_by_organization(organization.id).filter(
+                id=blocked_time_id
+            )
+
+        if not calendar_id or not start_datetime or not end_datetime:
+            raise GraphQLError(
+                "Missing required parameters. If not filtered by id, querying blocked times "
+                "require calendarId, startDatetime, and endDatetime. "
+            )
+
         deps = get_query_dependencies()
 
         # Initialize the calendar service
@@ -109,22 +140,25 @@ class Query:
 
         calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
 
+        blocked_times = deps.calendar_service.get_blocked_times_expanded(
+            calendar,
+            start_datetime,
+            end_datetime,
+        )
+
         return cast(
             list[BlockedTimeGraphQLType],
-            deps.calendar_service.get_blocked_times_expanded(
-                calendar,
-                start_datetime,
-                end_datetime,
-            ),
+            blocked_times,
         )
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def available_times(
         self,
         info: strawberry.Info,
-        calendar_id: int,
-        start_datetime: datetime.datetime,
-        end_datetime: datetime.datetime,
+        calendar_id: int | None = None,
+        start_datetime: datetime.datetime | None = None,
+        end_datetime: datetime.datetime | None = None,
+        available_time_id: int | None = None,
     ) -> list[AvailableTimeGraphQLType]:
         """Get available times filtered by user's organization."""
         # Get the user's organization from the GraphQL context
@@ -132,6 +166,17 @@ class Query:
         if not organization:
             raise GraphQLError("Organization not found in request context")
 
+        if available_time_id is not None:
+            return AvailableTime.objects.filter_by_organization(organization.id).filter(
+                id=available_time_id
+            )
+
+        if not calendar_id or not start_datetime or not end_datetime:
+            raise GraphQLError(
+                "Missing required parameters. If not filtered by id, querying available times "
+                "require calendarId, startDatetime, and endDatetime. "
+            )
+
         deps = get_query_dependencies()
 
         # Initialize the calendar service
@@ -139,26 +184,33 @@ class Query:
 
         calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
 
+        available_times = deps.calendar_service.get_available_times_expanded(
+            calendar,
+            start_datetime,
+            end_datetime,
+        )
+
         return cast(
             list[AvailableTimeGraphQLType],
-            deps.calendar_service.get_available_times_expanded(
-                calendar,
-                start_datetime,
-                end_datetime,
-            ),
+            available_times,
         )
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def users(self, info: strawberry.Info) -> list[UserGraphQLType]:
+    def users(self, info: strawberry.Info, user_id: int | None = None) -> list[UserGraphQLType]:
         """Get users filtered by user's organization."""
         organization = info.context.request.public_api_organization
         if not organization:
             raise GraphQLError("Organization not found in request context")
+
+        queryset = User.objects.filter(organization_membership__organization=organization)
+        if user_id is not None:
+            queryset = queryset.filter(id=user_id)
+
         # Return a concrete list and cast to the declared GraphQL return type so
         # mypy recognizes the return value matches the annotation.
         return cast(
             list[UserGraphQLType],
-            list(User.objects.filter(organization_membership__organization=organization)),
+            list(queryset),
         )
 
     @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])

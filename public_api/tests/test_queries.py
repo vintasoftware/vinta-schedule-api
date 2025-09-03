@@ -940,3 +940,412 @@ class TestGraphQLQueries:
         response_data = response.json()
         assert "errors" in response_data
         # Should contain variable validation errors
+
+    def test_calendars_query_with_id_filter(self, mock_rate_limiter, graphql_client, calendar):
+        """Test calendars query with ID filter."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create an additional calendar to ensure filtering works
+        baker.make(
+            Calendar,
+            organization=calendar.organization,
+            name="Other Calendar",
+            email="other@example.com",
+            external_id="other-external-id",
+        )
+
+        query = """
+            query GetCalendars($calendarId: Int) {
+                calendars(calendarId: $calendarId) {
+                    id
+                    name
+                    email
+                }
+            }
+        """
+
+        # Test filtering by ID
+        variables = {"calendarId": calendar.id}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" not in response_data
+        assert len(response_data["data"]["calendars"]) == 1
+        assert response_data["data"]["calendars"][0]["id"] == str(calendar.id)
+        assert response_data["data"]["calendars"][0]["name"] == calendar.name
+
+        # Test without ID filter (should return all calendars)
+        variables = {}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" not in response_data
+        # Should return both calendars
+        assert len(response_data["data"]["calendars"]) == 2
+
+    def test_calendar_events_query_with_id_filter(
+        self, mock_rate_limiter, graphql_client, calendar
+    ):
+        """Test calendar events query with ID filter."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create a calendar event
+        event = baker.make(
+            CalendarEvent,
+            calendar_fk=calendar,
+            organization=calendar.organization,
+            title="Test Event",
+            description="Test Description",
+            start_time=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            external_id="test-event-external-id",
+        )
+
+        # Create another event to ensure filtering works
+        baker.make(
+            CalendarEvent,
+            calendar_fk=calendar,
+            organization=calendar.organization,
+            title="Other Event",
+            external_id="other-event-external-id",
+        )
+
+        query = """
+            query GetCalendarEvents($eventId: Int) {
+                calendarEvents(eventId: $eventId) {
+                    id
+                    title
+                    description
+                    startTime
+                    endTime
+                    isRecurring
+                }
+            }
+        """
+
+        variables = {"eventId": event.id}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "calendarEvents" in data
+
+        events = data["calendarEvents"]
+        assert len(events) == 1
+        assert events[0]["id"] == str(event.id)
+        assert events[0]["title"] == "Test Event"
+
+    def test_calendar_events_query_missing_required_params(self, mock_rate_limiter, graphql_client):
+        """Test calendar events query without required parameters."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query GetCalendarEvents($calendarId: Int, $startDatetime: DateTime, $endDatetime: DateTime) {
+                calendarEvents(
+                    calendarId: $calendarId,
+                    startDatetime: $startDatetime,
+                    endDatetime: $endDatetime
+                ) {
+                    id
+                    title
+                }
+            }
+        """
+
+        # Missing required parameters
+        variables = {"calendarId": 1}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+        assert any(
+            "Missing required parameters" in error.get("message", "")
+            for error in response_data["errors"]
+        )
+
+    def test_blocked_times_query_with_id_filter(self, mock_rate_limiter, graphql_client, calendar):
+        """Test blocked times query with ID filter."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        blocked_time = baker.make(
+            BlockedTime,
+            calendar_fk=calendar,
+            organization=calendar.organization,
+            start_time=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            external_id="test-blocked-time-external-id",
+        )
+
+        # Create another blocked time to ensure filtering works
+        baker.make(
+            BlockedTime,
+            calendar_fk=calendar,
+            organization=calendar.organization,
+            external_id="other-blocked-time-external-id",
+        )
+
+        query = """
+            query GetBlockedTimes($blockedTimeId: Int) {
+                blockedTimes(blockedTimeId: $blockedTimeId) {
+                    id
+                    startTime
+                    endTime
+                }
+            }
+        """
+
+        variables = {"blockedTimeId": blocked_time.id}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "blockedTimes" in data
+
+        blocked_times = data["blockedTimes"]
+        assert len(blocked_times) == 1
+        assert blocked_times[0]["id"] == str(blocked_time.id)
+
+    def test_blocked_times_query_missing_required_params(self, mock_rate_limiter, graphql_client):
+        """Test blocked times query without required parameters."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query GetBlockedTimes($calendarId: Int, $startDatetime: DateTime, $endDatetime: DateTime) {
+                blockedTimes(
+                    calendarId: $calendarId,
+                    startDatetime: $startDatetime,
+                    endDatetime: $endDatetime
+                ) {
+                    id
+                }
+            }
+        """
+
+        # Missing required parameters
+        variables = {"calendarId": 1}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+        # The actual error should be related to missing required parameters
+        assert any(
+            "required" in error.get("message", "").lower() for error in response_data["errors"]
+        )
+
+    def test_available_times_query_with_id_filter(
+        self, mock_rate_limiter, graphql_client, calendar
+    ):
+        """Test available times query with ID filter."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        available_time = baker.make(
+            AvailableTime,
+            calendar_fk=calendar,
+            organization=calendar.organization,
+            start_time=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+        )
+
+        # Create another available time to ensure filtering works
+        baker.make(
+            AvailableTime,
+            calendar_fk=calendar,
+            organization=calendar.organization,
+        )
+
+        query = """
+            query GetAvailableTimes($availableTimeId: Int) {
+                availableTimes(availableTimeId: $availableTimeId) {
+                    id
+                    startTime
+                    endTime
+                }
+            }
+        """
+
+        variables = {"availableTimeId": available_time.id}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "availableTimes" in data
+
+        available_times = data["availableTimes"]
+        assert len(available_times) == 1
+        assert available_times[0]["id"] == str(available_time.id)
+
+    def test_available_times_query_missing_required_params(self, mock_rate_limiter, graphql_client):
+        """Test available times query without required parameters."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query GetAvailableTimes($calendarId: Int, $startDatetime: DateTime, $endDatetime: DateTime) {
+                availableTimes(
+                    calendarId: $calendarId,
+                    startDatetime: $startDatetime,
+                    endDatetime: $endDatetime
+                ) {
+                    id
+                }
+            }
+        """
+
+        # Missing required parameters
+        variables = {"calendarId": 1}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+        # The actual error should be related to missing required parameters
+        assert any(
+            "required" in error.get("message", "").lower() for error in response_data["errors"]
+        )
+
+    def test_users_query_with_id_filter(
+        self, mock_rate_limiter, graphql_client, user_with_organization
+    ):
+        """Test users query with ID filter."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        # user_with_organization is already created by the fixture
+        user = user_with_organization
+        organization = user.organization_membership.organization
+
+        # Create another user in the same organization to ensure filtering works
+        user_model = get_user_model()
+        other_user = baker.make(user_model, email="other@example.com", username="otheruser")
+        baker.make(
+            OrganizationMembership,
+            user=other_user,
+            organization=organization,
+        )
+
+        query = """
+            query GetUsers($userId: Int) {
+                users(userId: $userId) {
+                    id
+                    email
+                    username
+                }
+            }
+        """
+
+        variables = {"userId": user.id}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "users" in data
+
+        users = data["users"]
+        assert len(users) == 1
+        assert users[0]["id"] == str(user.id)
+        assert users[0]["email"] == user.email
+
+    def test_calendars_query_nonexistent_id(self, mock_rate_limiter, graphql_client):
+        """Test calendars query with nonexistent ID."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query GetCalendars($calendarId: Int) {
+                calendars(calendarId: $calendarId) {
+                    id
+                    name
+                }
+            }
+        """
+
+        variables = {"calendarId": 99999}  # Nonexistent ID
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "calendars" in data
+        calendars = data["calendars"]
+        assert len(calendars) == 0  # Should return empty list
+
+    def test_users_query_nonexistent_id(self, mock_rate_limiter, graphql_client):
+        """Test users query with nonexistent ID."""
+        # Mock rate limiter to allow requests
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query GetUsers($userId: Int) {
+                users(userId: $userId) {
+                    id
+                    email
+                }
+            }
+        """
+
+        variables = {"userId": 99999}  # Nonexistent ID
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert "users" in data
+        users = data["users"]
+        assert len(users) == 0  # Should return empty list
