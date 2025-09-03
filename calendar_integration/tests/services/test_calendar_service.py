@@ -6703,3 +6703,546 @@ def test_delete_event_sends_webhook(
     # Check webhook payload
     payload = call_args[1]["payload"]
     assert payload["id"] == event.id
+
+
+@pytest.fixture
+def calendar_owner_user(db):
+    """Create a calendar owner user for testing."""
+    return User.objects.create_user(
+        username="calendar_owner", email="owner@example.com", password="testpass123"
+    )
+
+
+@pytest.fixture
+def calendar_owner_social_account(calendar_owner_user, db):
+    """Create a social account for the calendar owner."""
+    return SocialAccount.objects.create(
+        user=calendar_owner_user, provider=CalendarProvider.GOOGLE, uid="owner123"
+    )
+
+
+@pytest.fixture
+def calendar_owner_social_token(calendar_owner_social_account):
+    """Create a social token for the calendar owner."""
+    return SocialToken.objects.create(
+        account=calendar_owner_social_account,
+        token="owner_access_token",
+        token_secret="owner_refresh_token",
+        expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+    )
+
+
+@pytest.fixture
+def owned_calendar(db, organization, calendar_owner_user):
+    """Create a calendar owned by the calendar owner user."""
+    calendar = Calendar.objects.create(
+        name="Owned Calendar",
+        description="A calendar owned by another user",
+        external_id="owned_cal_123",
+        provider=CalendarProvider.GOOGLE,
+        organization=organization,
+        calendar_type=CalendarType.PERSONAL,
+    )
+    # Create ownership relationship
+    CalendarOwnership.objects.create(
+        organization=organization,
+        calendar=calendar,
+        user=calendar_owner_user,
+        is_default=True,
+    )
+    return calendar
+
+
+@pytest.fixture
+def unrelated_user(db):
+    """Create an unrelated user for testing."""
+    return User.objects.create_user(
+        username="unrelated_user", email="unrelated@example.com", password="testpass123"
+    )
+
+
+@pytest.fixture
+def unrelated_social_account(unrelated_user, db):
+    """Create a social account for the unrelated user."""
+    return SocialAccount.objects.create(
+        user=unrelated_user, provider=CalendarProvider.GOOGLE, uid="unrelated123"
+    )
+
+
+@pytest.fixture
+def unrelated_social_token(unrelated_social_account):
+    """Create a social token for the unrelated user."""
+    return SocialToken.objects.create(
+        account=unrelated_social_account,
+        token="unrelated_access_token",
+        token_secret="unrelated_refresh_token",
+        expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+    )
+
+
+@pytest.mark.django_db
+def test_get_write_adapter_returns_self_adapter_when_user_owns_calendar(
+    calendar_owner_social_account,
+    calendar_owner_social_token,
+    owned_calendar,
+    mock_google_adapter,
+):
+    """Test that _get_write_adapter_for_calendar returns self.calendar_adapter when user owns the calendar."""
+    service = CalendarService()
+    service.authenticate(
+        account=calendar_owner_social_account, organization=owned_calendar.organization
+    )
+
+    write_adapter = service._get_write_adapter_for_calendar(owned_calendar)
+
+    assert write_adapter == service.calendar_adapter
+    assert write_adapter == mock_google_adapter
+
+
+@pytest.mark.django_db
+def test_get_write_adapter_returns_owner_adapter_when_user_doesnt_own_calendar(
+    unrelated_social_account,
+    unrelated_social_token,
+    calendar_owner_social_account,
+    calendar_owner_social_token,
+    owned_calendar,
+    mock_google_adapter,
+):
+    """Test that _get_write_adapter_for_calendar returns owner's adapter when user doesn't own the calendar."""
+    service = CalendarService()
+    # Mock the authentication to avoid Google credentials issue
+    service.account = unrelated_social_account
+    service.organization = owned_calendar.organization
+    service.calendar_adapter = mock_google_adapter
+
+    with patch.object(CalendarService, "get_calendar_adapter_for_account") as mock_get_adapter:
+        mock_owner_adapter = Mock()
+        mock_owner_adapter.provider = CalendarProvider.GOOGLE
+        del mock_owner_adapter.resolve_expression
+        del mock_owner_adapter.get_source_expressions
+        mock_get_adapter.return_value = mock_owner_adapter
+
+        write_adapter = service._get_write_adapter_for_calendar(owned_calendar)
+
+        assert write_adapter == mock_owner_adapter
+        mock_get_adapter.assert_called_once_with(calendar_owner_social_account)
+
+
+@pytest.mark.django_db
+def test_get_write_adapter_prefers_default_owner(
+    unrelated_social_account,
+    unrelated_social_token,
+    calendar_owner_social_account,
+    calendar_owner_social_token,
+    owned_calendar,
+    calendar_owner_user,
+    mock_google_adapter,
+    db,
+):
+    """Test that _get_write_adapter_for_calendar prefers owners with is_default=True."""
+    # Create another user who also owns the calendar but is not default
+    other_owner = User.objects.create_user(
+        username="other_owner", email="other@example.com", password="testpass123"
+    )
+    other_social_account = SocialAccount.objects.create(
+        user=other_owner, provider=CalendarProvider.GOOGLE, uid="other123"
+    )
+    SocialToken.objects.create(
+        account=other_social_account,
+        token="other_access_token",
+        token_secret="other_refresh_token",
+        expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+    )
+
+    # Create ownership for the other user (not default)
+    CalendarOwnership.objects.create(
+        organization=owned_calendar.organization,
+        calendar=owned_calendar,
+        user=other_owner,
+        is_default=False,
+    )
+
+    service = CalendarService()
+    # Mock the authentication to avoid Google credentials issue
+    service.account = unrelated_social_account
+    service.organization = owned_calendar.organization
+    service.calendar_adapter = mock_google_adapter
+
+    with patch.object(CalendarService, "get_calendar_adapter_for_account") as mock_get_adapter:
+        mock_owner_adapter = Mock()
+        mock_owner_adapter.provider = CalendarProvider.GOOGLE
+        del mock_owner_adapter.resolve_expression
+        del mock_owner_adapter.get_source_expressions
+        mock_get_adapter.return_value = mock_owner_adapter
+
+        write_adapter = service._get_write_adapter_for_calendar(owned_calendar)
+
+        # Should call with the default owner (calendar_owner_social_account)
+        mock_get_adapter.assert_called_once_with(calendar_owner_social_account)
+        assert write_adapter == mock_owner_adapter
+
+
+@pytest.mark.django_db
+def test_get_write_adapter_returns_self_adapter_when_no_valid_owner(
+    unrelated_social_account,
+    unrelated_social_token,
+    organization,
+    mock_google_adapter,
+    db,
+):
+    """Test that _get_write_adapter_for_calendar returns self.calendar_adapter when no valid owner exists."""
+    # Create a calendar with no valid owners (no social accounts)
+    calendar_no_owner = Calendar.objects.create(
+        name="No Owner Calendar",
+        external_id="no_owner_cal_123",
+        provider=CalendarProvider.GOOGLE,
+        organization=organization,
+        calendar_type=CalendarType.PERSONAL,
+    )
+
+    # Create user without social account
+    user_no_social = User.objects.create_user(
+        username="user_no_social", email="nosocial@example.com", password="testpass123"
+    )
+    CalendarOwnership.objects.create(
+        organization=organization,
+        calendar=calendar_no_owner,
+        user=user_no_social,
+        is_default=True,
+    )
+
+    service = CalendarService()
+    service.authenticate(account=unrelated_social_account, organization=organization)
+
+    write_adapter = service._get_write_adapter_for_calendar(calendar_no_owner)
+
+    assert write_adapter == service.calendar_adapter
+
+
+@pytest.mark.django_db
+def test_get_write_adapter_with_service_account_owns_calendar(
+    google_service_account,
+    mock_google_adapter,
+    organization,
+    db,
+):
+    """Test that _get_write_adapter_for_calendar works with service accounts that own calendars."""
+    # Create a calendar linked to the service account
+    service_calendar = Calendar.objects.create(
+        name="Service Calendar",
+        external_id="service_cal_123",
+        provider=CalendarProvider.GOOGLE,
+        organization=organization,
+        calendar_type=CalendarType.RESOURCE,
+    )
+
+    # Link the service account to the calendar
+    google_service_account.calendar = service_calendar
+    google_service_account.save()
+
+    service = CalendarService()
+    service.authenticate(account=google_service_account, organization=organization)
+
+    write_adapter = service._get_write_adapter_for_calendar(service_calendar)
+
+    assert write_adapter == service.calendar_adapter
+
+
+@pytest.mark.django_db
+def test_create_event_uses_write_adapter_for_non_owned_calendar(
+    unrelated_social_account,
+    unrelated_social_token,
+    calendar_owner_social_account,
+    calendar_owner_social_token,
+    owned_calendar,
+    sample_event_input_data,
+    patch_get_calendar,
+):
+    """Test that create_event uses the write adapter for non-owned calendars."""
+    # Set up the created event data
+    created_event_data = CalendarEventData(
+        calendar_external_id="owned_cal_123",
+        external_id="event_new_123",
+        title="New Event",
+        description="A new event",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+    )
+
+    # Mock the owner's adapter
+    mock_owner_adapter = Mock()
+    mock_owner_adapter.provider = CalendarProvider.GOOGLE
+    del mock_owner_adapter.resolve_expression
+    del mock_owner_adapter.get_source_expressions
+    mock_owner_adapter.create_event.return_value = created_event_data
+
+    service = CalendarService()
+    # Mock the authentication to avoid Google credentials issue
+    service.account = unrelated_social_account
+    service.organization = owned_calendar.organization
+    service.calendar_adapter = Mock()
+
+    # Mock the get_write_adapter_for_calendar to return the owner's adapter
+    with (
+        patch.object(service, "_get_write_adapter_for_calendar", return_value=mock_owner_adapter),
+        patch.object(
+            service,
+            "get_availability_windows_in_range",
+            return_value=[
+                AvailableTimeWindow(
+                    start_time=sample_event_input_data.start_time,
+                    end_time=sample_event_input_data.end_time,
+                    id=1,
+                    can_book_partially=False,
+                )
+            ],
+        ),
+    ):
+        result = service.create_event(owned_calendar.id, sample_event_input_data)
+
+    # Verify that the owner's adapter was used
+    mock_owner_adapter.create_event.assert_called_once()
+
+    # Verify the event was created correctly
+    assert result.external_id == "event_new_123"
+    assert result.title == "New Event"
+    assert result.calendar == owned_calendar
+
+
+@pytest.mark.django_db
+def test_update_event_uses_write_adapter_for_non_owned_calendar(
+    unrelated_social_account,
+    unrelated_social_token,
+    calendar_owner_social_account,
+    calendar_owner_social_token,
+    owned_calendar,
+    sample_event_input_data,
+    db,
+):
+    """Test that update_event uses the write adapter for non-owned calendars."""
+    # Create an event in the owned calendar
+    event = CalendarEvent.objects.create(
+        calendar_fk=owned_calendar,
+        title="Original Event",
+        description="Original description",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        external_id="event_to_update_123",
+        organization=owned_calendar.organization,
+    )
+
+    # Set up the updated event data
+    updated_event_data = CalendarEventData(
+        calendar_external_id="owned_cal_123",
+        external_id="event_to_update_123",
+        title="Updated Event",
+        description="Updated description",
+        start_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        attendees=[],
+        resources=[],
+        original_payload={},
+    )
+
+    # Mock the owner's adapter
+    mock_owner_adapter = Mock()
+    mock_owner_adapter.provider = CalendarProvider.GOOGLE
+    del mock_owner_adapter.resolve_expression
+    del mock_owner_adapter.get_source_expressions
+    mock_owner_adapter.update_event.return_value = updated_event_data
+
+    service = CalendarService()
+    # Mock the authentication to avoid Google credentials issue
+    service.account = unrelated_social_account
+    service.organization = owned_calendar.organization
+    service.calendar_adapter = Mock()
+
+    # Mock the get_write_adapter_for_calendar to return the owner's adapter
+    with (
+        patch.object(service, "_get_write_adapter_for_calendar", return_value=mock_owner_adapter),
+        patch.object(
+            service,
+            "get_availability_windows_in_range",
+            return_value=[
+                AvailableTimeWindow(
+                    start_time=sample_event_input_data.start_time,
+                    end_time=sample_event_input_data.end_time,
+                    id=1,
+                    can_book_partially=False,
+                )
+            ],
+        ),
+    ):
+        result = service.update_event(owned_calendar.id, event.id, sample_event_input_data)
+
+    # Verify that the owner's adapter was used
+    mock_owner_adapter.update_event.assert_called_once()
+
+    # Verify the event was updated correctly
+    assert result.title == sample_event_input_data.title
+
+
+@pytest.mark.django_db
+def test_delete_event_uses_write_adapter_for_non_owned_calendar(
+    unrelated_social_account,
+    unrelated_social_token,
+    calendar_owner_social_account,
+    calendar_owner_social_token,
+    owned_calendar,
+    db,
+):
+    """Test that delete_event uses the write adapter for non-owned calendars."""
+    # Create an event in the owned calendar
+    event = CalendarEvent.objects.create(
+        calendar_fk=owned_calendar,
+        title="Event to Delete",
+        description="Event description",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        external_id="event_to_delete_123",
+        organization=owned_calendar.organization,
+    )
+
+    # Mock the owner's adapter
+    mock_owner_adapter = Mock()
+    mock_owner_adapter.provider = CalendarProvider.GOOGLE
+    del mock_owner_adapter.resolve_expression
+    del mock_owner_adapter.get_source_expressions
+
+    service = CalendarService()
+    # Mock the authentication to avoid Google credentials issue
+    service.account = unrelated_social_account
+    service.organization = owned_calendar.organization
+    service.calendar_adapter = Mock()
+
+    # Mock the get_write_adapter_for_calendar to return the owner's adapter
+    with patch.object(service, "_get_write_adapter_for_calendar", return_value=mock_owner_adapter):
+        service.delete_event(owned_calendar.id, event.id)
+
+    # Verify that the owner's adapter was used
+    mock_owner_adapter.delete_event.assert_called_once_with(
+        owned_calendar.external_id, event.external_id
+    )
+
+
+@pytest.mark.django_db
+def test_write_adapter_only_used_for_personal_and_resource_calendars(
+    unrelated_social_account,
+    unrelated_social_token,
+    organization,
+    sample_event_input_data,
+    mock_google_adapter,
+):
+    """Test that write adapter logic is only used for PERSONAL and RESOURCE calendar types."""
+    # Create a virtual calendar (should not use write adapter logic)
+    virtual_calendar = Calendar.objects.create(
+        name="Virtual Calendar",
+        external_id="virtual_cal_123",
+        provider=CalendarProvider.INTERNAL,
+        organization=organization,
+        calendar_type=CalendarType.VIRTUAL,
+    )
+
+    service = CalendarService()
+    service.authenticate(account=unrelated_social_account, organization=organization)
+
+    # Mock availability check
+    with (
+        patch.object(
+            service,
+            "get_availability_windows_in_range",
+            return_value=[
+                AvailableTimeWindow(
+                    start_time=sample_event_input_data.start_time,
+                    end_time=sample_event_input_data.end_time,
+                    id=1,
+                    can_book_partially=False,
+                )
+            ],
+        ),
+        patch.object(service, "_get_write_adapter_for_calendar") as mock_get_write_adapter,
+    ):
+        result = service.create_event(virtual_calendar.id, sample_event_input_data)
+
+        # Verify that _get_write_adapter_for_calendar was not called for virtual calendar
+        mock_get_write_adapter.assert_not_called()
+
+        # Verify the event was created
+        assert result.title == sample_event_input_data.title
+        assert result.calendar == virtual_calendar
+
+
+@pytest.mark.django_db
+def test_create_event_falls_back_to_self_adapter_when_write_adapter_is_none(
+    unrelated_social_account,
+    unrelated_social_token,
+    owned_calendar,
+    sample_event_input_data,
+    mock_google_adapter,
+):
+    """Test that create_event falls back to not using external adapter when write adapter is None."""
+    service = CalendarService()
+    service.authenticate(account=unrelated_social_account, organization=owned_calendar.organization)
+
+    # Mock _get_write_adapter_for_calendar to return None
+    with (
+        patch.object(service, "_get_write_adapter_for_calendar", return_value=None),
+        patch.object(
+            service,
+            "get_availability_windows_in_range",
+            return_value=[
+                AvailableTimeWindow(
+                    start_time=sample_event_input_data.start_time,
+                    end_time=sample_event_input_data.end_time,
+                    id=1,
+                    can_book_partially=False,
+                )
+            ],
+        ),
+    ):
+        result = service.create_event(owned_calendar.id, sample_event_input_data)
+
+        # Verify that no external adapter was used (event created only in database)
+        mock_google_adapter.create_event.assert_not_called()
+
+        # Verify the event was created in the database
+        assert result.title == sample_event_input_data.title
+        assert result.calendar == owned_calendar
+        assert result.external_id == ""  # No external ID when no adapter is used
+
+
+@pytest.mark.django_db
+def test_get_write_adapter_filters_by_provider(
+    unrelated_social_account,
+    unrelated_social_token,
+    owned_calendar,
+    calendar_owner_user,
+    mock_google_adapter,
+    db,
+):
+    """Test that _get_write_adapter_for_calendar only considers owners with matching provider."""
+    # Create a Microsoft social account for the calendar owner
+    ms_social_account = SocialAccount.objects.create(
+        user=calendar_owner_user, provider=CalendarProvider.MICROSOFT, uid="ms123"
+    )
+    SocialToken.objects.create(
+        account=ms_social_account,
+        token="ms_access_token",
+        token_secret="ms_refresh_token",
+        expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+    )
+
+    service = CalendarService()
+    # Mock the authentication to avoid Google credentials issue
+    service.account = unrelated_social_account
+    service.organization = owned_calendar.organization
+    service.calendar_adapter = mock_google_adapter
+
+    # The calendar is Google provider, so MS social account should not be considered
+    write_adapter = service._get_write_adapter_for_calendar(owned_calendar)
+
+    # Should fall back to self.calendar_adapter since no matching provider found
+    assert write_adapter == service.calendar_adapter

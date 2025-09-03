@@ -37,6 +37,9 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
     ) -> CalendarEvent:
         ...
 
+    def _get_write_adapter_for_calendar(self, calendar: Calendar) -> CalendarAdapter | None:
+        ...
+
     def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
         ...
 

@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal, cast
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from dependency_injector.wiring import Provide, inject
@@ -638,6 +638,52 @@ class CalendarService(BaseCalendarService):
 
         return [EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids]
 
+    def _get_write_adapter_for_calendar(self, calendar: Calendar) -> CalendarAdapter | None:
+        # if the authenticated account doesn't own the calendar:
+        if not self.account or not (
+            (
+                isinstance(self.account, SocialAccount)
+                and calendar.users.filter(id=self.account.user_id).exists()
+            )
+            or (
+                isinstance(self.account, GoogleCalendarServiceAccount)
+                and self.account.calendar == calendar
+            )
+        ):
+            # gets social account of one of the owners if they exist, favoring the owners that have
+            # this calendar as default
+            ownership = (
+                calendar.ownerships.order_by("-is_default", "created")
+                .select_related("user")
+                .prefetch_related(
+                    Prefetch(
+                        "user__socialaccount_set",
+                        queryset=SocialAccount.objects.filter(
+                            provider=calendar.provider,
+                        ),
+                        to_attr="owner_social_accounts",
+                    )
+                )
+                .filter(
+                    user__in=User.objects.filter(
+                        socialaccount__provider=calendar.provider,
+                    )
+                )
+                .first()
+            )
+
+            if (
+                ownership
+                and hasattr(ownership.user, "owner_social_accounts")
+                and ownership.user.owner_social_accounts
+            ):  # type: ignore
+                social_account = ownership.user.owner_social_accounts[0]  # type: ignore
+                return CalendarService.get_calendar_adapter_for_account(social_account)
+
+            # if the calendar doesn't have a valid owner, try to use self.calendar_adapter
+
+        return self.calendar_adapter
+
     @transaction.atomic()
     def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
         """
@@ -664,7 +710,9 @@ class CalendarService(BaseCalendarService):
 
         external_id = ""
         original_payload: dict = {}
-        if self.calendar_adapter:
+        if calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE] and (
+            write_adapter := self._get_write_adapter_for_calendar(calendar)
+        ):
             users_by_id = {
                 u.id: u
                 for u in User.objects.filter(id__in=[a.user_id for a in event_data.attendances])
@@ -675,7 +723,8 @@ class CalendarService(BaseCalendarService):
                     id__in=[r.resource_id for r in event_data.resource_allocations]
                 )
             }
-            created_event = self.calendar_adapter.create_event(
+
+            created_event = write_adapter.create_event(
                 CalendarEventAdapterInputData(
                     calendar_external_id=calendar.external_id,
                     title=event_data.title,
@@ -874,8 +923,11 @@ class CalendarService(BaseCalendarService):
                 "calendar event"
             )
 
-        original_payload = {}
-        if self.calendar_adapter:
+        original_payload: dict[str, Any] = {}
+        if calendar_event.calendar.calendar_type in [
+            CalendarType.PERSONAL,
+            CalendarType.RESOURCE,
+        ] and (write_adapter := self._get_write_adapter_for_calendar(calendar_event.calendar)):
             users_by_id = {
                 u.id: u
                 for u in User.objects.filter(id__in=[a.user_id for a in event_data.attendances])
@@ -892,7 +944,8 @@ class CalendarService(BaseCalendarService):
                     id__in=[r.resource_id for r in event_data.resource_allocations]
                 )
             }
-            updated_event = self.calendar_adapter.update_event(
+
+            updated_event = write_adapter.update_event(
                 calendar_event.calendar.id,
                 calendar_event.id,
                 CalendarEventData(
@@ -1603,10 +1656,13 @@ class CalendarService(BaseCalendarService):
             self._delete_bundle_event(event)
             return
 
-        if self.calendar_adapter:
+        if event.calendar.calendar_type in [
+            CalendarType.PERSONAL,
+            CalendarType.RESOURCE,
+        ] and (write_adapter := self._get_write_adapter_for_calendar(event.calendar)):
             if event.is_recurring and delete_series:
                 # Delete the entire recurring series from external calendar
-                self.calendar_adapter.delete_event(event.calendar.external_id, event.external_id)
+                write_adapter.delete_event(event.calendar.external_id, event.external_id)
             elif event.is_recurring_instance and not delete_series:
                 # Create a cancellation exception instead of deleting
                 if event.parent_recurring_object:
@@ -1615,7 +1671,7 @@ class CalendarService(BaseCalendarService):
                     )
             else:
                 # Delete single event or instance
-                self.calendar_adapter.delete_event(event.calendar.external_id, event.external_id)
+                write_adapter.delete_event(event.calendar.external_id, event.external_id)
 
         if event.is_recurring and delete_series:
             # Delete the entire series including all instances and exceptions
