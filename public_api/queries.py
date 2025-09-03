@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 import strawberry
 import strawberry_django
 from dependency_injector.wiring import Provide, inject
+from graphql import GraphQLError
 
 from calendar_integration.graphql import (
     AvailableTimeGraphQLType,
@@ -38,7 +39,7 @@ def get_query_dependencies(
 ) -> QueryDependencies:
     required_dependencies = [calendar_service]
     if any(dep is None for dep in required_dependencies):
-        raise ValueError(
+        raise GraphQLError(
             f"Missing required dependency {', '.join([str(dep) for dep in required_dependencies if dep is None])}"
         )
 
@@ -54,7 +55,7 @@ class Query:
         """Get calendars filtered by user's organization."""
         organization = info.context.request.public_api_organization
         if not organization:
-            raise ValueError("Organization not found in request context")
+            raise GraphQLError("Organization not found in request context")
         return Calendar.objects.filter_by_organization(organization.id)
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
@@ -69,7 +70,7 @@ class Query:
         # Get the user's organization from the GraphQL context
         organization = info.context.request.public_api_organization
         if not organization:
-            raise ValueError("Organization not found in request context")
+            raise GraphQLError("Organization not found in request context")
 
         deps = get_query_dependencies()
 
@@ -99,7 +100,7 @@ class Query:
         # Get the user's organization from the GraphQL context
         organization = info.context.request.public_api_organization
         if not organization:
-            raise ValueError("Organization not found in request context")
+            raise GraphQLError("Organization not found in request context")
 
         deps = get_query_dependencies()
 
@@ -129,7 +130,7 @@ class Query:
         # Get the user's organization from the GraphQL context
         organization = info.context.request.public_api_organization
         if not organization:
-            raise ValueError("Organization not found in request context")
+            raise GraphQLError("Organization not found in request context")
 
         deps = get_query_dependencies()
 
@@ -152,7 +153,7 @@ class Query:
         """Get users filtered by user's organization."""
         organization = info.context.request.public_api_organization
         if not organization:
-            raise ValueError("Organization not found in request context")
+            raise GraphQLError("Organization not found in request context")
         # Return a concrete list and cast to the declared GraphQL return type so
         # mypy recognizes the return value matches the annotation.
         return cast(
@@ -172,7 +173,7 @@ class Query:
         # Get the user's organization from the GraphQL context
         organization = info.context.request.public_api_organization
         if not organization:
-            raise ValueError("Organization not found in request context")
+            raise GraphQLError("Organization not found in request context")
 
         deps = get_query_dependencies()
 
@@ -212,7 +213,7 @@ class Query:
         # Get the user's organization from the GraphQL context
         organization = info.context.request.public_api_organization
         if not organization:
-            raise ValueError("Organization not found in request context")
+            raise GraphQLError("Organization not found in request context")
 
         deps = get_query_dependencies()
 
