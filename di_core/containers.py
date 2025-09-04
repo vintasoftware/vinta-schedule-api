@@ -17,6 +17,7 @@ from payments.services.payment_service import PaymentService
 from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
     MercadoPagoSubscriptionAdapter,
 )
+from public_api.services import PublicAPIAuthService
 from vintasend_django_sms_template_renderer.services.notification_template_renderers.django_sms_template_renderer import (
     DjangoTemplatedSMSRenderer,
 )
@@ -76,6 +77,10 @@ class AppContainer(containers.DeclarativeContainer):
     calendar_service = providers.Factory(
         CalendarService,
         webhook_service=webhook_service,
+    )
+
+    public_api_auth_service = providers.Factory(
+        PublicAPIAuthService,
     )
 
 
