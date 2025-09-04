@@ -43,6 +43,17 @@ Welcome to the Vinta Schedule project! This guide provides instructions for cont
 - To create a new database-defined structure you need to create a directory with its name under the structure name directory and the numbered sql file (0001.sql) with its code. You also need to create the migration manager inheriting from one of the managers defined `common/raw_sql_migration_managers.py` in the `__init__.py` file. Then you need to create a migration including the migration manager you defined and calling its `migration` method in the `operations` array of the migration.
 - To update an existing database structure you just need to add a new sql file  with the following number (four digits) containing the updated version. You also need to create a migration including the proper migration manager referencing the new version name in the operations (and calling its `migrate` method).
 
+## Public API
+- The public API is implemented using GraphQL with [`strawberry-graphql`](https://strawberry.rocks/).
+- API schema is defined in `public_api/schema.py`.
+- Resolvers are organized in `queries.py` and `mutations.py` within the `public_api` app.
+- Use DI to inject services into resolvers.
+- Follow GraphQL best practices for schema design and error handling.
+- Use pagination for list queries.
+- Use proper authentication and authorization mechanisms, leveraging the `PublicAPIAuthService` and the existing permission classes defined in `public_api/permissions.py`.
+- Each app can define their own GraphQL types in a `graphql.py` file. They need to be registered in the `public_api/queries.py` file.
+- Each app can define their own mutations in a `mutations.py` file. They need to be registered in the `public_api/mutations.py` file.
+
 ## Testing
 - We use [`pytest`](https://docs.pytest.org/) for testing.
 - Tests are located in each app's `tests/` directory.
