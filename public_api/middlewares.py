@@ -69,18 +69,11 @@ class PublicApiSystemUserMiddleware:
         request.public_api_system_user = None
         request.public_api_organization = None
 
-        if request.get_full_path() == "/graphql/":
+        if request.get_full_path().startswith("/graphql/"):
             request.public_api_system_user = self._get_system_user_from_request(request)
 
         if request.public_api_system_user:
-            request.public_api_organization = request.public_api_system_user.organization
+            request.public_api_organization = request.public_api_system_user.organization or self._get_organization_from_request(request)
 
-            if not request.public_api_organization:
-                request.public_api_organization = self._get_organization_from_request(request)
 
-        response = self.get_response(request)
-
-        # Code to be executed for each request/response after
-        # the view is called.
-
-        return response
+        return self.get_response(request)
