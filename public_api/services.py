@@ -7,7 +7,7 @@ from public_api.models import SystemUser
 
 
 class PublicAPIAuthService:
-    def check_system_user_token(self, system_user_id: str, token: str) -> tuple[SystemUser, bool]:
+    def check_system_user_token(self, system_user_id: int, token: str) -> tuple[SystemUser, bool]:
         """
         Check if the provided token matches the system user's long-lived token.
         :param system_user_id: ID of the system user.

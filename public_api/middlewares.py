@@ -19,7 +19,7 @@ class PublicApiSystemUserMiddleware:
         self.get_response = get_response
         # One-time configuration and initialization.
 
-    def _get_credentials_from_request(self, request: HttpRequest) -> tuple[str, str]:
+    def _get_credentials_from_request(self, request: HttpRequest) -> tuple[int, str]:
         """
         Extracts the system user ID and token from the request headers.
         The expected format is:
@@ -31,7 +31,12 @@ class PublicApiSystemUserMiddleware:
             raise ValueError("Invalid Authorization header format")
 
         try:
-            system_user_id, token = auth_header.split("Bearer ")[-1].split(":", 1)
+            system_user_id_str, token = auth_header.split("Bearer ")[-1].split(":", 1)
+        except ValueError as e:
+            raise ValueError("Invalid Authorization header format") from e
+
+        try:
+            system_user_id = int(system_user_id_str)
         except ValueError as e:
             raise ValueError("Invalid Authorization header format") from e
 
