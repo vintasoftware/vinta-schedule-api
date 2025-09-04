@@ -94,7 +94,7 @@ class OrganizationRateLimiter(SchemaExtension):
             return None
 
         bucket = RedisBucket.init(
-            list(self.rates if self.rates else self.get_default_rates()),
+            list(self.rates or self.get_default_rates()),
             self.redis_client,
             getattr(settings, "PUBLIC_API_RATE_LIMITER_KEY", ""),
         )
