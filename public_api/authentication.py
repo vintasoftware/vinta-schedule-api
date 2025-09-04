@@ -11,8 +11,7 @@ def generate_long_lived_token() -> str:
     The token is valid until it is explicitly revoked or the user is deleted.
     The token is stored as a hash in the database for security.
     """
-    token = secrets.token_urlsafe(32)
-    return token
+    return secrets.token_urlsafe(32)
 
 
 def hash_long_lived_token(token: str) -> str:
