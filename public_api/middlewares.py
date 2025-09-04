@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Annotated
+from typing import Annotated, cast
 
 from django.http import (
     HttpRequest,
@@ -11,6 +11,7 @@ from dependency_injector.wiring import Provide, inject
 from organizations.models import Organization
 from public_api.models import SystemUser
 from public_api.services import PublicAPIAuthService
+from public_api.types import PublicApiHttpRequest
 
 
 class PublicApiSystemUserMiddleware:
@@ -39,11 +40,14 @@ class PublicApiSystemUserMiddleware:
     @inject
     def _get_system_user_from_request(
         self,
-        request: HttpRequest,
+        request: PublicApiHttpRequest,
         public_api_auth_service: Annotated[
-            PublicAPIAuthService, Provide["public_api_auth_service"]
-        ],
-    ) -> SystemUser | None:  # type: ignore
+            PublicAPIAuthService | None, Provide["public_api_auth_service"]
+        ] = None,
+    ) -> SystemUser | None:
+        if public_api_auth_service is None:
+            raise ValueError("PublicAPIAuthService is not available")
+
         try:
             system_user_id, token = self._get_credentials_from_request(request)
         except ValueError:
@@ -58,22 +62,27 @@ class PublicApiSystemUserMiddleware:
 
         return None if not authenticated or not system_user.is_active else system_user
 
-    def _get_organization_from_request(self, request: HttpRequest) -> Organization | None:
-        organization_id = request.headers.get("X-Public-Api-Organization-Id")
-        if not organization_id:
+    def _get_organization_from_request(self, request: PublicApiHttpRequest) -> Organization | None:
+        if not (organization_id := request.headers.get("X-Public-Api-Organization-Id")):
             return None
         return Organization.objects.filter(id=organization_id).first()
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
         # ignore middleware if request is not the graphql endpoint
-        request.public_api_system_user = None
-        request.public_api_organization = None
 
-        if request.get_full_path().startswith("/graphql/"):
-            request.public_api_system_user = self._get_system_user_from_request(request)
+        extended_request = cast(PublicApiHttpRequest, request)
+        extended_request.public_api_system_user = None
+        extended_request.public_api_organization = None
 
-        if request.public_api_system_user:
-            request.public_api_organization = request.public_api_system_user.organization or self._get_organization_from_request(request)
+        if extended_request.get_full_path().startswith("/graphql/"):
+            extended_request.public_api_system_user = self._get_system_user_from_request(
+                extended_request
+            )
 
+        if extended_request.public_api_system_user:
+            extended_request.public_api_organization = (
+                extended_request.public_api_system_user.organization
+                or self._get_organization_from_request(extended_request)
+            )
 
-        return self.get_response(request)
+        return self.get_response(extended_request)

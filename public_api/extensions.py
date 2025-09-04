@@ -45,7 +45,7 @@ class OrganizationRateLimiter(SchemaExtension):
                     )
                 ]
                 if hasattr(settings, "PUBLIC_API_REQUESTS_PER_SECOND_LIMIT")
-                and getattr(settings, "PUBLIC_API_REQUESTS_PER_SECOND_LIMIT", 0)
+                and bool(getattr(settings, "PUBLIC_API_REQUESTS_PER_SECOND_LIMIT", 0))
                 else []
             ),
             *(
@@ -56,7 +56,7 @@ class OrganizationRateLimiter(SchemaExtension):
                     )
                 ]
                 if hasattr(settings, "PUBLIC_API_REQUESTS_PER_MINUTE_LIMIT")
-                and getattr(settings, "PUBLIC_API_REQUESTS_PER_MINUTE_LIMIT", 0)
+                and bool(getattr(settings, "PUBLIC_API_REQUESTS_PER_MINUTE_LIMIT", 0))
                 else []
             ),
             *(
@@ -67,7 +67,7 @@ class OrganizationRateLimiter(SchemaExtension):
                     )
                 ]
                 if hasattr(settings, "PUBLIC_API_REQUESTS_PER_HOUR_LIMIT")
-                and getattr(settings, "PUBLIC_API_REQUESTS_PER_HOUR_LIMIT", 0)
+                and bool(getattr(settings, "PUBLIC_API_REQUESTS_PER_HOUR_LIMIT", 0))
                 else []
             ),
         ]
@@ -82,7 +82,7 @@ class OrganizationRateLimiter(SchemaExtension):
         context = self.execution_context.context
         request: HttpRequest = context.request
 
-        # request.public_api_system_user is set by core.public_api.middlewares.PublicApiSystemUserMiddleware
+        # request.public_api_system_user is set by public_api.middlewares.PublicApiSystemUserMiddleware
         organization = getattr(request, "public_api_organization", None)
         organization_id = organization.id if organization else None
 

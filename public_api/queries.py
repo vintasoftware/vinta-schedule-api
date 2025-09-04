@@ -1,6 +1,6 @@
 import datetime
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated, TypeVar, cast
 
 from django.db.models import Value
 from django.db.models.functions import Concat
@@ -8,6 +8,7 @@ from django.db.models.functions import Concat
 import strawberry
 import strawberry_django
 from dependency_injector.wiring import Provide, inject
+from django_virtual_models import QuerySet
 from graphql import GraphQLError
 
 from calendar_integration.graphql import (
@@ -51,6 +52,32 @@ def get_query_dependencies(
     )
 
 
+def _get_org(info):
+    org = info.context.request.public_api_organization
+    if not org:
+        raise GraphQLError("Organization not found in request context")
+    return org
+
+
+TQuerySet = TypeVar("TQuerySet", bound=QuerySet)
+
+
+def _slice_qs(qs: TQuerySet, offset: int, limit: int) -> TQuerySet:
+    if offset < 0:
+        raise GraphQLError("Offset must be non-negative")
+    if limit <= 0 or limit > 100:
+        raise GraphQLError("Limit must be between 1 and 100")
+    return qs[offset : offset + limit]
+
+
+def _prepare_service_and_calendar(info, calendar_id: int) -> tuple["CalendarService", Calendar]:
+    org = _get_org(info)
+    deps = get_query_dependencies()
+    deps.calendar_service.initialize_without_provider(org)
+    cal = Calendar.objects.filter_by_organization(org.id).get(id=calendar_id)
+    return deps.calendar_service, cal
+
+
 @strawberry.type
 class Query:
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
@@ -64,9 +91,7 @@ class Query:
         limit: int = 100,
     ) -> list[CalendarGraphQLType]:
         """Get calendars filtered by user's organization."""
-        organization = info.context.request.public_api_organization
-        if not organization:
-            raise GraphQLError("Organization not found in request context")
+        org = _get_org(info)
 
         # Validate pagination parameters
         if offset < 0:
@@ -74,7 +99,7 @@ class Query:
         if limit <= 0 or limit > 100:
             raise GraphQLError("Limit must be between 1 and 100")
 
-        queryset = Calendar.objects.filter_by_organization(organization.id)
+        queryset = Calendar.objects.filter_by_organization(org.id)
         if calendar_id is not None:
             queryset = queryset.filter(id=calendar_id)
 
@@ -88,7 +113,7 @@ class Query:
             queryset = queryset.filter(calendar_type=calendar_type)
 
         # Apply ordering first, then pagination
-        queryset = queryset.order_by("pk")[offset : offset + limit]
+        queryset = _slice_qs(queryset.order_by("pk"), offset, limit)
 
         return list(queryset)
 
@@ -103,12 +128,10 @@ class Query:
     ) -> list[CalendarEventGraphQLType]:
         """Get calendar events filtered by user's organization."""
         # Get the user's organization from the GraphQL context
-        organization = info.context.request.public_api_organization
-        if not organization:
-            raise GraphQLError("Organization not found in request context")
+        org = _get_org(info)
 
         if event_id is not None:
-            return CalendarEvent.objects.filter_by_organization(organization.id).filter(id=event_id)
+            return CalendarEvent.objects.filter_by_organization(org.id).filter(id=event_id)
 
         if not calendar_id or not start_datetime or not end_datetime:
             raise GraphQLError(
@@ -116,14 +139,8 @@ class Query:
                 "calendarId, startDatetime, and endDatetime. "
             )
 
-        deps = get_query_dependencies()
-
-        # Initialize the calendar service
-        deps.calendar_service.initialize_without_provider(organization)
-
-        calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
-
-        events = deps.calendar_service.get_calendar_events_expanded(
+        calendar_service, calendar = _prepare_service_and_calendar(info, calendar_id)
+        events = calendar_service.get_calendar_events_expanded(
             calendar,
             start_datetime,
             end_datetime,
@@ -145,14 +162,10 @@ class Query:
     ) -> list[BlockedTimeGraphQLType]:
         """Get blocked times filtered by user's organization."""
         # Get the user's organization from the GraphQL context
-        organization = info.context.request.public_api_organization
-        if not organization:
-            raise GraphQLError("Organization not found in request context")
+        org = _get_org(info)
 
         if blocked_time_id is not None:
-            return BlockedTime.objects.filter_by_organization(organization.id).filter(
-                id=blocked_time_id
-            )
+            return BlockedTime.objects.filter_by_organization(org.id).filter(id=blocked_time_id)
 
         if not calendar_id or not start_datetime or not end_datetime:
             raise GraphQLError(
@@ -160,14 +173,9 @@ class Query:
                 "require calendarId, startDatetime, and endDatetime. "
             )
 
-        deps = get_query_dependencies()
+        calendar_service, calendar = _prepare_service_and_calendar(info, calendar_id)
 
-        # Initialize the calendar service
-        deps.calendar_service.initialize_without_provider(organization)
-
-        calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
-
-        blocked_times = deps.calendar_service.get_blocked_times_expanded(
+        blocked_times = calendar_service.get_blocked_times_expanded(
             calendar,
             start_datetime,
             end_datetime,
@@ -189,14 +197,10 @@ class Query:
     ) -> list[AvailableTimeGraphQLType]:
         """Get available times filtered by user's organization."""
         # Get the user's organization from the GraphQL context
-        organization = info.context.request.public_api_organization
-        if not organization:
-            raise GraphQLError("Organization not found in request context")
+        org = _get_org(info)
 
         if available_time_id is not None:
-            return AvailableTime.objects.filter_by_organization(organization.id).filter(
-                id=available_time_id
-            )
+            return AvailableTime.objects.filter_by_organization(org.id).filter(id=available_time_id)
 
         if not calendar_id or not start_datetime or not end_datetime:
             raise GraphQLError(
@@ -204,14 +208,9 @@ class Query:
                 "require calendarId, startDatetime, and endDatetime. "
             )
 
-        deps = get_query_dependencies()
+        calendar_service, calendar = _prepare_service_and_calendar(info, calendar_id)
 
-        # Initialize the calendar service
-        deps.calendar_service.initialize_without_provider(organization)
-
-        calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
-
-        available_times = deps.calendar_service.get_available_times_expanded(
+        available_times = calendar_service.get_available_times_expanded(
             calendar,
             start_datetime,
             end_datetime,
@@ -233,17 +232,9 @@ class Query:
         limit: int = 100,
     ) -> list[UserGraphQLType]:
         """Get users filtered by user's organization."""
-        organization = info.context.request.public_api_organization
-        if not organization:
-            raise GraphQLError("Organization not found in request context")
+        org = _get_org(info)
 
-        # Validate pagination parameters
-        if offset < 0:
-            raise GraphQLError("Offset must be non-negative")
-        if limit <= 0 or limit > 100:
-            raise GraphQLError("Limit must be between 1 and 100")
-
-        queryset = User.objects.filter(organization_membership__organization=organization)
+        queryset = User.objects.filter(organization_membership__organization=org)
         if user_id is not None:
             queryset = queryset.filter(id=user_id)
 
@@ -258,7 +249,7 @@ class Query:
             queryset = queryset.filter(email__icontains=email)
 
         # Apply ordering first, then pagination
-        queryset = queryset.order_by("pk")[offset : offset + limit]
+        queryset = _slice_qs(queryset.order_by("pk"), offset, limit)
 
         # Return a concrete list and cast to the declared GraphQL return type so
         # mypy recognizes the return value matches the annotation.
@@ -276,21 +267,10 @@ class Query:
         end_datetime: datetime.datetime,
     ) -> list[AvailableTimeWindowGraphQLType]:
         """Get availability windows for a calendar within a date range."""
-        # Get the user's organization from the GraphQL context
-        organization = info.context.request.public_api_organization
-        if not organization:
-            raise GraphQLError("Organization not found in request context")
-
-        deps = get_query_dependencies()
-
-        # Initialize the calendar service
-        deps.calendar_service.initialize_without_provider(organization)
-
-        # Get the calendar
-        calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
+        calendar_service, calendar = _prepare_service_and_calendar(info, calendar_id)
 
         # Get the availability windows
-        availability_windows = deps.calendar_service.get_availability_windows_in_range(
+        availability_windows = calendar_service.get_availability_windows_in_range(
             calendar=calendar,
             start_datetime=start_datetime,
             end_datetime=end_datetime,
@@ -316,20 +296,9 @@ class Query:
         end_datetime: datetime.datetime,
     ) -> list[UnavailableTimeWindowGraphQLType]:
         """Get unavailable (blocked or event) windows for a calendar within a date range."""
-        # Get the user's organization from the GraphQL context
-        organization = info.context.request.public_api_organization
-        if not organization:
-            raise GraphQLError("Organization not found in request context")
+        calendar_service, calendar = _prepare_service_and_calendar(info, calendar_id)
 
-        deps = get_query_dependencies()
-
-        # Initialize the calendar service
-        deps.calendar_service.initialize_without_provider(organization)
-
-        # Get the calendar
-        calendar = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
-
-        unavailable_windows = deps.calendar_service.get_unavailable_time_windows_in_range(
+        unavailable_windows = calendar_service.get_unavailable_time_windows_in_range(
             calendar=calendar, start_datetime=start_datetime, end_datetime=end_datetime
         )
 

@@ -18,8 +18,8 @@ class PublicAPIAuthService:
         """
         try:
             system_user_id_int = int(system_user_id)
-        except (TypeError, ValueError):
-            raise SystemUser.DoesNotExist(f"Invalid system_user_id: {system_user_id!r}")
+        except (TypeError, ValueError) as e:
+            raise SystemUser.DoesNotExist(f"Invalid system_user_id: {system_user_id!r}") from e
         system_user = SystemUser.objects.get(id=system_user_id_int)
 
         if not system_user.is_active:

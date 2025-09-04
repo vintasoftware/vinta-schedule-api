@@ -13,13 +13,13 @@ class IsAuthenticated(BasePermission):
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
         request: HttpRequest = info.context.request
-        # request.public_api_system_user is set by core.public_api.middlewares.PublicApiSystemUserMiddleware
+        # request.public_api_system_user is set by public_api.middlewares.PublicApiSystemUserMiddleware
         system_user = getattr(request, "public_api_system_user", None)
         if system_user is None:
             return False
 
         # Check if the system user is active
-        return system_user
+        return system_user.is_active
 
 
 class OrganizationResourceAccess(BasePermission):
@@ -56,12 +56,12 @@ class OrganizationResourceAccess(BasePermission):
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
         request: HttpRequest = info.context.request
-        # request.public_api_system_user is set by core.public_api.middlewares.PublicApiSystemUserMiddleware
+        # request.public_api_system_user is set by public_api.middlewares.PublicApiSystemUserMiddleware
         system_user = getattr(request, "public_api_system_user", None)
         if system_user is None:
             return False
 
-        # request.public_api_organization is set by core.public_api.middlewares.PublicApiSystemUserMiddleware
+        # request.public_api_organization is set by public_api.middlewares.PublicApiSystemUserMiddleware
         if not getattr(request, "public_api_organization", None):
             return False
 
@@ -69,7 +69,4 @@ class OrganizationResourceAccess(BasePermission):
         resource_name = self.FIELD_TO_RESOURCE_MAPPING.get(info.field_name, info.field_name)
 
         # check system_user has access to queried resources
-        if not system_user.available_resources.filter(resource_name=resource_name).exists():
-            return False
-
-        return True
+        return system_user.available_resources.filter(resource_name=resource_name).exists()
