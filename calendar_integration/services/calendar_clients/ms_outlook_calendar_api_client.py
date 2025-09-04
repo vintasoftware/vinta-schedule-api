@@ -91,6 +91,7 @@ class MSGraphEvent:
     body_content: str
     start_time: datetime.datetime
     end_time: datetime.datetime
+    timezone: str
     location: str
     attendees: list[dict[str, Any]]
     organizer: dict[str, Any]
@@ -983,6 +984,7 @@ class MSOutlookCalendarAPIClient:
             body_content=event_data.get("body", {}).get("content", ""),
             start_time=self._parse_datetime(event_data["start"]),
             end_time=self._parse_datetime(event_data["end"]),
+            timezone=event_data["start"].get("timeZone", "UTC"),
             location=event_data.get("location", {}).get("displayName", ""),
             attendees=event_data.get("attendees", []),
             organizer=event_data.get("organizer", {}),

@@ -102,8 +102,9 @@ def test_calendar_event_get_next_occurrence_daily_basic():
         calendar_fk=cal,
         organization=org,
         title="Daily Standup",
-        start_time=start,
-        end_time=start + datetime.timedelta(minutes=30),
+        start_time_tz_unaware=start,
+        end_time_tz_unaware=start + datetime.timedelta(minutes=30),
+        timezone="UTC",
         recurrence_rule_fk=rule,
     )
     after_date = _dt(2025, 1, 2, 10)  # after second day occurrence
@@ -131,8 +132,9 @@ def test_calendar_event_get_next_occurrence_daily_count_limit():
         calendar_fk=cal,
         organization=org,
         title="Limited Daily",
-        start_time=start,
-        end_time=start + datetime.timedelta(hours=1),
+        start_time_tz_unaware=start,
+        end_time_tz_unaware=start + datetime.timedelta(hours=1),
+        timezone="UTC",
         recurrence_rule_fk=rule,
     )
     # After day2 (3rd occurrence) should return next occurrence only if count not exceeded.
@@ -163,8 +165,9 @@ def test_calendar_event_generate_instances_with_cancelled_exception():
         calendar_fk=cal,
         organization=org,
         title="Daily Event",
-        start_time=start,
-        end_time=start + datetime.timedelta(hours=1),
+        start_time_tz_unaware=start,
+        end_time_tz_unaware=start + datetime.timedelta(hours=1),
+        timezone="UTC",
         recurrence_rule_fk=rule,
         external_id="daily-event",
     )
@@ -199,8 +202,9 @@ def test_calendar_event_get_occurrences_in_range_with_modified_exception():
         calendar_fk=cal,
         organization=org,
         title="Parent",
-        start_time=start,
-        end_time=start + datetime.timedelta(minutes=45),
+        start_time_tz_unaware=start,
+        end_time_tz_unaware=start + datetime.timedelta(minutes=45),
+        timezone="UTC",
         recurrence_rule_fk=rule,
         external_id="parent",
     )
@@ -210,8 +214,9 @@ def test_calendar_event_get_occurrences_in_range_with_modified_exception():
         calendar=cal,
         organization=org,
         title="Parent (Modified)",
-        start_time=_dt(2025, 1, 2, 10),  # changed time
-        end_time=_dt(2025, 1, 2, 11),
+        start_time_tz_unaware=_dt(2025, 1, 2, 10),  # changed time
+        end_time_tz_unaware=_dt(2025, 1, 2, 11),
+        timezone="UTC",
         parent_recurring_object=parent,
         is_recurring_exception=True,
         external_id="modified",
@@ -245,8 +250,9 @@ def test_calendar_event_create_exception_updates_existing():
         calendar_fk=cal,
         organization=org,
         title="Daily",
-        start_time=start,
-        end_time=start + datetime.timedelta(minutes=30),
+        start_time_tz_unaware=start,
+        end_time_tz_unaware=start + datetime.timedelta(minutes=30),
+        timezone="UTC",
         recurrence_rule_fk=rule,
         external_id="daily",
     )
@@ -259,8 +265,9 @@ def test_calendar_event_create_exception_updates_existing():
         calendar=cal,
         organization=org,
         title="Daily (Modified)",
-        start_time=_dt(2025, 1, 2, 11),
-        end_time=_dt(2025, 1, 2, 11, 30),
+        start_time_tz_unaware=_dt(2025, 1, 2, 11),
+        end_time_tz_unaware=_dt(2025, 1, 2, 11, 30),
+        timezone="UTC",
         parent_recurring_object=event,
         is_recurring_exception=True,
         external_id="daily-mod",
@@ -490,8 +497,9 @@ def test_get_next_occurrence_not_recurring():
         CalendarEvent,
         calendar_fk=cal,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=None,
     )
     assert event.get_next_occurrence() is None
@@ -509,8 +517,9 @@ def test_get_next_occurrence_after_date_none():
     event = baker.make(
         CalendarEvent,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     # Should return next occurrence after now
@@ -531,8 +540,9 @@ def test_get_next_occurrence_after_date_before_start():
     event = baker.make(
         CalendarEvent,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 10, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 10, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 10, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 10, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     after_date = datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC)
@@ -552,8 +562,9 @@ def test_get_next_occurrence_until_exceeded():
     event = baker.make(
         CalendarEvent,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     after_date = datetime.datetime(2025, 1, 6, 9, 0, tzinfo=datetime.UTC)
@@ -573,8 +584,9 @@ def test_get_next_occurrence_daily_count_limit():
     event = baker.make(
         CalendarEvent,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     after_date = datetime.datetime(2025, 1, 3, 9, 0, tzinfo=datetime.UTC)
@@ -593,8 +605,9 @@ def test_get_next_occurrence_weekly():
     event = baker.make(
         CalendarEvent,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     after_date = datetime.datetime(2025, 1, 8, 9, 0, tzinfo=datetime.UTC)
@@ -616,8 +629,9 @@ def test_get_next_occurrence_monthly():
         CalendarEvent,
         calendar=cal,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 31, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 31, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 31, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 31, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     after_date = datetime.datetime(2025, 2, 1, 9, 0, tzinfo=datetime.UTC)
@@ -642,8 +656,9 @@ def test_get_next_occurrence_yearly():
     event = baker.make(
         CalendarEvent,
         organization=org,
-        start_time=datetime.datetime(2020, 2, 29, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2020, 2, 29, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2020, 2, 29, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2020, 2, 29, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     after_date = datetime.datetime(2021, 3, 1, 9, 0, tzinfo=datetime.UTC)
@@ -664,8 +679,9 @@ def test_generate_instances_not_recurring():
         CalendarEvent,
         calendar_fk=cal,
         organization_id=org.id,
-        start_time=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=None,
     )
     assert (
@@ -693,8 +709,9 @@ def test_generate_instances_daily_until_and_count():
         CalendarEvent,
         calendar=cal,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     instances = event.get_generated_occurrences_in_range(
@@ -720,8 +737,9 @@ def test_generate_instances_weekly_by_weekday():
     event = baker.make(
         CalendarEvent,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 6, 9, 0, tzinfo=datetime.UTC),  # Monday
-        end_time=datetime.datetime(2025, 1, 6, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 6, 9, 0, tzinfo=datetime.UTC),  # Monday
+        end_time_tz_unaware=datetime.datetime(2025, 1, 6, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     instances = event.get_generated_occurrences_in_range(
@@ -748,8 +766,9 @@ def test_generate_instances_weekly_simple():
     event = baker.make(
         CalendarEvent,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     instances = event.get_generated_occurrences_in_range(
@@ -773,8 +792,9 @@ def test_generate_instances_monthly_edge_case():
     event = baker.make(
         CalendarEvent,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 31, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 31, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 31, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 31, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     instances = event.get_generated_occurrences_in_range(
@@ -799,8 +819,9 @@ def test_generate_instances_yearly_leap_year():
     event = baker.make(
         CalendarEvent,
         organization=org,
-        start_time=datetime.datetime(2020, 2, 29, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2020, 2, 29, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2020, 2, 29, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2020, 2, 29, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     instances = event.get_generated_occurrences_in_range(
@@ -826,8 +847,9 @@ def test_generate_instances_unknown_frequency():
         CalendarEvent,
         calendar=cal,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     instances = event.get_generated_occurrences_in_range(
@@ -854,8 +876,9 @@ def test_generate_instances_with_exceptions():
         CalendarEvent,
         calendar=cal,
         organization=org,
-        start_time=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 1, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=rule,
     )
     EventRecurrenceException.objects.create(
@@ -892,8 +915,9 @@ def test_get_next_occurrence_with_cancelled_exception_before_range():
         calendar_fk=cal,
         organization=org,
         title="Daily with Cancelled",
-        start_time=_dt(2025, 1, 1),
-        end_time=_dt(2025, 1, 1, 10),
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 10),
+        timezone="UTC",
         recurrence_rule_fk=rule,
     )
 
@@ -935,8 +959,9 @@ def test_get_next_occurrence_with_modified_exception_before_range():
         calendar_fk=cal,
         organization=org,
         title="Daily with Modified",
-        start_time=_dt(2025, 1, 1),
-        end_time=_dt(2025, 1, 1, 10),
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 10),
+        timezone="UTC",
         recurrence_rule_fk=rule,
     )
 
@@ -946,8 +971,9 @@ def test_get_next_occurrence_with_modified_exception_before_range():
         calendar=cal,
         organization=org,
         title="Modified Occurrence",
-        start_time=_dt(2025, 1, 2, 15),  # moved to 3 PM
-        end_time=_dt(2025, 1, 2, 16),
+        start_time_tz_unaware=_dt(2025, 1, 2, 15),  # moved to 3 PM
+        end_time_tz_unaware=_dt(2025, 1, 2, 16),
+        timezone="UTC",
         parent_recurring_object=event,
         is_recurring_exception=True,
         external_id="modified-jan-2",
@@ -985,8 +1011,9 @@ def test_get_occurrences_in_range_with_cancelled_before_range():
         calendar_fk=cal,
         organization=org,
         title="Daily with Early Cancellation",
-        start_time=_dt(2025, 1, 1),
-        end_time=_dt(2025, 1, 1, 10),
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 10),
+        timezone="UTC",
         recurrence_rule_fk=rule,
     )
 
@@ -1023,8 +1050,9 @@ def test_get_occurrences_in_range_weekly_with_cancelled_before_range():
         calendar_fk=cal,
         organization=org,
         title="Weekly with Cancellation",
-        start_time=_dt(2025, 1, 6),  # Monday
-        end_time=_dt(2025, 1, 6, 10),
+        start_time_tz_unaware=_dt(2025, 1, 6),  # Monday
+        end_time_tz_unaware=_dt(2025, 1, 6, 10),
+        timezone="UTC",
         recurrence_rule_fk=rule,
     )
 
@@ -1067,8 +1095,9 @@ def test_get_next_occurrence_multiple_cancellations_before_range():
         calendar_fk=cal,
         organization=org,
         title="Daily with Multiple Cancellations",
-        start_time=_dt(2025, 1, 1),
-        end_time=_dt(2025, 1, 1, 10),
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 10),
+        timezone="UTC",
         recurrence_rule_fk=rule,
     )
 
@@ -1111,8 +1140,9 @@ def test_get_next_occurrence_mixed_exceptions_before_range():
         calendar_fk=cal,
         organization=org,
         title="Daily with Mixed Exceptions",
-        start_time=_dt(2025, 1, 1),
-        end_time=_dt(2025, 1, 1, 10),
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 10),
+        timezone="UTC",
         recurrence_rule_fk=rule,
     )
 
@@ -1125,8 +1155,9 @@ def test_get_next_occurrence_mixed_exceptions_before_range():
         calendar=cal,
         organization=org,
         title="Modified Jan 2",
-        start_time=_dt(2025, 1, 2, 15),
-        end_time=_dt(2025, 1, 2, 16),
+        start_time_tz_unaware=_dt(2025, 1, 2, 15),
+        end_time_tz_unaware=_dt(2025, 1, 2, 16),
+        timezone="UTC",
         parent_recurring_object=event,
         is_recurring_exception=True,
         external_id="modified-jan-2-mixed",
@@ -1164,9 +1195,10 @@ def test_event_bulk_modification_create_and_linking():
         calendar_fk=cal,
         organization=org,
         title="Parent",
-        start_time=_dt(2025, 1, 1),
         external_id="evt-parent-1",
-        end_time=_dt(2025, 1, 1, 10),
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 10),
+        timezone="UTC",
     )
 
     # Continuation event referencing parent via bulk_modification_parent
@@ -1175,9 +1207,10 @@ def test_event_bulk_modification_create_and_linking():
         calendar_fk=cal,
         organization=org,
         title="Continuation",
-        start_time=_dt(2025, 2, 1),
         external_id="evt-cont-1",
-        end_time=_dt(2025, 2, 1, 10),
+        start_time_tz_unaware=_dt(2025, 2, 1),
+        end_time_tz_unaware=_dt(2025, 2, 1, 10),
+        timezone="UTC",
         bulk_modification_parent=parent,
     )
 
@@ -1224,9 +1257,10 @@ def test_blocked_and_available_bulk_modification_parent_fields():
         calendar_fk=cal,
         organization=org,
         reason="Original",
-        start_time=_dt(2025, 1, 1),
         external_id="bt-parent-1",
-        end_time=_dt(2025, 1, 1, 1),
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 1),
+        timezone="UTC",
     )
 
     continuation_blocked = baker.make(
@@ -1234,9 +1268,10 @@ def test_blocked_and_available_bulk_modification_parent_fields():
         calendar_fk=cal,
         organization=org,
         reason="Continuation",
-        start_time=_dt(2025, 2, 1),
         external_id="bt-cont-1",
-        end_time=_dt(2025, 2, 1, 1),
+        start_time_tz_unaware=_dt(2025, 2, 1),
+        end_time_tz_unaware=_dt(2025, 2, 1, 1),
+        timezone="UTC",
         bulk_modification_parent=parent_blocked,
     )
 
@@ -1247,16 +1282,18 @@ def test_blocked_and_available_bulk_modification_parent_fields():
         AvailableTime,
         calendar_fk=cal,
         organization=org,
-        start_time=_dt(2025, 1, 5),
-        end_time=_dt(2025, 1, 5, 1),
+        start_time_tz_unaware=_dt(2025, 1, 5),
+        end_time_tz_unaware=_dt(2025, 1, 5, 1),
+        timezone="UTC",
     )
 
     continuation_available = baker.make(
         AvailableTime,
         calendar_fk=cal,
         organization=org,
-        start_time=_dt(2025, 2, 5),
-        end_time=_dt(2025, 2, 5, 1),
+        start_time_tz_unaware=_dt(2025, 2, 5),
+        end_time_tz_unaware=_dt(2025, 2, 5, 1),
+        timezone="UTC",
         bulk_modification_parent=parent_available,
     )
 
@@ -1276,9 +1313,10 @@ def test_blockedtime_and_availabletime_bulk_modification_records():
         calendar_fk=cal,
         organization=org,
         reason="Original BT",
-        start_time=_dt(2025, 1, 1),
         external_id="bt-parent-2",
-        end_time=_dt(2025, 1, 1, 1),
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 1),
+        timezone="UTC",
     )
 
     bulk_bt = baker.make(
@@ -1296,8 +1334,9 @@ def test_blockedtime_and_availabletime_bulk_modification_records():
         AvailableTime,
         calendar_fk=cal,
         organization=org,
-        start_time=_dt(2025, 1, 10),
-        end_time=_dt(2025, 1, 10, 1),
+        start_time_tz_unaware=_dt(2025, 1, 10),
+        end_time_tz_unaware=_dt(2025, 1, 10, 1),
+        timezone="UTC",
     )
 
     bulk_av = baker.make(

@@ -447,8 +447,9 @@ class TestGraphQLQueries:
             organization=calendar.organization,
             title="Test Event",
             description="Test Description",
-            start_time=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
-            end_time=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
         )
 
         query = """
@@ -501,8 +502,9 @@ class TestGraphQLQueries:
             BlockedTime,
             calendar=calendar,
             organization=calendar.organization,
-            start_time=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
-            end_time=datetime.datetime(2025, 9, 2, 13, 0, tzinfo=datetime.UTC),
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 13, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
         )
 
         query = """
@@ -550,8 +552,9 @@ class TestGraphQLQueries:
             AvailableTime,
             calendar=calendar,
             organization=calendar.organization,
-            start_time=datetime.datetime(2025, 9, 2, 14, 0, tzinfo=datetime.UTC),
-            end_time=datetime.datetime(2025, 9, 2, 15, 0, tzinfo=datetime.UTC),
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 14, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 15, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
         )
 
         query = """
@@ -796,6 +799,7 @@ class TestGraphQLQueries:
                 calendar_external_id="ext-cal",
                 start_time=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
                 end_time=datetime.datetime(2025, 9, 2, 13, 0, tzinfo=datetime.UTC),
+                timezone="UTC",
                 reason="maintenance",
                 external_id=None,
                 meta={},
@@ -1201,8 +1205,9 @@ class TestGraphQLQueries:
             organization=calendar.organization,
             title="Test Event",
             description="Test Description",
-            start_time=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
-            end_time=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             external_id="test-event-external-id",
         )
 
@@ -1213,6 +1218,7 @@ class TestGraphQLQueries:
             organization=calendar.organization,
             title="Other Event",
             external_id="other-event-external-id",
+            timezone="UTC",
         )
 
         query = """
@@ -1288,8 +1294,9 @@ class TestGraphQLQueries:
             BlockedTime,
             calendar_fk=calendar,
             organization=calendar.organization,
-            start_time=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
-            end_time=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             external_id="test-blocked-time-external-id",
         )
 
@@ -1299,6 +1306,7 @@ class TestGraphQLQueries:
             calendar_fk=calendar,
             organization=calendar.organization,
             external_id="other-blocked-time-external-id",
+            timezone="UTC",
         )
 
         query = """
@@ -1371,8 +1379,9 @@ class TestGraphQLQueries:
             AvailableTime,
             calendar_fk=calendar,
             organization=calendar.organization,
-            start_time=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
-            end_time=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
         )
 
         # Create another available time to ensure filtering works
@@ -1380,6 +1389,7 @@ class TestGraphQLQueries:
             AvailableTime,
             calendar_fk=calendar,
             organization=calendar.organization,
+            timezone="UTC",
         )
 
         query = """

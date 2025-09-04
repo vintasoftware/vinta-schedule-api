@@ -76,17 +76,20 @@ class CalendarIntegrationTestFactory:
         calendar=None,
         title="Test Event",
         description="Test Description",
-        start_time=None,
-        end_time=None,
+        start_time_tz_unaware=None,
+        end_time_tz_unaware=None,
+        timezone="UTC",
         external_id=None,
     ):
         if calendar is None:
             calendar = CalendarIntegrationTestFactory.create_calendar()
 
-        if start_time is None:
-            start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
-        if end_time is None:
-            end_time = start_time + datetime.timedelta(hours=1)
+        if start_time_tz_unaware is None:
+            start_time_tz_unaware = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+                hours=1
+            )
+        if end_time_tz_unaware is None:
+            end_time_tz_unaware = start_time_tz_unaware + datetime.timedelta(hours=1)
 
         if external_id is None:
             external_id = f"test_event_{uuid.uuid4().hex[:8]}"
@@ -97,8 +100,9 @@ class CalendarIntegrationTestFactory:
             organization=calendar.organization,
             title=title,
             description=description,
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time_tz_unaware,
+            end_time_tz_unaware=end_time_tz_unaware,
+            timezone=timezone,
             external_id=external_id,
         )
 
@@ -136,18 +140,21 @@ class CalendarIntegrationTestFactory:
         calendar=None,
         title="Recurring Event",
         description="Recurring Description",
-        start_time=None,
-        end_time=None,
+        start_time_tz_unaware=None,
+        end_time_tz_unaware=None,
+        timezone="UTC",
         external_id=None,
         recurrence_rule=None,
     ):
         if calendar is None:
             calendar = CalendarIntegrationTestFactory.create_calendar()
 
-        if start_time is None:
-            start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
-        if end_time is None:
-            end_time = start_time + datetime.timedelta(hours=1)
+        if start_time_tz_unaware is None:
+            start_time_tz_unaware = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+                hours=1
+            )
+        if end_time_tz_unaware is None:
+            end_time_tz_unaware = start_time_tz_unaware + datetime.timedelta(hours=1)
 
         if external_id is None:
             external_id = f"recurring_event_{uuid.uuid4().hex[:8]}"
@@ -163,8 +170,9 @@ class CalendarIntegrationTestFactory:
             organization=calendar.organization,
             title=title,
             description=description,
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time_tz_unaware,
+            end_time_tz_unaware=end_time_tz_unaware,
+            timezone=timezone,
             external_id=external_id,
             recurrence_rule=recurrence_rule,
         )
@@ -173,18 +181,21 @@ class CalendarIntegrationTestFactory:
     def create_blocked_time(
         calendar=None,
         reason="Test blocked time",
-        start_time=None,
-        end_time=None,
+        start_time_tz_unaware=None,
+        end_time_tz_unaware=None,
+        timezone="UTC",
         external_id=None,
         recurrence_rule=None,
     ):
         if calendar is None:
             calendar = CalendarIntegrationTestFactory.create_calendar()
 
-        if start_time is None:
-            start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
-        if end_time is None:
-            end_time = start_time + datetime.timedelta(hours=1)
+        if start_time_tz_unaware is None:
+            start_time_tz_unaware = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+                hours=1
+            )
+        if end_time_tz_unaware is None:
+            end_time_tz_unaware = start_time_tz_unaware + datetime.timedelta(hours=1)
 
         if external_id is None:
             external_id = f"blocked_time_{uuid.uuid4().hex[:8]}"
@@ -194,8 +205,9 @@ class CalendarIntegrationTestFactory:
             calendar=calendar,
             organization=calendar.organization,
             reason=reason,
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time_tz_unaware,
+            end_time_tz_unaware=end_time_tz_unaware,
+            timezone=timezone,
             external_id=external_id,
             recurrence_rule=recurrence_rule,
         )
@@ -203,24 +215,28 @@ class CalendarIntegrationTestFactory:
     @staticmethod
     def create_available_time(
         calendar=None,
-        start_time=None,
-        end_time=None,
+        start_time_tz_unaware=None,
+        end_time_tz_unaware=None,
+        timezone="UTC",
         recurrence_rule=None,
     ):
         if calendar is None:
             calendar = CalendarIntegrationTestFactory.create_calendar()
 
-        if start_time is None:
-            start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
-        if end_time is None:
-            end_time = start_time + datetime.timedelta(hours=1)
+        if start_time_tz_unaware is None:
+            start_time_tz_unaware = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+                hours=1
+            )
+        if end_time_tz_unaware is None:
+            end_time_tz_unaware = start_time_tz_unaware + datetime.timedelta(hours=1)
 
         return baker.make(
             AvailableTime,
             calendar=calendar,
             organization=calendar.organization,
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time_tz_unaware,
+            end_time_tz_unaware=end_time_tz_unaware,
+            timezone=timezone,
             recurrence_rule=recurrence_rule,
         )
 
@@ -312,15 +328,15 @@ class TestCalendarEventViewSet:
         CalendarIntegrationTestFactory.create_calendar_event(
             calendar=calendar,
             title="Meeting with client",
-            start_time=now + datetime.timedelta(hours=1),
-            end_time=now + datetime.timedelta(hours=2),
+            start_time_tz_unaware=now + datetime.timedelta(hours=1),
+            end_time_tz_unaware=now + datetime.timedelta(hours=2),
             external_id=f"meeting_{uuid.uuid4().hex[:8]}",
         )
         CalendarIntegrationTestFactory.create_calendar_event(
             calendar=calendar,
             title="Team standup",
-            start_time=now + datetime.timedelta(hours=3),
-            end_time=now + datetime.timedelta(hours=4),
+            start_time_tz_unaware=now + datetime.timedelta(hours=3),
+            end_time_tz_unaware=now + datetime.timedelta(hours=4),
             external_id=f"standup_{uuid.uuid4().hex[:8]}",
         )
 
@@ -374,8 +390,9 @@ class TestCalendarEventViewSet:
             calendar=calendar,
             title="New Event",
             description="Test Description",
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
+            timezone="UTC",
             external_id="new_external_id",
         )
 
@@ -396,6 +413,7 @@ class TestCalendarEventViewSet:
             "end_time": (
                 datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
             ).isoformat(),
+            "timezone": "UTC",
             "resource_allocations": [],
             "attendances": [],
             "external_attendances": [],
@@ -460,6 +478,7 @@ class TestCalendarEventViewSet:
             "description": "Updated important meeting",
             "start_time": calendar_event.start_time.isoformat(),
             "end_time": calendar_event.end_time.isoformat(),
+            "timezone": "UTC",
             "calendar": calendar_event.calendar.id,
             "resource_allocations": [],
             "attendances": [],
@@ -529,8 +548,9 @@ class TestRecurringCalendarEventViewSet:
             calendar=calendar,
             title="Weekly Meeting",
             description="Weekly team meeting",
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
+            timezone="UTC",
             external_id="recurring_weekly_meeting",
         )
 
@@ -547,6 +567,7 @@ class TestRecurringCalendarEventViewSet:
             "description": "Weekly team meeting",
             "start_time": start_time.isoformat(),
             "end_time": end_time.isoformat(),
+            "timezone": "UTC",
             "resource_allocations": [],
             "attendances": [],
             "external_attendances": [],
@@ -582,8 +603,8 @@ class TestRecurringCalendarEventViewSet:
             calendar=calendar,
             title="Daily Standup",
             description="Daily team standup",
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
             external_id="daily_standup",
         )
 
@@ -600,6 +621,7 @@ class TestRecurringCalendarEventViewSet:
             "description": "Daily team standup",
             "start_time": start_time.isoformat(),
             "end_time": end_time.isoformat(),
+            "timezone": "UTC",
             "resource_allocations": [],
             "attendances": [],
             "external_attendances": [],
@@ -631,6 +653,7 @@ class TestRecurringCalendarEventViewSet:
             "title": "Invalid Event",
             "start_time": (now + datetime.timedelta(hours=1)).isoformat(),
             "end_time": (now + datetime.timedelta(hours=2)).isoformat(),
+            "timezone": "UTC",
             "organization": calendar.organization.id,
             "calendar": calendar.id,
             "resource_allocations": [],
@@ -653,6 +676,7 @@ class TestRecurringCalendarEventViewSet:
             "description": "Test recurring",
             "start_time": (now + datetime.timedelta(hours=1)).isoformat(),
             "end_time": (now + datetime.timedelta(hours=2)).isoformat(),
+            "timezone": "UTC",
             "resource_allocations": [],
             "attendances": [],
             "external_attendances": [],
@@ -812,8 +836,8 @@ class TestRecurringCalendarEventViewSet:
             calendar=calendar,
             title="Weekly Meeting",
             description="Weekly team meeting",
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
             external_id="recurring_weekly_meeting",
         )
 
@@ -860,8 +884,8 @@ class TestRecurringCalendarEventViewSet:
             calendar=calendar,
             title="Weekly Meeting",
             description="Weekly team meeting",
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
             external_id="recurring_weekly_meeting",
         )
 
@@ -876,8 +900,8 @@ class TestRecurringCalendarEventViewSet:
             calendar=calendar,
             title="Modified Weekly Meeting",
             description="Modified weekly team meeting",
-            start_time=modified_start_time,
-            end_time=modified_end_time,
+            start_time_tz_unaware=modified_start_time,
+            end_time_tz_unaware=modified_end_time,
             external_id="modified_weekly_meeting",
         )
 
@@ -923,8 +947,8 @@ class TestRecurringCalendarEventViewSet:
         non_recurring_event = CalendarIntegrationTestFactory.create_calendar_event(
             calendar=calendar,
             title="Single Meeting",
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
             external_id="single_meeting",
         )
 
@@ -952,8 +976,8 @@ class TestRecurringCalendarEventViewSet:
         recurring_event = CalendarIntegrationTestFactory.create_recurring_event(
             calendar=calendar,
             title="Weekly Meeting",
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
             external_id="recurring_weekly_meeting",
         )
 
@@ -999,8 +1023,8 @@ class TestRecurringCalendarEventViewSet:
             calendar=calendar,
             title="Weekly Meeting",
             description="Weekly team meeting",
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
             external_id="recurring_weekly_meeting",
         )
 
@@ -1015,8 +1039,8 @@ class TestRecurringCalendarEventViewSet:
             calendar=calendar,
             title="Modified Weekly Meeting",
             description="Modified weekly team meeting",
-            start_time=modified_start_time,
-            end_time=modified_end_time,
+            start_time_tz_unaware=modified_start_time,
+            end_time_tz_unaware=modified_end_time,
             external_id="modified_weekly_meeting",
         )
 
@@ -1059,8 +1083,8 @@ class TestRecurringCalendarEventViewSet:
             calendar=calendar,
             title="Weekly Meeting",
             description="Weekly team meeting",
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
             external_id="recurring_weekly_meeting",
         )
 
@@ -1101,8 +1125,8 @@ class TestRecurringCalendarEventViewSet:
         recurring_event = CalendarIntegrationTestFactory.create_recurring_event(
             calendar=calendar,
             title="Weekly Meeting",
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
         )
 
         # Create calendar ownership for the user
@@ -1111,8 +1135,8 @@ class TestRecurringCalendarEventViewSet:
         continuation_event = CalendarIntegrationTestFactory.create_calendar_event(
             calendar=calendar,
             title="Modified Weekly Meeting",
-            start_time=start_time + datetime.timedelta(days=7),
-            end_time=end_time + datetime.timedelta(days=7),
+            start_time_tz_unaware=start_time + datetime.timedelta(days=7),
+            end_time_tz_unaware=end_time + datetime.timedelta(days=7),
         )
 
         mock_calendar_service = Mock()
@@ -1143,8 +1167,8 @@ class TestRecurringCalendarEventViewSet:
         non_recurring_event = CalendarIntegrationTestFactory.create_calendar_event(
             calendar=calendar,
             title="Single Meeting",
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
             external_id="single_meeting",
         )
 
@@ -1172,8 +1196,8 @@ class TestRecurringCalendarEventViewSet:
         recurring_event = CalendarIntegrationTestFactory.create_recurring_event(
             calendar=calendar,
             title="Weekly Meeting",
-            start_time=start_time,
-            end_time=end_time,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
         )
 
         # Create calendar ownership for the user
@@ -1692,15 +1716,15 @@ class TestCalendarEventFilters:
         CalendarIntegrationTestFactory.create_calendar_event(
             calendar=calendar,
             title="Early Event",
-            start_time=now + datetime.timedelta(hours=1),
-            end_time=now + datetime.timedelta(hours=2),
+            start_time_tz_unaware=now + datetime.timedelta(hours=1),
+            end_time_tz_unaware=now + datetime.timedelta(hours=2),
             external_id=f"early_{uuid.uuid4().hex[:8]}",
         )
         CalendarIntegrationTestFactory.create_calendar_event(
             calendar=calendar,
             title="Late Event",
-            start_time=now + datetime.timedelta(hours=3),
-            end_time=now + datetime.timedelta(hours=4),
+            start_time_tz_unaware=now + datetime.timedelta(hours=3),
+            end_time_tz_unaware=now + datetime.timedelta(hours=4),
             external_id=f"late_{uuid.uuid4().hex[:8]}",
         )
 
@@ -1725,15 +1749,15 @@ class TestCalendarEventFilters:
         CalendarIntegrationTestFactory.create_calendar_event(
             calendar=calendar,
             title="Short Event",
-            start_time=now + datetime.timedelta(hours=1),
-            end_time=now + datetime.timedelta(hours=2),
+            start_time_tz_unaware=now + datetime.timedelta(hours=1),
+            end_time_tz_unaware=now + datetime.timedelta(hours=2),
             external_id=f"short_{uuid.uuid4().hex[:8]}",
         )
         CalendarIntegrationTestFactory.create_calendar_event(
             calendar=calendar,
             title="Long Event",
-            start_time=now + datetime.timedelta(hours=1),
-            end_time=now + datetime.timedelta(hours=4),
+            start_time_tz_unaware=now + datetime.timedelta(hours=1),
+            end_time_tz_unaware=now + datetime.timedelta(hours=4),
             external_id=f"long_{uuid.uuid4().hex[:8]}",
         )
 
@@ -1854,6 +1878,7 @@ class TestBlockedTimeViewSet:
             "end_time": (
                 datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
             ).isoformat(),
+            "timezone": "UTC",
         }
 
         # Use container override to inject the mock service
@@ -1885,15 +1910,16 @@ class TestBlockedTimeViewSet:
 
         url = reverse("api:BlockedTimes-list")
         data = {
-            "calendar": calendar.id,  # Fixed: use calendar_id instead of calendar
+            "calendar": calendar.id,
             "reason": "Weekly team sync",
-            "start_time": (  # Fixed: use start_time (not start_datetime)
+            "start_time": (
                 datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
             ).isoformat(),
-            "end_time": (  # Fixed: use end_time (not end_datetime)
+            "end_time": (
                 datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
             ).isoformat(),
-            "rrule_string": "FREQ=WEEKLY;COUNT=10;BYDAY=MO",  # Fixed: use recurrence_rule instead of rrule
+            "timezone": "UTC",
+            "rrule_string": "FREQ=WEEKLY;COUNT=10;BYDAY=MO",
         }
 
         # Use container override to inject the mock service
@@ -1941,6 +1967,7 @@ class TestBlockedTimeViewSet:
                     "end_time": (
                         datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
                     ).isoformat(),
+                    "timezone": "UTC",
                 },
                 {
                     "calendar": calendar.id,
@@ -1951,6 +1978,7 @@ class TestBlockedTimeViewSet:
                     "end_time": (
                         datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=4)
                     ).isoformat(),
+                    "timezone": "UTC",
                 },
             ],
         }
@@ -2020,6 +2048,7 @@ class TestBlockedTimeViewSet:
             "reason": "Invalid time range",
             "start_time": (now + datetime.timedelta(hours=2)).isoformat(),
             "end_time": (now + datetime.timedelta(hours=1)).isoformat(),
+            "timezone": "UTC",
         }
         response = auth_client.post(url, data, format="json")
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
@@ -2058,6 +2087,7 @@ class TestBlockedTimeViewSet:
             "reason": "Updated reason",
             "start_time": blocked_time.start_time.isoformat(),
             "end_time": blocked_time.end_time.isoformat(),
+            "timezone": "UTC",
             "calendar": calendar.id,
         }
 
@@ -2504,6 +2534,7 @@ class TestAvailableTimeViewSet:
             "end_time": (
                 datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
             ).isoformat(),
+            "timezone": "UTC",
         }
 
         # Use container override to inject the mock service
@@ -2544,6 +2575,7 @@ class TestAvailableTimeViewSet:
             "end_time": (
                 datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
             ).isoformat(),
+            "timezone": "UTC",
             "rrule_string": "FREQ=DAILY;COUNT=5;BYDAY=MO,TU,WE,TH,FR",
         }
 
@@ -2595,6 +2627,7 @@ class TestAvailableTimeViewSet:
                     "end_time": (
                         datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
                     ).isoformat(),
+                    "timezone": "UTC",
                 },
                 {
                     "calendar": calendar.id,
@@ -2604,6 +2637,7 @@ class TestAvailableTimeViewSet:
                     "end_time": (
                         datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=4)
                     ).isoformat(),
+                    "timezone": "UTC",
                 },
             ],
         }
@@ -2642,8 +2676,8 @@ class TestAvailableTimeViewSet:
         url = reverse("api:AvailableTimes-expanded")
         params = {
             "calendar_id": calendar.id,
-            "start_time": "2024-01-01T00:00:00Z",  # Fixed: use start_time (not start_datetime)
-            "end_time": "2024-01-31T23:59:59Z",  # Fixed: use end_time (not end_datetime)
+            "start_time": "2024-01-01T00:00:00Z",
+            "end_time": "2024-01-31T23:59:59Z",
         }
 
         # Use container override to inject the mock service
@@ -2708,6 +2742,7 @@ class TestAvailableTimeViewSet:
         updated_data = {
             "start_time": available_time.start_time.isoformat(),
             "end_time": available_time.end_time.isoformat(),
+            "timezone": "UTC",
             "calendar": calendar.id,
         }
 
@@ -3139,15 +3174,16 @@ class TestRecurringBlockedAndAvailableTimeViewSets:
 
         url = reverse("api:BlockedTimes-list")
         data = {
-            "calendar": calendar.id,  # Fixed: use calendar_id instead of calendar
+            "calendar": calendar.id,
             "reason": "Daily standup",
-            "start_time": (  # Fixed: use start_time (not start_datetime)
+            "start_time": (
                 datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
             ).isoformat(),
-            "end_time": (  # Fixed: use end_time (not end_datetime)
+            "end_time": (
                 datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
             ).isoformat(),
-            "rrule_string": "FREQ=DAILY;INTERVAL=1;COUNT=20;BYDAY=MO,TU,WE,TH,FR",  # Fixed: use RRULE string instead of object
+            "timezone": "UTC",
+            "rrule_string": "FREQ=DAILY;INTERVAL=1;COUNT=20;BYDAY=MO,TU,WE,TH,FR",
         }
 
         # Use container override to inject the mock service
@@ -3184,14 +3220,15 @@ class TestRecurringBlockedAndAvailableTimeViewSets:
 
         url = reverse("api:AvailableTimes-list")
         data = {
-            "calendar": calendar.id,  # Fixed: use calendar_id instead of calendar
-            "start_time": (  # Fixed: use start_time (not start_datetime)
+            "calendar": calendar.id,
+            "start_time": (
                 datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
             ).isoformat(),
-            "end_time": (  # Fixed: use end_time (not end_datetime)
+            "end_time": (
                 datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
             ).isoformat(),
-            "rrule_string": "FREQ=WEEKLY;INTERVAL=1;COUNT=10;BYDAY=MO,WE,FR",  # Fixed: use RRULE string instead of object
+            "timezone": "UTC",
+            "rrule_string": "FREQ=WEEKLY;INTERVAL=1;COUNT=10;BYDAY=MO,WE,FR",
         }
 
         # Use container override to inject the mock service
@@ -3231,6 +3268,7 @@ class TestRecurringBlockedAndAvailableTimeViewSets:
             "reason": "Invalid recurrence rule",
             "start_time": (now + datetime.timedelta(hours=1)).isoformat(),
             "end_time": (now + datetime.timedelta(hours=2)).isoformat(),
+            "timezone": "UTC",
             "recurrence_rule": "INVALID_RRULE_FORMAT",  # This should cause validation error
         }
 

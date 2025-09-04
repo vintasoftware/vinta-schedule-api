@@ -1,4 +1,5 @@
 import datetime
+import zoneinfo
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
@@ -572,6 +573,8 @@ class CalendarEventSerializer(VirtualModelSerializer):
     is_recurring = serializers.SerializerMethodField(
         read_only=True, help_text="True if this is a recurring event"
     )
+    start_time = serializers.DateTimeField(required=True)
+    end_time = serializers.DateTimeField(required=True)
     parent_recurring_object = ParentEventSerializer(read_only=True)
 
     class Meta:
@@ -584,6 +587,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
             "description",
             "start_time",
             "end_time",
+            "timezone",
             "created",
             "modified",
             "external_id",
@@ -669,6 +673,19 @@ class CalendarEventSerializer(VirtualModelSerializer):
             required=False,
             write_only=True,
         )
+
+    def validate_timezone(self, timezone):
+        if not timezone:
+            raise serializers.ValidationError("Timezone is required.")
+
+        # check timezone is a valid IANA timezone
+        try:
+            datetime.timezone(datetime.timedelta(0)).tzname(None)  # Dummy call to access tzinfo
+            zoneinfo.ZoneInfo(timezone)
+        except zoneinfo.ZoneInfoNotFoundError as e:
+            raise serializers.ValidationError(f"Invalid timezone: {timezone}") from e
+
+        return timezone
 
     def validate_provider(self, provider):
         if not provider:
@@ -777,6 +794,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 description=validated_data.get("description"),
                 start_time=validated_data.get("start_time"),
                 end_time=validated_data.get("end_time"),
+                timezone=validated_data.get("timezone"),
                 resource_allocations=[
                     ResourceAllocationInputData(resource_id=ra["calendar"].id)
                     for ra in resource_allocations
@@ -872,6 +890,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 description=validated_data.get("description", instance.description),
                 start_time=validated_data.get("start_time", instance.start_time),
                 end_time=validated_data.get("end_time", instance.end_time),
+                timezone=validated_data.get("timezone", instance.timezone),
                 resource_allocations=[
                     ResourceAllocationInputData(resource_id=ra["calendar"].id)
                     for ra in resource_allocations
@@ -943,6 +962,8 @@ class BlockedTimeSerializer(VirtualModelSerializer):
     is_recurring = serializers.SerializerMethodField(
         read_only=True, help_text="True if this is a recurring blocked time"
     )
+    start_time = serializers.DateTimeField(required=True)
+    end_time = serializers.DateTimeField(required=True)
     parent_blocked_time = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
@@ -952,6 +973,7 @@ class BlockedTimeSerializer(VirtualModelSerializer):
             "id",
             "start_time",
             "end_time",
+            "timezone",
             "reason",
             "recurrence_rule",
             "rrule_string",
@@ -1078,6 +1100,7 @@ class BlockedTimeSerializer(VirtualModelSerializer):
             reason=cast(str, validated_data.get("reason", "")),
             start_time=validated_data["start_time"],
             end_time=validated_data["end_time"],
+            timezone=validated_data["timezone"],
             rrule_string=final_rrule_string,
         )
 
@@ -1108,6 +1131,19 @@ class BlockedTimeSerializer(VirtualModelSerializer):
 
         instance.save()
         return instance
+
+    def validate_timezone(self, timezone):
+        if not timezone:
+            raise serializers.ValidationError("Timezone is required.")
+
+        # check timezone is a valid IANA timezone
+        try:
+            datetime.timezone(datetime.timedelta(0)).tzname(None)  # Dummy call to access tzinfo
+            zoneinfo.ZoneInfo(timezone)
+        except zoneinfo.ZoneInfoNotFoundError as e:
+            raise serializers.ValidationError(f"Invalid timezone: {timezone}") from e
+
+        return timezone
 
     def validate(self, attrs):
         """Validate blocked time data."""
@@ -1155,6 +1191,8 @@ class AvailableTimeSerializer(VirtualModelSerializer):
     is_recurring = serializers.SerializerMethodField(
         read_only=True, help_text="True if this is a recurring available time"
     )
+    start_time = serializers.DateTimeField(required=True)
+    end_time = serializers.DateTimeField(required=True)
     parent_available_time = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
@@ -1164,6 +1202,7 @@ class AvailableTimeSerializer(VirtualModelSerializer):
             "id",
             "start_time",
             "end_time",
+            "timezone",
             "recurrence_rule",
             "rrule_string",
             "is_recurring_instance",
@@ -1286,6 +1325,7 @@ class AvailableTimeSerializer(VirtualModelSerializer):
             calendar=calendar,
             start_time=validated_data["start_time"],
             end_time=validated_data["end_time"],
+            timezone=validated_data["timezone"],
             rrule_string=final_rrule_string,
         )
 

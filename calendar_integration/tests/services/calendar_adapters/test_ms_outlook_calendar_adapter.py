@@ -50,6 +50,7 @@ def mock_ms_event() -> MSGraphEvent:
         body_content="Test event description",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         location="Test Location",
         attendees=[
             {
@@ -101,6 +102,7 @@ def sample_event_input_data() -> CalendarEventAdapterInputData:
         description="Test Description",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[
             EventAttendeeData(
                 email="attendee@example.com",
@@ -120,6 +122,7 @@ def sample_recurring_event_input_data() -> CalendarEventAdapterInputData:
         description="Weekly recurring meeting",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=10;BYDAY=MO",
     )
@@ -385,6 +388,7 @@ def test_create_recurring_event(
         body_content="Weekly recurring meeting",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         location="Test Location",
         attendees=[],
         organizer={"emailAddress": {"address": "organizer@example.com", "name": "Organizer"}},
@@ -476,6 +480,7 @@ def test_update_event(mock_client_class, mock_settings, mock_credentials, mock_m
         description="Updated Description",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[EventAttendeeData(email="test@example.com", name="Test", status="accepted")],
         status="confirmed",
         original_payload={},
@@ -1929,6 +1934,7 @@ def test_empty_attendees_list(mock_client_class, mock_settings, mock_credentials
         body_content="Test Description",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         location="Test Location",
         attendees=[],  # Empty attendees
         organizer={},
@@ -1964,6 +1970,7 @@ def test_malformed_attendee_data(mock_client_class, mock_settings, mock_credenti
         body_content="Test Description",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         location="Test Location",
         attendees=[
             {
@@ -2013,6 +2020,7 @@ def test_unknown_rsvp_status(mock_client_class, mock_settings, mock_credentials)
         body_content="Test Description",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         location="Test Location",
         attendees=[
             {
@@ -2300,6 +2308,7 @@ def test_create_delta_events_iterator_with_pagination(
         body_content="Test event description 2",
         start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         location="Test Location 2",
         attendees=[],
         organizer={"emailAddress": {"address": "organizer@example.com", "name": "Organizer"}},

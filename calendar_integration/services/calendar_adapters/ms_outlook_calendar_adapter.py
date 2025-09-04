@@ -188,6 +188,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
             description=ms_event.body_content,
             start_time=ms_event.start_time,
             end_time=ms_event.end_time,
+            timezone=ms_event.timezone,
             attendees=attendees,
             status=status,
             original_payload=ms_event.original_payload,
@@ -955,6 +956,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
             description=ms_event.body_content,
             start_time=ms_event.start_time,
             end_time=ms_event.end_time,
+            timezone=ms_event.timezone,
             attendees=[
                 EventAttendeeData(
                     email=attendee.get("email_address", {}).get("address", ""),

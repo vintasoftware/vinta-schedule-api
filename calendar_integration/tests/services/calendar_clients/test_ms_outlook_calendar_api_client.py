@@ -292,7 +292,7 @@ def test_list_events_with_filters(client, sample_event_data):
             skip=5,
             select=["id", "subject"],
             filter_query="contains(subject,'meeting')",
-            timezone="America/New_York",
+            timezone="UTC",
         )
     )
 

@@ -4044,6 +4044,9 @@ components:
         end_time:
           type: string
           format: date-time
+        timezone:
+          type: string
+          maxLength: 50
         recurrence_rule:
           allOf:
           - $ref: '#/components/schemas/RecurrenceRule'
@@ -4099,6 +4102,7 @@ components:
       - parent_available_time
       - recurrence_id
       - start_time
+      - timezone
     AvailableTimeBulkModification:
       type: object
       properties:
@@ -4245,6 +4249,9 @@ components:
         end_time:
           type: string
           format: date-time
+        timezone:
+          type: string
+          maxLength: 50
         reason:
           type: string
           maxLength: 255
@@ -4303,6 +4310,7 @@ components:
       - modified
       - parent_blocked_time
       - start_time
+      - timezone
     BlockedTimeBulkModification:
       type: object
       properties:
@@ -4470,6 +4478,9 @@ components:
         end_time:
           type: string
           format: date-time
+        timezone:
+          type: string
+          maxLength: 50
         created:
           type: string
           format: date-time
@@ -4546,6 +4557,7 @@ components:
       - parent_recurring_object
       - resource_allocations
       - start_time
+      - timezone
       - title
     CalendarTypeEnum:
       enum:
@@ -4937,9 +4949,11 @@ components:
         start_time:
           type: string
           format: date-time
+          readOnly: true
         end_time:
           type: string
           format: date-time
+          readOnly: true
         created:
           type: string
           format: date-time
@@ -4969,6 +4983,9 @@ components:
         end_time:
           type: string
           format: date-time
+        timezone:
+          type: string
+          maxLength: 50
         recurrence_rule:
           allOf:
           - $ref: '#/components/schemas/RecurrenceRule'
@@ -5049,6 +5066,9 @@ components:
         end_time:
           type: string
           format: date-time
+        timezone:
+          type: string
+          maxLength: 50
         reason:
           type: string
           maxLength: 255
@@ -5160,6 +5180,9 @@ components:
         end_time:
           type: string
           format: date-time
+        timezone:
+          type: string
+          maxLength: 50
         created:
           type: string
           format: date-time

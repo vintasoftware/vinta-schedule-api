@@ -444,6 +444,7 @@ class TestEventOperations:
             description="Test Description",
             start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             attendees=[
                 EventAttendeeData(email="test@example.com", name="Test User", status="accepted")
             ],
@@ -476,6 +477,7 @@ class TestEventOperations:
             description="Test Description",
             start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             attendees=[
                 EventAttendeeData(email="test@example.com", name="Test User", status="accepted")
             ],
@@ -501,6 +503,7 @@ class TestEventOperations:
             description="Weekly recurring meeting",
             start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             attendees=[],
             recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=10;BYDAY=MO",
         )
@@ -525,6 +528,7 @@ class TestEventOperations:
             description="Weekly recurring meeting",
             start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             attendees=[],
             recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=10;BYDAY=MO",
         )
@@ -550,6 +554,7 @@ class TestEventOperations:
             description="Test Description",
             start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             attendees=[],
             status="confirmed",
         )
@@ -572,6 +577,7 @@ class TestEventOperations:
             description="Updated Description",
             start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             attendees=[],
         )
 
@@ -583,6 +589,7 @@ class TestEventOperations:
             description="Updated Description",
             start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             attendees=[],
         )
 
@@ -645,6 +652,7 @@ class TestEventOperations:
                 description="Description 1",
                 start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
                 end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+                timezone="UTC",
                 attendees=[],
             ),
             CalendarEventData(
@@ -654,6 +662,7 @@ class TestEventOperations:
                 description="Description 2",
                 start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
                 end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+                timezone="UTC",
                 attendees=[],
             ),
         ]
@@ -705,6 +714,7 @@ class TestEventOperations:
             description="Updated Description",
             start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             attendees=[],
         )
 
@@ -928,6 +938,7 @@ class TestEventDataConversion:
             description="Test Description",
             start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             attendees=[
                 EventAttendeeData(
                     email="attendee1@example.com", name="Attendee 1", status="accepted"
