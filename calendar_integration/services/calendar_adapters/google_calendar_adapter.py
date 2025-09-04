@@ -298,10 +298,11 @@ class GoogleCalendarAdapter(CalendarAdapter):
             description=created_event.get("description", ""),
             start_time=datetime.datetime.strptime(
                 created_event["start"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=created_event.get("start", {}).get("timeZone")),
+            ).replace(tzinfo=datetime.UTC),
             end_time=datetime.datetime.strptime(
                 created_event["end"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=created_event.get("end", {}).get("timeZone")),
+            ).replace(tzinfo=datetime.UTC),
+            timezone=created_event.get("start", {}).get("timeZone"),
             original_payload=created_event,
             recurrence_rule=recurrence_rule,
             recurring_event_id=created_event.get("recurringEventId"),
@@ -336,7 +337,8 @@ class GoogleCalendarAdapter(CalendarAdapter):
             ).replace(tzinfo=event.get("start", {}).get("timeZone")),
             end_time=datetime.datetime.strptime(
                 event["end"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=event.get("end", {}).get("timeZone")),
+            ).replace(tzinfo=datetime.UTC),
+            timezone=event.get("end", {}).get("timeZone"),
             original_payload=event,
             recurrence_rule=recurrence_rule,
             recurring_event_id=event.get("recurringEventId"),
@@ -421,7 +423,8 @@ class GoogleCalendarAdapter(CalendarAdapter):
             ).replace(tzinfo=event.get("start", {}).get("timeZone")),
             end_time=datetime.datetime.strptime(
                 event["end"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=event.get("end", {}).get("timeZone")),
+            ).replace(tzinfo=datetime.UTC),
+            timezone=event.get("start", {}).get("timeZone"),
             original_payload=event,
             attendees=[
                 EventAttendeeData(
@@ -478,10 +481,11 @@ class GoogleCalendarAdapter(CalendarAdapter):
             description=updated_event.get("description", ""),
             start_time=datetime.datetime.strptime(
                 updated_event["start"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=updated_event.get("start", {}).get("timeZone")),
+            ).replace(tzinfo=datetime.UTC),
             end_time=datetime.datetime.strptime(
                 updated_event["end"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=updated_event.get("end", {}).get("timeZone")),
+            ).replace(tzinfo=datetime.UTC),
+            timezone=updated_event.get("start", {}).get("timeZone"),
             original_payload=updated_event,
             recurrence_rule=recurrence_rule,
             recurring_event_id=updated_event.get("recurringEventId"),

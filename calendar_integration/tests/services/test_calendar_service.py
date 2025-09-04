@@ -1,4 +1,5 @@
 import datetime
+import zoneinfo
 from datetime import timedelta
 from unittest.mock import MagicMock, Mock, patch
 
@@ -198,8 +199,9 @@ def calendar_event(calendar, db, organization):
         calendar_fk=calendar,
         title="Test Event",
         description="A test event",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         external_id="event_123",
         organization=organization,
     )
@@ -215,6 +217,7 @@ def sample_event_data():
         description="A sample event",
         start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[
             EventAttendeeData(email="attendee@example.com", name="Test Attendee", status="accepted")
         ],
@@ -248,6 +251,7 @@ def sample_unavailable_window():
             description="A sample event",
             start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             attendees=[],
             status="confirmed",
         ),
@@ -262,6 +266,7 @@ def sample_event_input_data():
         description="A new event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendances=[],
         external_attendances=[],
         resource_allocations=[],
@@ -279,6 +284,7 @@ def sample_event_input_data_with_attendances(db):
         description="An event with attendances",
         start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendances=[
             EventAttendanceInputData(user_id=user1.id),
             EventAttendanceInputData(user_id=user2.id),
@@ -317,6 +323,7 @@ def sample_event_input_data_with_resources(organization, db):
         description="An event with resource allocations",
         start_time=datetime.datetime(2025, 6, 22, 16, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 17, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendances=[],
         external_attendances=[],
         resource_allocations=[
@@ -696,6 +703,7 @@ def test_create_event(
         description="A new event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -734,6 +742,7 @@ def test_create_recurring_event(
         description="Recurring weekly meeting",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendances=[],
         external_attendances=[],
         resource_allocations=[],
@@ -747,6 +756,7 @@ def test_create_recurring_event(
         description="Recurring weekly meeting",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -799,6 +809,7 @@ def test_create_recurring_event_helper_method(
         description="Weekly meeting created via helper",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -815,6 +826,7 @@ def test_create_recurring_event_helper_method(
         description="Weekly meeting created via helper",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         recurrence_rule=recurrence_rule,
     )
 
@@ -851,6 +863,7 @@ def test_create_recurring_exception_modified(
         description="Parent recurring meeting",
         start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),  # Monday
         end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -863,6 +876,7 @@ def test_create_recurring_exception_modified(
         description="Modified description",
         start_time=datetime.datetime(2025, 6, 30, 10, 30, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 30, 11, 30, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -895,6 +909,7 @@ def test_create_recurring_exception_modified(
             description="Parent recurring meeting",
             start_time=parent_created_event_data.start_time,
             end_time=parent_created_event_data.end_time,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -965,6 +980,7 @@ def test_create_recurring_exception_cancelled(
         description="Parent recurring meeting",
         start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -993,6 +1009,7 @@ def test_create_recurring_exception_cancelled(
             description="Parent recurring meeting",
             start_time=parent_created_event_data.start_time,
             end_time=parent_created_event_data.end_time,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -1051,6 +1068,7 @@ def test_create_recurring_exception_on_master_event_with_future_occurrences(
         description="Master recurring meeting",
         start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),  # Monday
         end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1065,6 +1083,7 @@ def test_create_recurring_exception_on_master_event_with_future_occurrences(
         description="Master recurring meeting",
         start_time=datetime.datetime(2025, 6, 30, 10, 0, tzinfo=datetime.UTC),  # Following Monday
         end_time=datetime.datetime(2025, 6, 30, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1099,6 +1118,7 @@ def test_create_recurring_exception_on_master_event_with_future_occurrences(
             description="Master recurring meeting",
             start_time=parent_created_event_data.start_time,
             end_time=parent_created_event_data.end_time,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -1165,6 +1185,7 @@ def test_create_recurring_exception_on_master_event_no_future_occurrences(
         description="Only one occurrence",
         start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1195,6 +1216,7 @@ def test_create_recurring_exception_on_master_event_no_future_occurrences(
             description="Only one occurrence",
             start_time=parent_created_event_data.start_time,
             end_time=parent_created_event_data.end_time,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -1263,6 +1285,7 @@ def test_create_recurring_exception_on_master_preserves_attendances_and_resource
         description="Has attendees and resources",
         start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1276,6 +1299,7 @@ def test_create_recurring_exception_on_master_preserves_attendances_and_resource
         description="Has attendees and resources",
         start_time=datetime.datetime(2025, 6, 30, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 30, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1309,6 +1333,7 @@ def test_create_recurring_exception_on_master_preserves_attendances_and_resource
                 description="Has attendees and resources",
                 start_time=parent_created_event_data.start_time,
                 end_time=parent_created_event_data.end_time,
+                timezone="UTC",
                 recurrence_rule=recurrence_rule,
                 attendances=[
                     EventAttendanceInputData(user_id=additional_user.id),
@@ -1391,6 +1416,7 @@ def test_create_recurring_event_bulk_modification_creates_continuation_and_recor
         description="Parent recurring",
         start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1404,6 +1430,7 @@ def test_create_recurring_event_bulk_modification_creates_continuation_and_recor
         description="Continuation recurring",
         start_time=datetime.datetime(2025, 9, 8, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 8, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1422,6 +1449,7 @@ def test_create_recurring_event_bulk_modification_creates_continuation_and_recor
         description="Parent recurring",
         start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1449,6 +1477,7 @@ def test_create_recurring_event_bulk_modification_creates_continuation_and_recor
             description="Parent recurring",
             start_time=parent_created_event_data.start_time,
             end_time=parent_created_event_data.end_time,
+            timezone="UTC",
             recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=5;BYDAY=MO",
         )
 
@@ -1504,6 +1533,7 @@ def test_create_recurring_event_bulk_modification_cancelled_records_only(
         # Use a Monday to match BYDAY=MO in the recurrence rule
         start_time=datetime.datetime(2025, 10, 6, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 10, 6, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1519,6 +1549,7 @@ def test_create_recurring_event_bulk_modification_cancelled_records_only(
         description="Parent recurring",
         start_time=datetime.datetime(2025, 10, 6, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 10, 6, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1546,6 +1577,7 @@ def test_create_recurring_event_bulk_modification_cancelled_records_only(
             description="Parent recurring",
             start_time=parent_created_event_data.start_time,
             end_time=parent_created_event_data.end_time,
+            timezone="UTC",
             recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=5;BYDAY=MO",
         )
 
@@ -1585,8 +1617,9 @@ def test_create_recurring_blocked_time_bulk_modification_creates_continuation_an
 
     parent_blocked = BlockedTime.objects.create(
         calendar_fk=calendar,
-        start_time=parent_start,
-        end_time=parent_end,
+        start_time_tz_unaware=parent_start,
+        end_time_tz_unaware=parent_end,
+        timezone="UTC",
         reason="Original Block",
         organization=calendar.organization,
         recurrence_rule_fk=rule_blocked,
@@ -1632,8 +1665,9 @@ def test_create_recurring_available_time_bulk_modification_cancelled_records_onl
 
     parent_available = AvailableTime.objects.create(
         calendar_fk=calendar,
-        start_time=parent_start,
-        end_time=parent_end,
+        start_time_tz_unaware=parent_start,
+        end_time_tz_unaware=parent_end,
+        timezone="UTC",
         organization=calendar.organization,
         recurrence_rule_fk=rule_available,
     )
@@ -1695,6 +1729,7 @@ def test_get_recurring_event_instances_basic_recurring(
         description="Team standup",
         start_time=start,
         end_time=end,
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1718,6 +1753,7 @@ def test_get_recurring_event_instances_basic_recurring(
             description="Team standup",
             start_time=start,
             end_time=end,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -1748,6 +1784,7 @@ def test_get_recurring_event_instances_with_modified_exception(
         description="Sync meeting",
         start_time=start,
         end_time=end,
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1760,6 +1797,7 @@ def test_get_recurring_event_instances_with_modified_exception(
         description="Adjusted time",
         start_time=start + datetime.timedelta(weeks=1, minutes=30),
         end_time=start + datetime.timedelta(weeks=1, minutes=90),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1785,6 +1823,7 @@ def test_get_recurring_event_instances_with_modified_exception(
             description="Sync meeting",
             start_time=start,
             end_time=end,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -1807,6 +1846,7 @@ def test_get_recurring_event_instances_with_modified_exception(
             modified_description="Adjusted time",
             modified_start_time=modified_start,
             modified_end_time=modified_end,
+            modified_timezone="UTC",
             is_cancelled=False,
         )
     assert modified_event is not None
@@ -1850,6 +1890,7 @@ def test_get_recurring_event_instances_with_cancelled_exception(
         description="Training session",
         start_time=start,
         end_time=end,
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1873,6 +1914,7 @@ def test_get_recurring_event_instances_with_cancelled_exception(
             description="Training session",
             start_time=start,
             end_time=end,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -1925,6 +1967,7 @@ def test_get_calendar_events_expanded_non_recurring(
         description="In range",
         start_time=inside_start,
         end_time=inside_end,
+        timezone="UTC",
         attendances=[],
         external_attendances=[],
         resource_allocations=[],
@@ -1937,6 +1980,7 @@ def test_get_calendar_events_expanded_non_recurring(
         description="Out of range",
         start_time=outside_start,
         end_time=outside_end,
+        timezone="UTC",
         attendances=[],
         external_attendances=[],
         resource_allocations=[],
@@ -1949,6 +1993,7 @@ def test_get_calendar_events_expanded_non_recurring(
         description="In range",
         start_time=inside_start,
         end_time=inside_end,
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -1960,6 +2005,7 @@ def test_get_calendar_events_expanded_non_recurring(
         description="Out of range",
         start_time=outside_start,
         end_time=outside_end,
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2008,6 +2054,7 @@ def test_get_calendar_events_expanded_recurring_expansion(
         description="Planning meeting",
         start_time=start,
         end_time=end,
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2028,6 +2075,7 @@ def test_get_calendar_events_expanded_recurring_expansion(
             description="Planning meeting",
             start_time=start,
             end_time=end,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -2066,6 +2114,7 @@ def test_get_calendar_events_expanded_with_exceptions(
         description="Review meeting",
         start_time=start,
         end_time=end,
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2078,6 +2127,7 @@ def test_get_calendar_events_expanded_with_exceptions(
         description="Adjusted",
         start_time=start + datetime.timedelta(weeks=1, minutes=30),
         end_time=start + datetime.timedelta(weeks=1, minutes=90),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2101,6 +2151,7 @@ def test_get_calendar_events_expanded_with_exceptions(
             description="Review meeting",
             start_time=start,
             end_time=end,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -2124,6 +2175,7 @@ def test_get_calendar_events_expanded_with_exceptions(
             modified_description="Adjusted",
             modified_start_time=modified_start,
             modified_end_time=modified_end,
+            modified_timezone="UTC",
             is_cancelled=False,
         )
 
@@ -2169,6 +2221,7 @@ def test_delete_recurring_event_series_deletes_all(
         description="Parent recurring meeting",
         start_time=start,
         end_time=end,
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2181,6 +2234,7 @@ def test_delete_recurring_event_series_deletes_all(
         description="Modified occurrence",
         start_time=start + datetime.timedelta(weeks=1, minutes=30),
         end_time=start + datetime.timedelta(weeks=1, minutes=90),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2204,6 +2258,7 @@ def test_delete_recurring_event_series_deletes_all(
             description="Parent recurring meeting",
             start_time=start,
             end_time=end,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -2227,6 +2282,7 @@ def test_delete_recurring_event_series_deletes_all(
             modified_description="Modified occurrence",
             modified_start_time=mod_start,
             modified_end_time=mod_end,
+            modified_timezone="UTC",
             is_cancelled=False,
         )
 
@@ -2295,6 +2351,7 @@ def test_delete_recurring_modified_instance_creates_cancellation_exception(
         description="Parent",
         start_time=start,
         end_time=end,
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2307,6 +2364,7 @@ def test_delete_recurring_modified_instance_creates_cancellation_exception(
         description="Modified occ",
         start_time=start + datetime.timedelta(weeks=1, minutes=15),
         end_time=start + datetime.timedelta(weeks=1, minutes=75),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2329,6 +2387,7 @@ def test_delete_recurring_modified_instance_creates_cancellation_exception(
             description="Parent",
             start_time=start,
             end_time=end,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -2351,6 +2410,7 @@ def test_delete_recurring_modified_instance_creates_cancellation_exception(
             modified_description="Modified occ",
             modified_start_time=mod_start,
             modified_end_time=mod_end,
+            modified_timezone="UTC",
             is_cancelled=False,
         )
     assert modified_instance is not None
@@ -2390,6 +2450,7 @@ def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only
         description="Parent",
         start_time=start,
         end_time=end,
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2402,6 +2463,7 @@ def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only
         description="Modified occ",
         start_time=start + datetime.timedelta(weeks=1, minutes=10),
         end_time=start + datetime.timedelta(weeks=1, minutes=70),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2424,6 +2486,7 @@ def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only
             description="Parent",
             start_time=start,
             end_time=end,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -2446,6 +2509,7 @@ def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only
             modified_description="Modified occ",
             modified_start_time=mod_start,
             modified_end_time=mod_end,
+            modified_timezone="UTC",
             is_cancelled=False,
         )
     assert modified_instance is not None
@@ -2479,6 +2543,7 @@ def test_create_event_with_resources(
         description="An event with resource allocations",
         start_time=datetime.datetime(2025, 6, 22, 16, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 17, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2516,6 +2581,7 @@ def test_update_event(social_account, social_token, mock_google_adapter, calenda
         description="Updated description",
         start_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2526,6 +2592,7 @@ def test_update_event(social_account, social_token, mock_google_adapter, calenda
         description="Updated description",
         start_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendances=[],
         external_attendances=[],
         resource_allocations=[],
@@ -2563,6 +2630,7 @@ def test_create_event_with_attendances(
         description="An event with attendances",
         start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2637,6 +2705,7 @@ def test_update_event_with_attendances(
         description="Updated description",
         start_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2647,6 +2716,7 @@ def test_update_event_with_attendances(
         description="Updated description",
         start_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendances=[
             EventAttendanceInputData(user_id=new_user1.id),
             EventAttendanceInputData(user_id=new_user2.id),
@@ -2725,6 +2795,7 @@ def test_update_event_with_resource_allocations(
         description="Updated description",
         start_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -2735,6 +2806,7 @@ def test_update_event_with_resource_allocations(
         description="Updated description",
         start_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendances=[],
         external_attendances=[],
         resource_allocations=[
@@ -2804,6 +2876,7 @@ def test_transfer_event(
         description="A test event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[
             EventAttendeeData(email="user@example.com", name="User", status="accepted"),
             EventAttendeeData(email="room@example.com", name="Room", status="accepted"),
@@ -2819,6 +2892,7 @@ def test_transfer_event(
         description="A test event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
     )
     mock_google_adapter.create_event.return_value = new_event_data
@@ -2835,8 +2909,9 @@ def test_transfer_event(
             calendar_fk=target_calendar,
             title="Test Event",
             external_id="new_event_123",
-            start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-            end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             organization=calendar_event.organization,
         )
 
@@ -2883,6 +2958,7 @@ def test_transfer_event_with_resources(
         description="A test event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[
             EventAttendeeData(email="user@example.com", name="User", status="accepted"),
             EventAttendeeData(email="room@example.com", name="Room", status="accepted"),
@@ -2898,6 +2974,7 @@ def test_transfer_event_with_resources(
         description="A test event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
     )
     mock_google_adapter.create_event.return_value = new_event_data
@@ -3115,6 +3192,7 @@ def test_process_new_event_recurring_master(
         description="Master recurring event",
         start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         recurrence_rule="FREQ=WEEKLY;COUNT=3;BYDAY=MO",
     )
@@ -3151,8 +3229,9 @@ def test_process_new_event_recurring_instance_with_parent(
         organization=calendar.organization,
         title="Parent Rec",
         description="Parent",
-        start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         external_id="parent_rec_123",
         recurrence_rule_fk=rule,
     )
@@ -3164,6 +3243,7 @@ def test_process_new_event_recurring_instance_with_parent(
         description="Instance",
         start_time=datetime.datetime(2025, 9, 8, 9, 15, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 8, 10, 15, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         recurring_event_id=parent_event.external_id,
     )
@@ -3199,6 +3279,7 @@ def test_process_new_event_recurring_instance_parent_missing_creates_blocked_tim
         description="Instance without parent",
         start_time=datetime.datetime(2025, 9, 15, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 15, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         recurring_event_id="missing_parent_999",
     )
@@ -3224,6 +3305,7 @@ def test_process_existing_event_cancelled(
         description="",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         status="cancelled",
     )
@@ -3252,6 +3334,7 @@ def test_process_existing_event_update(
         description="Updated description",
         start_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
     )
 
@@ -3273,8 +3356,9 @@ def test_process_existing_blocked_time(social_account, social_token, mock_google
     """Test processing an existing blocked time updates it."""
     blocked_time = BlockedTime.objects.create(
         calendar_fk=calendar,
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Original reason",
         external_id="block_123",
         organization=calendar.organization,
@@ -3287,6 +3371,7 @@ def test_process_existing_blocked_time(social_account, social_token, mock_google
         description="",
         start_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         status="confirmed",
     )
@@ -3320,6 +3405,7 @@ def test_process_event_attendees_new_user(
         description="",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[
             EventAttendeeData(email="attendee@example.com", name="Test Attendee", status="accepted")
         ],
@@ -3349,6 +3435,7 @@ def test_process_event_attendees_external_user(
         description="",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[
             EventAttendeeData(
                 email="external@example.com", name="External Attendee", status="pending"
@@ -3384,16 +3471,18 @@ def test_handle_deletions_for_full_sync(
         calendar_fk=calendar,
         title="Event 1",
         external_id="event_1",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
     event2 = CalendarEvent.objects.create(
         calendar_fk=calendar,
         title="Event 2",
         external_id="event_2",
-        start_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
 
@@ -3428,8 +3517,9 @@ def test_apply_sync_changes(social_account, social_token, mock_google_adapter, c
     # Add blocked time to create
     blocked_time = BlockedTime(
         calendar_fk=calendar,
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="New blocked time",
         external_id="block_new",
         organization=calendar.organization,
@@ -3441,8 +3531,9 @@ def test_apply_sync_changes(social_account, social_token, mock_google_adapter, c
         calendar_fk=calendar,
         title="Original Title",
         external_id="event_existing",
-        start_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
     existing_event.title = "Updated Title"
@@ -3479,8 +3570,9 @@ def test_apply_sync_changes_with_recurrence_rules_and_events(
         calendar_fk=calendar,
         title="Team Sync",
         description="Weekly team sync",
-        start_time=datetime.datetime(2025, 6, 23, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 23, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         external_id="recurring_event_1",
         organization=calendar.organization,
         recurrence_rule_fk=rule,
@@ -3513,22 +3605,31 @@ def test_remove_available_time_windows_overlap(
     # Create available time windows
     available_time1 = AvailableTime.objects.create(
         calendar_fk=calendar,
-        start_time=datetime.datetime(2025, 6, 22, 9, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 10, 30, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 30, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
     available_time2 = AvailableTime.objects.create(
         calendar_fk=calendar,
-        start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 16, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 16, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
 
     # Create blocked time that overlaps with available_time1
     blocked_time = BlockedTime(
         calendar_fk=calendar,
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC).replace(
+            tzinfo=zoneinfo.ZoneInfo("UTC")
+        ),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC).replace(
+            tzinfo=zoneinfo.ZoneInfo("UTC")
+        ),
+        timezone="UTC",
         reason="Blocked",
         external_id="block_overlap",
         organization=calendar.organization,
@@ -3539,8 +3640,15 @@ def test_remove_available_time_windows_overlap(
         calendar_fk=calendar,
         title="Event",
         external_id="event_overlap",
-        start_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 16, 30, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 16, 30, tzinfo=datetime.UTC),
+        start_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC).replace(
+            tzinfo=zoneinfo.ZoneInfo("UTC")
+        ),
+        end_time=datetime.datetime(2025, 6, 22, 16, 30, tzinfo=datetime.UTC).replace(
+            tzinfo=zoneinfo.ZoneInfo("UTC")
+        ),
+        timezone="UTC",
         organization=calendar.organization,
     )
 
@@ -3571,15 +3679,17 @@ def test_get_existing_calendar_data(social_account, social_token, mock_google_ad
         calendar_fk=calendar,
         title="Test Event",
         external_id="event_123",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
 
     blocked_time = BlockedTime.objects.create(
         calendar_fk=calendar,
-        start_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Blocked",
         external_id="block_123",
         organization=calendar.organization,
@@ -3708,6 +3818,7 @@ def test_create_event_with_available_windows(
                 description="Test Description",
                 start_time=start_time,
                 end_time=end_time,
+                timezone="UTC",
                 attendances=[],
                 external_attendances=[],
                 resource_allocations=[],
@@ -3769,6 +3880,7 @@ def test_create_event_no_available_windows(
                 description="Test Description",
                 start_time=start_time,
                 end_time=end_time,
+                timezone="UTC",
                 attendances=[],
                 external_attendances=[],
                 resource_allocations=[],
@@ -3841,6 +3953,7 @@ def test_create_event_with_partial_availability(
                 description="Partial Description",
                 start_time=start_time,
                 end_time=end_time,
+                timezone="UTC",
                 attendances=[],
                 external_attendances=[],
                 resource_allocations=[],
@@ -3925,6 +4038,7 @@ def test_create_event_with_multiple_availability_windows(
                 description="Multi Window Description",
                 start_time=start_time,
                 end_time=end_time,
+                timezone="UTC",
                 attendances=[],
                 external_attendances=[],
                 resource_allocations=[],
@@ -4001,6 +4115,7 @@ def test_create_event_with_attendees(
                 description="Event Description",
                 start_time=start_time,
                 end_time=end_time,
+                timezone="UTC",
                 attendances=[],
                 external_attendances=[],
                 resource_allocations=[],
@@ -4039,6 +4154,7 @@ def test_create_event_calendar_not_found(
         description="Test Description",
         start_time=start_time,
         end_time=end_time,
+        timezone="UTC",
         attendances=[],
         external_attendances=[],
         resource_allocations=[],
@@ -4096,6 +4212,7 @@ def test_create_event_adapter_failure(
                 description="Test Description",
                 start_time=start_time,
                 end_time=end_time,
+                timezone="UTC",
                 attendances=[],
                 external_attendances=[],
                 resource_allocations=[],
@@ -4241,6 +4358,7 @@ def test_unavailable_time_window_creation():
         description="A sample event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         status="confirmed",
     )
@@ -4270,6 +4388,7 @@ def test_google_adapter_event_creation_with_resources(mock_google_adapter):
         description="Test event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[EventAttendeeData(email="user@example.com", name="User", status="accepted")],
         resources=[
             ResourceData(email="room@example.com", title="Conference Room", status="accepted")
@@ -4284,6 +4403,7 @@ def test_google_adapter_event_creation_with_resources(mock_google_adapter):
         description="Test event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=["room@example.com"],
     )
@@ -4305,6 +4425,7 @@ def test_calendar_event_data_with_resources():
         description="A sample event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         status="confirmed",
         id=123,
@@ -4324,6 +4445,7 @@ def test_calendar_event_input_data_with_resources():
         description="Test event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[ResourceData(email="room@example.com", title="Room", external_id="room_123")],
     )
@@ -4341,6 +4463,7 @@ def test_calendar_event_input_data_with_recurrence_rule():
         description="Test recurring event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendances=[],
         external_attendances=[],
         resource_allocations=[],
@@ -4360,6 +4483,7 @@ def test_calendar_event_adapter_input_data_with_recurrence_rule():
         description="Test recurring event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         recurrence_rule="RRULE:FREQ=DAILY;COUNT=5",
     )
@@ -4378,6 +4502,7 @@ def test_calendar_event_data_with_recurrence_rule():
         description="Test recurring event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         status="confirmed",
         id=123,
@@ -4409,6 +4534,7 @@ def test_get_unavailable_time_windows_in_range_with_recurring_events_outside_mas
         description="Recurring team meeting",
         start_time=master_start,
         end_time=master_end,
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -4431,6 +4557,7 @@ def test_get_unavailable_time_windows_in_range_with_recurring_events_outside_mas
             description="Recurring team meeting",
             start_time=master_start,
             end_time=master_end,
+            timezone="UTC",
             recurrence_rule=recurrence_rule,
         )
 
@@ -4500,16 +4627,18 @@ def test_events_sync_changes_with_data(calendar, organization, db):
         calendar_fk=calendar,
         title="Test Event",
         external_id="event_123",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
 
     # Create test blocked time
     blocked_time = BlockedTime(
         calendar_fk=calendar,
-        start_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Test block",
         external_id="block_123",
         organization=calendar.organization,
@@ -4552,8 +4681,9 @@ def test_apply_sync_changes_events_to_create(
         calendar_fk=calendar,
         title="New Event",
         description="A new event",
-        start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         external_id="new_event_123",
         organization=calendar.organization,
     )
@@ -4583,8 +4713,9 @@ def test_apply_sync_changes_events_to_delete(
         calendar_fk=calendar,
         title="Event to Delete",
         external_id="delete_event_123",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
 
@@ -4611,8 +4742,9 @@ def test_apply_sync_changes_blocked_times_to_create(
     # Create blocked time to be created
     new_blocked_time = BlockedTime(
         calendar_fk=calendar,
-        start_time=datetime.datetime(2025, 6, 22, 16, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 17, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 16, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 17, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="New blocked time",
         external_id="new_block_123",
         organization=calendar.organization,
@@ -4640,8 +4772,9 @@ def test_apply_sync_changes_blocked_times_to_update(
     # Create existing blocked time to be updated
     existing_block = BlockedTime.objects.create(
         calendar_fk=calendar,
-        start_time=datetime.datetime(2025, 6, 22, 18, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 19, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 18, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 19, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Original reason",
         external_id="update_block_123",
         organization=calendar.organization,
@@ -4649,7 +4782,9 @@ def test_apply_sync_changes_blocked_times_to_update(
 
     # Update the blocked time
     existing_block.reason = "Updated reason"
-    existing_block.start_time = datetime.datetime(2025, 6, 22, 18, 30, tzinfo=datetime.UTC)
+    existing_block.start_time_tz_unaware = datetime.datetime(
+        2025, 6, 22, 18, 30, tzinfo=datetime.UTC
+    )
 
     changes = EventsSyncChanges()
     changes.blocked_times_to_update.append(existing_block)
@@ -4672,8 +4807,9 @@ def test_apply_sync_changes_blocks_to_delete(
     # Create existing blocked time to be deleted
     BlockedTime.objects.create(
         calendar_fk=calendar,
-        start_time=datetime.datetime(2025, 6, 22, 20, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 21, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 20, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 21, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Block to delete",
         external_id="delete_block_123",
         organization=calendar.organization,
@@ -4702,8 +4838,9 @@ def test_apply_sync_changes_attendances_to_create(
         calendar_fk=calendar,
         title="Event with Attendees",
         external_id="event_with_attendees",
-        start_time=datetime.datetime(2025, 6, 22, 22, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 23, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 22, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 23, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
 
@@ -4743,8 +4880,9 @@ def test_apply_sync_changes_external_attendances_to_create(
         calendar_fk=calendar,
         title="Event with External Attendees",
         external_id="event_with_external_attendees",
-        start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
 
@@ -4808,16 +4946,18 @@ def test_apply_sync_changes_comprehensive(
         calendar_fk=calendar,
         title="Original Title",
         external_id="update_event_123",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
 
     # Create existing blocked time to update
     existing_block = BlockedTime.objects.create(
         calendar_fk=calendar,
-        start_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Original reason",
         external_id="update_block_123",
         organization=calendar.organization,
@@ -4828,8 +4968,9 @@ def test_apply_sync_changes_comprehensive(
         calendar_fk=calendar,
         title="Event to Delete",
         external_id="delete_event_789",
-        start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
 
@@ -4840,8 +4981,9 @@ def test_apply_sync_changes_comprehensive(
         calendar_fk=calendar,
         title="New Event",
         external_id="new_event_456",
-        start_time=datetime.datetime(2025, 6, 22, 16, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 17, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 16, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 17, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         organization=calendar.organization,
     )
     changes.events_to_create.append(new_event)
@@ -4849,8 +4991,9 @@ def test_apply_sync_changes_comprehensive(
     # Add new blocked time to create
     new_block = BlockedTime(
         calendar_fk=calendar,
-        start_time=datetime.datetime(2025, 6, 22, 18, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 19, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 18, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 19, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="New block reason",
         external_id="new_block_456",
         organization=calendar.organization,
@@ -4975,6 +5118,7 @@ def bundle_event_data():
         description="A meeting created through bundle calendar",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendances=[],
         external_attendances=[],
         resource_allocations=[],
@@ -5129,8 +5273,9 @@ def test_create_bundle_event_uses_designated_primary(
             title=bundle_event_data.title,
             calendar=child_calendar_google,  # Primary calendar
             organization=organization,
-            start_time=bundle_event_data.start_time,
-            end_time=bundle_event_data.end_time,
+            start_time_tz_unaware=bundle_event_data.start_time,
+            end_time_tz_unaware=bundle_event_data.end_time,
+            timezone="UTC",
         )
         mock_create_event.return_value = mock_primary_event
 
@@ -5241,8 +5386,9 @@ def test_create_bundle_event_creates_representations(
         event = CalendarEvent.objects.create(
             title=event_data.title,
             description=event_data.description,
-            start_time=event_data.start_time,
-            end_time=event_data.end_time,
+            start_time_tz_unaware=event_data.start_time,
+            end_time_tz_unaware=event_data.end_time,
+            timezone="UTC",
             calendar=calendar,
             organization=organization,
             external_id=f"event-{len(created_events)}",
@@ -5284,8 +5430,9 @@ def test_update_bundle_event(organization, bundle_calendar):
     primary_event = CalendarEvent.objects.create(
         title="Original Title",
         description="Original description",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         calendar=Calendar.objects.create(
             name="Primary Calendar",
             external_id="primary-1",
@@ -5302,8 +5449,9 @@ def test_update_bundle_event(organization, bundle_calendar):
     CalendarEvent.objects.create(
         title="[Bundle] Original Title",
         description="Bundle event from Test Bundle Calendar\n\nOriginal description",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         calendar=Calendar.objects.create(
             name="Internal Calendar",
             external_id="internal-1",
@@ -5324,8 +5472,9 @@ def test_update_bundle_event(organization, bundle_calendar):
             provider=CalendarProvider.GOOGLE,
             organization=organization,
         ),
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Bundle event: Original Title",
         organization=organization,
         bundle_calendar=bundle_calendar,
@@ -5344,6 +5493,7 @@ def test_update_bundle_event(organization, bundle_calendar):
             description="Updated description",
             start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
             attendances=[],
             external_attendances=[],
             resource_allocations=[],
@@ -5366,8 +5516,9 @@ def test_update_bundle_event_non_primary_error(organization):
     """Test that update_bundle_event only works with primary events."""
     non_primary_event = CalendarEvent.objects.create(
         title="Non-primary Event",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         calendar=Calendar.objects.create(
             name="Some Calendar", external_id="some-1", organization=organization
         ),
@@ -5383,6 +5534,7 @@ def test_update_bundle_event_non_primary_error(organization):
         description="Updated description",
         start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendances=[],
         external_attendances=[],
         resource_allocations=[],
@@ -5398,8 +5550,9 @@ def test_delete_bundle_event(organization, bundle_calendar):
     # Create a primary bundle event
     primary_event = CalendarEvent.objects.create(
         title="Primary Event",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         calendar=Calendar.objects.create(
             name="Primary Calendar",
             external_id="primary-1",
@@ -5415,8 +5568,9 @@ def test_delete_bundle_event(organization, bundle_calendar):
     # Create representation event
     CalendarEvent.objects.create(
         title="[Bundle] Primary Event",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         calendar=Calendar.objects.create(
             name="Internal Calendar",
             external_id="internal-1",
@@ -5437,8 +5591,9 @@ def test_delete_bundle_event(organization, bundle_calendar):
             provider=CalendarProvider.GOOGLE,
             organization=organization,
         ),
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Bundle event: Primary Event",
         organization=organization,
         bundle_calendar=bundle_calendar,
@@ -5464,8 +5619,9 @@ def test_delete_bundle_event_non_primary_error(organization):
     """Test that delete_bundle_event only works with primary events."""
     non_primary_event = CalendarEvent.objects.create(
         title="Non-primary Event",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         calendar=Calendar.objects.create(
             name="Some Calendar", external_id="some-1", organization=organization
         ),
@@ -5510,8 +5666,9 @@ def test_get_calendar_events_expanded_bundle_calendar(organization, bundle_calen
     # Create a bundle primary event
     primary_event = CalendarEvent.objects.create(
         title="Bundle Primary Event",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         calendar=child2,
         organization=organization,
         external_id="primary-1",
@@ -5522,8 +5679,9 @@ def test_get_calendar_events_expanded_bundle_calendar(organization, bundle_calen
     # Create a representation event (should be filtered out)
     CalendarEvent.objects.create(
         title="[Bundle] Primary Event",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         calendar=child1,
         organization=organization,
         external_id="repr-1",
@@ -5534,8 +5692,9 @@ def test_get_calendar_events_expanded_bundle_calendar(organization, bundle_calen
     # Create a regular event in child calendar
     CalendarEvent.objects.create(
         title="Regular Event",
-        start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         calendar=child1,
         organization=organization,
         external_id="regular-1",
@@ -5571,7 +5730,11 @@ def test_create_blocked_time_simple(organization, calendar):
     end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
 
     blocked_time = service.create_blocked_time(
-        calendar=calendar, start_time=start_time, end_time=end_time, reason="Office maintenance"
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        timezone="UTC",
+        reason="Office maintenance",
     )
 
     assert blocked_time.calendar == calendar
@@ -5596,6 +5759,7 @@ def test_create_blocked_time_recurring(organization, calendar):
         calendar=calendar,
         start_time=start_time,
         end_time=end_time,
+        timezone="UTC",
         reason="Weekly maintenance",
         rrule_string=rrule_string,
     )
@@ -5629,7 +5793,10 @@ def test_create_available_time_simple(organization):
     end_time = datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC)
 
     available_time = service.create_available_time(
-        calendar=calendar, start_time=start_time, end_time=end_time
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        timezone="UTC",
     )
 
     assert available_time.calendar == calendar
@@ -5656,7 +5823,11 @@ def test_create_available_time_recurring(organization):
     rrule_string = "FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR;COUNT=5"
 
     available_time = service.create_available_time(
-        calendar=calendar, start_time=start_time, end_time=end_time, rrule_string=rrule_string
+        calendar=calendar,
+        start_time=start_time,
+        end_time=end_time,
+        timezone="UTC",
+        rrule_string=rrule_string,
     )
 
     assert available_time.calendar == calendar
@@ -5681,12 +5852,14 @@ def test_bulk_create_blocked_times_with_recurrence(organization, calendar):
         (
             datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
             datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC),
+            "UTC",
             "Daily maintenance",
             "FREQ=DAILY;COUNT=3",
         ),
         (
             datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
             datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            "UTC",
             "Simple blocking",
             None,
         ),
@@ -5729,11 +5902,13 @@ def test_bulk_create_availability_windows_with_recurrence(organization):
         (
             datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
             datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC),
+            "UTC",
             "FREQ=WEEKLY;BYDAY=MO,WE,FR;COUNT=3",
         ),
         (
             datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
             datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            "UTC",
             None,
         ),
     ]
@@ -5772,6 +5947,7 @@ def test_get_blocked_times_expanded(organization, calendar):
         calendar=calendar,
         start_time=start_time,
         end_time=end_time,
+        timezone="UTC",
         reason="Weekly maintenance",
         rrule_string="FREQ=WEEKLY;COUNT=3",
     )
@@ -5811,6 +5987,7 @@ def test_get_available_times_expanded(organization):
         calendar=calendar,
         start_time=start_time,
         end_time=end_time,
+        timezone="UTC",
         rrule_string="FREQ=DAILY;COUNT=5",
     )
 
@@ -5843,6 +6020,7 @@ def test_get_blocked_times_expanded_with_cancelled_exception(organization, calen
         calendar=calendar,
         start_time=start_time,
         end_time=end_time,
+        timezone="UTC",
         reason="Weekly maintenance",
         rrule_string="FREQ=WEEKLY;COUNT=4",
     )
@@ -5899,6 +6077,7 @@ def test_get_blocked_times_expanded_with_modified_exception(organization, calend
         calendar=calendar,
         start_time=start_time,
         end_time=end_time,
+        timezone="UTC",
         reason="Daily maintenance",
         rrule_string="FREQ=DAILY;COUNT=5",
     )
@@ -5913,6 +6092,7 @@ def test_get_blocked_times_expanded_with_modified_exception(organization, calend
         calendar=calendar,
         start_time=modified_start,
         end_time=modified_end,
+        timezone="UTC",
         reason="Extended maintenance",
     )
 
@@ -5986,6 +6166,7 @@ def test_get_available_times_expanded_with_cancelled_exception(organization):
         calendar=calendar,
         start_time=start_time,
         end_time=end_time,
+        timezone="UTC",
         rrule_string="FREQ=WEEKLY;COUNT=4",
     )
 
@@ -6048,6 +6229,7 @@ def test_get_available_times_expanded_with_modified_exception(organization):
         calendar=calendar,
         start_time=start_time,
         end_time=end_time,
+        timezone="UTC",
         rrule_string="FREQ=DAILY;COUNT=5",
     )
 
@@ -6061,6 +6243,7 @@ def test_get_available_times_expanded_with_modified_exception(organization):
         calendar=calendar,
         start_time=modified_start,
         end_time=modified_end,
+        timezone="UTC",
     )
 
     # Mark it as an exception
@@ -6127,6 +6310,7 @@ def test_get_blocked_times_expanded_with_multiple_exceptions(organization, calen
         calendar=calendar,
         start_time=start_time,
         end_time=end_time,
+        timezone="UTC",
         reason="Daily maintenance",
         rrule_string="FREQ=DAILY;COUNT=7",
     )
@@ -6152,6 +6336,7 @@ def test_get_blocked_times_expanded_with_multiple_exceptions(organization, calen
         calendar=calendar,
         start_time=modified_start,
         end_time=modified_end,
+        timezone="UTC",
         reason="Afternoon maintenance",
     )
     modified_blocked_time.is_recurring_exception = True
@@ -6238,6 +6423,7 @@ def test_get_available_times_expanded_with_multiple_exceptions(organization):
         calendar=calendar,
         start_time=start_time,
         end_time=end_time,
+        timezone="UTC",
         rrule_string="FREQ=DAILY;COUNT=6",
     )
 
@@ -6262,6 +6448,7 @@ def test_get_available_times_expanded_with_multiple_exceptions(organization):
         calendar=calendar,
         start_time=modified_start,
         end_time=modified_end,
+        timezone="UTC",
     )
     modified_available_time.is_recurring_exception = True
     modified_available_time.save()
@@ -6321,6 +6508,7 @@ def test_get_blocked_times_expanded_bundle_calendar(
         calendar=bundle_calendar,
         start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Bundle maintenance",
     )
 
@@ -6329,6 +6517,7 @@ def test_get_blocked_times_expanded_bundle_calendar(
         calendar=child_calendar_internal,
         start_time=datetime.datetime(2025, 9, 2, 14, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 2, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Internal calendar maintenance",
     )
 
@@ -6336,6 +6525,7 @@ def test_get_blocked_times_expanded_bundle_calendar(
         calendar=child_calendar_google,
         start_time=datetime.datetime(2025, 9, 3, 16, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 3, 17, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Google calendar maintenance",
     )
 
@@ -6388,6 +6578,7 @@ def test_get_blocked_times_expanded_bundle_calendar_with_recurring(
         calendar=bundle_calendar,
         start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Weekly bundle maintenance",
         rrule_string="FREQ=WEEKLY;COUNT=3",
     )
@@ -6397,6 +6588,7 @@ def test_get_blocked_times_expanded_bundle_calendar_with_recurring(
         calendar=child_calendar_internal,
         start_time=datetime.datetime(2025, 9, 2, 14, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 2, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Daily child maintenance",
         rrule_string="FREQ=DAILY;COUNT=5",
     )
@@ -6437,6 +6629,7 @@ def test_get_blocked_times_expanded_non_bundle_calendar_unchanged(
         calendar=child_calendar_internal,
         start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Regular maintenance",
     )
 
@@ -6464,6 +6657,7 @@ def test_get_blocked_times_expanded_empty_bundle_calendar(organization, empty_bu
         calendar=empty_bundle_calendar,
         start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Empty bundle maintenance",
     )
 
@@ -6494,6 +6688,7 @@ def test_get_blocked_times_expanded_bundle_calendar_date_filtering(
         calendar=child_calendar_internal,
         start_time=datetime.datetime(2025, 9, 15, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 9, 15, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Included maintenance",
     )
 
@@ -6502,6 +6697,7 @@ def test_get_blocked_times_expanded_bundle_calendar_date_filtering(
         calendar=child_calendar_internal,
         start_time=datetime.datetime(2025, 10, 15, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 10, 15, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         reason="Excluded maintenance",
     )
 
@@ -6545,6 +6741,7 @@ def test_create_event_sends_webhook(
         description="A new event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -6595,6 +6792,7 @@ def test_update_event_sends_webhook(
         description="Original event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -6620,6 +6818,7 @@ def test_update_event_sends_webhook(
         description="Updated event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -6631,6 +6830,7 @@ def test_update_event_sends_webhook(
         description="Updated event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendances=[],
         external_attendances=[],
         resource_allocations=[],
@@ -6673,6 +6873,7 @@ def test_delete_event_sends_webhook(
         description="Event to delete",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -6967,6 +7168,7 @@ def test_create_event_uses_write_adapter_for_non_owned_calendar(
         description="A new event",
         start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -7028,8 +7230,9 @@ def test_update_event_uses_write_adapter_for_non_owned_calendar(
         calendar_fk=owned_calendar,
         title="Original Event",
         description="Original description",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         external_id="event_to_update_123",
         organization=owned_calendar.organization,
     )
@@ -7042,6 +7245,7 @@ def test_update_event_uses_write_adapter_for_non_owned_calendar(
         description="Updated description",
         start_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         attendees=[],
         resources=[],
         original_payload={},
@@ -7100,8 +7304,9 @@ def test_delete_event_uses_write_adapter_for_non_owned_calendar(
         calendar_fk=owned_calendar,
         title="Event to Delete",
         description="Event description",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
         external_id="event_to_delete_123",
         organization=owned_calendar.organization,
     )

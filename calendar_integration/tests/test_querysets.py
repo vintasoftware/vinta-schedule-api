@@ -585,22 +585,25 @@ class TestCalendarAvailabilityQuerySet(TestCase):
         # Create available times for managed calendar
         AvailableTime.objects.create(
             calendar=self.managed_calendar,
-            start_time=self.range1_start,
-            end_time=self.range1_end,
+            start_time_tz_unaware=self.range1_start,
+            end_time_tz_unaware=self.range1_end,
+            timezone="UTC",
             organization=self.organization,
         )
         AvailableTime.objects.create(
             calendar=self.managed_calendar,
-            start_time=self.range2_start,
-            end_time=self.range2_end,
+            start_time_tz_unaware=self.range2_start,
+            end_time_tz_unaware=self.range2_end,
+            timezone="UTC",
             organization=self.organization,
         )
 
         # Create available times for resource calendar
         AvailableTime.objects.create(
             calendar=self.resource_calendar,
-            start_time=self.range1_start,
-            end_time=self.range1_end,
+            start_time_tz_unaware=self.range1_start,
+            end_time_tz_unaware=self.range1_end,
+            timezone="UTC",
             organization=self.organization,
         )
 
@@ -609,8 +612,9 @@ class TestCalendarAvailabilityQuerySet(TestCase):
             calendar=self.unmanaged_calendar,
             title="Test Event 1",
             description="Test event in range 1",
-            start_time=self.range1_start,
-            end_time=self.range1_end,
+            start_time_tz_unaware=self.range1_start,
+            end_time_tz_unaware=self.range1_end,
+            timezone="UTC",
             external_id="event1_123",
             organization=self.organization,
         )
@@ -618,9 +622,10 @@ class TestCalendarAvailabilityQuerySet(TestCase):
         # Create blocked times for unmanaged calendar
         BlockedTime.objects.create(
             calendar=self.unmanaged_calendar,
-            start_time=self.range2_start,
-            end_time=self.range2_end,
+            start_time_tz_unaware=self.range2_start,
+            end_time_tz_unaware=self.range2_end,
             reason="Blocked for testing",
+            timezone="UTC",
             organization=self.organization,
         )
 
@@ -798,8 +803,8 @@ class TestCalendarAvailabilityQuerySet(TestCase):
         # Create additional test data
         AvailableTime.objects.create(
             calendar=self.resource_calendar,
-            start_time=self.range2_start,
-            end_time=self.range2_end,
+            start_time_tz_unaware=self.range2_start,
+            end_time_tz_unaware=self.range2_end,
             organization=organization,
         )
 
@@ -807,8 +812,9 @@ class TestCalendarAvailabilityQuerySet(TestCase):
             calendar=self.unmanaged_calendar,
             title="Test Event 2",
             description="Test event in range 2",
-            start_time=self.range2_start,
-            end_time=self.range2_end,
+            start_time_tz_unaware=self.range2_start,
+            end_time_tz_unaware=self.range2_end,
+            timezone="UTC",
             external_id="test_event_2_ext_id",
             organization=organization,
         )
@@ -862,8 +868,8 @@ class TestCalendarAvailabilityQuerySet(TestCase):
 
         AvailableTime.objects.create(
             calendar=self.managed_calendar,
-            start_time=overlap_start,
-            end_time=overlap_end,
+            start_time_tz_unaware=overlap_start,
+            end_time_tz_unaware=overlap_end,
             organization=organization,
         )
 
@@ -888,8 +894,9 @@ class TestCalendarAvailabilityQuerySet(TestCase):
             calendar=self.unmanaged_calendar,
             title="Conflict Event",
             description="Event that creates conflict",
-            start_time=conflict_start,
-            end_time=conflict_end,
+            start_time_tz_unaware=conflict_start,
+            end_time_tz_unaware=conflict_end,
+            timezone="UTC",
             external_id="conflict_event_ext_id",
             organization=organization,
         )
@@ -948,8 +955,8 @@ class TestBlockedTimeQuerySet(TestCase):
         # Create recurring blocked time (daily)
         self.daily_blocked_time = BlockedTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=1),
-            end_time=self.now + timedelta(days=1, hours=2),
+            start_time_tz_unaware=self.now + timedelta(days=1),
+            end_time_tz_unaware=self.now + timedelta(days=1, hours=2),
             reason="Daily maintenance",
             external_id="daily_blocked_time",
             recurrence_rule=self.daily_rule,
@@ -959,8 +966,8 @@ class TestBlockedTimeQuerySet(TestCase):
         # Create recurring blocked time (weekly)
         self.weekly_blocked_time = BlockedTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=7),
-            end_time=self.now + timedelta(days=7, hours=1),
+            start_time_tz_unaware=self.now + timedelta(days=7),
+            end_time_tz_unaware=self.now + timedelta(days=7, hours=1),
             reason="Weekly meeting",
             external_id="weekly_blocked_time",
             recurrence_rule=self.weekly_rule,
@@ -970,8 +977,8 @@ class TestBlockedTimeQuerySet(TestCase):
         # Create non-recurring blocked time
         self.single_blocked_time = BlockedTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=2),
-            end_time=self.now + timedelta(days=2, hours=1),
+            start_time_tz_unaware=self.now + timedelta(days=2),
+            end_time_tz_unaware=self.now + timedelta(days=2, hours=1),
             reason="One-time block",
             external_id="single_blocked_time",
             organization=self.organization,
@@ -994,8 +1001,8 @@ class TestBlockedTimeQuerySet(TestCase):
         # Create a recurring instance
         instance = BlockedTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=3),
-            end_time=self.now + timedelta(days=3, hours=2),
+            start_time_tz_unaware=self.now + timedelta(days=3),
+            end_time_tz_unaware=self.now + timedelta(days=3, hours=2),
             reason="Modified occurrence",
             parent_recurring_object=self.daily_blocked_time,
             recurrence_id=self.now + timedelta(days=3),
@@ -1056,8 +1063,8 @@ class TestBlockedTimeQuerySet(TestCase):
         # Create and test recurring instance
         instance = BlockedTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=3),
-            end_time=self.now + timedelta(days=3, hours=2),
+            start_time_tz_unaware=self.now + timedelta(days=3),
+            end_time_tz_unaware=self.now + timedelta(days=3, hours=2),
             reason="Modified occurrence",
             parent_recurring_object=self.daily_blocked_time,
             recurrence_id=self.now + timedelta(days=3),
@@ -1125,8 +1132,8 @@ class TestAvailableTimeQuerySet(TestCase):
         # Create recurring available time (daily work hours)
         self.daily_available_time = AvailableTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now.replace(hour=9, minute=0) + timedelta(days=1),  # 9 AM
-            end_time=self.now.replace(hour=17, minute=0) + timedelta(days=1),  # 5 PM
+            start_time_tz_unaware=self.now.replace(hour=9, minute=0) + timedelta(days=1),  # 9 AM
+            end_time_tz_unaware=self.now.replace(hour=17, minute=0) + timedelta(days=1),  # 5 PM
             recurrence_rule=self.daily_rule,
             organization=self.organization,
         )
@@ -1134,8 +1141,8 @@ class TestAvailableTimeQuerySet(TestCase):
         # Create recurring available time (bi-weekly)
         self.weekly_available_time = AvailableTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now.replace(hour=10, minute=0) + timedelta(days=7),  # 10 AM
-            end_time=self.now.replace(hour=12, minute=0) + timedelta(days=7),  # 12 PM
+            start_time_tz_unaware=self.now.replace(hour=10, minute=0) + timedelta(days=7),  # 10 AM
+            end_time_tz_unaware=self.now.replace(hour=12, minute=0) + timedelta(days=7),  # 12 PM
             recurrence_rule=self.weekly_rule,
             organization=self.organization,
         )
@@ -1143,8 +1150,8 @@ class TestAvailableTimeQuerySet(TestCase):
         # Create non-recurring available time
         self.single_available_time = AvailableTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=2, hours=14),
-            end_time=self.now + timedelta(days=2, hours=16),
+            start_time_tz_unaware=self.now + timedelta(days=2, hours=14),
+            end_time_tz_unaware=self.now + timedelta(days=2, hours=16),
             organization=self.organization,
         )
 
@@ -1165,8 +1172,8 @@ class TestAvailableTimeQuerySet(TestCase):
         # Create a recurring instance (exception)
         instance = AvailableTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=3, hours=10),
-            end_time=self.now + timedelta(days=3, hours=18),  # Extended hours
+            start_time_tz_unaware=self.now + timedelta(days=3, hours=10),
+            end_time_tz_unaware=self.now + timedelta(days=3, hours=18),  # Extended hours
             parent_recurring_object=self.daily_available_time,
             recurrence_id=self.now + timedelta(days=3, hours=9),
             is_recurring_exception=True,
@@ -1225,8 +1232,8 @@ class TestAvailableTimeQuerySet(TestCase):
         # Create and test recurring instance
         instance = AvailableTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=5, hours=9),
-            end_time=self.now + timedelta(days=5, hours=17),
+            start_time_tz_unaware=self.now + timedelta(days=5, hours=9),
+            end_time_tz_unaware=self.now + timedelta(days=5, hours=17),
             parent_recurring_object=self.daily_available_time,
             recurrence_id=self.now + timedelta(days=5, hours=9),
             is_recurring_exception=True,
@@ -1306,8 +1313,8 @@ class TestRecurringIntegration(TestCase):
         # Create recurring blocked time
         blocked_time = BlockedTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=1, hours=12),
-            end_time=self.now + timedelta(days=1, hours=13),  # Lunch break
+            start_time_tz_unaware=self.now + timedelta(days=1, hours=12),
+            end_time_tz_unaware=self.now + timedelta(days=1, hours=13),  # Lunch break
             reason="Daily lunch break",
             recurrence_rule=self.shared_rule,
             organization=self.organization,
@@ -1316,8 +1323,8 @@ class TestRecurringIntegration(TestCase):
         # Create recurring available time with same rule
         available_time = AvailableTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=1, hours=9),
-            end_time=self.now + timedelta(days=1, hours=17),  # Work hours
+            start_time_tz_unaware=self.now + timedelta(days=1, hours=9),
+            end_time_tz_unaware=self.now + timedelta(days=1, hours=17),  # Work hours
             recurrence_rule=self.shared_rule,
             organization=self.organization,
         )
@@ -1350,8 +1357,8 @@ class TestRecurringIntegration(TestCase):
         # Create recurring objects
         BlockedTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=1),
-            end_time=self.now + timedelta(days=1, hours=1),
+            start_time_tz_unaware=self.now + timedelta(days=1),
+            end_time_tz_unaware=self.now + timedelta(days=1, hours=1),
             reason="Weekly block",
             recurrence_rule=blocked_rule,
             organization=self.organization,
@@ -1359,8 +1366,8 @@ class TestRecurringIntegration(TestCase):
 
         AvailableTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=1),
-            end_time=self.now + timedelta(days=1, hours=2),
+            start_time_tz_unaware=self.now + timedelta(days=1),
+            end_time_tz_unaware=self.now + timedelta(days=1, hours=2),
             recurrence_rule=available_rule,
             organization=self.organization,
         )
@@ -1389,8 +1396,8 @@ class TestRecurringIntegration(TestCase):
 
         blocked_time = BlockedTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=1, hours=10),
-            end_time=self.now + timedelta(days=1, hours=11),
+            start_time_tz_unaware=self.now + timedelta(days=1, hours=10),
+            end_time_tz_unaware=self.now + timedelta(days=1, hours=11),
             reason="Daily block",
             recurrence_rule=daily_rule,
             organization=self.organization,
@@ -1398,8 +1405,8 @@ class TestRecurringIntegration(TestCase):
 
         available_time = AvailableTime.objects.create(
             calendar=self.calendar,
-            start_time=self.now + timedelta(days=1, hours=14),
-            end_time=self.now + timedelta(days=1, hours=16),
+            start_time_tz_unaware=self.now + timedelta(days=1, hours=14),
+            end_time_tz_unaware=self.now + timedelta(days=1, hours=16),
             recurrence_rule=daily_rule,
             organization=self.organization,
         )
@@ -1449,8 +1456,9 @@ class TestBulkModificationQuerySet:
             calendar=calendar,
             title="Daily Standup",
             description="Daily standup meeting",
-            start_time=_dt(2023, 10, 1, 9, 0),
-            end_time=_dt(2023, 10, 1, 9, 30),
+            start_time_tz_unaware=_dt(2023, 10, 1, 9, 0),
+            end_time_tz_unaware=_dt(2023, 10, 1, 9, 30),
+            timezone="UTC",
             external_id="event_123",
             recurrence_rule=rule,
             organization=organization,
@@ -1463,8 +1471,9 @@ class TestBulkModificationQuerySet:
             calendar=calendar,
             title="Modified Standup",
             description="Modified",
-            start_time=_dt(2023, 10, 6, 9, 0),
-            end_time=_dt(2023, 10, 6, 9, 30),
+            start_time_tz_unaware=_dt(2023, 10, 6, 9, 0),
+            end_time_tz_unaware=_dt(2023, 10, 6, 9, 30),
+            timezone="UTC",
             external_id="event_124",
             recurrence_rule=continuation_rule,
             organization=organization,
@@ -1493,15 +1502,15 @@ class TestBulkModificationQuerySet:
         )
         _at1 = AvailableTime.objects.create(
             calendar=calendar,
-            start_time=_dt(2023, 10, 1, 9, 0),
-            end_time=_dt(2023, 10, 1, 17, 0),
+            start_time_tz_unaware=_dt(2023, 10, 1, 9, 0),
+            end_time_tz_unaware=_dt(2023, 10, 1, 17, 0),
             recurrence_rule=rule1,
             organization=organization,
         )
         _at2 = AvailableTime.objects.create(
             calendar=calendar,
-            start_time=_dt(2023, 10, 2, 9, 0),
-            end_time=_dt(2023, 10, 2, 17, 0),
+            start_time_tz_unaware=_dt(2023, 10, 2, 9, 0),
+            end_time_tz_unaware=_dt(2023, 10, 2, 17, 0),
             recurrence_rule=rule2,
             organization=organization,
         )
@@ -1532,8 +1541,8 @@ class TestBulkModificationQuerySet:
         )
         _bt1 = BlockedTime.objects.create(
             calendar=calendar,
-            start_time=_dt(2023, 10, 1, 10, 0),
-            end_time=_dt(2023, 10, 1, 11, 0),
+            start_time_tz_unaware=_dt(2023, 10, 1, 10, 0),
+            end_time_tz_unaware=_dt(2023, 10, 1, 11, 0),
             reason="Daily meeting",
             recurrence_rule=rule1,
             organization=organization,
@@ -1541,8 +1550,8 @@ class TestBulkModificationQuerySet:
         )
         _bt2 = BlockedTime.objects.create(
             calendar=calendar,
-            start_time=_dt(2023, 10, 2, 10, 0),
-            end_time=_dt(2023, 10, 2, 11, 0),
+            start_time_tz_unaware=_dt(2023, 10, 2, 10, 0),
+            end_time_tz_unaware=_dt(2023, 10, 2, 11, 0),
             reason="Weekly sync",
             recurrence_rule=rule2,
             organization=organization,
@@ -1575,15 +1584,15 @@ class TestBulkModificationQuerySet:
         )
         at1 = AvailableTime.objects.create(
             calendar=calendar,
-            start_time=_dt(2023, 10, 1, 9, 0),
-            end_time=_dt(2023, 10, 1, 17, 0),
+            start_time_tz_unaware=_dt(2023, 10, 1, 9, 0),
+            end_time_tz_unaware=_dt(2023, 10, 1, 17, 0),
             recurrence_rule=rule1,
             organization=organization,
         )
         _at2 = AvailableTime.objects.create(
             calendar=calendar,
-            start_time=_dt(2023, 10, 8, 9, 0),
-            end_time=_dt(2023, 10, 8, 17, 0),
+            start_time_tz_unaware=_dt(2023, 10, 8, 9, 0),
+            end_time_tz_unaware=_dt(2023, 10, 8, 17, 0),
             recurrence_rule=rule2,
             organization=organization,
             bulk_modification_parent=at1,
@@ -1616,8 +1625,9 @@ class TestBulkModificationQuerySet:
         _event = CalendarEvent.objects.create(
             calendar=calendar,
             title="Test Event",
-            start_time=_dt(2023, 10, 1, 9, 0),
-            end_time=_dt(2023, 10, 1, 10, 0),
+            start_time_tz_unaware=_dt(2023, 10, 1, 9, 0),
+            end_time_tz_unaware=_dt(2023, 10, 1, 10, 0),
+            timezone="UTC",
             recurrence_rule=rule,
             organization=organization,
             external_id="event_128",
@@ -1634,8 +1644,8 @@ class TestBulkModificationQuerySet:
         )
         _blocked = BlockedTime.objects.create(
             calendar=calendar,
-            start_time=_dt(2023, 10, 1, 10, 0),
-            end_time=_dt(2023, 10, 1, 11, 0),
+            start_time_tz_unaware=_dt(2023, 10, 1, 10, 0),
+            end_time_tz_unaware=_dt(2023, 10, 1, 11, 0),
             recurrence_rule=blocked_rule,
             organization=organization,
             external_id="blocked_3",
@@ -1664,8 +1674,9 @@ class TestBulkModificationQuerySet:
         event = CalendarEvent.objects.create(
             calendar=calendar,
             title="Event to Cancel",
-            start_time=_dt(2023, 10, 1, 9, 0),
-            end_time=_dt(2023, 10, 1, 10, 0),
+            start_time_tz_unaware=_dt(2023, 10, 1, 9, 0),
+            end_time_tz_unaware=_dt(2023, 10, 1, 10, 0),
+            timezone="UTC",
             recurrence_rule=rule,
             organization=organization,
             external_id="event_129",
@@ -1674,8 +1685,9 @@ class TestBulkModificationQuerySet:
         _ = CalendarEvent.objects.create(
             calendar=calendar,
             title="Cancelled Event",
-            start_time=_dt(2023, 10, 3, 9, 0),
-            end_time=_dt(2023, 10, 3, 10, 0),
+            start_time_tz_unaware=_dt(2023, 10, 3, 9, 0),
+            end_time_tz_unaware=_dt(2023, 10, 3, 10, 0),
+            timezone="UTC",
             recurrence_rule=None,
             organization=organization,
             bulk_modification_parent=event,

@@ -58,6 +58,7 @@ class CalendarEventInputData:
     description: str
     start_time: datetime.datetime
     end_time: datetime.datetime
+    timezone: str  # IANA timezone string (required)
     attendances: list[EventAttendanceInputData] = dataclass_field(default_factory=list)
     external_attendances: list[EventExternalAttendanceInputData] = dataclass_field(
         default_factory=list
@@ -76,6 +77,7 @@ class CalendarEventAdapterInputData:
     description: str
     start_time: datetime.datetime
     end_time: datetime.datetime
+    timezone: str  # IANA timezone string (required)
     attendees: list[EventAttendeeData]
     resources: list[ResourceData] = dataclass_field(default_factory=list)
     original_payload: dict | None = None
@@ -91,6 +93,7 @@ class CalendarEventData:
     description: str
     start_time: datetime.datetime
     end_time: datetime.datetime
+    timezone: str  # IANA timezone string (required)
     attendees: list[EventAttendeeData]
     external_id: str
     status: Literal["confirmed", "cancelled"] = "confirmed"
@@ -164,6 +167,7 @@ class BlockedTimeData:
     calendar_external_id: str
     start_time: datetime.datetime
     end_time: datetime.datetime
+    timezone: str  # IANA timezone string (required)
     reason: str
     external_id: str | None
     meta: dict | None
@@ -184,6 +188,7 @@ class RecurringObjectInputData:
 
     start_time: datetime.datetime
     end_time: datetime.datetime
+    timezone: str  # IANA timezone string (required)
     recurrence_rule: str | None = None
     parent_object_id: int | None = None
     is_recurring_exception: bool = False
@@ -196,6 +201,7 @@ class BlockedTimeInputData:
     calendar_id: int
     start_time: datetime.datetime
     end_time: datetime.datetime
+    timezone: str  # IANA timezone string (required)
     reason: str = ""
     external_id: str = ""
     recurrence_rule: str | None = None
@@ -210,6 +216,7 @@ class AvailableTimeInputData:
     calendar_id: int
     start_time: datetime.datetime
     end_time: datetime.datetime
+    timezone: str  # IANA timezone string (required)
     recurrence_rule: str | None = None
     parent_object_id: int | None = None
     is_recurring_exception: bool = False

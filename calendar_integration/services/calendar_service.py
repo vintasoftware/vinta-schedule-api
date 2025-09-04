@@ -1,5 +1,6 @@
 import copy
 import datetime
+import zoneinfo
 from collections.abc import Callable, Iterable
 from functools import lru_cache
 from typing import Annotated, Any, Literal, cast
@@ -551,6 +552,7 @@ class CalendarService(BaseCalendarService):
             description=event_data.description,
             start_time=event_data.start_time,
             end_time=event_data.end_time,
+            timezone=event_data.timezone,
             attendances=all_attendees,
             external_attendances=event_data.external_attendances,
             resource_allocations=event_data.resource_allocations,
@@ -576,6 +578,7 @@ class CalendarService(BaseCalendarService):
                     description=f"Bundle event from {bundle_calendar.name}\n\n{event_data.description}",
                     start_time=event_data.start_time,
                     end_time=event_data.end_time,
+                    timezone=event_data.timezone,
                     attendances=[],  # No direct attendances for linked events
                     external_attendances=[],
                     resource_allocations=[],
@@ -592,8 +595,12 @@ class CalendarService(BaseCalendarService):
                 # Create BlockedTime for other PROVIDER calendars
                 BlockedTime.objects.create(
                     calendar=child_calendar,
-                    start_time=event_data.start_time,
-                    end_time=event_data.end_time,
+                    start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
+                        event_data.start_time, event_data.timezone
+                    ),
+                    end_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
+                        event_data.end_time, event_data.timezone
+                    ),
                     reason=f"Bundle event: {event_data.title}",
                     organization=child_calendar.organization,
                     bundle_calendar=bundle_calendar,
@@ -684,6 +691,20 @@ class CalendarService(BaseCalendarService):
 
         return self.calendar_adapter
 
+    def convert_naive_utc_datetime_to_timezone(self, datetime_obj: datetime.datetime, iana_tz: str):
+        """
+        Convert a naive UTC datetime object to a timezone-aware datetime in the specified IANA timezone.
+        :param datetime_obj: Naive datetime object in UTC.
+        :param iana_tz: IANA timezone string (e.g., "America/New_York").
+        :return: Timezone-aware datetime object in the specified timezone.
+        """
+        try:
+            target_tz = zoneinfo.ZoneInfo(iana_tz)
+        except zoneinfo.ZoneInfoNotFoundError as e:
+            raise ValueError(f"Invalid IANA timezone: {iana_tz}") from e
+
+        return datetime_obj.replace(tzinfo=target_tz)
+
     @transaction.atomic()
     def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
         """
@@ -731,6 +752,7 @@ class CalendarService(BaseCalendarService):
                     description=event_data.description,
                     start_time=event_data.start_time,
                     end_time=event_data.end_time,
+                    timezone=event_data.timezone,
                     attendees=[
                         EventAttendeeData(
                             email=users_by_id[a.user_id].email,
@@ -783,8 +805,13 @@ class CalendarService(BaseCalendarService):
             organization=self.organization,
             title=event_data.title,
             description=event_data.description,
-            start_time=event_data.start_time,
-            end_time=event_data.end_time,
+            start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
+                event_data.start_time, event_data.timezone
+            ),
+            end_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
+                event_data.end_time, event_data.timezone
+            ),
+            timezone=event_data.timezone,
             external_id=external_id,
             meta={"latest_original_payload": original_payload} if self.calendar_adapter else {},
             parent_recurring_object_fk=parent_event,
@@ -871,6 +898,7 @@ class CalendarService(BaseCalendarService):
                 description=f"Bundle event from {bundle_calendar.name}\n\n{event_data.description}",
                 start_time=event_data.start_time,
                 end_time=event_data.end_time,
+                timezone=event_data.timezone,
                 attendances=[],
                 external_attendances=[],
                 resource_allocations=[],
@@ -888,10 +916,16 @@ class CalendarService(BaseCalendarService):
         )
 
         for blocked_time in blocked_time_representations:
-            blocked_time.start_time = event_data.start_time
-            blocked_time.end_time = event_data.end_time
+            blocked_time.start_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+                event_data.start_time, event_data.timezone
+            )
+            blocked_time.end_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+                event_data.end_time, event_data.timezone
+            )
             blocked_time.reason = f"Bundle event: {event_data.title}"
-            blocked_time.save(update_fields=["start_time", "end_time", "reason"])
+            blocked_time.save(
+                update_fields=["start_time_tz_unaware", "end_time_tz_unaware", "reason"]
+            )
 
         return updated_primary
 
@@ -954,6 +988,7 @@ class CalendarService(BaseCalendarService):
                     description=event_data.description,
                     start_time=event_data.start_time,
                     end_time=event_data.end_time,
+                    timezone=event_data.timezone,
                     attendees=[
                         EventAttendeeData(
                             email=users_by_id[a.user_id].email,
@@ -1232,6 +1267,7 @@ class CalendarService(BaseCalendarService):
         description: str,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
+        timezone: str,
         recurrence_rule: str,
         attendances: list[EventAttendanceInputData] | None = None,
         external_attendances: list[EventExternalAttendanceInputData] | None = None,
@@ -1262,6 +1298,7 @@ class CalendarService(BaseCalendarService):
             description=description,
             start_time=start_time,
             end_time=end_time,
+            timezone=timezone,
             recurrence_rule=recurrence_rule,
             attendances=attendances or [],
             external_attendances=external_attendances or [],
@@ -1387,6 +1424,7 @@ class CalendarService(BaseCalendarService):
         modified_description: str | None = None,
         modified_start_time: datetime.datetime | None = None,
         modified_end_time: datetime.datetime | None = None,
+        modified_timezone: str | None = None,
         is_cancelled: bool = False,
     ) -> CalendarEvent | None:
         """
@@ -1401,6 +1439,7 @@ class CalendarService(BaseCalendarService):
         :param modified_description: New description for the modified occurrence (if not cancelled)
         :param modified_start_time: New start time for the modified occurrence (if not cancelled)
         :param modified_end_time: New end time for the modified occurrence (if not cancelled)
+        :param modified_timezone: New timezone for the modified occurrence (if not cancelled)
         :param is_cancelled: True if cancelling the occurrence, False if modifying
         :return: Created modified event or None if cancelled
         """
@@ -1418,6 +1457,7 @@ class CalendarService(BaseCalendarService):
                 description=parent_event.description,
                 start_time=second_event.start_time,
                 end_time=second_event.end_time,
+                timezone=parent_event.timezone,
                 recurrence_rule=new_recurrence_rule.to_rrule_string(),
                 attendances=[
                     EventAttendanceInputData(user_id=a.user_id)
@@ -1452,6 +1492,7 @@ class CalendarService(BaseCalendarService):
                 start_time=modification_data.get("start_time") or exception_datetime,
                 end_time=modification_data.get("end_time")
                 or (exception_datetime + parent_event.duration),
+                timezone=modification_data.get("timezone") or parent_event.timezone,
                 parent_event_id=parent_event.id,
                 is_recurring_exception=True,
             )
@@ -1472,6 +1513,7 @@ class CalendarService(BaseCalendarService):
             "description": modified_description,
             "start_time": modified_start_time,
             "end_time": modified_end_time,
+            "timezone": modified_timezone,
         }
 
         result = self._create_recurring_exception_generic(
@@ -1713,6 +1755,8 @@ class CalendarService(BaseCalendarService):
             description=event_data.description,
             start_time=event_data.start_time,
             end_time=event_data.end_time,
+            timezone=event_data.timezone,
+            recurrence_rule=event_data.recurrence_rule,
             attendances=[
                 EventAttendanceInputData(
                     user_id=a.user_id,
@@ -2013,8 +2057,13 @@ class CalendarService(BaseCalendarService):
                 # (because the parent was created through our API)
                 calendar_event = CalendarEvent(
                     calendar_fk=calendar,
-                    start_time=event.start_time,
-                    end_time=event.end_time,
+                    start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
+                        event.start_time, event.timezone
+                    ),
+                    end_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
+                        event.end_time, event.timezone
+                    ),
+                    timezone=event.timezone,
                     title=event.title,
                     description=event.description,
                     external_id=event.external_id,
@@ -2031,8 +2080,13 @@ class CalendarService(BaseCalendarService):
                 changes.blocked_times_to_create.append(
                     BlockedTime(
                         calendar_fk=calendar,
-                        start_time=event.start_time,
-                        end_time=event.end_time,
+                        start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
+                            event.start_time, event.timezone
+                        ),
+                        end_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
+                            event.end_time, event.timezone
+                        ),
+                        timezone=event.timezone,
                         reason=event.title,
                         external_id=event.external_id,
                         meta={
@@ -2052,8 +2106,13 @@ class CalendarService(BaseCalendarService):
             )
             calendar_event = CalendarEvent(
                 calendar_fk=calendar,
-                start_time=event.start_time,
-                end_time=event.end_time,
+                start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
+                    event.start_time, event.timezone
+                ),
+                end_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
+                    event.end_time, event.timezone
+                ),
+                timezone=event.timezone,
                 title=event.title,
                 description=event.description,
                 external_id=event.external_id,
@@ -2069,8 +2128,13 @@ class CalendarService(BaseCalendarService):
             changes.blocked_times_to_create.append(
                 BlockedTime(
                     calendar_fk=calendar,
-                    start_time=event.start_time,
-                    end_time=event.end_time,
+                    start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
+                        event.start_time, event.timezone
+                    ),
+                    end_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
+                        event.end_time, event.timezone
+                    ),
+                    timezone=event.timezone,
                     reason=event.title,
                     external_id=event.external_id,
                     meta={"latest_original_payload": event.original_payload or {}},
@@ -2170,7 +2234,8 @@ class CalendarService(BaseCalendarService):
 
         if changes.blocked_times_to_update:
             BlockedTime.objects.bulk_update(
-                changes.blocked_times_to_update, ["start_time", "end_time", "reason", "external_id"]
+                changes.blocked_times_to_update,
+                ["start_time_tz_unaware", "end_time_tz_unaware", "reason", "external_id"],
             )
 
         if changes.events_to_delete:
@@ -2375,6 +2440,7 @@ class CalendarService(BaseCalendarService):
                         calendar_external_id=event.calendar.external_id,
                         start_time=event.start_time,
                         end_time=event.end_time,
+                        timezone=event.timezone,
                         title=event.title,
                         description=event.description,
                         original_payload=event.meta.get("latest_original_payload", {})
@@ -2444,6 +2510,7 @@ class CalendarService(BaseCalendarService):
                         calendar_external_id=blocked_time.calendar.external_id,
                         start_time=blocked_time.start_time,
                         end_time=blocked_time.end_time,
+                        timezone=blocked_time.timezone,
                         reason=blocked_time.reason,
                         external_id=blocked_time.external_id,
                         meta=blocked_time.meta or {},
@@ -2532,7 +2599,9 @@ class CalendarService(BaseCalendarService):
     def bulk_create_availability_windows(
         self,
         calendar: Calendar,
-        availability_windows: Iterable[tuple[datetime.datetime, datetime.datetime, str | None]],
+        availability_windows: Iterable[
+            tuple[datetime.datetime, datetime.datetime, str, str | None]
+        ],
     ) -> Iterable[AvailableTime]:
         """
         Create availability windows for a calendar (with optional recurrence support).
@@ -2548,14 +2617,15 @@ class CalendarService(BaseCalendarService):
 
         availability_windows_to_create = []
 
-        for start_time, end_time, rrule_string in availability_windows:
+        for start_time, end_time, timezone, rrule_string in availability_windows:
             # Create recurrence rule if provided
             recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
 
             available_time = AvailableTime(
                 calendar=calendar,
-                start_time=start_time,
-                end_time=end_time,
+                start_time_tz_unaware=start_time,
+                end_time_tz_unaware=end_time,
+                timezone=timezone,
                 organization_id=calendar.organization_id,
                 recurrence_rule=recurrence_rule,
             )
@@ -2567,12 +2637,12 @@ class CalendarService(BaseCalendarService):
     def bulk_create_manual_blocked_times(
         self,
         calendar: Calendar,
-        blocked_times: Iterable[tuple[datetime.datetime, datetime.datetime, str, str | None]],
+        blocked_times: Iterable[tuple[datetime.datetime, datetime.datetime, str, str, str | None]],
     ) -> Iterable[BlockedTime]:
         """
         Create new blocked times for a calendar (with optional recurrence support).
         :param calendar: The calendar to create the blocked times for.
-        :param blocked_times: Iterable of tuples containing (start_time, end_time, reason, rrule_string).
+        :param blocked_times: Iterable of tuples containing (start_time, end_time, timezone, reason, rrule_string).
         :return: List of created BlockedTime instances.
         """
         if not is_initialized_or_authenticated_calendar_service(self):
@@ -2580,7 +2650,7 @@ class CalendarService(BaseCalendarService):
 
         blocked_times_to_create = []
 
-        for i, (start_time, end_time, reason, rrule_string) in enumerate(blocked_times):
+        for i, (start_time, end_time, timezone, reason, rrule_string) in enumerate(blocked_times):
             # Create recurrence rule if provided
             recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
 
@@ -2589,8 +2659,9 @@ class CalendarService(BaseCalendarService):
 
             blocked_time = BlockedTime(
                 calendar=calendar,
-                start_time=start_time,
-                end_time=end_time,
+                start_time_tz_unaware=start_time,
+                end_time_tz_unaware=end_time,
+                timezone=timezone,
                 reason=reason,
                 external_id=external_id,
                 organization_id=calendar.organization_id,
@@ -2607,12 +2678,14 @@ class CalendarService(BaseCalendarService):
         calendar: Calendar,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
+        timezone: str,
         reason: str = "",
         rrule_string: str | None = None,
     ) -> BlockedTime:
         """Create a single blocked time (optionally recurring)."""
         result = self.bulk_create_manual_blocked_times(
-            calendar=calendar, blocked_times=[(start_time, end_time, reason, rrule_string)]
+            calendar=calendar,
+            blocked_times=[(start_time, end_time, timezone, reason, rrule_string)],
         )
         return next(iter(result))
 
@@ -2622,11 +2695,12 @@ class CalendarService(BaseCalendarService):
         calendar: Calendar,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
+        timezone: str,
         rrule_string: str | None = None,
     ) -> AvailableTime:
         """Create a single available time (optionally recurring)."""
         result = self.bulk_create_availability_windows(
-            calendar=calendar, availability_windows=[(start_time, end_time, rrule_string)]
+            calendar=calendar, availability_windows=[(start_time, end_time, timezone, rrule_string)]
         )
         return next(iter(result))
 
@@ -2738,6 +2812,7 @@ class CalendarService(BaseCalendarService):
         modified_reason: str | None = None,
         modified_start_time: datetime.datetime | None = None,
         modified_end_time: datetime.datetime | None = None,
+        modified_timezone: str | None = None,
         is_cancelled: bool = False,
     ) -> BlockedTime | None:
         """
@@ -2748,6 +2823,7 @@ class CalendarService(BaseCalendarService):
         :param modified_reason: New reason for the modified occurrence (if not cancelled)
         :param modified_start_time: New start time for the modified occurrence (if not cancelled)
         :param modified_end_time: New end time for the modified occurrence (if not cancelled)
+        :param modified_timezone: New timezone for the modified occurrence (if not cancelled)
         :param is_cancelled: True if cancelling the occurrence, False if modifying
         :return: Created modified blocked time or None if cancelled
         """
@@ -2763,6 +2839,7 @@ class CalendarService(BaseCalendarService):
                 calendar=parent_blocked_time.calendar,
                 start_time=second_blocked_time.start_time,
                 end_time=second_blocked_time.end_time,
+                timezone=second_blocked_time.timezone,
                 reason=second_blocked_time.reason,
                 rrule_string=new_recurrence_rule.to_rrule_string(),
             )
@@ -2776,8 +2853,11 @@ class CalendarService(BaseCalendarService):
             return self.create_blocked_time(
                 calendar=parent_blocked_time.calendar,
                 start_time=modification_data.get("start_time") or exception_datetime,
-                end_time=modification_data.get("end_time")
-                or (exception_datetime + parent_blocked_time.duration),
+                end_time=(
+                    modification_data.get("end_time")
+                    or (exception_datetime + parent_blocked_time.duration)
+                ),
+                timezone=modification_data.get("timezone") or parent_blocked_time.timezone,
                 reason=modification_data.get("reason") or parent_blocked_time.reason,
             )
 
@@ -2795,6 +2875,7 @@ class CalendarService(BaseCalendarService):
             "reason": modified_reason,
             "start_time": modified_start_time,
             "end_time": modified_end_time,
+            "timezone": modified_timezone,
         }
 
         result = self._create_recurring_exception_generic(
@@ -2820,6 +2901,7 @@ class CalendarService(BaseCalendarService):
         exception_date: datetime.date,
         modified_start_time: datetime.datetime | None = None,
         modified_end_time: datetime.datetime | None = None,
+        modified_timezone: str | None = None,
         is_cancelled: bool = False,
     ) -> AvailableTime | None:
         """
@@ -2829,6 +2911,7 @@ class CalendarService(BaseCalendarService):
         :param exception_date: The date of the occurrence to modify/cancel
         :param modified_start_time: New start time for the modified occurrence (if not cancelled)
         :param modified_end_time: New end time for the modified occurrence (if not cancelled)
+        :param modified_timezone: New timezone for the modified occurrence (if not cancelled)
         :param is_cancelled: True if cancelling the occurrence, False if modifying
         :return: Created modified available time or None if cancelled
         """
@@ -2844,6 +2927,7 @@ class CalendarService(BaseCalendarService):
                 calendar=parent_available_time.calendar,
                 start_time=second_available_time.start_time,
                 end_time=second_available_time.end_time,
+                timezone=second_available_time.timezone,
                 rrule_string=new_recurrence_rule.to_rrule_string(),
             )
 
@@ -2856,8 +2940,11 @@ class CalendarService(BaseCalendarService):
             return self.create_available_time(
                 calendar=parent_available_time.calendar,
                 start_time=modification_data.get("start_time") or exception_datetime,
-                end_time=modification_data.get("end_time")
-                or (exception_datetime + parent_available_time.duration),
+                end_time=(
+                    modification_data.get("end_time")
+                    or (exception_datetime + parent_available_time.duration)
+                ),
+                timezone=modification_data.get("timezone") or parent_available_time.timezone,
             )
 
         def update_exception_manager(
@@ -2875,6 +2962,7 @@ class CalendarService(BaseCalendarService):
         modification_data = {
             "start_time": modified_start_time,
             "end_time": modified_end_time,
+            "timezone": modified_timezone,
         }
 
         result = self._create_recurring_exception_generic(
@@ -3025,6 +3113,7 @@ class CalendarService(BaseCalendarService):
                     description=parent.description,
                     start_time=parent.start_time,
                     end_time=parent.end_time,
+                    timezone=parent.timezone,
                     resource_allocations=[
                         ResourceAllocationInputData(resource_id=ra.calendar_fk_id)  # type: ignore
                         for ra in parent.resource_allocations.all()
@@ -3083,6 +3172,7 @@ class CalendarService(BaseCalendarService):
                     description=modification_data.get("description") or parent.description,
                     start_time=new_start,
                     end_time=new_end,
+                    timezone=parent.timezone,
                     recurrence_rule=recurrence_rule.to_rrule_string() if recurrence_rule else None,
                     attendances=[
                         EventAttendanceInputData(user_id=a.user_id)
@@ -3182,6 +3272,7 @@ class CalendarService(BaseCalendarService):
                 calendar=parent.calendar,
                 start_time=new_start,
                 end_time=new_end,
+                timezone=parent.timezone,
                 reason=modification_data.get("reason") or parent.reason,
                 rrule_string=recurrence_rule.to_rrule_string() if recurrence_rule else None,
             )
@@ -3261,6 +3352,7 @@ class CalendarService(BaseCalendarService):
                 calendar=parent.calendar,
                 start_time=new_start,
                 end_time=new_end,
+                timezone=parent.timezone,
                 rrule_string=recurrence_rule.to_rrule_string() if recurrence_rule else None,
             )
 

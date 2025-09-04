@@ -40,6 +40,11 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
     def _get_write_adapter_for_calendar(self, calendar: Calendar) -> CalendarAdapter | None:
         ...
 
+    def convert_naive_utc_datetime_to_timezone(
+        self, naive_utc_datetime: datetime.datetime, timezone_str: str
+    ) -> datetime.datetime:
+        ...
+
     def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
         ...
 
