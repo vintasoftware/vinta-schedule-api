@@ -16,7 +16,11 @@ class PublicAPIAuthService:
         :raises SystemUser.DoesNotExist: If the system user does not exist.
         :raises ValueError: If the token is invalid or does not match the user's token.
         """
-        system_user = SystemUser.objects.get(id=system_user_id)
+        try:
+            system_user_id_int = int(system_user_id)
+        except (TypeError, ValueError):
+            raise SystemUser.DoesNotExist(f"Invalid system_user_id: {system_user_id!r}")
+        system_user = SystemUser.objects.get(id=system_user_id_int)
 
         if not system_user.is_active:
             return system_user, False
