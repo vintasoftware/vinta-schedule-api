@@ -56,10 +56,7 @@ class PublicApiSystemUserMiddleware:
         except (SystemUser.DoesNotExist, ValueError):
             return None
 
-        if not authenticated or not system_user.is_active:
-            return None
-
-        return system_user
+        return None if not authenticated or not system_user.is_active else system_user
 
     def _get_organization_from_request(self, request: HttpRequest) -> Organization | None:
         organization_id = request.headers.get("X-Public-Api-Organization-Id")
