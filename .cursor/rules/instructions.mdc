@@ -78,6 +78,13 @@ Welcome to the Vinta Schedule project! This guide provides instructions for cont
 ### Calendar Integration 
 - The calculation of recurring events occurrences happens dynamically on the database based on the master event `recurrence_rule` and also its rule exceptions. The functions to generate the occurrences are defined on `calendar_integration/migrations/sql/functions/calculate_recurring_events` and `calendar_integration/migrations/sql/functions/get_event_occurrences_json`. There's also a Django ORM compatible function defined on  `calendar_integration/database_functions.py`.
 
+#### Timezones
+- We store start and end date/times in UTC but they are actually timezone unaware (which means they should record the final time the event's timezone)
+- We also store the timezone as string in the IANA format
+- The start and end date/time fields that are editable are called `start_time_tz_unaware` and `end_time_tz_unaware`, and they should not be used on queries as comparing them for events in different timezones would give us wrong results. 
+- We must use the generated fields `start_time` and `end_time` instead. These fields use the `convert_naive_utc_to_timezone` database function to replace the timezone information, which allow us to consider the Daylight Saving Time status for comparisons.
+
+
 #### Calendar Bundles
 - **Bundle calendars** allow creating events across multiple child calendars simultaneously while maintaining a single source of truth.
 - Bundle calendars are of type `CalendarType.BUNDLE` and contain multiple child calendars through the `ChildrenCalendarRelationship` model.

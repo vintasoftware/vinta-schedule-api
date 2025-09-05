@@ -14,7 +14,7 @@ from calendar_integration.migrations.sql.functions.calculate_recurring_blocked_t
 from calendar_integration.migrations.sql.functions.calculate_recurring_available_times_with_bulk_modifications import CalculateRecurringAvailableTimesWithBulkModificationsMigrationManager
 from calendar_integration.migrations.sql.functions.get_blocked_time_occurrences_with_bulk_modifications_json import GetBlockedTimeOccurrencesWithBulkModificationsJSONMigrationManager
 from calendar_integration.migrations.sql.functions.get_available_time_occurrences_with_bulk_modifications_json import GetAvailableTimeOccurrencesWithBulkModificationsJSONMigrationManager
-from calendar_integration.migrations.sql.functions.timezone_conversion import TimezoneConversionMigrationManager
+from calendar_integration.migrations.sql.functions.convert_naive_utc_to_timezone import ConvertNaiveUtcToTimezoneMigrationManager
 
 
 class Migration(migrations.Migration):
@@ -24,7 +24,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        TimezoneConversionMigrationManager("calendar_integration", "0001").migration(),
+        ConvertNaiveUtcToTimezoneMigrationManager("calendar_integration", "0001").migration(),
         CalculateRecurringEventsMigrationManager("calendar_integration", "0001").migration(),
         GetEventOccurrencesJsonMigrationManager("calendar_integration", "0001").migration(),
         CalculateRecurringBlockedTimesMigrationManager("calendar_integration", "0001").migration(),
