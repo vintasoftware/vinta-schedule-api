@@ -41,7 +41,7 @@ class WebhookService:
         configuration.save()
         return True
 
-    def send_events(
+    def send_event(
         self, organization: Organization, event_type: WebhookEventType, payload: dict
     ) -> list[WebhookEvent]:
         """

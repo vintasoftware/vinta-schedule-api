@@ -2,7 +2,7 @@ import datetime
 from collections.abc import Iterable
 from typing import Protocol
 
-from allauth.socialaccount.models import SocialAccount
+from django.contrib.auth import get_user_model
 
 from calendar_integration.models import (
     BlockedTime,
@@ -15,7 +15,7 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
-    CalendarEventData,
+    CalendarEventAdapterOutputData,
     CalendarResourceData,
     EventsSyncChanges,
 )
@@ -25,9 +25,12 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
 )
 
 
+User = get_user_model()
+
+
 class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Protocol):
     organization: Organization
-    account: SocialAccount | GoogleCalendarServiceAccount
+    account: User | GoogleCalendarServiceAccount
     calendar_adapter: CalendarAdapter
 
     def request_organization_calendar_resources_import(
@@ -93,7 +96,7 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
 
     def _process_events_for_sync(
         self,
-        events: Iterable[CalendarEventData],
+        events: Iterable[CalendarEventAdapterOutputData],
         calendar_events_by_external_id: dict,
         blocked_times_by_external_id: dict,
         calendar: Calendar,
@@ -103,7 +106,7 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
 
     def _process_existing_event(
         self,
-        event: CalendarEventData,
+        event: CalendarEventAdapterOutputData,
         existing_event: CalendarEvent,
         changes: EventsSyncChanges,
         update_events: bool,
@@ -112,19 +115,22 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
 
     def _process_existing_blocked_time(
         self,
-        event: CalendarEventData,
+        event: CalendarEventAdapterOutputData,
         existing_blocked_time: BlockedTime,
         changes: EventsSyncChanges,
     ):
         ...
 
     def _process_new_event(
-        self, event: CalendarEventData, calendar: Calendar, changes: EventsSyncChanges
+        self, event: CalendarEventAdapterOutputData, calendar: Calendar, changes: EventsSyncChanges
     ):
         ...
 
     def _process_event_attendees(
-        self, event: CalendarEventData, existing_event: CalendarEvent, changes: EventsSyncChanges
+        self,
+        event: CalendarEventAdapterOutputData,
+        existing_event: CalendarEvent,
+        changes: EventsSyncChanges,
     ):
         ...
 

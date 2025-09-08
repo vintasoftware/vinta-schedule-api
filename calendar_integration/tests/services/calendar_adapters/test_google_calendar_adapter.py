@@ -14,7 +14,7 @@ from calendar_integration.services.calendar_adapters.google_calendar_adapter imp
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
-    CalendarEventData,
+    CalendarEventAdapterOutputData,
     CalendarEventsSyncTypedDict,
     CalendarResourceData,
     EventAttendeeData,
@@ -470,7 +470,7 @@ class TestEventOperations:
         )
 
         # Mock the entire create_event method to avoid datetime parsing issues
-        expected_result = CalendarEventData(
+        expected_result = CalendarEventAdapterOutputData(
             calendar_external_id="calendar_123",
             external_id="event_123",
             title="Test Event",
@@ -486,7 +486,7 @@ class TestEventOperations:
         with patch.object(adapter, "create_event", return_value=expected_result) as mock_create:
             result = adapter.create_event(event_data)
 
-            assert isinstance(result, CalendarEventData)
+            assert isinstance(result, CalendarEventAdapterOutputData)
             assert result.external_id == "event_123"
             assert result.title == "Test Event"
             assert result.calendar_external_id == "calendar_123"
@@ -521,7 +521,7 @@ class TestEventOperations:
             mock_created_event
         )
 
-        expected_result = CalendarEventData(
+        expected_result = CalendarEventAdapterOutputData(
             calendar_external_id="calendar_123",
             external_id="recurring_event_123",
             title="Recurring Meeting",
@@ -536,7 +536,7 @@ class TestEventOperations:
         with patch.object(adapter, "create_event", return_value=expected_result) as mock_create:
             result = adapter.create_event(event_data)
 
-            assert isinstance(result, CalendarEventData)
+            assert isinstance(result, CalendarEventAdapterOutputData)
             assert result.external_id == "recurring_event_123"
             assert result.title == "Recurring Meeting"
             assert result.recurrence_rule == "RRULE:FREQ=WEEKLY;COUNT=10;BYDAY=MO"
@@ -547,7 +547,7 @@ class TestEventOperations:
     def test_get_event(self, adapter, mock_rate_limiters):
         """Test retrieving a specific event."""
         # Mock the entire get_event method to avoid datetime parsing issues
-        expected_result = CalendarEventData(
+        expected_result = CalendarEventAdapterOutputData(
             calendar_external_id="calendar_123",
             external_id="event_123",
             title="Test Event",
@@ -562,7 +562,7 @@ class TestEventOperations:
         with patch.object(adapter, "get_event", return_value=expected_result) as mock_get:
             result = adapter.get_event("calendar_123", "event_123")
 
-            assert isinstance(result, CalendarEventData)
+            assert isinstance(result, CalendarEventAdapterOutputData)
             assert result.external_id == "event_123"
             assert result.status == "confirmed"
 
@@ -570,7 +570,7 @@ class TestEventOperations:
 
     def test_update_event(self, adapter, mock_rate_limiters):
         """Test updating an event."""
-        event_data = CalendarEventData(
+        event_data = CalendarEventAdapterOutputData(
             calendar_external_id="calendar_123",
             external_id="event_123",
             title="Updated Event",
@@ -582,7 +582,7 @@ class TestEventOperations:
         )
 
         # Mock the entire update_event method to avoid datetime parsing issues
-        expected_result = CalendarEventData(
+        expected_result = CalendarEventAdapterOutputData(
             calendar_external_id="calendar_123",
             external_id="event_123",
             title="Updated Event",
@@ -596,7 +596,7 @@ class TestEventOperations:
         with patch.object(adapter, "update_event", return_value=expected_result) as mock_update:
             result = adapter.update_event("calendar_123", "event_123", event_data)
 
-            assert isinstance(result, CalendarEventData)
+            assert isinstance(result, CalendarEventAdapterOutputData)
             assert result.title == "Updated Event"
 
             mock_update.assert_called_once_with("calendar_123", "event_123", event_data)
@@ -645,7 +645,7 @@ class TestEventOperations:
 
         # Mock the entire get_events method to avoid datetime parsing
         mock_events = [
-            CalendarEventData(
+            CalendarEventAdapterOutputData(
                 calendar_external_id="calendar_123",
                 external_id="event_1",
                 title="Event 1",
@@ -655,7 +655,7 @@ class TestEventOperations:
                 timezone="UTC",
                 attendees=[],
             ),
-            CalendarEventData(
+            CalendarEventAdapterOutputData(
                 calendar_external_id="calendar_123",
                 external_id="event_2",
                 title="Event 2",
@@ -707,7 +707,7 @@ class TestEventOperations:
         end_date = datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC)
 
         # Mock the conversion method
-        mock_event = CalendarEventData(
+        mock_event = CalendarEventAdapterOutputData(
             calendar_external_id="calendar_123",
             external_id="event_updated",
             title="Updated Event",
@@ -931,7 +931,7 @@ class TestEventDataConversion:
         }
 
         # Mock the conversion method to return expected data
-        expected_result = CalendarEventData(
+        expected_result = CalendarEventAdapterOutputData(
             calendar_external_id="calendar_123",
             external_id="event_123",
             title="Test Event",
@@ -956,7 +956,7 @@ class TestEventDataConversion:
                 google_event, "calendar_123"
             )
 
-            assert isinstance(result, CalendarEventData)
+            assert isinstance(result, CalendarEventAdapterOutputData)
             assert result.external_id == "event_123"
             assert result.title == "Test Event"
             assert result.description == "Test Description"

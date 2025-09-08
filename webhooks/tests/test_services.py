@@ -8,7 +8,7 @@ from model_bakery import baker
 from organizations.models import Organization
 from webhooks.constants import WebhookEventType, WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
-from webhooks.services import WebhookService
+from webhooks.services.webhook_service import WebhookService
 
 
 @pytest.mark.django_db
@@ -93,8 +93,8 @@ class TestWebhookService:
         webhook_configuration.refresh_from_db()
         assert webhook_configuration.deleted_at is not None
 
-    @patch("webhooks.services.process_webhook_event.delay")
-    def test_send_events(self, mock_task, organization, webhook_configuration, webhook_service):
+    @patch("webhooks.services.webhook_service.process_webhook_event.delay")
+    def test_send_event(self, mock_task, organization, webhook_configuration, webhook_service):
         """Test sending webhook events to all configured URLs."""
         # Create another configuration for the same event type
         baker.make(
@@ -107,7 +107,7 @@ class TestWebhookService:
 
         payload = {"event": "calendar_created", "data": {"id": 123}}
 
-        webhook_events = webhook_service.send_events(
+        webhook_events = webhook_service.send_event(
             organization=organization,
             event_type=WebhookEventType.CALENDAR_EVENT_CREATED,
             payload=payload,
@@ -123,8 +123,8 @@ class TestWebhookService:
         # Verify that tasks were scheduled
         assert mock_task.call_count == 2
 
-    @patch("webhooks.services.process_webhook_event.delay")
-    def test_send_events_excludes_deleted_configurations(
+    @patch("webhooks.services.webhook_service.process_webhook_event.delay")
+    def test_send_event_excludes_deleted_configurations(
         self, mock_task, organization, webhook_service
     ):
         """Test that deleted configurations are excluded from sending events."""
@@ -139,7 +139,7 @@ class TestWebhookService:
 
         payload = {"event": "calendar_created"}
 
-        webhook_events = webhook_service.send_events(
+        webhook_events = webhook_service.send_event(
             organization=organization,
             event_type=WebhookEventType.CALENDAR_EVENT_CREATED,
             payload=payload,
@@ -148,7 +148,7 @@ class TestWebhookService:
         assert len(webhook_events) == 0
         mock_task.assert_not_called()
 
-    @patch("webhooks.services.process_webhook_event.apply_async")
+    @patch("webhooks.services.webhook_service.process_webhook_event.apply_async")
     def test_schedule_event_retry_automatic(self, mock_apply_async, webhook_event, webhook_service):
         """Test automatic retry scheduling (from failure processing)."""
         retry_event = webhook_service.schedule_event_retry(
@@ -174,7 +174,7 @@ class TestWebhookService:
         assert call_kwargs["kwargs"]["organization_id"] == retry_event.organization_id
         assert call_kwargs["countdown"] == 1  # 2^(1-1) = 1 second backoff
 
-    @patch("webhooks.services.process_webhook_event.apply_async")
+    @patch("webhooks.services.webhook_service.process_webhook_event.apply_async")
     def test_schedule_event_retry_manual(self, mock_apply_async, webhook_event, webhook_service):
         """Test manual retry scheduling (immediate retry, no backoff)."""
         retry_event = webhook_service.schedule_event_retry(
@@ -206,7 +206,7 @@ class TestWebhookService:
 
         assert retry_event is None
 
-    @patch("webhooks.services.process_webhook_event.apply_async")
+    @patch("webhooks.services.webhook_service.process_webhook_event.apply_async")
     def test_schedule_event_retry_manual_ignores_max_retries(
         self, mock_apply_async, webhook_event, webhook_service
     ):
@@ -222,7 +222,7 @@ class TestWebhookService:
         assert retry_event.retry_number == 11
         mock_apply_async.assert_called_once()
 
-    @patch("webhooks.services.process_webhook_event.apply_async")
+    @patch("webhooks.services.webhook_service.process_webhook_event.apply_async")
     def test_schedule_event_retry_with_main_event(
         self, mock_apply_async, webhook_event, webhook_service
     ):
@@ -386,7 +386,7 @@ class TestWebhookService:
                     webhook_event.status == expected_status
                 ), f"Status code {status_code} should result in {expected_status}"
 
-    @patch("webhooks.services.process_webhook_event.delay")
+    @patch("webhooks.services.webhook_service.process_webhook_event.delay")
     def test_schedule_webhook_event_private_method(
         self, mock_delay, webhook_event, webhook_service
     ):
@@ -411,7 +411,9 @@ class TestWebhookService:
             webhook_event.retry_number = initial_retry_number
             webhook_event.save()
 
-            with patch("webhooks.services.process_webhook_event.apply_async") as mock_apply_async:
+            with patch(
+                "webhooks.services.webhook_service.process_webhook_event.apply_async"
+            ) as mock_apply_async:
                 webhook_service.schedule_event_retry(
                     event=webhook_event, use_current_configuration=False, is_manual=False
                 )

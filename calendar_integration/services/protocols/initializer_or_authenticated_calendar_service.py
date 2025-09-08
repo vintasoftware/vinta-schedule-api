@@ -9,15 +9,21 @@ from calendar_integration.models import (
     BlockedTime,
     Calendar,
     CalendarEvent,
+    EventAttendance,
+    EventExternalAttendance,
     GoogleCalendarServiceAccount,
     Organization,
     RecurrenceRule,
 )
+from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
+    CalendarEventData,
     CalendarEventInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
+    EventExternalAttendeeData,
+    EventInternalAttendeeData,
     ResourceAllocationInputData,
     UnavailableTimeWindow,
 )
@@ -28,6 +34,7 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
     organization: Organization
     account: SocialAccount | GoogleCalendarServiceAccount | None
     calendar_adapter: CalendarAdapter | None
+    calendar_side_effects_service: CalendarSideEffectsService
 
     def _get_calendar_by_id(self, calendar_id: int) -> Calendar:
         ...
@@ -190,4 +197,17 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
         end_time: datetime.datetime,
         rrule_string: str | None = None,
     ) -> AvailableTime:
+        ...
+
+    def _serialize_event(self, event: CalendarEvent) -> CalendarEventData:
+        ...
+
+    def _serialize_event_internal_attendee(
+        self, attendance: EventAttendance
+    ) -> EventInternalAttendeeData:
+        ...
+
+    def _serialize_event_external_attendee(
+        self, external_attendance: EventExternalAttendance
+    ) -> EventExternalAttendeeData:
         ...

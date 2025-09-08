@@ -31,7 +31,11 @@ def import_account_calendars_task(
         return
 
     if account_type == "social_account":
-        account = SocialAccount.objects.filter(id=account_id).first()
+        social_account = SocialAccount.objects.filter(id=account_id).first()
+        if social_account:
+            account = social_account.user
+        else:
+            account = None
     else:
         account = (
             GoogleCalendarServiceAccount.objects.filter_by_organization(
@@ -43,7 +47,6 @@ def import_account_calendars_task(
 
     if not account:
         return
-
     calendar_service.authenticate(account=account, organization=organization)
     calendar_service.import_account_calendars()
 
@@ -69,7 +72,11 @@ def sync_calendar_task(
         organization_id=organization_id
     ).get_not_started_calendar_sync(calendar_sync_id)
     if account_type == "social_account":
-        account = SocialAccount.objects.filter(id=account_id).first()
+        social_account = SocialAccount.objects.filter(id=account_id).first()
+        if social_account:
+            account = social_account.user
+        else:
+            account = None
     else:
         account = (
             GoogleCalendarServiceAccount.objects.filter_by_organization(
@@ -118,7 +125,11 @@ def import_organization_calendar_resources_task(
         return
 
     if account_type == "social_account":
-        account = SocialAccount.objects.filter(id=account_id).first()
+        social_account = SocialAccount.objects.filter(id=account_id).first()
+        if social_account:
+            account = social_account.user
+        else:
+            account = None
     else:
         account = (
             GoogleCalendarServiceAccount.objects.filter_by_organization(

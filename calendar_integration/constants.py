@@ -51,3 +51,11 @@ class RecurrenceWeekday(TextChoices):
     FRIDAY = "FR", "Friday"
     SATURDAY = "SA", "Saturday"
     SUNDAY = "SU", "Sunday"
+
+
+class EventUpdatePermissions(TextChoices):
+    ATTENDEES = "attendees", "Update Attendees"
+    SELF_RSVP = "self_rsvp", "Update Self RSVP"
+    DETAILS = "details", "Update Event Details"
+    CANCEL = "cancel", "Cancel Event"
+    RESCHEDULE = "reschedule", "Reschedule Event"

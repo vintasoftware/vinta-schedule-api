@@ -17,7 +17,7 @@ from calendar_integration.constants import CalendarProvider
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
-    CalendarEventData,
+    CalendarEventAdapterOutputData,
     CalendarEventsSyncTypedDict,
     CalendarResourceData,
     EventAttendeeData,
@@ -234,7 +234,9 @@ class GoogleCalendarAdapter(CalendarAdapter):
             organization_id=None,  # Will be set later in the sync process
         )
 
-    def create_event(self, event_data: CalendarEventAdapterInputData) -> CalendarEventData:
+    def create_event(
+        self, event_data: CalendarEventAdapterInputData
+    ) -> CalendarEventAdapterOutputData:
         event = {
             "summary": event_data.title,
             "description": event_data.description,
@@ -291,7 +293,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
                     recurrence_rule = rule[6:]  # Remove "RRULE:" prefix
                     break
 
-        return CalendarEventData(
+        return CalendarEventAdapterOutputData(
             calendar_external_id=event_data.calendar_external_id,
             external_id=created_event["id"],
             title=created_event["summary"],
@@ -318,7 +320,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
 
     def _convert_google_calendar_event_to_event_data(
         self, event: dict[str, Any], calendar_id: str
-    ) -> CalendarEventData:
+    ) -> CalendarEventAdapterOutputData:
         # Extract recurrence rule if present
         recurrence_rule = None
         if "recurrence" in event:
@@ -327,7 +329,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
                     recurrence_rule = rule[6:]  # Remove "RRULE:" prefix
                     break
 
-        return CalendarEventData(
+        return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=event["id"],
             title=event["summary"],
@@ -410,10 +412,10 @@ class GoogleCalendarAdapter(CalendarAdapter):
             next_sync_token=next_sync_token,
         )
 
-    def get_event(self, calendar_id: str, event_id: str) -> CalendarEventData:
+    def get_event(self, calendar_id: str, event_id: str) -> CalendarEventAdapterOutputData:
         read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
         event = self.client.events().get(calendarId=calendar_id, eventId=event_id).execute()
-        return CalendarEventData(
+        return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=event["id"],
             title=event["summary"],
@@ -437,7 +439,9 @@ class GoogleCalendarAdapter(CalendarAdapter):
             status=event.get("status", "confirmed"),
         )
 
-    def update_event(self, calendar_id: str, event_id, event_data) -> CalendarEventData:
+    def update_event(
+        self, calendar_id: str, event_id: str, event_data: CalendarEventAdapterInputData
+    ) -> CalendarEventAdapterOutputData:
         event = {
             "summary": event_data.title,
             "description": event_data.description,
@@ -474,7 +478,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
                     recurrence_rule = rule[6:]  # Remove "RRULE:" prefix
                     break
 
-        return CalendarEventData(
+        return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=updated_event["id"],
             title=updated_event["summary"],

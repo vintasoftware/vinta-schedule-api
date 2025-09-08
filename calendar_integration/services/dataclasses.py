@@ -81,13 +81,16 @@ class CalendarEventAdapterInputData:
     attendees: list[EventAttendeeData]
     resources: list[ResourceData] = dataclass_field(default_factory=list)
     original_payload: dict | None = None
+
+    external_id: str | None = None  # only for update
+
     # Recurrence fields
     recurrence_rule: str | None = None  # RRULE string for creating recurring events
     is_recurring_instance: bool = False  # True if this is a single instance of a recurring event
 
 
 @dataclass
-class CalendarEventData:
+class CalendarEventAdapterOutputData:
     calendar_external_id: str
     title: str
     description: str
@@ -149,7 +152,7 @@ class ApplicationCalendarData:
 
 
 class CalendarEventsSyncTypedDict(TypedDict):
-    events: Iterable[CalendarEventData]
+    events: Iterable[CalendarEventAdapterOutputData]
     next_sync_token: str | None
 
 
@@ -174,24 +177,47 @@ class BlockedTimeData:
 
 
 @dataclass
+class EventInternalAttendeeData:
+    user_id: int
+    email: str
+    name: str | None
+    status: Literal["accepted", "declined", "pending"]
+
+
+@dataclass
+class EventExternalAttendeeData:
+    email: str
+    name: str | None
+    status: Literal["accepted", "declined", "pending"]
+
+
+@dataclass
+class CalendarEventData:
+    id: int  # noqa: A003
+    calendar_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str  # IANA timezone string (required)
+    title: str
+    description: str
+    external_id: str
+    status: Literal["confirmed", "cancelled"]
+    attendees: list[EventInternalAttendeeData]
+    external_attendees: list[EventExternalAttendeeData]
+    resources: list[ResourceData]
+    recurrence_rule: str | None
+    is_recurring: bool
+    recurring_event_id: str | None  # ID of the master recurring event
+    original_payload: dict | None = None
+
+
+@dataclass
 class UnavailableTimeWindow:
     start_time: datetime.datetime
     end_time: datetime.datetime
     reason: Literal["blocked_time"] | Literal["calendar_event"]
     id: int  # noqa: A003
     data: BlockedTimeData | CalendarEventData
-
-
-@dataclass
-class RecurringObjectInputData:
-    """Base class for recurring object input data."""
-
-    start_time: datetime.datetime
-    end_time: datetime.datetime
-    timezone: str  # IANA timezone string (required)
-    recurrence_rule: str | None = None
-    parent_object_id: int | None = None
-    is_recurring_exception: bool = False
 
 
 @dataclass

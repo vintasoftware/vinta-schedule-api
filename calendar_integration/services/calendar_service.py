@@ -5,9 +5,8 @@ from collections.abc import Callable, Iterable
 from functools import lru_cache
 from typing import Annotated, Any, Literal, cast
 
-from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Prefetch, Q
+from django.db.models import Q
 
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from dependency_injector.wiring import Provide, inject
@@ -42,17 +41,21 @@ from calendar_integration.models import (
     ResourceAllocation,
 )
 from calendar_integration.recurrence_utils import OccurrenceValidator, RecurrenceRuleSplitter
+from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     AvailableTimeWindow,
     BlockedTimeData,
     CalendarEventAdapterInputData,
+    CalendarEventAdapterOutputData,
     CalendarEventData,
     CalendarEventInputData,
     CalendarResourceData,
     EventAttendanceInputData,
     EventAttendeeData,
     EventExternalAttendanceInputData,
+    EventExternalAttendeeData,
+    EventInternalAttendeeData,
     EventsSyncChanges,
     ExternalAttendeeInputData,
     ResourceAllocationInputData,
@@ -66,69 +69,117 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from organizations.models import Organization
-from webhooks.constants import WebhookEventType
-from webhooks.services import WebhookService
-
-
-User = get_user_model()
+from users.models import User
 
 
 class CalendarService(BaseCalendarService):
     organization: Organization | None
     account: SocialAccount | GoogleCalendarServiceAccount | None
     calendar_adapter: CalendarAdapter | None
-    webhook_service: WebhookService
 
     @inject
     def __init__(
-        self, webhook_service: Annotated[WebhookService, Provide["webhook_service"]]
+        self,
+        calendar_side_effects_service: Annotated[
+            "CalendarSideEffectsService | None", Provide["calendar_side_effects_service"]
+        ] = None,
     ) -> None:
         """Initialize a CalendarService instance. Call authenticate() before using calendar operations."""
         self.organization = None
         self.account = None
         self.calendar_adapter = None
-        self.webhook_service = webhook_service
+        self.calendar_side_effects_service = calendar_side_effects_service
 
-    def _build_event_webhook_payload(self, event: CalendarEvent) -> dict[str, Any]:
+    def _serialize_event_internal_attendee(
+        self, attendance: EventAttendance
+    ) -> EventInternalAttendeeData:
+        return EventInternalAttendeeData(
+            user_id=attendance.user.id,
+            email=attendance.user.email,
+            name=attendance.user.get_full_name(),
+            status=cast(Literal["accepted", "declined", "pending"], attendance.status),
+        )
+
+    def _serialize_event_external_attendee(
+        self, external_attendance: EventExternalAttendance
+    ) -> EventExternalAttendeeData:
+        return EventExternalAttendeeData(
+            email=external_attendance.external_attendee_fk.email,  # type: ignore
+            name=external_attendance.external_attendee_fk.name,  # type: ignore
+            status=cast(
+                Literal["accepted", "declined", "pending"],
+                external_attendance.status,
+            ),
+        )
+
+    def _serialize_event(self, event: CalendarEvent) -> CalendarEventData:
         """Build webhook payload for calendar event."""
 
-        return {
-            "id": event.id,
-            "calendar_id": event.calendar_fk_id,
-            "is_recurring": event.is_recurring,
-        }
-
-    def _build_attendee_webhook_payload(
-        self, event: CalendarEvent, user_id: int | None = None, external_email: str | None = None
-    ) -> dict[str, Any]:
-        """Build webhook payload for attendee operations."""
-        payload: dict[str, Any] = {
-            "event_id": event.id,
-            "calendar_id": event.calendar_fk_id,
-        }
-
-        if user_id:
-            payload["user_id"] = user_id
-        if external_email:
-            payload["external_attendee_email"] = external_email
-
-        return payload
-
-    def _send_webhook_event(self, event_type: WebhookEventType, payload: dict[str, Any]) -> None:
-        """Send webhook event if organization is available."""
-        if self.organization:
-            self.webhook_service.send_events(
-                organization=self.organization, event_type=event_type, payload=payload
-            )
+        return CalendarEventData(
+            id=event.id,
+            calendar_id=event.calendar_fk_id,  # type: ignore
+            start_time=event.start_time,
+            end_time=event.end_time,
+            timezone=event.timezone,
+            title=event.title,
+            description=event.description,
+            original_payload=event.meta.get("latest_original_payload", {})
+            if hasattr(event, "meta") and event.meta
+            else {},
+            attendees=[
+                self._serialize_event_internal_attendee(attendance)
+                # For recurring instances, get attendances from the parent event; for regular events, use their own
+                for attendance in (
+                    event.parent_recurring_object.attendances.all()
+                    if event.parent_recurring_object
+                    else (event.attendances.all() if event.id else [])
+                )
+            ],
+            external_attendees=[
+                self._serialize_event_external_attendee(external_attendance)
+                # For recurring instances, get external attendances from the parent event; for regular events, use their own
+                for external_attendance in (
+                    event.parent_recurring_object.external_attendances.all()
+                    if event.parent_recurring_object
+                    else (event.external_attendances.all() if event.id else [])
+                )
+            ],
+            resources=[
+                ResourceData(
+                    title=resource_allocation.calendar.name,
+                    email=resource_allocation.calendar.email,
+                    external_id=resource_allocation.calendar.external_id,
+                    status=cast(
+                        Literal["accepted", "declined", "pending"],
+                        resource_allocation.status,
+                    ),
+                )
+                # For recurring instances, get resource allocations from the parent event; for regular events, use their own
+                for resource_allocation in (
+                    event.parent_recurring_object.resource_allocations.all()
+                    if event.parent_recurring_object
+                    else (event.resource_allocations.all() if event.id else [])
+                )
+            ],
+            external_id=event.external_id,
+            recurrence_rule=(
+                event.recurrence_rule.to_rrule_string() if event.recurrence_rule else None
+            ),
+            status="confirmed",
+            is_recurring=event.is_recurring,
+            recurring_event_id=(
+                event.parent_recurring_object_fk_id if event.parent_recurring_object_fk_id else None  # type: ignore
+            ),
+        )
 
     @staticmethod
     def get_calendar_adapter_for_account(
-        account: SocialAccount | GoogleCalendarServiceAccount,
-    ) -> CalendarAdapter:
+        account: User | GoogleCalendarServiceAccount,
+    ) -> tuple[CalendarAdapter, SocialAccount | GoogleCalendarServiceAccount]:
         """
         Retrieve a calendar adapter for the given social account.
         :param account: Social account instance or GoogleCalendarServiceAccount instance.
-        :return: CalendarAdapter instance
+        :return: CalendarAdapter instance and the account used (SocialAccount or GoogleCalendarServiceAccount).
         """
         if isinstance(account, GoogleCalendarServiceAccount):
             from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
@@ -144,14 +195,24 @@ class CalendarService(BaseCalendarService):
                     "private_key": account.private_key,
                     "audience": account.audience,
                 }
-            )
+            ), account
 
         now = datetime.datetime.now(datetime.UTC)
-        token: SocialToken = (
-            account.socialtoken_set.filter(expires_at__gte=now).order_by("-id").first()
+        token = (
+            SocialToken.objects.select_related("account")
+            .filter(
+                account__user=account,
+                account__provider__in=[CalendarProvider.GOOGLE, CalendarProvider.MICROSOFT],
+                expires_at__gte=now,
+            )
+            .order_by("-id")
+            .first()
         )
 
-        if account.provider == CalendarProvider.GOOGLE:
+        if not token:
+            raise ValueError("User doesn't have a valid calendar token. Please reauthenticate")
+
+        if token.account.provider == CalendarProvider.GOOGLE:
             from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
                 GoogleCalendarAdapter,
             )
@@ -160,11 +221,11 @@ class CalendarService(BaseCalendarService):
                 credentials_dict={
                     "token": token.token,
                     "refresh_token": token.token_secret,
-                    "account_id": f"social-{account.id}",
+                    "account_id": f"social-{token.account_id}",
                 }
-            )
+            ), token.account
 
-        if account.provider == CalendarProvider.MICROSOFT:
+        if token.account.provider == CalendarProvider.MICROSOFT:
             from calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter import (
                 MSOutlookCalendarAdapter,
             )
@@ -173,17 +234,17 @@ class CalendarService(BaseCalendarService):
                 credentials_dict={
                     "token": token.token,
                     "refresh_token": token.token_secret,
-                    "account_id": f"social-{account.id}",
+                    "account_id": f"social-{token.account_id}",
                 }
-            )
+            ), token.account
 
         raise NotImplementedError(
-            f"Calendar adapter for provider {account.provider} is not implemented."
+            f"Calendar adapter for provider {token.account.provider} is not implemented."
         )
 
     def authenticate(
         self,
-        account: SocialAccount | GoogleCalendarServiceAccount,
+        account: User | GoogleCalendarServiceAccount,
         organization: Organization,
     ) -> None:
         """
@@ -191,12 +252,13 @@ class CalendarService(BaseCalendarService):
         :param account: Social account instance or GoogleCalendarServiceAccount instance.
         :param organization: Calendar organization instance.
         """
-        self.account = account
+        self.user = account if isinstance(account, User) else None
         self.organization = organization
-        self.calendar_adapter = self.get_calendar_adapter_for_account(account)
+        self.calendar_adapter, self.account = self.get_calendar_adapter_for_account(account)
 
     def initialize_without_provider(
         self,
+        user: User | None = None,
         organization: Organization | None = None,
     ):
         """
@@ -204,6 +266,7 @@ class CalendarService(BaseCalendarService):
         :param organization: Calendar organization instance.
         """
         self.organization = organization
+        self.user = user
         self.account = None
         self.calendar_adapter = None
 
@@ -383,9 +446,6 @@ class CalendarService(BaseCalendarService):
 
         if not is_authenticated_calendar_service(self):
             raise
-
-        if not self.account or not self.account.id:
-            raise NotImplementedError("Account is not set for the current service instance.")
 
         import_account_calendars_task.delay(  # type: ignore
             account_type="google_service_account"
@@ -662,15 +722,6 @@ class CalendarService(BaseCalendarService):
             ownership = (
                 calendar.ownerships.order_by("-is_default", "created")
                 .select_related("user")
-                .prefetch_related(
-                    Prefetch(
-                        "user__socialaccount_set",
-                        queryset=SocialAccount.objects.filter(
-                            provider=calendar.provider,
-                        ),
-                        to_attr="owner_social_accounts",
-                    )
-                )
                 .filter(
                     user__in=User.objects.filter(
                         socialaccount__provider=calendar.provider,
@@ -679,13 +730,8 @@ class CalendarService(BaseCalendarService):
                 .first()
             )
 
-            if (
-                ownership
-                and hasattr(ownership.user, "owner_social_accounts")
-                and ownership.user.owner_social_accounts
-            ):  # type: ignore
-                social_account = ownership.user.owner_social_accounts[0]  # type: ignore
-                return CalendarService.get_calendar_adapter_for_account(social_account)
+            if ownership:
+                return CalendarService.get_calendar_adapter_for_account(ownership.user)[0]
 
             # if the calendar doesn't have a valid owner, try to use self.calendar_adapter
 
@@ -861,10 +907,13 @@ class CalendarService(BaseCalendarService):
             ]
         )
 
-        # Send webhook event for event creation
-        cast(CalendarService, self)._send_webhook_event(
-            WebhookEventType.CALENDAR_EVENT_CREATED,
-            cast(CalendarService, self)._build_event_webhook_payload(event),
+        transaction.on_commit(
+            lambda: self.calendar_side_effects_service.on_create_event(
+                event=self._serialize_event(event),
+                organization=event.organization,
+            )
+            if self.calendar_side_effects_service
+            else None
         )
 
         return event
@@ -943,31 +992,31 @@ class CalendarService(BaseCalendarService):
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
 
-        calendar_event = CalendarEvent.objects.select_related("calendar").get(
+        event = CalendarEvent.objects.select_related("calendar").get(
             calendar_fk_id=calendar_id,
             id=event_id,
             organization_id=self.organization.id,
         )
 
-        if calendar_event.is_bundle_primary:
-            return self._update_bundle_event(calendar_event, event_data)
-        elif calendar_event.is_bundle_event:
+        if event.is_bundle_primary:
+            return self._update_bundle_event(event, event_data)
+        elif event.is_bundle_event:
             raise ValueError(
                 "Cannot update an event created from bundle calendar from a non-primary "
                 "calendar event"
             )
 
         original_payload: dict[str, Any] = {}
-        if calendar_event.calendar.calendar_type in [
+        if event.calendar.calendar_type in [
             CalendarType.PERSONAL,
             CalendarType.RESOURCE,
-        ] and (write_adapter := self._get_write_adapter_for_calendar(calendar_event.calendar)):
+        ] and (write_adapter := self._get_write_adapter_for_calendar(event.calendar)):
             users_by_id = {
                 u.id: u
                 for u in User.objects.filter(id__in=[a.user_id for a in event_data.attendances])
             }
-            attendance_status_by_user_id = {
-                a.user_id: a.status
+            attendance_by_user_id = {
+                a.user_id: a
                 for a in EventAttendance.objects.filter_by_organization(
                     self.organization.id
                 ).filter(event__id=event_id, user_id__in=users_by_id.keys())
@@ -980,10 +1029,10 @@ class CalendarService(BaseCalendarService):
             }
 
             updated_event = write_adapter.update_event(
-                calendar_event.calendar.id,
-                calendar_event.id,
-                CalendarEventData(
-                    calendar_external_id=calendar_event.calendar.external_id,
+                event.calendar.id,
+                event.id,
+                CalendarEventAdapterInputData(
+                    calendar_external_id=event.calendar.external_id,
                     title=event_data.title,
                     description=event_data.description,
                     start_time=event_data.start_time,
@@ -1000,15 +1049,14 @@ class CalendarService(BaseCalendarService):
                             )
                             or users_by_id[a.user_id].username,
                             status=(
-                                attendance_status_by_user_id[a.user_id]
-                                if a.user_id in attendance_status_by_user_id
+                                attendance_by_user_id[a.user_id].status
+                                if a.user_id in attendance_by_user_id
                                 else "pending"
                             ),
                         )
                         for a in event_data.attendances
                     ],
-                    id=calendar_event.id,
-                    external_id=calendar_event.external_id,
+                    external_id=event.external_id,
                     resources=[
                         ResourceData(
                             email=resources_by_id[r.resource_id].email,
@@ -1022,12 +1070,12 @@ class CalendarService(BaseCalendarService):
             )
             original_payload = updated_event.original_payload or {}
 
-        calendar_event.title = event_data.title
-        calendar_event.description = event_data.description
-        calendar_event.start_time = event_data.start_time
-        calendar_event.end_time = event_data.end_time
+        event.title = event_data.title
+        event.description = event_data.description
+        event.start_time = event_data.start_time
+        event.end_time = event_data.end_time
         if self.calendar_adapter:
-            calendar_event.meta["latest_original_payload"] = original_payload
+            event.meta["latest_original_payload"] = original_payload
 
         # update recurrence rule
         if event_data.recurrence_rule:
@@ -1035,29 +1083,31 @@ class CalendarService(BaseCalendarService):
                 rrule_string=event_data.recurrence_rule,
                 organization=self.organization,
             )
-            if calendar_event.recurrence_rule:
-                recurrence_rule.id = calendar_event.recurrence_rule.id
+            if event.recurrence_rule:
+                recurrence_rule.id = event.recurrence_rule.id
             recurrence_rule.save()
-            calendar_event.recurrence_rule = recurrence_rule
-        elif calendar_event.recurrence_rule:
+            event.recurrence_rule = recurrence_rule
+        elif event.recurrence_rule:
             # turn recurring event into non-recurring
-            calendar_event.recurrence_rule.delete()
-            calendar_event.recurrence_rule = None
+            event.recurrence_rule.delete()
+            event.recurrence_rule = None
 
-        calendar_event.save()
+        event.save()
 
-        existing_attendances = {a.user_id: a for a in calendar_event.attendances.all()}
+        existing_attendances = {a.user_id: a for a in event.attendances.all()}
         existing_external_attendances = {
-            a.external_attendee_fk_id: a for a in calendar_event.external_attendances.all()
+            a.external_attendee_fk_id: a for a in event.external_attendances.all()
         }
         existing_resource_allocation = {
-            r.calendar_fk_id: r for r in calendar_event.resource_allocations.all()
+            r.calendar_fk_id: r for r in event.resource_allocations.all()
         }
 
         maintained_external_attendees_ids = []
         external_attendees_to_update = []
         external_attendees_to_create = []
-        external_attenances_to_create = []
+        external_attendances_to_create = []
+        serialized_external_attendances_to_create = []
+        serialized_external_attendances_to_update = []
         for external_attendance_data in event_data.external_attendances:
             if (
                 external_attendance_data.external_attendee.id
@@ -1073,6 +1123,9 @@ class CalendarService(BaseCalendarService):
                 attendance_to_update.external_attendee.name = (
                     external_attendance_data.external_attendee.name
                 )
+                serialized_external_attendances_to_update.append(
+                    self._serialize_event_external_attendee(attendance_to_update)
+                )
                 external_attendees_to_update.append(attendance_to_update.external_attendee)
             else:
                 external_attendee = ExternalAttendee(
@@ -1081,12 +1134,14 @@ class CalendarService(BaseCalendarService):
                     name=external_attendance_data.external_attendee.name,
                 )
                 external_attendees_to_create.append(external_attendee)
-                external_attenances_to_create.append(
-                    EventExternalAttendance(
-                        organization=self.organization,
-                        event=calendar_event,
-                        external_attendee=external_attendee,
-                    )
+                external_attendance_instance = EventExternalAttendance(
+                    organization=self.organization,
+                    event=event,
+                    external_attendee=external_attendee,
+                )
+                external_attendances_to_create.append(external_attendance_instance)
+                serialized_external_attendances_to_create.append(
+                    self._serialize_event_external_attendee(external_attendance_instance)
                 )
             if external_attendance_data.external_attendee:
                 maintained_external_attendees_ids.append(
@@ -1094,37 +1149,53 @@ class CalendarService(BaseCalendarService):
                 )
         ExternalAttendee.objects.bulk_update(external_attendees_to_update, ["email", "name"])
         ExternalAttendee.objects.bulk_create(external_attendees_to_create)
-        EventExternalAttendance.objects.bulk_create(external_attenances_to_create)
+        EventExternalAttendance.objects.bulk_create(external_attendances_to_create)
 
         external_attendees_to_delete = set(existing_external_attendances.keys()) - set(
             maintained_external_attendees_ids
         )
 
-        EventExternalAttendance.objects.filter_by_organization(self.organization.id).filter(
-            external_attendee_fk_id__in=external_attendees_to_delete
-        ).delete()
+        event_external_attendances_instance_to_delete = (
+            EventExternalAttendance.objects.filter_by_organization(self.organization.id).filter(
+                external_attendee_fk_id__in=external_attendees_to_delete
+            )
+        )
+        serialized_external_attendances_to_delete = [
+            self._serialize_event_external_attendee(external_attendance)
+            for external_attendance in event_external_attendances_instance_to_delete
+        ]
+
+        event_external_attendances_instance_to_delete.delete()
         ExternalAttendee.objects.filter_by_organization(self.organization.id).filter(
             id__in=external_attendees_to_delete
         ).delete()
 
         maintained_attendees_ids = []
         event_attendances_to_create = []
+        serialized_attendances_to_create = []
         for attendance_data in event_data.attendances:
             if not existing_attendances.get(attendance_data.user_id):
-                event_attendances_to_create.append(
-                    EventAttendance(
-                        organization=self.organization,
-                        event=calendar_event,
-                        user_id=attendance_data.user_id,
-                    )
+                event_attendance_instance = EventAttendance(
+                    organization=self.organization,
+                    event=event,
+                    user_id=attendance_data.user_id,
+                )
+                event_attendances_to_create.append(event_attendance_instance)
+                serialized_attendances_to_create.append(
+                    self._serialize_event_internal_attendee(event_attendance_instance)
                 )
             maintained_attendees_ids.append(attendance_data.user_id)
 
         EventAttendance.objects.bulk_create(event_attendances_to_create)
         attendances_to_delete = set(existing_attendances.keys()) - set(maintained_attendees_ids)
-        EventAttendance.objects.filter_by_organization(self.organization.id).filter(
-            user_id__in=attendances_to_delete
-        ).delete()
+        attendances_instances_to_delete = EventAttendance.objects.filter_by_organization(
+            self.organization.id
+        ).filter(user_id__in=attendances_to_delete)
+        serialized_attendances_to_delete = [
+            self._serialize_event_internal_attendee(attendance)
+            for attendance in attendances_instances_to_delete
+        ]
+        attendances_instances_to_delete.delete()
 
         maintained_resources_ids = []
         resource_allocations_to_create = []
@@ -1133,7 +1204,7 @@ class CalendarService(BaseCalendarService):
                 resource_allocations_to_create.append(
                     ResourceAllocation(
                         organization_id=self.organization.id,
-                        event=calendar_event,
+                        event=event,
                         calendar_fk_id=resource_allocation_data.resource_id,
                     )
                 )
@@ -1145,120 +1216,48 @@ class CalendarService(BaseCalendarService):
             calendar_fk_id__in=resources_to_delete
         ).delete()
 
-        # Send webhook events for attendee changes
-        added_attendees = set(maintained_attendees_ids) - set(existing_attendances.keys())
-        removed_attendees = set(existing_attendances.keys()) - set(maintained_attendees_ids)
-        existing_attendee_ids = set(existing_attendances.keys()) & set(maintained_attendees_ids)
+        def call_side_effects():
+            if not self.calendar_side_effects_service:
+                return
 
-        for user_id in added_attendees:
-            cast(CalendarService, self)._send_webhook_event(
-                WebhookEventType.CALENDAR_EVENT_ATTENDEE_ADDED,
-                cast(CalendarService, self)._build_attendee_webhook_payload(
-                    calendar_event, user_id=user_id
-                ),
+            self.calendar_side_effects_service.on_update_event(
+                event=self._serialize_event(event),
+                organization=event.organization,
             )
-
-        for user_id in removed_attendees:
-            cast(CalendarService, self)._send_webhook_event(
-                WebhookEventType.CALENDAR_EVENT_ATTENDEE_REMOVED,
-                cast(CalendarService, self)._build_attendee_webhook_payload(
-                    calendar_event, user_id=user_id
-                ),
-            )
-
-        # Check for status updates of existing attendees
-        for user_id in existing_attendee_ids:
-            old_attendance = existing_attendances[user_id]
-            # Reload to get current status after bulk operations
-            new_attendance = (
-                EventAttendance.objects.filter_by_organization(self.organization.id)
-                .filter(event=calendar_event, user_id=user_id)
-                .first()
-            )
-
-            if new_attendance and old_attendance.status != new_attendance.status:
-                payload = cast(CalendarService, self)._build_attendee_webhook_payload(
-                    calendar_event, user_id=user_id
+            for payload in serialized_attendances_to_create:
+                self.calendar_side_effects_service.on_add_attendee_to_event(
+                    event=self._serialize_event(event),
+                    attendee=payload,
+                    organization=event.organization,
                 )
-                payload.update(
-                    {
-                        "old_status": old_attendance.status,
-                        "new_status": new_attendance.status,
-                    }
+            for payload in serialized_attendances_to_delete:
+                self.calendar_side_effects_service.on_remove_attendee_from_event(
+                    event=self._serialize_event(event),
+                    attendee=payload,
+                    organization=event.organization,
                 )
-                cast(CalendarService, self)._send_webhook_event(
-                    WebhookEventType.CALENDAR_EVENT_ATTENDEE_UPDATED, payload
+            for payload in serialized_external_attendances_to_create:
+                self.calendar_side_effects_service.on_add_attendee_to_event(
+                    event=self._serialize_event(event),
+                    attendee=payload,
+                    organization=event.organization,
+                )
+            for payload in serialized_external_attendances_to_delete:
+                self.calendar_side_effects_service.on_remove_attendee_from_event(
+                    event=self._serialize_event(event),
+                    attendee=payload,
+                    organization=event.organization,
+                )
+            for payload in serialized_external_attendances_to_update:
+                self.calendar_side_effects_service.on_update_attendee_on_event(
+                    event=self._serialize_event(event),
+                    attendee=payload,
+                    organization=event.organization,
                 )
 
-        # Send webhook events for external attendee changes
-        added_external_attendees = set(maintained_external_attendees_ids) - set(
-            existing_external_attendances.keys()
-        )
-        removed_external_attendees = set(existing_external_attendances.keys()) - set(
-            maintained_external_attendees_ids
-        )
-        existing_external_attendee_ids = set(existing_external_attendances.keys()) & set(
-            maintained_external_attendees_ids
-        )
+        transaction.on_commit(lambda: call_side_effects())
 
-        for external_attendee_id in added_external_attendees:
-            if external_attendee_id:  # Check for None values
-                try:
-                    external_attendee = ExternalAttendee.objects.get(
-                        organization_id=calendar_event.organization_id,
-                        id=external_attendee_id,
-                    )
-                    cast(CalendarService, self)._send_webhook_event(
-                        WebhookEventType.CALENDAR_EVENT_ATTENDEE_ADDED,
-                        cast(CalendarService, self)._build_attendee_webhook_payload(
-                            calendar_event, external_email=external_attendee.email
-                        ),
-                    )
-                except ExternalAttendee.DoesNotExist:
-                    pass
-
-        for external_attendee_id in removed_external_attendees:
-            # Get the external attendee before it's deleted
-            try:
-                external_attendee = ExternalAttendee.objects.get(
-                    organization_id=calendar_event.organization_id,
-                    id=external_attendee_id,
-                )
-                cast(CalendarService, self)._send_webhook_event(
-                    WebhookEventType.CALENDAR_EVENT_ATTENDEE_REMOVED,
-                    cast(CalendarService, self)._build_attendee_webhook_payload(
-                        calendar_event, external_email=external_attendee.email
-                    ),
-                )
-            except ExternalAttendee.DoesNotExist:
-                pass  # External attendee was already deleted
-
-        # Check for updates to existing external attendees (email/name changes)
-        for external_attendee_id in existing_external_attendee_ids:
-            if external_attendee_id:  # Check for None values
-                try:
-                    # Check if the external attendee was updated
-                    updated_attendee = ExternalAttendee.objects.get(id=external_attendee_id)
-                    # Since we just bulk_update above, any changes would be reflected
-                    # We can send an update event if this external attendee was in the update list
-                    if any(ea.id == external_attendee_id for ea in external_attendees_to_update):
-                        cast(CalendarService, self)._send_webhook_event(
-                            WebhookEventType.CALENDAR_EVENT_ATTENDEE_UPDATED,
-                            cast(CalendarService, self)._build_attendee_webhook_payload(
-                                calendar_event, external_email=updated_attendee.email
-                            ),
-                        )
-                except ExternalAttendee.DoesNotExist:
-                    pass
-
-        # Send webhook event for event update
-        webhook_service = cast(CalendarService, self)
-        webhook_service._send_webhook_event(
-            WebhookEventType.CALENDAR_EVENT_UPDATED,
-            webhook_service._build_event_webhook_payload(calendar_event),
-        )
-
-        return calendar_event
+        return event
 
     def create_recurring_event(
         self,
@@ -1728,14 +1727,18 @@ class CalendarService(BaseCalendarService):
                     event.recurrence_id, is_cancelled=True
                 )
 
-        # Send webhook event for event deletion (before actual deletion)
-        webhook_service = cast(CalendarService, self)
-        webhook_service._send_webhook_event(
-            WebhookEventType.CALENDAR_EVENT_DELETED,
-            webhook_service._build_event_webhook_payload(event),
-        )
+        serialized_event = self._serialize_event(event)
 
         event.delete()
+
+        transaction.on_commit(
+            lambda: self.calendar_side_effects_service.on_delete_event(
+                event=serialized_event,
+                organization=event.organization,
+            )
+            if self.calendar_side_effects_service
+            else None
+        )
 
     def transfer_event(self, event: CalendarEvent, new_calendar: Calendar) -> CalendarEvent:
         """
@@ -1971,7 +1974,7 @@ class CalendarService(BaseCalendarService):
 
     def _process_events_for_sync(
         self,
-        events: Iterable[CalendarEventData],
+        events: Iterable[CalendarEventAdapterOutputData],
         calendar_events_by_external_id: dict,
         blocked_times_by_external_id: dict,
         calendar: Calendar,
@@ -1995,7 +1998,7 @@ class CalendarService(BaseCalendarService):
 
     def _process_existing_event(
         self,
-        event: CalendarEventData,
+        event: CalendarEventAdapterOutputData,
         existing_event: CalendarEvent,
         changes: EventsSyncChanges,
         update_events: bool,
@@ -2023,7 +2026,7 @@ class CalendarService(BaseCalendarService):
 
     def _process_existing_blocked_time(
         self,
-        event: CalendarEventData,
+        event: CalendarEventAdapterOutputData,
         existing_blocked_time: BlockedTime,
         changes: EventsSyncChanges,
     ):
@@ -2043,7 +2046,7 @@ class CalendarService(BaseCalendarService):
         changes.matched_event_ids.add(existing_blocked_time.external_id)
 
     def _process_new_event(
-        self, event: CalendarEventData, calendar: Calendar, changes: EventsSyncChanges
+        self, event: CalendarEventAdapterOutputData, calendar: Calendar, changes: EventsSyncChanges
     ):
         """Process a new event by creating appropriate records."""
         if event.recurring_event_id:
@@ -2145,7 +2148,10 @@ class CalendarService(BaseCalendarService):
         changes.matched_event_ids.add(event.external_id)
 
     def _process_event_attendees(
-        self, event: CalendarEventData, existing_event: CalendarEvent, changes: EventsSyncChanges
+        self,
+        event: CalendarEventAdapterOutputData,
+        existing_event: CalendarEvent,
+        changes: EventsSyncChanges,
     ):
         """Process attendees for an existing event."""
         for attendee in event.attendees:
@@ -2435,67 +2441,7 @@ class CalendarService(BaseCalendarService):
                     end_time=event.end_time,
                     reason="calendar_event",
                     id=event.id,
-                    data=CalendarEventData(
-                        id=event.id,
-                        calendar_external_id=event.calendar.external_id,
-                        start_time=event.start_time,
-                        end_time=event.end_time,
-                        timezone=event.timezone,
-                        title=event.title,
-                        description=event.description,
-                        original_payload=event.meta.get("latest_original_payload", {})
-                        if hasattr(event, "meta") and event.meta
-                        else {},
-                        attendees=[
-                            EventAttendeeData(
-                                email=attendance.user.email,
-                                name=attendance.user.get_full_name(),
-                                status=cast(
-                                    Literal["accepted", "declined", "pending"], attendance.status
-                                ),
-                            )
-                            # For recurring instances, get attendances from the parent event; for regular events, use their own
-                            for attendance in (
-                                event.parent_recurring_object.attendances.all()
-                                if event.parent_recurring_object
-                                else (event.attendances.all() if event.id else [])
-                            )
-                        ]
-                        + [
-                            EventAttendeeData(
-                                email=external_attendance.external_attendee.email,
-                                name=external_attendance.external_attendee.name,
-                                status=cast(
-                                    Literal["accepted", "declined", "pending"],
-                                    external_attendance.status,
-                                ),
-                            )
-                            # For recurring instances, get external attendances from the parent event; for regular events, use their own
-                            for external_attendance in (
-                                event.parent_recurring_object.external_attendances.all()
-                                if event.parent_recurring_object
-                                else (event.external_attendances.all() if event.id else [])
-                            )
-                        ],
-                        resources=[
-                            ResourceData(
-                                title=resource_allocation.calendar.name,
-                                email=resource_allocation.calendar.email,
-                                external_id=resource_allocation.calendar.external_id,
-                                status=cast(
-                                    Literal["accepted", "declined", "pending"],
-                                    resource_allocation.status,
-                                ),
-                            )
-                            # For recurring instances, get resource allocations from the parent event; for regular events, use their own
-                            for resource_allocation in (
-                                event.parent_recurring_object.resource_allocations.all()
-                                if event.parent_recurring_object
-                                else (event.resource_allocations.all() if event.id else [])
-                            )
-                        ],
-                        external_id=event.external_id,
-                    ),
+                    data=self._serialize_event(event),
                 )
                 for event in all_events
             ]
@@ -3411,9 +3357,6 @@ class CalendarService(BaseCalendarService):
             modification_rrule_string=modification_rrule_string,
         )
 
-        # Adapter sync for truncated original + continuation is performed inside
-        # _create_recurring_bulk_modification_generic where possible.
-
         return continuation
 
     def cancel_recurring_event_from_date(
@@ -3429,8 +3372,6 @@ class CalendarService(BaseCalendarService):
             is_bulk_cancelled=True,
             modification_rrule_string=modification_rrule_string,
         )
-
-    # Adapter sync handled during bulk modification transaction.
 
     def modify_recurring_blocked_time_from_date(
         self,
@@ -3451,8 +3392,6 @@ class CalendarService(BaseCalendarService):
             modification_rrule_string=modification_rrule_string,
         )
 
-        # Adapter sync handled during bulk modification transaction.
-
         return continuation
 
     def cancel_recurring_blocked_time_from_date(
@@ -3467,8 +3406,6 @@ class CalendarService(BaseCalendarService):
             is_bulk_cancelled=True,
             modification_rrule_string=modification_rrule_string,
         )
-
-    # Adapter sync handled during bulk modification transaction.
 
     def modify_recurring_available_time_from_date(
         self,
@@ -3487,8 +3424,6 @@ class CalendarService(BaseCalendarService):
             modification_rrule_string=modification_rrule_string,
         )
 
-        # Adapter sync handled during bulk modification transaction.
-
         return continuation
 
     def cancel_recurring_available_time_from_date(
@@ -3503,5 +3438,3 @@ class CalendarService(BaseCalendarService):
             is_bulk_cancelled=True,
             modification_rrule_string=modification_rrule_string,
         )
-
-    # Adapter sync handled during bulk modification transaction.
