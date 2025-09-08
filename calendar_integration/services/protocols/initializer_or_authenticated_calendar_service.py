@@ -9,6 +9,7 @@ from calendar_integration.models import (
     BlockedTime,
     Calendar,
     CalendarEvent,
+    CalendarEventUpdateToken,
     EventAttendance,
     EventExternalAttendance,
     GoogleCalendarServiceAccount,
@@ -28,11 +29,14 @@ from calendar_integration.services.dataclasses import (
     UnavailableTimeWindow,
 )
 from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
+from public_api.models import SystemUser
+from users.models import User
 
 
 class InitializedOrAuthenticatedCalendarService(Protocol):
     organization: Organization
     account: SocialAccount | GoogleCalendarServiceAccount | None
+    user: User | CalendarEventUpdateToken | SystemUser | None
     calendar_adapter: CalendarAdapter | None
     calendar_side_effects_service: CalendarSideEffectsService
 

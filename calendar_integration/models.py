@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
+from cuid2 import Cuid
 from encrypted_fields.fields import EncryptedCharField  # type:ignore
 
 from calendar_integration.constants import (
@@ -14,6 +15,7 @@ from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncStatus,
     CalendarType,
+    EventUpdatePermissions,
     RecurrenceFrequency,
     RecurrenceWeekday,
     RSVPStatus,
@@ -1376,3 +1378,60 @@ class GoogleCalendarServiceAccount(OrganizationModel):
 
     def __str__(self):
         return f"Service Account for {self.calendar} ({self.email})"
+
+
+def generate_unique_id() -> str:
+    cuid_generator = Cuid(length=64)
+    return cuid_generator.generate()
+
+
+class CalendarEventUpdateToken(OrganizationModel):
+    """
+    Represents a token used to allow updates to calendar events without authentication.
+    """
+
+    event = OrganizationForeignKey(
+        CalendarEvent,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="update_tokens",
+    )
+    token = models.CharField(max_length=255, unique=True, default=generate_unique_id, db_index=True)
+    used_at = models.DateTimeField(null=True)
+    revoked_at = models.DateTimeField(null=True)
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="calendar_event_update_tokens",
+    )
+    external_attendee = models.ForeignKey(
+        ExternalAttendee,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="calendar_event_update_tokens",
+    )
+
+    permissions: "RelatedManager[CalendarEventUpdateTokenPermission]"
+
+    def __str__(self):
+        used_at = "" if self.used_at is None else f"(used at: {self.used_at.isoformat()})"
+        return f"Update Token from {self.user or self.external_attendee} for {self.event}{used_at}"
+
+
+class CalendarEventUpdateTokenPermission(OrganizationModel):
+    """
+    Represents a permission associated with a CalendarEventUpdateToken.
+    """
+
+    token = OrganizationForeignKey(
+        CalendarEventUpdateToken,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="permissions",
+    )
+    permission = models.CharField(max_length=100, choices=EventUpdatePermissions)
+
+    def __str__(self):
+        return f"Permission {self.permission} for Token {self.token}"

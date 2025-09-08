@@ -26,6 +26,7 @@ from calendar_integration.models import (
     BlockedTimeRecurrenceException,
     Calendar,
     CalendarEvent,
+    CalendarEventUpdateToken,
     CalendarOrganizationResourcesImport,
     CalendarOwnership,
     CalendarSync,
@@ -69,11 +70,13 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from organizations.models import Organization
+from public_api.models import SystemUser
 from users.models import User
 
 
 class CalendarService(BaseCalendarService):
     organization: Organization | None
+    user: User | CalendarEventUpdateToken | SystemUser | None
     account: SocialAccount | GoogleCalendarServiceAccount | None
     calendar_adapter: CalendarAdapter | None
 
@@ -258,7 +261,7 @@ class CalendarService(BaseCalendarService):
 
     def initialize_without_provider(
         self,
-        user: User | None = None,
+        user: User | CalendarEventUpdateToken | SystemUser | None = None,
         organization: Organization | None = None,
     ):
         """
@@ -909,6 +912,7 @@ class CalendarService(BaseCalendarService):
 
         transaction.on_commit(
             lambda: self.calendar_side_effects_service.on_create_event(
+                actor=self.user,
                 event=self._serialize_event(event),
                 organization=event.organization,
             )
@@ -1221,36 +1225,38 @@ class CalendarService(BaseCalendarService):
                 return
 
             self.calendar_side_effects_service.on_update_event(
+                actor=self.user,
                 event=self._serialize_event(event),
                 organization=event.organization,
             )
             for payload in serialized_attendances_to_create:
                 self.calendar_side_effects_service.on_add_attendee_to_event(
+                    actor=self.user,
                     event=self._serialize_event(event),
                     attendee=payload,
                     organization=event.organization,
                 )
             for payload in serialized_attendances_to_delete:
                 self.calendar_side_effects_service.on_remove_attendee_from_event(
-                    event=self._serialize_event(event),
+                    actor=self._serialize_event(event),
                     attendee=payload,
                     organization=event.organization,
                 )
             for payload in serialized_external_attendances_to_create:
                 self.calendar_side_effects_service.on_add_attendee_to_event(
-                    event=self._serialize_event(event),
+                    actor=self._serialize_event(event),
                     attendee=payload,
                     organization=event.organization,
                 )
             for payload in serialized_external_attendances_to_delete:
                 self.calendar_side_effects_service.on_remove_attendee_from_event(
-                    event=self._serialize_event(event),
+                    actor=self._serialize_event(event),
                     attendee=payload,
                     organization=event.organization,
                 )
             for payload in serialized_external_attendances_to_update:
                 self.calendar_side_effects_service.on_update_attendee_on_event(
-                    event=self._serialize_event(event),
+                    actor=self._serialize_event(event),
                     attendee=payload,
                     organization=event.organization,
                 )
@@ -1733,6 +1739,7 @@ class CalendarService(BaseCalendarService):
 
         transaction.on_commit(
             lambda: self.calendar_side_effects_service.on_delete_event(
+                actor=self.user,
                 event=serialized_event,
                 organization=event.organization,
             )

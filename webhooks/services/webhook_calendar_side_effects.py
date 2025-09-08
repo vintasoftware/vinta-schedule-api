@@ -2,12 +2,15 @@ from typing import TYPE_CHECKING, Annotated
 
 from dependency_injector.wiring import Provide, inject
 
+from calendar_integration.models import CalendarEventUpdateToken
 from calendar_integration.services.dataclasses import (
     CalendarEventData,
     EventExternalAttendeeData,
     EventInternalAttendeeData,
 )
 from organizations.models import Organization
+from public_api.models import SystemUser
+from users.models import User
 from webhooks.constants import WebhookEventType
 from webhooks.services.payloads import CalendarEventWebhookPayload, EventAttendeeWebhookPayload
 
@@ -47,21 +50,36 @@ class WebhookCalendarEventSideEffectsService:
             "event": self._serialize_event(event),
         }
 
-    def on_create_event(self, event: CalendarEventData, organization: Organization) -> None:
+    def on_create_event(
+        self,
+        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        event: CalendarEventData,
+        organization: Organization,
+    ) -> None:
         self.webhook_service.send_event(
             organization=organization,
             event_type=WebhookEventType.CALENDAR_EVENT_CREATED,
             payload=dict(self._serialize_event(event)),
         )
 
-    def on_update_event(self, event: CalendarEventData, organization: Organization) -> None:
+    def on_update_event(
+        self,
+        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        event: CalendarEventData,
+        organization: Organization,
+    ) -> None:
         self.webhook_service.send_event(
             organization=organization,
             event_type=WebhookEventType.CALENDAR_EVENT_UPDATED,
             payload=dict(self._serialize_event(event)),
         )
 
-    def on_delete_event(self, event: CalendarEventData, organization: Organization) -> None:
+    def on_delete_event(
+        self,
+        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        event: CalendarEventData,
+        organization: Organization,
+    ) -> None:
         self.webhook_service.send_event(
             organization=organization,
             event_type=WebhookEventType.CALENDAR_EVENT_DELETED,
@@ -70,6 +88,7 @@ class WebhookCalendarEventSideEffectsService:
 
     def on_add_attendee_to_event(
         self,
+        actor: User | CalendarEventUpdateToken | SystemUser | None,
         event: CalendarEventData,
         attendance: EventInternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
@@ -82,6 +101,7 @@ class WebhookCalendarEventSideEffectsService:
 
     def on_remove_attendee_from_event(
         self,
+        actor: User | CalendarEventUpdateToken | SystemUser | None,
         event: CalendarEventData,
         attendance: EventInternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
@@ -94,6 +114,7 @@ class WebhookCalendarEventSideEffectsService:
 
     def on_update_attendee_in_event(
         self,
+        actor: User | CalendarEventUpdateToken | SystemUser | None,
         event: CalendarEventData,
         attendance: EventInternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
