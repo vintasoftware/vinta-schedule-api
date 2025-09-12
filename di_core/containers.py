@@ -10,7 +10,9 @@ from vintasend_django.services.notification_template_renderers.django_templated_
     DjangoTemplatedEmailRenderer,
 )
 
+from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
+from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from organizations.organization_subscription_plan_factory import OrganizationSubscriptionPlanFactory
 from payments.services.payment_adapters.mercadopago_payment_adapter import MercadoPagoPaymentAdapter
 from payments.services.payment_service import PaymentService
@@ -24,7 +26,7 @@ from vintasend_django_sms_template_renderer.services.notification_template_rende
 from vintasend_twilio.services.notification_adapters.twilio import (
     TwilioSMSNotificationAdapter,
 )
-from webhooks.services import WebhookService
+from webhooks.services import WebhookCalendarEventSideEffectsService, WebhookService
 
 
 class AppContainer(containers.DeclarativeContainer):
@@ -74,9 +76,24 @@ class AppContainer(containers.DeclarativeContainer):
         WebhookService,
     )
 
+    webhook_calendar_side_effects_service = providers.Factory(
+        WebhookCalendarEventSideEffectsService,
+        webhook_service=webhook_service,
+    )
+
+    calendar_side_effects_service = providers.Factory(
+        CalendarSideEffectsService,
+        side_effects_pipeline=(webhook_calendar_side_effects_service,),
+    )
+
+    calendar_permission_service = providers.Factory(
+        CalendarPermissionService,
+    )
+
     calendar_service = providers.Factory(
         CalendarService,
-        webhook_service=webhook_service,
+        calendar_side_effects_service=calendar_side_effects_service,
+        calendar_permission_service=calendar_permission_service,
     )
 
     public_api_auth_service = providers.Factory(

@@ -21,7 +21,7 @@ from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_clie
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
-    CalendarEventData,
+    CalendarEventAdapterOutputData,
     CalendarResourceData,
     EventAttendeeData,
 )
@@ -211,7 +211,7 @@ def test_convert_ms_event_to_calendar_event_data(
 
     result = adapter._convert_ms_event_to_calendar_event_data(mock_ms_event, "test_calendar_id")
 
-    assert isinstance(result, CalendarEventData)
+    assert isinstance(result, CalendarEventAdapterOutputData)
     assert result.calendar_external_id == "test_calendar_id"
     assert result.external_id == "test_event_id"
     assert result.title == "Test Event"
@@ -334,7 +334,7 @@ def test_create_event(
 
     result = adapter.create_event(sample_event_input_data)
 
-    assert isinstance(result, CalendarEventData)
+    assert isinstance(result, CalendarEventAdapterOutputData)
     assert result.external_id == "test_event_id"
     assert result.title == "Test Event"
 
@@ -417,7 +417,7 @@ def test_create_recurring_event(
 
     result = adapter.create_event(sample_recurring_event_input_data)
 
-    assert isinstance(result, CalendarEventData)
+    assert isinstance(result, CalendarEventAdapterOutputData)
     assert result.external_id == "recurring_event_123"
     assert result.title == "Recurring Meeting"
     assert result.recurrence_rule == "RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=10"
@@ -451,7 +451,7 @@ def test_get_event(mock_client_class, mock_settings, mock_credentials, mock_ms_e
 
     result = adapter.get_event("test_calendar_id", "test_event_id")
 
-    assert isinstance(result, CalendarEventData)
+    assert isinstance(result, CalendarEventAdapterOutputData)
     assert result.external_id == "test_event_id"
 
     mock_client.get_event.assert_called_once_with("test_event_id", "test_calendar_id")
@@ -473,7 +473,7 @@ def test_update_event(mock_client_class, mock_settings, mock_credentials, mock_m
 
     adapter = MSOutlookCalendarAdapter(mock_credentials)
 
-    event_data = CalendarEventData(
+    event_data = CalendarEventAdapterOutputData(
         calendar_external_id="test_calendar_id",
         external_id="test_event_id",
         title="Updated Event",
@@ -488,7 +488,7 @@ def test_update_event(mock_client_class, mock_settings, mock_credentials, mock_m
 
     result = adapter.update_event("test_calendar_id", "test_event_id", event_data)
 
-    assert isinstance(result, CalendarEventData)
+    assert isinstance(result, CalendarEventAdapterOutputData)
     mock_client.update_event.assert_called_once()
 
 
@@ -1487,7 +1487,7 @@ def test_adapter_get_room_events_with_pagination(
 
     # Should get 2 events (one from each page)
     assert len(result) == 2
-    assert all(isinstance(event, CalendarEventData) for event in result)
+    assert all(isinstance(event, CalendarEventAdapterOutputData) for event in result)
 
     # Should have called get_room_events_delta twice due to pagination
     assert mock_client.get_room_events_delta.call_count == 2
@@ -1772,7 +1772,7 @@ def test_get_room_events_no_sync_token(
     result = adapter._get_room_events("room@example.com", start_time, end_time)
 
     assert len(result) == 1
-    assert isinstance(result[0], CalendarEventData)
+    assert isinstance(result[0], CalendarEventAdapterOutputData)
     assert result[0].external_id == "test_event_id"
 
     mock_client.get_room_events.assert_called_once_with(
@@ -1812,7 +1812,7 @@ def test_get_room_events_with_sync_token(
     )
 
     assert len(result) == 1
-    assert isinstance(result[0], CalendarEventData)
+    assert isinstance(result[0], CalendarEventAdapterOutputData)
     assert result[0].external_id == "test_event_id"
 
     mock_client.get_room_events_delta.assert_called_once_with(
@@ -2069,7 +2069,7 @@ def test_get_events_iterator(mock_client_class, mock_settings, mock_credentials,
 
     assert len(events_list) == 2
     for event in events_list:
-        assert isinstance(event, CalendarEventData)
+        assert isinstance(event, CalendarEventAdapterOutputData)
         assert event.external_id == "test_event_id"
         assert event.calendar_external_id == calendar_id
         assert event.title == "Test Event"
@@ -2220,7 +2220,7 @@ def test_create_delta_events_iterator_with_deltatoken(
     events_list = list(events_iterator)
 
     assert len(events_list) == 1
-    assert isinstance(events_list[0], CalendarEventData)
+    assert isinstance(events_list[0], CalendarEventAdapterOutputData)
     assert events_list[0].external_id == "test_event_id"
 
     # Verify API was called with correct parameters

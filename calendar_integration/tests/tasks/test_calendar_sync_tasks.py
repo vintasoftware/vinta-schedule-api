@@ -96,7 +96,7 @@ def test_sync_calendar_task_with_social_account(
         calendar_service=mock_service,
     )
     mock_service.authenticate.assert_called_once_with(
-        account=social_account, organization=organization
+        account=social_account.user, organization=organization
     )
     mock_service.sync_events.assert_called_once_with(calendar_sync)
 
@@ -250,7 +250,7 @@ def test_sync_calendar_task_service_exception(social_account, social_token, cale
             calendar_service=mock_service,
         )
     mock_service.authenticate.assert_called_once_with(
-        account=social_account, organization=organization
+        account=social_account.user, organization=organization
     )
     mock_service.sync_events.assert_called_once_with(calendar_sync)
 
@@ -278,7 +278,7 @@ def test_import_organization_calendar_resources_with_social_account(
         calendar_service=mock_service,
     )
     mock_service.authenticate.assert_called_once_with(
-        account=social_account, organization=organization
+        account=social_account.user, organization=organization
     )
     mock_service.import_organization_calendar_resources.assert_called_once_with(
         import_workflow_state
@@ -399,7 +399,7 @@ def test_import_organization_calendar_resources_service_exception(
             calendar_service=mock_service,
         )
     mock_service.authenticate.assert_called_once_with(
-        account=social_account, organization=organization
+        account=social_account.user, organization=organization
     )
     mock_service.import_organization_calendar_resources.assert_called_once_with(
         import_workflow_state
@@ -438,7 +438,7 @@ def test_sync_calendar_task_with_changes_applied(
 
     # Verify the service was called correctly
     mock_service.authenticate.assert_called_once_with(
-        account=social_account, organization=organization
+        account=social_account.user, organization=organization
     )
     mock_service.sync_events.assert_called_once_with(calendar_sync)
 
@@ -480,7 +480,7 @@ def test_sync_calendar_task_handles_sync_failures(
 
     # Verify the service was called correctly
     mock_service.authenticate.assert_called_once_with(
-        account=social_account, organization=organization
+        account=social_account.user, organization=organization
     )
     mock_service.sync_events.assert_called_once_with(calendar_sync)
 
@@ -576,7 +576,7 @@ def test_import_organization_calendar_resources_task_with_changes_simulation(
 
     # Verify service was authenticated and import called
     mock_service.authenticate.assert_called_once_with(
-        account=social_account, organization=organization
+        account=social_account.user, organization=organization
     )
     mock_service.import_organization_calendar_resources.assert_called_once_with(
         import_workflow_state

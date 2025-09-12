@@ -27,7 +27,7 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.dataclasses import (
     BlockedTimeData,
-    CalendarEventData,
+    CalendarEventAdapterOutputData,
     CalendarEventInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
@@ -49,6 +49,7 @@ from calendar_integration.virtual_models import (
     ResourceAllocationVirtualModel,
 )
 from common.utils.serializer_utils import VirtualModelSerializer
+from organizations.models import Organization
 from users.models import User
 from users.serializers import UserSerializer
 
@@ -274,7 +275,7 @@ class EventRecurringExceptionSerializer(serializers.Serializer):
         """Create a recurring event exception."""
         parent_event = self.context["parent_event"]
 
-        user = (
+        user: User | None = (
             self.context["request"].user if self.context and self.context.get("request") else None
         )
 
@@ -283,9 +284,18 @@ class EventRecurringExceptionSerializer(serializers.Serializer):
                 "calendar_service is not defined, please configure your DI container correctly"
             )
 
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError(
+                {
+                    "non_field_errors": [
+                        "Only authenticated users can create Blocked Times",
+                    ]
+                }
+            )
+
         # Initialize calendar service
         self.calendar_service.authenticate(
-            account=SocialAccount.objects.get(user=user, provider=parent_event.calendar.provider),
+            account=user,
             organization=parent_event.organization,
         )
 
@@ -759,15 +769,15 @@ class CalendarEventSerializer(VirtualModelSerializer):
         user = self.context["request"].user
         if validated_data.get("google_calendar_service_account"):
             account = validated_data.get("google_calendar_service_account")
+            self.calendar_service.authenticate(
+                account=account,
+                organization=calendar.organization,
+            )
         else:
-            account = SocialAccount.objects.filter(
-                user=user,
-                provider=calendar.provider,
-            ).first()
-        self.calendar_service.authenticate(
-            account=account,
-            organization=calendar.organization,
-        )
+            self.calendar_service.authenticate(
+                account=user,
+                organization=calendar.organization,
+            )
 
         resource_allocations = validated_data.pop("resource_allocations", [])
         attendances = validated_data.pop("attendances", [])
@@ -828,19 +838,20 @@ class CalendarEventSerializer(VirtualModelSerializer):
             )
 
         calendar: Calendar = validated_data.pop("calendar", instance.calendar)
-        user = self.context["request"].user
-        user = self.context["request"].user
+        user: User = self.context["request"].user
         if validated_data.get("google_calendar_service_account"):
-            account = validated_data.get("google_calendar_service_account")
+            account: GoogleCalendarServiceAccount = validated_data[
+                "google_calendar_service_account"
+            ]
+            self.calendar_service.authenticate(
+                account=account,
+                organization=calendar.organization,
+            )
         else:
-            account = SocialAccount.objects.filter(
-                user=user,
-                provider=calendar.provider,
-            ).first()
-        self.calendar_service.authenticate(
-            account=account,
-            organization=calendar.organization,
-        )
+            self.calendar_service.authenticate(
+                account=user,
+                organization=calendar.organization,
+            )
 
         resource_allocations = validated_data.pop(
             "resource_allocations",
@@ -1080,7 +1091,8 @@ class BlockedTimeSerializer(VirtualModelSerializer):
             )
 
         calendar = validated_data.pop("calendar")
-        self.calendar_service.initialize_without_provider(user.organization_membership.organization)
+        organization: Organization = user.organization_membership.organization
+        self.calendar_service.initialize_without_provider(user, organization)
 
         # Handle recurrence fields
         recurrence_rule_data = validated_data.pop("recurrence_rule", None)
@@ -1306,7 +1318,8 @@ class AvailableTimeSerializer(VirtualModelSerializer):
             )
 
         calendar = validated_data.pop("calendar")
-        self.calendar_service.initialize_without_provider(user.organization_membership.organization)
+        organization: Organization = user.organization_membership.organization
+        self.calendar_service.initialize_without_provider(user, organization)
 
         # Handle recurrence fields
         recurrence_rule_data = validated_data.pop("recurrence_rule", None)
@@ -1397,7 +1410,7 @@ class UnavailableTimeWindowSerializer(serializers.Serializer):
 
     def get_reason_description(self, obj: UnavailableTimeWindow) -> str:
         if obj.reason == "calendar_event":
-            event_data = cast(CalendarEventData, obj.data)
+            event_data = cast(CalendarEventAdapterOutputData, obj.data)
             return event_data.title
 
         blocked_time_data = cast(BlockedTimeData, obj.data)

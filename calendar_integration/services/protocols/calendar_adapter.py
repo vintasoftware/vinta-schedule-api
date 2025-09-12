@@ -5,7 +5,7 @@ from typing import Protocol
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
-    CalendarEventData,
+    CalendarEventAdapterOutputData,
     CalendarEventsSyncTypedDict,
     CalendarResourceData,
 )
@@ -25,7 +25,9 @@ class CalendarAdapter(Protocol):
         """
         ...
 
-    def create_event(self, event_data: CalendarEventAdapterInputData) -> CalendarEventData:
+    def create_event(
+        self, event_data: CalendarEventAdapterInputData
+    ) -> CalendarEventAdapterOutputData:
         """
         Create a new event in the calendar.
         :param event_data: Dictionary containing event details.
@@ -50,7 +52,7 @@ class CalendarAdapter(Protocol):
         """
         ...
 
-    def get_event(self, calendar_id: str, event_id: str) -> CalendarEventData:
+    def get_event(self, calendar_id: str, event_id: str) -> CalendarEventAdapterOutputData:
         """
         Retrieve a specific event by its unique identifier.
         :param event_id: Unique identifier of the event to retrieve.
@@ -59,8 +61,8 @@ class CalendarAdapter(Protocol):
         ...
 
     def update_event(
-        self, calendar_id: str, event_id: str, event_data: CalendarEventData
-    ) -> CalendarEventData:
+        self, calendar_id: str, event_id: str, event_data: CalendarEventAdapterInputData
+    ) -> CalendarEventAdapterOutputData:
         """
         Update an existing event in the calendar.
         :param event_id: Unique identifier of the event to update.

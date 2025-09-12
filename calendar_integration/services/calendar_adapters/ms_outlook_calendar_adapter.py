@@ -35,7 +35,7 @@ from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_clie
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
-    CalendarEventData,
+    CalendarEventAdapterOutputData,
     CalendarEventsSyncTypedDict,
     CalendarResourceData,
     EventAttendeeData,
@@ -157,7 +157,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
 
     def _convert_ms_event_to_calendar_event_data(
         self, ms_event: MSGraphEvent, calendar_id: str
-    ) -> CalendarEventData:
+    ) -> CalendarEventAdapterOutputData:
         """Convert MSGraphEvent to CalendarEventData."""
         # Extract attendees information
         attendees = []
@@ -181,7 +181,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         if hasattr(ms_event, "recurrence_pattern") and ms_event.recurrence_pattern:
             recurrence_rule = self._convert_ms_recurrence_to_rrule(ms_event.recurrence_pattern)
 
-        return CalendarEventData(
+        return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=ms_event.id,
             title=ms_event.subject,
@@ -408,7 +408,9 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
             organization_id=None,  # will be set later in the sync process
         )
 
-    def create_event(self, event_data: CalendarEventAdapterInputData) -> CalendarEventData:
+    def create_event(
+        self, event_data: CalendarEventAdapterInputData
+    ) -> CalendarEventAdapterOutputData:
         """Create a new event in the calendar."""
         try:
             ms_format_data = self._convert_calendar_event_input_to_ms_format(event_data)
@@ -426,7 +428,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
 
     def _get_events_iterator(
         self, ms_events: list[MSGraphEvent], calendar_id: str
-    ) -> Iterable[CalendarEventData]:
+    ) -> Iterable[CalendarEventAdapterOutputData]:
         """Generator that yields CalendarEventData objects from MS Graph events."""
         for ms_event in ms_events:
             yield self._convert_ms_event_to_calendar_event_data(ms_event, calendar_id)
@@ -624,7 +626,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
 
         return None
 
-    def get_event(self, calendar_id: str, event_id: str) -> CalendarEventData:
+    def get_event(self, calendar_id: str, event_id: str) -> CalendarEventAdapterOutputData:
         """Get a specific event by its ID."""
         try:
             ms_event = self.client.get_event(event_id, calendar_id)
@@ -634,8 +636,8 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
             raise ValueError(f"Failed to get event: {e}") from e
 
     def update_event(
-        self, calendar_id: str, event_id: str, event_data: CalendarEventData
-    ) -> CalendarEventData:
+        self, calendar_id: str, event_id: str, event_data: CalendarEventAdapterInputData
+    ) -> CalendarEventAdapterOutputData:
         """Update an existing event."""
         try:
             # Convert attendees back to the format expected by the API client
@@ -939,7 +941,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
 
     def _convert_ms_graph_event_to_calendar_event_data(
         self, ms_event: MSGraphEvent
-    ) -> CalendarEventData:
+    ) -> CalendarEventAdapterOutputData:
         """
         Convert a Microsoft Graph event to CalendarEventData format.
 
@@ -949,7 +951,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         Returns:
             CalendarEventData object
         """
-        return CalendarEventData(
+        return CalendarEventAdapterOutputData(
             calendar_external_id=ms_event.calendar_id,
             external_id=ms_event.id,
             title=ms_event.subject,
@@ -978,7 +980,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         end_time: datetime.datetime,
         sync_token: str | None = None,
         max_results_per_page: int = 250,
-    ) -> list[CalendarEventData]:
+    ) -> list[CalendarEventAdapterOutputData]:
         """
         Get calendar events for a specific room with pagination support.
 

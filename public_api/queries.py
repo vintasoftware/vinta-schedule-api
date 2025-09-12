@@ -24,6 +24,7 @@ from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
 )
+from public_api.types import PublicApiHttpRequest
 from users.graphql import UserGraphQLType
 from users.models import User
 
@@ -52,7 +53,7 @@ def get_query_dependencies(
     )
 
 
-def _get_org(info):
+def _get_org(info: strawberry.Info):
     org = info.context.request.public_api_organization
     if not org:
         raise GraphQLError("Organization not found in request context")
@@ -70,10 +71,15 @@ def _slice_qs(qs: TQuerySet, offset: int, limit: int) -> TQuerySet:
     return qs[offset : offset + limit]
 
 
-def _prepare_service_and_calendar(info, calendar_id: int) -> tuple["CalendarService", Calendar]:
+def _prepare_service_and_calendar(
+    info: strawberry.Info, calendar_id: int
+) -> tuple["CalendarService", Calendar]:
     org = _get_org(info)
     deps = get_query_dependencies()
-    deps.calendar_service.initialize_without_provider(org)
+    request: PublicApiHttpRequest = info.context.request
+    deps.calendar_service.initialize_without_provider(
+        user_or_token=request.public_api_system_user, organization=org
+    )
     cal = Calendar.objects.filter_by_organization(org.id).get(id=calendar_id)
     return deps.calendar_service, cal
 

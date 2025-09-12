@@ -14,6 +14,7 @@ from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncStatus,
     CalendarType,
+    EventManagementPermissions,
     RecurrenceFrequency,
     RecurrenceWeekday,
     RSVPStatus,
@@ -76,6 +77,12 @@ class Calendar(OrganizationModel):
         help_text=(
             "If true, this calendar can manage its own available time windows. If not, it will "
             "use the available time windows of the external calendar it's attached to."
+        ),
+    )
+    accepts_public_scheduling = models.BooleanField(
+        default=False,
+        help_text=(
+            "If true, this event can be scheduled by external users through public scheduling links."
         ),
     )
 
@@ -1376,3 +1383,61 @@ class GoogleCalendarServiceAccount(OrganizationModel):
 
     def __str__(self):
         return f"Service Account for {self.calendar} ({self.email})"
+
+
+class CalendarManagementToken(OrganizationModel):
+    """
+    Represents a token used to allow updates to calendar events without authentication.
+    """
+
+    calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="management_tokens",
+    )
+    event = OrganizationForeignKey(
+        CalendarEvent,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="management_tokens",
+    )
+    token_hash = models.TextField()
+    used_at = models.DateTimeField(null=True)
+    revoked_at = models.DateTimeField(null=True)
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="calendar_event_management_tokens",
+    )
+    external_attendee = OrganizationForeignKey(
+        ExternalAttendee,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="calendar_event_management_tokens",
+    )
+
+    permissions: "RelatedManager[CalendarManagementTokenPermission]"
+
+    def __str__(self):
+        used_at = "" if self.used_at is None else f"(used at: {self.used_at.isoformat()})"
+        return f"Update Token from {self.user or self.external_attendee} for {self.event}{used_at}"
+
+
+class CalendarManagementTokenPermission(OrganizationModel):
+    """
+    Represents a permission associated with a CalendarEventUpdateToken.
+    """
+
+    token = OrganizationForeignKey(
+        CalendarManagementToken,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="permissions",
+    )
+    permission = models.CharField(max_length=100, choices=EventManagementPermissions)
+
+    def __str__(self):
+        return f"Permission {self.permission} for Token {self.token}"
