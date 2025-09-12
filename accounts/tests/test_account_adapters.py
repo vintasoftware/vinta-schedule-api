@@ -28,7 +28,6 @@ class TestSocialAccountAdapter:
         adapter = SocialAccountAdapter()
         data = adapter.serialize_instance(user)
         assert data["id"] == user.id
-        assert data["username"] == user.username
         assert data["profile"]["first_name"] == user.profile.first_name
 
     def test_serialize_instance_sociallogin(self, user):
@@ -74,7 +73,7 @@ class TestSocialAccountAdapter:
 
     def test_deserialize_instance_user_without_id(self):
         adapter = SocialAccountAdapter()
-        data = {"username": "foo", "profile": {"first_name": "Bar", "last_name": "Baz"}}
+        data = {"profile": {"first_name": "Bar", "last_name": "Baz"}}
         result = adapter.deserialize_instance(User, data)
         assert isinstance(result, User)
         assert isinstance(result.profile, Profile)
@@ -178,7 +177,6 @@ class TestAccountAdapter:
         assert found is None
 
     def test_send_verification_code_sms_success(self, adapter, user):
-        user.username = "foo"
         with patch("accounts.account_adapters.logger.info") as log_info:
             adapter.send_verification_code_sms(user, "+123456789", "1234")
             log_info.assert_called()

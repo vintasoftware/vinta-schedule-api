@@ -294,10 +294,9 @@ CORS_ALLOW_HEADERS = (
 )
 CORS_ALLOW_CREDENTIALS = True
 HEADLESS_ONLY = True
-ACCOUNT_USER_MODEL_USERNAME_FIELD = "username"
-ACCOUNT_LOGIN_METHODS = {"email", "username", "phone"}
+ACCOUNT_USER_MODEL_USERNAME_FIELD = "email"
+ACCOUNT_LOGIN_METHODS = {"email", "phone"}
 ACCOUNT_SIGNUP_FIELDS = [
-    "username*",
     "email*",
     "phone*",
     "password1",
@@ -326,7 +325,7 @@ HEADLESS_ADAPTER = "accounts.account_adapters.HeadlessAdapter"
 HEADLESS_TOKEN_STRATEGY = "accounts.token_strategies.AccessAndRefreshTokenStrategy"  # noqa: S105
 ACCESS_TOKEN_EXPIRY_MINUTES = config("ACCESS_TOKEN_EXPIRY_MINUTES", cast=int, default=15)
 REFRESH_TOKEN_EXPIRY_DAYS = config("REFRESH_TOKEN_EXPIRY_DAYS", cast=int, default=30)
-ACCOUNT_LOGIN_METHODS = {"phone", "email", "username"}
+ACCOUNT_LOGIN_METHODS = {"phone", "email"}
 ACCOUNT_PHONE_VERIFICATION_ENABLED = True
 ACCOUNT_PHONE_VERIFICATION_MAX_ATTEMPTS = 3
 ACCOUNT_PHONE_VERIFICATION_SUPPORTS_RESEND = True

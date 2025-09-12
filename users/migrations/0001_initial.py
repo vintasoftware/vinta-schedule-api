@@ -28,7 +28,6 @@ class Migration(migrations.Migration):
                 ('created', model_utils.fields.AutoCreatedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='created')),
                 ('modified', model_utils.fields.AutoLastModifiedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='modified')),
                 ('meta', models.JSONField(blank=True, default=dict, verbose_name='meta')),
-                ('username', models.CharField(db_index=True, help_text='Required. 150 characters or fewer. Letters, digits and @/./+/-/_ only.', max_length=150, unique=True, validators=[django.core.validators.RegexValidator(message='Enter a valid username. This value may contain only letters, numbers and ./-/_ characters.', regex='^[\\w.-]+$'), django.core.validators.MinLengthValidator(limit_value=3, message='Username must be at least 3 characters long.')])),
                 ('email', models.EmailField(max_length=255, unique=True)),
                 ('phone_number', models.CharField(max_length=20)),
                 ('phone_verified_date', models.DateTimeField(blank=True, null=True)),

@@ -19,7 +19,7 @@ def user(user_password):
 @pytest.fixture
 def auth_client(user, user_password):
     client = APIClient()
-    client.login(username=user.username, password=user_password)
+    client.login(email=user.email, password=user_password)
     return client
 
 

@@ -5474,13 +5474,6 @@ components:
         phone_number:
           type: string
           readOnly: true
-        username:
-          type: string
-          description: Required. 150 characters or fewer. Letters, digits and @/./+/-/_
-            only.
-          pattern: ^[\w.-]+$
-          maxLength: 150
-          minLength: 3
         profile:
           $ref: '#/components/schemas/Profile'
         is_active:
@@ -5522,7 +5515,6 @@ components:
       - modified
       - phone_number
       - profile
-      - username
     WebhookConfiguration:
       type: object
       properties:
