@@ -9,13 +9,13 @@ from calendar_integration.models import (
     BlockedTime,
     Calendar,
     CalendarEvent,
-    CalendarEventUpdateToken,
     EventAttendance,
     EventExternalAttendance,
     GoogleCalendarServiceAccount,
     Organization,
     RecurrenceRule,
 )
+from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
@@ -36,9 +36,10 @@ from users.models import User
 class InitializedOrAuthenticatedCalendarService(Protocol):
     organization: Organization
     account: SocialAccount | GoogleCalendarServiceAccount | None
-    user: User | CalendarEventUpdateToken | SystemUser | None
+    user_or_token: User | str | SystemUser | None
     calendar_adapter: CalendarAdapter | None
     calendar_side_effects_service: CalendarSideEffectsService
+    calendar_permission_service: CalendarPermissionService
 
     def _get_calendar_by_id(self, calendar_id: int) -> Calendar:
         ...
@@ -214,4 +215,15 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
     def _serialize_event_external_attendee(
         self, external_attendance: EventExternalAttendance
     ) -> EventExternalAttendeeData:
+        ...
+
+    def _serialize_event_data_input(
+        self, event: CalendarEvent, event_data: CalendarEventInputData
+    ) -> CalendarEventData:
+        ...
+
+    def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None:
+        ...
+
+    def _grant_event_attendee_permissions(self, event: CalendarEvent) -> None:
         ...

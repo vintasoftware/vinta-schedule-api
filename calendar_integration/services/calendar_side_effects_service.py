@@ -1,7 +1,7 @@
 from collections.abc import Iterable
 from typing import Protocol, runtime_checkable
 
-from calendar_integration.models import CalendarEventUpdateToken
+from calendar_integration.models import CalendarManagementToken
 from calendar_integration.services.dataclasses import CalendarEventData, EventExternalAttendeeData
 from organizations.models import Organization
 from public_api.models import SystemUser
@@ -12,7 +12,7 @@ from users.models import User
 class OnCreateEventHandler(Protocol):
     def on_create_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         organization: Organization,
     ) -> None:
@@ -23,7 +23,7 @@ class OnCreateEventHandler(Protocol):
 class OnUpdateEventHandler(Protocol):
     def on_update_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         organization: Organization,
     ) -> None:
@@ -34,7 +34,7 @@ class OnUpdateEventHandler(Protocol):
 class OnDeleteEventHandler(Protocol):
     def on_delete_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         organization: Organization,
     ) -> None:
@@ -45,7 +45,7 @@ class OnDeleteEventHandler(Protocol):
 class OnAddAttendeeToEventHandler(Protocol):
     def on_add_attendee_to_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         attendance: EventExternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
@@ -57,7 +57,7 @@ class OnAddAttendeeToEventHandler(Protocol):
 class OnRemoveAttendeeFromEventHandler(Protocol):
     def on_remove_attendee_from_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         attendance: EventExternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
@@ -69,7 +69,7 @@ class OnRemoveAttendeeFromEventHandler(Protocol):
 class OnUpdateAttendeeOnEventHandler(Protocol):
     def on_update_attendee_on_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         attendance: EventExternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
@@ -93,7 +93,7 @@ class CalendarSideEffectsService:
 
     def on_create_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         organization: Organization,
     ) -> None:
@@ -104,7 +104,7 @@ class CalendarSideEffectsService:
 
     def on_update_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         organization: Organization,
     ) -> None:
@@ -115,7 +115,7 @@ class CalendarSideEffectsService:
 
     def on_delete_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         organization: Organization,
     ) -> None:
@@ -126,7 +126,7 @@ class CalendarSideEffectsService:
 
     def on_add_attendee_to_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         attendee: EventExternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
@@ -138,7 +138,7 @@ class CalendarSideEffectsService:
 
     def on_remove_attendee_from_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         attendee: EventExternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
@@ -150,7 +150,7 @@ class CalendarSideEffectsService:
 
     def on_update_attendee_on_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         attendee: EventExternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,

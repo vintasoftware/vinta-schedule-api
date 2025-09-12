@@ -53,9 +53,10 @@ class RecurrenceWeekday(TextChoices):
     SUNDAY = "SU", "Sunday"
 
 
-class EventUpdatePermissions(TextChoices):
-    ATTENDEES = "attendees", "Update Attendees"
-    SELF_RSVP = "self_rsvp", "Update Self RSVP"
-    DETAILS = "details", "Update Event Details"
+class EventManagementPermissions(TextChoices):
+    CREATE = "create", "Create Event"
+    UPDATE_ATTENDEES = "update_attendees", "Update Event Attendees"
+    UPDATE_SELF_RSVP = "update_self_rsvp", "Update Self RSVP on Event"
+    UPDATE_DETAILS = "update_details", "Update Event Details"
     CANCEL = "cancel", "Cancel Event"
     RESCHEDULE = "reschedule", "Reschedule Event"

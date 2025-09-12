@@ -12,6 +12,7 @@ from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncStatus,
     CalendarType,
+    EventManagementPermissions,
 )
 from calendar_integration.models import (
     AvailableTime,
@@ -22,6 +23,7 @@ from calendar_integration.models import (
     BlockedTimeRecurrenceException,
     Calendar,
     CalendarEvent,
+    CalendarManagementToken,
     CalendarOrganizationResourcesImport,
     CalendarOwnership,
     CalendarSync,
@@ -34,6 +36,12 @@ from calendar_integration.models import (
     GoogleCalendarServiceAccount,
     RecurrenceRule,
     ResourceAllocation,
+)
+from calendar_integration.services.calendar_permission_service import (
+    DEFAULT_ATTENDEE_PERMISSIONS,
+    DEFAULT_CALENDAR_OWNER_PERMISSIONS,
+    DEFAULT_EXTERNAL_ATTENDEE_PERMISSIONS,
+    CalendarPermissionService,
 )
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
@@ -54,6 +62,46 @@ from calendar_integration.services.dataclasses import (
 )
 from organizations.models import Organization
 from users.models import Profile, User
+
+
+def create_event_management_token(event, user, organization, token_hash=None):
+    """Helper function to create a properly configured event management token."""
+    if token_hash is None:
+        token_hash = f"test_event_token_{event.id}"
+
+    token = CalendarManagementToken.objects.create(
+        event_fk=event,
+        user=user,
+        token_hash=token_hash,
+        organization=organization,
+    )
+    token.permissions.all().delete()
+    for permission_str in DEFAULT_CALENDAR_OWNER_PERMISSIONS:
+        token.permissions.create(
+            permission=permission_str,
+            organization_id=organization.id,
+        )
+    return token
+
+
+def create_calendar_management_token(calendar, user, organization, token_hash=None):
+    """Helper function to create a properly configured calendar management token."""
+    if token_hash is None:
+        token_hash = f"test_calendar_token_{calendar.id}"
+
+    token = CalendarManagementToken.objects.create(
+        calendar=calendar,
+        user=user,
+        token_hash=token_hash,
+        organization=organization,
+    )
+    token.permissions.all().delete()
+    for permission_str in DEFAULT_CALENDAR_OWNER_PERMISSIONS:
+        token.permissions.create(
+            permission=permission_str,
+            organization_id=organization.id,
+        )
+    return token
 
 
 @pytest.fixture
@@ -146,6 +194,8 @@ def social_account(db):
     user = User.objects.create_user(
         username="testuser", email="test@example.com", password="testpass123"
     )
+    # Create a profile for the user to avoid RelatedObjectDoesNotExist errors
+    Profile.objects.create(user=user)
     account = SocialAccount.objects.create(user=user, provider=CalendarProvider.GOOGLE, uid="12345")
     return account
 
@@ -196,6 +246,24 @@ def calendar(db, organization):
 
 
 @pytest.fixture
+def calendar_management_token(db, calendar, social_account):
+    """Create a calendar management token for testing."""
+    token = CalendarManagementToken.objects.create(
+        calendar=calendar,
+        user=social_account.user,
+        token_hash="test_token_hash",
+        organization=calendar.organization,
+    )
+    token.permissions.all().delete()
+    for permission_str in DEFAULT_CALENDAR_OWNER_PERMISSIONS:
+        token.permissions.create(
+            permission=permission_str,
+            organization_id=calendar.organization_id,
+        )
+    return token
+
+
+@pytest.fixture
 def calendar_event(calendar, db, organization):
     """Create a calendar event for testing."""
     return CalendarEvent.objects.create(
@@ -208,6 +276,24 @@ def calendar_event(calendar, db, organization):
         external_id="event_123",
         organization=organization,
     )
+
+
+@pytest.fixture
+def event_management_token(db, calendar_event, social_account):
+    """Create an event-specific management token for testing."""
+    token = CalendarManagementToken.objects.create(
+        event_fk=calendar_event,
+        user=social_account.user,
+        token_hash="test_event_token_hash",
+        organization=calendar_event.organization,
+    )
+    token.permissions.all().delete()
+    for permission_str in DEFAULT_CALENDAR_OWNER_PERMISSIONS:
+        token.permissions.create(
+            permission=permission_str,
+            organization_id=calendar_event.organization_id,
+        )
+    return token
 
 
 @pytest.fixture
@@ -699,6 +785,7 @@ def test_create_event(
     social_token,
     mock_google_adapter,
     calendar,
+    calendar_management_token,
     patch_get_calendar,
     sample_event_input_data,
 ):
@@ -741,6 +828,7 @@ def test_create_recurring_event(
     social_token,
     mock_google_adapter,
     calendar,
+    calendar_management_token,
     patch_get_calendar,
 ):
     """Test creating a recurring event."""
@@ -804,6 +892,7 @@ def test_create_recurring_event_helper_method(
     social_token,
     mock_google_adapter,
     calendar,
+    calendar_management_token,
     patch_get_calendar,
 ):
     """Test creating a recurring event using the convenience helper method create_recurring_event."""
@@ -857,6 +946,7 @@ def test_create_recurring_exception_modified(
     social_token,
     mock_google_adapter,
     calendar,
+    calendar_management_token,
     patch_get_calendar,
 ):
     """Test creating a modified exception for a recurring event returns a new instance and records exception."""
@@ -975,6 +1065,7 @@ def test_create_recurring_exception_cancelled(
     social_token,
     mock_google_adapter,
     calendar,
+    calendar_management_token,
     patch_get_calendar,
 ):
     """Test creating a cancelled exception for a recurring event returns None and records cancellation."""
@@ -1061,6 +1152,7 @@ def test_create_recurring_exception_on_master_event_with_future_occurrences(
     social_token,
     mock_google_adapter,
     calendar,
+    calendar_management_token,
     patch_get_calendar,
 ):
     """Test creating an exception on the master event date when there are future occurrences."""
@@ -1177,6 +1269,7 @@ def test_create_recurring_exception_on_master_event_no_future_occurrences(
     social_token,
     mock_google_adapter,
     calendar,
+    calendar_management_token,
     patch_get_calendar,
 ):
     """Test creating an exception on master event date when there are no future occurrences."""
@@ -1263,6 +1356,7 @@ def test_create_recurring_exception_on_master_preserves_attendances_and_resource
     mock_google_adapter,
     calendar,
     patch_get_calendar,
+    calendar_management_token,
     db,
 ):
     """Test that creating an exception on master event preserves attendances and resources in new recurring event."""
@@ -1406,7 +1500,12 @@ def test_create_recurring_exception_on_master_preserves_attendances_and_resource
 
 @pytest.mark.django_db
 def test_create_recurring_event_bulk_modification_creates_continuation_and_record(
-    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    patch_get_calendar,
 ):
     """Non-cancel bulk modification should create a continuation event and an EventBulkModification record."""
     mock_google_adapter.provider = CalendarProvider.GOOGLE
@@ -1484,6 +1583,14 @@ def test_create_recurring_event_bulk_modification_creates_continuation_and_recor
             recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=5;BYDAY=MO",
         )
 
+    # Create event-specific management token for bulk modification operation
+    CalendarManagementToken.objects.create(
+        event_fk=parent_event,
+        user=social_account.user,
+        token_hash="test_bulk_modification_token_hash",
+        organization=calendar.organization,
+    )
+
     # Apply bulk modification starting at second occurrence
     modification_start = parent_event.start_time + datetime.timedelta(weeks=1)
 
@@ -1521,7 +1628,12 @@ def test_create_recurring_event_bulk_modification_creates_continuation_and_recor
 
 @pytest.mark.django_db
 def test_create_recurring_event_bulk_modification_cancelled_records_only(
-    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    patch_get_calendar,
 ):
     """Cancelled bulk modification should not create a continuation but should create a bulk record."""
     mock_google_adapter.provider = CalendarProvider.GOOGLE
@@ -1581,6 +1693,14 @@ def test_create_recurring_event_bulk_modification_cancelled_records_only(
             timezone="UTC",
             recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=5;BYDAY=MO",
         )
+
+    # Create event-specific management token for bulk modification operation
+    CalendarManagementToken.objects.create(
+        event_fk=parent_event,
+        user=social_account.user,
+        token_hash="test_bulk_cancel_token_hash",
+        organization=calendar.organization,
+    )
 
     modification_start = parent_event.start_time + datetime.timedelta(weeks=1)
     result = service.create_recurring_event_bulk_modification(
@@ -1713,7 +1833,12 @@ def test_get_recurring_event_instances_non_recurring_in_and_out_of_range(
 
 @pytest.mark.django_db
 def test_get_recurring_event_instances_basic_recurring(
-    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    patch_get_calendar,
 ):
     """Recurring event should return all generated instances within range."""
     mock_google_adapter.provider = CalendarProvider.GOOGLE
@@ -1768,7 +1893,12 @@ def test_get_recurring_event_instances_basic_recurring(
 
 @pytest.mark.django_db
 def test_get_recurring_event_instances_with_modified_exception(
-    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    patch_get_calendar,
 ):
     """Modified exception should replace generated occurrence when include_exceptions=True."""
     mock_google_adapter.provider = CalendarProvider.GOOGLE
@@ -1874,7 +2004,12 @@ def test_get_recurring_event_instances_with_modified_exception(
 
 @pytest.mark.django_db
 def test_get_recurring_event_instances_with_cancelled_exception(
-    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    patch_get_calendar,
 ):
     """Cancelled exception should remove the occurrence regardless of include_exceptions flag."""
     mock_google_adapter.provider = CalendarProvider.GOOGLE
@@ -1950,6 +2085,7 @@ def test_get_calendar_events_expanded_non_recurring(
     mock_google_adapter,
     calendar,
     patch_get_calendar,
+    calendar_management_token,
     sample_event_input_data,
 ):
     """Expanded events should include only non-recurring events within range."""
@@ -2035,7 +2171,12 @@ def test_get_calendar_events_expanded_non_recurring(
 
 @pytest.mark.django_db
 def test_get_calendar_events_expanded_recurring_expansion(
-    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    patch_get_calendar,
 ):
     """Recurring events should be expanded into instances within range."""
     mock_google_adapter.provider = CalendarProvider.GOOGLE
@@ -2095,7 +2236,12 @@ def test_get_calendar_events_expanded_recurring_expansion(
 
 @pytest.mark.django_db
 def test_get_calendar_events_expanded_with_exceptions(
-    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    patch_get_calendar,
 ):
     """Expanded events should include modified exceptions and exclude cancelled ones."""
     mock_google_adapter.provider = CalendarProvider.GOOGLE
@@ -2202,7 +2348,12 @@ def test_get_calendar_events_expanded_with_exceptions(
 
 @pytest.mark.django_db
 def test_delete_recurring_event_series_deletes_all(
-    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    patch_get_calendar,
 ):
     """Deleting a recurring parent event with delete_series=True removes parent, rule, modified instances, and exceptions."""
     mock_google_adapter.provider = CalendarProvider.GOOGLE
@@ -2288,6 +2439,14 @@ def test_delete_recurring_event_series_deletes_all(
     assert parent_event.recurrence_rule is not None
     assert parent_event.recurrence_exceptions.count() == 1
 
+    # Create event-specific management token for delete operation
+    create_event_management_token(
+        event=parent_event,
+        user=social_account.user,
+        organization=calendar.organization,
+        token_hash="test_delete_token_hash",
+    )
+
     # Delete entire series
     service.delete_event(calendar_id=calendar.id, event_id=parent_event.id, delete_series=True)
 
@@ -2328,7 +2487,12 @@ def test_delete_recurring_event_series_deletes_all(
 
 @pytest.mark.django_db
 def test_delete_recurring_modified_instance_creates_cancellation_exception(
-    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    patch_get_calendar,
 ):
     """Deleting a modified recurring instance (delete_series=False) should create a cancellation exception for that modified occurrence without deleting the instance (current behavior)."""
     mock_google_adapter.provider = CalendarProvider.GOOGLE
@@ -2410,6 +2574,14 @@ def test_delete_recurring_modified_instance_creates_cancellation_exception(
     assert modified_instance is not None
     pre_exception_count = parent_event.recurrence_exceptions.count()
 
+    # Create event-specific management token for delete operation
+    create_event_management_token(
+        event=modified_instance,
+        user=social_account.user,
+        organization=calendar.organization,
+        token_hash="test_delete_modified_token_hash",
+    )
+
     # Delete the modified instance (should create a cancellation exception for its modified start time)
     service.delete_event(
         calendar_id=calendar.id, event_id=modified_instance.id, delete_series=False
@@ -2427,7 +2599,12 @@ def test_delete_recurring_modified_instance_creates_cancellation_exception(
 
 @pytest.mark.django_db
 def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only(
-    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    patch_get_calendar,
 ):
     """Deleting a recurring instance with delete_series=True deletes that instance record (treats as single event deletion path)."""
     mock_google_adapter.provider = CalendarProvider.GOOGLE
@@ -2508,6 +2685,14 @@ def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only
         )
     assert modified_instance is not None
 
+    # Create event-specific management token for delete operation
+    create_event_management_token(
+        event=modified_instance,
+        user=social_account.user,
+        organization=calendar.organization,
+        token_hash="test_delete_instance_token_hash",
+    )
+
     service.delete_event(calendar_id=calendar.id, event_id=modified_instance.id, delete_series=True)
 
     # Adapter should be called for deletion (treated as direct deletion)
@@ -2527,6 +2712,7 @@ def test_create_event_with_resources(
     mock_google_adapter,
     calendar,
     patch_get_calendar,
+    calendar_management_token,
     sample_event_input_data_with_resources,
 ):
     """Test creating an event with resources."""
@@ -2566,7 +2752,9 @@ def test_create_event_with_resources(
 
 
 @pytest.mark.django_db
-def test_update_event(social_account, social_token, mock_google_adapter, calendar_event):
+def test_update_event(
+    social_account, social_token, mock_google_adapter, calendar_event, event_management_token
+):
     """Test updating an event."""
     updated_event_data = CalendarEventAdapterOutputData(
         calendar_external_id="cal_123",
@@ -2614,6 +2802,7 @@ def test_create_event_with_attendances(
     mock_google_adapter,
     calendar,
     patch_get_calendar,
+    calendar_management_token,
     sample_event_input_data_with_attendances,
 ):
     """Test creating an event with user attendances and external attendances."""
@@ -2666,7 +2855,7 @@ def test_create_event_with_attendances(
 
 @pytest.mark.django_db
 def test_update_event_with_attendances(
-    social_account, social_token, mock_google_adapter, calendar_event, db
+    social_account, social_token, mock_google_adapter, calendar_event, db, event_management_token
 ):
     """Test updating an event with attendances and external attendances."""
     # Create initial attendances
@@ -2761,7 +2950,13 @@ def test_update_event_with_attendances(
 
 @pytest.mark.django_db
 def test_update_event_with_resource_allocations(
-    social_account, social_token, mock_google_adapter, calendar_event, organization, db
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar_event,
+    organization,
+    db,
+    event_management_token,
 ):
     """Test updating an event with resource allocations."""
     # Create initial resource allocation
@@ -2770,6 +2965,13 @@ def test_update_event_with_resource_allocations(
         external_id="initial_resource_123",
         name="Initial Resource",
         provider=CalendarProvider.GOOGLE,
+    )
+    # Create token for initial resource
+    CalendarManagementToken.objects.create(
+        calendar_fk=initial_resource,
+        user=social_account.user,
+        token_hash="test_token_hash_initial",
+        organization=organization,
     )
     ResourceAllocation.objects.create(
         organization=calendar_event.organization,
@@ -2783,6 +2985,13 @@ def test_update_event_with_resource_allocations(
         external_id="new_resource_456",
         name="New Resource",
         provider=CalendarProvider.GOOGLE,
+    )
+    # Create token for new resource
+    CalendarManagementToken.objects.create(
+        calendar_fk=new_resource,
+        user=social_account.user,
+        token_hash="test_token_hash_new",
+        organization=organization,
     )
 
     updated_event_data = CalendarEventAdapterOutputData(
@@ -2835,7 +3044,9 @@ def test_update_event_with_resource_allocations(
 
 
 @pytest.mark.django_db
-def test_delete_event(social_account, social_token, mock_google_adapter, calendar_event):
+def test_delete_event(
+    social_account, social_token, mock_google_adapter, calendar_event, event_management_token
+):
     """Test deleting an event."""
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=calendar_event.organization)
@@ -2852,7 +3063,12 @@ def test_delete_event(social_account, social_token, mock_google_adapter, calenda
 
 @pytest.mark.django_db
 def test_transfer_event(
-    social_account, social_token, mock_google_adapter, calendar_event, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar_event,
+    patch_get_calendar,
+    event_management_token,
 ):
     """Test transferring an event to a different calendar."""
     # Create a resource calendar to test the filtering logic
@@ -2934,7 +3150,12 @@ def test_transfer_event(
 
 @pytest.mark.django_db
 def test_transfer_event_with_resources(
-    social_account, social_token, mock_google_adapter, calendar_event, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar_event,
+    patch_get_calendar,
+    event_management_token,
 ):
     """Test transferring an event that includes resource calendars."""
     # Create a resource calendar
@@ -2978,6 +3199,14 @@ def test_transfer_event_with_resources(
 
     # Get target calendar from patch
     target_calendar = patch_get_calendar(None, "target_cal_123")
+
+    # Create calendar management token for target calendar (needed for create_event in transfer)
+    create_calendar_management_token(
+        calendar=target_calendar,
+        user=social_account.user,
+        organization=calendar_event.organization,
+        token_hash="test_transfer_target_token_hash",
+    )
 
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=calendar_event.organization)
@@ -3757,7 +3986,7 @@ def patch_calendar_create():
 
 @pytest.mark.django_db
 def test_create_event_with_available_windows(
-    social_account, social_token, mock_google_adapter, organization
+    social_account, social_token, mock_google_adapter, organization, calendar_management_token
 ):
     """Test creating an event when availability windows exist."""
 
@@ -3771,6 +4000,19 @@ def test_create_event_with_available_windows(
         manage_available_windows=True,
         organization=organization,
     )
+
+    # Create calendar management token for this calendar
+    token = CalendarManagementToken.objects.create(
+        calendar_fk=calendar,
+        user=social_account.user,
+        token_hash="test_token_hash",
+        organization=organization,
+    )
+    for permission_str in DEFAULT_CALENDAR_OWNER_PERMISSIONS:
+        token.permissions.create(
+            permission=permission_str,
+            organization_id=organization.id,
+        )
 
     # Create test time range
     now = timezone.now()
@@ -3853,6 +4095,21 @@ def test_create_event_no_available_windows(
         organization=organization,
     )
 
+    # Create calendar ownership for the user
+    CalendarOwnership.objects.create(
+        calendar=calendar,
+        user=social_account.user,
+        organization=organization,
+    )
+
+    # Create permission token for the user
+    permission_service = CalendarPermissionService()
+    permission_service.create_calendar_owner_token(
+        organization_id=organization.id,
+        user=social_account.user,
+        calendar_id=calendar.id,
+    )
+
     # Create test time range
     now = timezone.now()
     start_time = now + timedelta(hours=1)
@@ -3892,7 +4149,7 @@ def test_create_event_no_available_windows(
 
 @pytest.mark.django_db
 def test_create_event_with_partial_availability(
-    social_account, social_token, mock_google_adapter, organization
+    social_account, social_token, mock_google_adapter, organization, calendar_management_token
 ):
     """Test creating an event when partial availability windows exist."""
 
@@ -3906,6 +4163,19 @@ def test_create_event_with_partial_availability(
         manage_available_windows=False,
         organization=organization,
     )
+
+    # Create calendar management token for this calendar
+    token = CalendarManagementToken.objects.create(
+        calendar_fk=calendar,
+        user=social_account.user,
+        token_hash="test_token_hash",
+        organization=organization,
+    )
+    for permission_str in DEFAULT_CALENDAR_OWNER_PERMISSIONS:
+        token.permissions.create(
+            permission=permission_str,
+            organization_id=organization.id,
+        )
 
     # Create test time range
     now = timezone.now()
@@ -3971,7 +4241,7 @@ def test_create_event_with_partial_availability(
 
 @pytest.mark.django_db
 def test_create_event_with_multiple_availability_windows(
-    social_account, social_token, mock_google_adapter, organization
+    social_account, social_token, mock_google_adapter, organization, calendar_management_token
 ):
     """Test creating an event when multiple availability windows exist."""
 
@@ -3985,6 +4255,19 @@ def test_create_event_with_multiple_availability_windows(
         manage_available_windows=True,
         organization=organization,
     )
+
+    # Create calendar management token for this calendar
+    token = CalendarManagementToken.objects.create(
+        calendar_fk=calendar,
+        user=social_account.user,
+        token_hash="test_token_hash",
+        organization=organization,
+    )
+    for permission_str in DEFAULT_CALENDAR_OWNER_PERMISSIONS:
+        token.permissions.create(
+            permission=permission_str,
+            organization_id=organization.id,
+        )
 
     # Create test time range
     now = timezone.now()
@@ -4055,7 +4338,7 @@ def test_create_event_with_multiple_availability_windows(
 
 @pytest.mark.django_db
 def test_create_event_with_attendees(
-    social_account, social_token, mock_google_adapter, organization
+    social_account, social_token, mock_google_adapter, organization, calendar_management_token
 ):
     """Test creating an event with attendees."""
 
@@ -4069,6 +4352,19 @@ def test_create_event_with_attendees(
         manage_available_windows=True,
         organization=organization,
     )
+
+    # Create calendar management token for this calendar
+    token = CalendarManagementToken.objects.create(
+        calendar_fk=calendar,
+        user=social_account.user,
+        token_hash="test_token_hash",
+        organization=organization,
+    )
+    for permission_str in DEFAULT_CALENDAR_OWNER_PERMISSIONS:
+        token.permissions.create(
+            permission=permission_str,
+            organization_id=organization.id,
+        )
 
     # Create test time range
     now = timezone.now()
@@ -4173,6 +4469,21 @@ def test_create_event_adapter_failure(
         calendar_type=CalendarType.PERSONAL,
         manage_available_windows=True,
         organization=organization,
+    )
+
+    # Create calendar ownership for the user
+    CalendarOwnership.objects.create(
+        calendar=calendar,
+        user=social_account.user,
+        organization=organization,
+    )
+
+    # Create permission token for the user
+    permission_service = CalendarPermissionService()
+    permission_service.create_calendar_owner_token(
+        organization_id=organization.id,
+        user=social_account.user,
+        calendar_id=calendar.id,
     )
 
     # Create test time range
@@ -4516,7 +4827,12 @@ def test_calendar_event_data_with_recurrence_rule():
 
 @pytest.mark.django_db
 def test_get_unavailable_time_windows_in_range_with_recurring_events_outside_master_range(
-    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    patch_get_calendar,
 ):
     """Test that get_unavailable_time_windows_in_range finds recurring instances even when the master event is outside the search window."""
     mock_google_adapter.provider = CalendarProvider.GOOGLE
@@ -6720,6 +7036,7 @@ def test_create_event_calls_side_effects(
     mock_google_adapter,
     calendar,
     patch_get_calendar,
+    calendar_management_token,
     sample_event_input_data,
 ):
     """Test that creating an event sends a webhook event."""
@@ -6768,6 +7085,7 @@ def test_update_event_calls_side_effects(
     mock_google_adapter,
     calendar,
     patch_get_calendar,
+    calendar_management_token,
     sample_event_input_data,
 ):
     """Test that updating an event sends a webhook event."""
@@ -6793,6 +7111,14 @@ def test_update_event_calls_side_effects(
     service = CalendarService(calendar_side_effects_service=calendar_side_effects_service)
     service.authenticate(account=social_account.user, organization=calendar.organization)
     event = service.create_event(calendar.id, sample_event_input_data)
+
+    # Create event-specific management token for update operation
+    create_event_management_token(
+        event=event,
+        user=social_account.user,
+        organization=calendar.organization,
+        token_hash="test_update_side_effects_token_hash",
+    )
 
     # Reset mock to clear create_event call
     calendar_side_effects_service.reset_mock()
@@ -6848,6 +7174,7 @@ def test_delete_event_calls_side_effects(
     mock_google_adapter,
     calendar,
     patch_get_calendar,
+    calendar_management_token,
     sample_event_input_data,
 ):
     """Test that deleting an event sends a webhook event."""
@@ -6873,6 +7200,14 @@ def test_delete_event_calls_side_effects(
     service.authenticate(account=social_account.user, organization=calendar.organization)
     event = service.create_event(calendar.id, sample_event_input_data)
     event_id = event.id
+
+    # Create event-specific management token for delete operation
+    create_event_management_token(
+        event=event,
+        user=social_account.user,
+        organization=calendar.organization,
+        token_hash="test_delete_side_effects_token_hash",
+    )
 
     # Reset mock to clear create_event call
     calendar_side_effects_service.reset_mock()
@@ -6942,15 +7277,26 @@ def owned_calendar(db, organization, calendar_owner_user):
         user=calendar_owner_user,
         is_default=True,
     )
+
+    # Create permission token for the calendar owner
+    permission_service = CalendarPermissionService()
+    permission_service.create_calendar_owner_token(
+        organization_id=organization.id,
+        user=calendar_owner_user,
+        calendar_id=calendar.id,
+    )
+
     return calendar
 
 
 @pytest.fixture
 def unrelated_user(db):
     """Create an unrelated user for testing."""
-    return User.objects.create_user(
+    user = User.objects.create_user(
         username="unrelated_user", email="unrelated@example.com", password="testpass123"
     )
+    Profile.objects.create(user=user)
+    return user
 
 
 @pytest.fixture
@@ -7151,6 +7497,15 @@ def test_create_event_uses_write_adapter_for_non_owned_calendar(
     patch_get_calendar,
 ):
     """Test that create_event uses the write adapter for non-owned calendars."""
+
+    # Create permission token for the unrelated user to allow calendar access
+    permission_service = CalendarPermissionService()
+    permission_service.create_calendar_owner_token(
+        organization_id=owned_calendar.organization.id,
+        user=unrelated_social_account.user,
+        calendar_id=owned_calendar.id,
+    )
+
     # Set up the created event data
     created_event_data = CalendarEventAdapterOutputData(
         calendar_external_id="owned_cal_123",
@@ -7173,9 +7528,13 @@ def test_create_event_uses_write_adapter_for_non_owned_calendar(
     mock_owner_adapter.create_event.return_value = created_event_data
 
     service = CalendarService()
+    # Initialize the service properly with the unrelated user
+    service.initialize_without_provider(
+        user_or_token=unrelated_social_account.user,
+        organization=owned_calendar.organization,
+    )
     # Mock the authentication to avoid Google credentials issue
     service.account = unrelated_social_account
-    service.organization = owned_calendar.organization
     service.calendar_adapter = Mock()
 
     # Mock the get_write_adapter_for_calendar to return the owner's adapter
@@ -7228,6 +7587,14 @@ def test_update_event_uses_write_adapter_for_non_owned_calendar(
         organization=owned_calendar.organization,
     )
 
+    # Create permission token for the unrelated user to update this event
+    permission_service = CalendarPermissionService()
+    permission_service.create_attendee_token(
+        organization_id=owned_calendar.organization.id,
+        user=unrelated_social_account.user,
+        event_id=event.id,
+    )
+
     # Set up the updated event data
     updated_event_data = CalendarEventAdapterOutputData(
         calendar_external_id="owned_cal_123",
@@ -7250,9 +7617,13 @@ def test_update_event_uses_write_adapter_for_non_owned_calendar(
     mock_owner_adapter.update_event.return_value = updated_event_data
 
     service = CalendarService()
+    # Initialize the service properly with the unrelated user
+    service.initialize_without_provider(
+        user_or_token=unrelated_social_account.user,
+        organization=owned_calendar.organization,
+    )
     # Mock the authentication to avoid Google credentials issue
     service.account = unrelated_social_account
-    service.organization = owned_calendar.organization
     service.calendar_adapter = Mock()
 
     # Mock the get_write_adapter_for_calendar to return the owner's adapter
@@ -7302,6 +7673,14 @@ def test_delete_event_uses_write_adapter_for_non_owned_calendar(
         organization=owned_calendar.organization,
     )
 
+    # Create permission token for the unrelated user to delete this event
+    permission_service = CalendarPermissionService()
+    permission_service.create_attendee_token(
+        organization_id=owned_calendar.organization.id,
+        user=unrelated_social_account.user,
+        event_id=event.id,
+    )
+
     # Mock the owner's adapter
     mock_owner_adapter = Mock()
     mock_owner_adapter.provider = CalendarProvider.GOOGLE
@@ -7309,9 +7688,13 @@ def test_delete_event_uses_write_adapter_for_non_owned_calendar(
     del mock_owner_adapter.get_source_expressions
 
     service = CalendarService()
+    # Initialize the service properly with the unrelated user
+    service.initialize_without_provider(
+        user_or_token=unrelated_social_account.user,
+        organization=owned_calendar.organization,
+    )
     # Mock the authentication to avoid Google credentials issue
     service.account = unrelated_social_account
-    service.organization = owned_calendar.organization
     service.calendar_adapter = Mock()
 
     # Mock the get_write_adapter_for_calendar to return the owner's adapter
@@ -7331,6 +7714,7 @@ def test_write_adapter_only_used_for_personal_and_resource_calendars(
     organization,
     sample_event_input_data,
     mock_google_adapter,
+    calendar_management_token,
 ):
     """Test that write adapter logic is only used for PERSONAL and RESOURCE calendar types."""
     # Create a virtual calendar (should not use write adapter logic)
@@ -7341,6 +7725,19 @@ def test_write_adapter_only_used_for_personal_and_resource_calendars(
         organization=organization,
         calendar_type=CalendarType.VIRTUAL,
     )
+
+    # Create calendar management token for this calendar
+    token = CalendarManagementToken.objects.create(
+        calendar_fk=virtual_calendar,
+        user=unrelated_social_account.user,
+        token_hash="test_token_hash",
+        organization=organization,
+    )
+    for permission_str in DEFAULT_CALENDAR_OWNER_PERMISSIONS:
+        token.permissions.create(
+            permission=permission_str,
+            organization_id=organization.id,
+        )
 
     service = CalendarService()
     service.authenticate(account=unrelated_social_account.user, organization=organization)
@@ -7376,10 +7773,19 @@ def test_create_event_falls_back_to_self_adapter_when_write_adapter_is_none(
     unrelated_social_account,
     unrelated_social_token,
     owned_calendar,
+    calendar_management_token,
     sample_event_input_data,
     mock_google_adapter,
 ):
     """Test that create_event falls back to not using external adapter when write adapter is None."""
+    # Create calendar management token for the unrelated user to access owned_calendar
+    create_calendar_management_token(
+        calendar=owned_calendar,
+        user=unrelated_social_account.user,
+        organization=owned_calendar.organization,
+        token_hash="test_fallback_calendar_token_hash",
+    )
+
     service = CalendarService()
     service.authenticate(
         account=unrelated_social_account.user, organization=owned_calendar.organization
@@ -7444,3 +7850,477 @@ def test_get_write_adapter_filters_by_provider(
 
     # Should fall back to self.calendar_adapter since no matching provider found
     assert write_adapter == service.calendar_adapter
+
+
+# Permission Integration Tests
+
+
+class TestCalendarServicePermissionIntegration:
+    """Tests for permission checking integration in calendar service operations."""
+
+    @pytest.mark.django_db
+    def test_grant_calendar_owner_permissions(self, organization, calendar, db):
+        """Test that calendar owners are granted proper permissions."""
+        # Create a user and make them a calendar owner
+        user = User.objects.create(email="owner@example.com")
+        Profile.objects.create(user=user)
+        CalendarOwnership.objects.create(
+            calendar=calendar,
+            user=user,
+            organization=organization,
+        )
+
+        # Create a permission service
+        permission_service = CalendarPermissionService()
+
+        # Create calendar service with the permission service
+        service = CalendarService(calendar_permission_service=permission_service)
+
+        # Grant permissions
+        service._grant_calendar_owner_permissions(calendar)
+
+        # Check that a token was created for the owner
+        token = CalendarManagementToken.objects.get(
+            calendar_fk=calendar,
+            user=user,
+            organization=organization,
+        )
+
+        # Check that the token has the expected permissions
+        permission_values = list(token.permissions.values_list("permission", flat=True))
+        assert set(permission_values) == set(DEFAULT_CALENDAR_OWNER_PERMISSIONS)
+
+    @pytest.mark.django_db
+    def test_grant_event_attendee_permissions(self, organization, calendar, calendar_event, db):
+        """Test that event attendees are granted proper permissions."""
+        # Create users
+        attendee_user = User.objects.create(email="attendee@example.com")
+        Profile.objects.create(user=attendee_user)
+        external_attendee = ExternalAttendee.objects.create(
+            email="external@example.com",
+            name="External User",
+            organization=organization,
+        )
+
+        # Create attendances
+        EventAttendance.objects.create(
+            event=calendar_event,
+            user=attendee_user,
+            organization=organization,
+            status="pending",
+        )
+        EventExternalAttendance.objects.create(
+            event=calendar_event,
+            external_attendee_fk=external_attendee,
+            organization=organization,
+            status="pending",
+        )
+
+        # Create a permission service
+        permission_service = CalendarPermissionService()
+
+        # Create calendar service with the permission service
+        service = CalendarService(calendar_permission_service=permission_service)
+
+        # Grant permissions
+        service._grant_event_attendee_permissions(calendar_event)
+
+        # Check that tokens were created for attendees
+        internal_token = CalendarManagementToken.objects.get(
+            event_fk=calendar_event,
+            user=attendee_user,
+            organization=organization,
+        )
+        external_token = CalendarManagementToken.objects.get(
+            event_fk=calendar_event,
+            external_attendee_fk=external_attendee,
+            organization=organization,
+        )
+
+        # Check permissions
+        internal_permissions = list(internal_token.permissions.values_list("permission", flat=True))
+        external_permissions = list(external_token.permissions.values_list("permission", flat=True))
+
+        assert set(internal_permissions) == set(DEFAULT_ATTENDEE_PERMISSIONS)
+        assert set(external_permissions) == set(DEFAULT_EXTERNAL_ATTENDEE_PERMISSIONS)
+
+    @pytest.mark.django_db
+    def test_grant_permissions_without_permission_service(self, calendar, calendar_event):
+        """Test that permission granting is skipped when permission service is None."""
+        # Create calendar service without permission service
+        service = CalendarService()
+
+        # These should not raise exceptions and should do nothing
+        service._grant_calendar_owner_permissions(calendar)
+        service._grant_event_attendee_permissions(calendar_event)
+
+        # No tokens should be created
+        assert (
+            CalendarManagementToken.objects.filter(organization=calendar.organization).count() == 0
+        )
+
+    @pytest.mark.django_db
+    @patch(
+        "calendar_integration.services.calendar_service.CalendarService._grant_calendar_owner_permissions"
+    )
+    def test_create_application_calendar_grants_permissions(
+        self,
+        mock_grant_permissions,
+        social_account,
+        social_token,
+        mock_google_adapter,
+        organization,
+    ):
+        """Test that creating an application calendar grants owner permissions."""
+        mock_google_adapter.create_application_calendar.return_value = ApplicationCalendarData(
+            id=1,
+            organization_id=organization.id,
+            name="Test Calendar",
+            email="test@calendar.com",
+            external_id="ext123",
+            description="Test Calendar Description",
+            provider=CalendarProvider.GOOGLE,
+            original_payload={},
+        )
+
+        service = CalendarService()
+        service.authenticate(social_account.user, organization)
+
+        service.create_application_calendar("Test Calendar", organization)
+
+        # Check that permissions were granted
+        mock_grant_permissions.assert_called_once()
+
+        # Get the calendar that was created
+        created_calendar = Calendar.objects.filter_by_organization(organization.id).get(
+            external_id="ext123"
+        )
+        mock_grant_permissions.assert_called_with(created_calendar)
+
+    @pytest.mark.django_db
+    @patch(
+        "calendar_integration.services.calendar_service.CalendarService._grant_event_attendee_permissions"
+    )
+    def test_create_event_grants_attendee_permissions(
+        self,
+        mock_grant_permissions,
+        social_account,
+        social_token,
+        mock_google_adapter,
+        calendar,
+        calendar_management_token,
+        patch_get_calendar,
+        sample_event_input_data,
+    ):
+        """Test that creating an event grants attendee permissions."""
+        mock_google_adapter.create_event.return_value = CalendarEventAdapterOutputData(
+            calendar_external_id=calendar.external_id,
+            external_id="ext123",
+            title=sample_event_input_data.title,
+            description=sample_event_input_data.description,
+            start_time=sample_event_input_data.start_time,
+            end_time=sample_event_input_data.end_time,
+            timezone=sample_event_input_data.timezone,
+            attendees=[],
+            recurrence_rule=None,
+        )
+
+        service = CalendarService()
+        service.authenticate(social_account.user, calendar.organization)
+
+        result = service.create_event(calendar.id, sample_event_input_data)
+
+        # Check that permissions were granted
+        mock_grant_permissions.assert_called_once()
+        mock_grant_permissions.assert_called_with(result)
+
+    @pytest.mark.django_db
+    def test_permission_service_integration_with_dependency_injection(self, db):
+        """Test that CalendarService properly integrates with dependency injected permission service."""
+        # Create a mock permission service
+        mock_permission_service = Mock(spec=CalendarPermissionService)
+
+        # Create calendar service with injected permission service
+        service = CalendarService(calendar_permission_service=mock_permission_service)
+
+        # Check that the permission service was properly assigned
+        assert service.calendar_permission_service == mock_permission_service
+
+    @pytest.mark.django_db
+    def test_calendar_service_without_permission_service_injection(self, db):
+        """Test that CalendarService works when permission service is not injected."""
+        # Create calendar service without permission service
+        service = CalendarService()
+
+        # Permission service should be auto-injected via dependency injection
+        assert service.calendar_permission_service is not None
+        assert isinstance(service.calendar_permission_service, CalendarPermissionService)
+
+    @pytest.mark.django_db
+    def test_duplicate_token_creation_prevention(self, organization, calendar, db):
+        """Test that duplicate tokens are not created for the same user/calendar combination."""
+        user = User.objects.create(email="owner@example.com")
+        Profile.objects.create(user=user)
+        CalendarOwnership.objects.create(
+            calendar=calendar,
+            user=user,
+            organization=organization,
+        )
+
+        permission_service = CalendarPermissionService()
+        service = CalendarService(calendar_permission_service=permission_service)
+
+        # Grant permissions twice
+        service._grant_calendar_owner_permissions(calendar)
+        initial_token_count = CalendarManagementToken.objects.filter(
+            calendar_fk=calendar,
+            user=user,
+            organization=organization,
+        ).count()
+
+        service._grant_calendar_owner_permissions(calendar)
+        final_token_count = CalendarManagementToken.objects.filter(
+            calendar_fk=calendar,
+            user=user,
+            organization=organization,
+        ).count()
+
+        # Should not create duplicate tokens
+        assert initial_token_count == final_token_count == 1
+
+    @pytest.mark.django_db
+    def test_event_attendee_permission_deduplication(
+        self, organization, calendar, calendar_event, db
+    ):
+        """Test that duplicate event attendee tokens are not created."""
+        attendee_user = User.objects.create(email="attendee@example.com")
+        Profile.objects.create(user=attendee_user)
+
+        EventAttendance.objects.create(
+            event=calendar_event,
+            user=attendee_user,
+            organization=organization,
+            status="pending",
+        )
+
+        permission_service = CalendarPermissionService()
+        service = CalendarService(calendar_permission_service=permission_service)
+
+        # Grant permissions twice
+        service._grant_event_attendee_permissions(calendar_event)
+        initial_token_count = CalendarManagementToken.objects.filter(
+            event_fk=calendar_event,
+            user=attendee_user,
+            organization=organization,
+        ).count()
+
+        service._grant_event_attendee_permissions(calendar_event)
+        final_token_count = CalendarManagementToken.objects.filter(
+            event_fk=calendar_event,
+            user=attendee_user,
+            organization=organization,
+        ).count()
+
+        # Should not create duplicate tokens
+        assert initial_token_count == final_token_count == 1
+
+
+class TestCalendarServicePermissionScenarios:
+    """Tests for specific permission scenarios in calendar operations."""
+
+    @pytest.mark.django_db
+    def test_calendar_owner_has_all_permissions(self, organization, calendar, db):
+        """Test that calendar owners receive all expected permissions."""
+        user = User.objects.create_user(email="owner@example.com")
+        Profile.objects.create(user=user)
+        CalendarOwnership.objects.create(
+            calendar=calendar,
+            user=user,
+            organization=organization,
+        )
+
+        permission_service = CalendarPermissionService()
+        service = CalendarService(calendar_permission_service=permission_service)
+        service._grant_calendar_owner_permissions(calendar)
+
+        # Initialize permission service with the created token
+        permission_service.initialize_with_user(user, organization.id, calendar_id=calendar.id)
+
+        # Check all expected permissions
+        expected_permissions = [
+            EventManagementPermissions.CREATE,
+            EventManagementPermissions.UPDATE_ATTENDEES,
+            EventManagementPermissions.UPDATE_DETAILS,
+            EventManagementPermissions.RESCHEDULE,
+            EventManagementPermissions.CANCEL,
+        ]
+
+        for permission in expected_permissions:
+            assert permission_service.has_permission(
+                permission
+            ), f"Missing permission: {permission}"
+
+    @pytest.mark.django_db
+    def test_event_attendee_has_limited_permissions(
+        self, organization, calendar, calendar_event, db
+    ):
+        """Test that event attendees receive limited permissions."""
+        attendee_user = User.objects.create(email="attendee@example.com")
+        Profile.objects.create(user=attendee_user)
+
+        EventAttendance.objects.create(
+            event=calendar_event,
+            user=attendee_user,
+            organization=organization,
+            status="pending",
+        )
+
+        permission_service = CalendarPermissionService()
+        service = CalendarService(calendar_permission_service=permission_service)
+        service._grant_event_attendee_permissions(calendar_event)
+
+        # Initialize permission service with the created token
+        permission_service.initialize_with_user(
+            attendee_user, organization.id, event_id=calendar_event.id
+        )
+
+        # Check that attendee has expected permissions
+        expected_permissions = [
+            EventManagementPermissions.UPDATE_ATTENDEES,
+            EventManagementPermissions.UPDATE_DETAILS,
+            EventManagementPermissions.RESCHEDULE,
+            EventManagementPermissions.CANCEL,
+        ]
+
+        for permission in expected_permissions:
+            assert permission_service.has_permission(
+                permission
+            ), f"Missing permission: {permission}"
+
+        # Check that attendee does NOT have CREATE permission
+        assert not permission_service.has_permission(EventManagementPermissions.CREATE)
+
+    @pytest.mark.django_db
+    def test_external_attendee_has_minimal_permissions(
+        self, organization, calendar, calendar_event, db
+    ):
+        """Test that external attendees receive minimal permissions."""
+        external_attendee = ExternalAttendee.objects.create(
+            email="external@example.com",
+            name="External User",
+            organization=organization,
+        )
+
+        EventExternalAttendance.objects.create(
+            event=calendar_event,
+            external_attendee_fk=external_attendee,
+            organization=organization,
+            status="pending",
+        )
+
+        permission_service = CalendarPermissionService()
+        service = CalendarService(calendar_permission_service=permission_service)
+        service._grant_event_attendee_permissions(calendar_event)
+
+        # Get the created token
+        token = CalendarManagementToken.objects.get(
+            event_fk=calendar_event,
+            external_attendee_fk=external_attendee,
+            organization=organization,
+        )
+
+        # Check permissions
+        permission_values = list(token.permissions.values_list("permission", flat=True))
+        expected_permissions = [
+            EventManagementPermissions.UPDATE_SELF_RSVP,
+            EventManagementPermissions.RESCHEDULE,
+            EventManagementPermissions.CANCEL,
+        ]
+
+        assert set(permission_values) == set(expected_permissions)
+
+    @pytest.mark.django_db
+    def test_permission_inheritance_in_calendar_operations(self, organization, db):
+        """Test that permissions are properly inherited through calendar operations."""
+        # Create a calendar and owner
+        calendar = Calendar.objects.create(
+            name="Test Calendar",
+            organization=organization,
+        )
+        user = User.objects.create_user(email="owner@example.com")
+        Profile.objects.create(user=user)
+        CalendarOwnership.objects.create(
+            calendar=calendar,
+            user=user,
+            organization=organization,
+        )
+
+        # Create permission service and calendar service
+        permission_service = CalendarPermissionService()
+        service = CalendarService(calendar_permission_service=permission_service)
+
+        # Grant calendar permissions
+        service._grant_calendar_owner_permissions(calendar)
+
+        # Create an event on the calendar
+        event_data = CalendarEventInputData(
+            title="Test Event",
+            description="Test Description",
+            start_time=timezone.now(),
+            end_time=timezone.now() + timedelta(hours=1),
+            timezone="UTC",
+            attendances=[
+                EventAttendanceInputData(
+                    user_id=user.id,
+                )
+            ],
+        )
+
+        # Mock the service to avoid external dependencies
+        with patch.object(service, "_get_calendar_by_id") as mock_get_calendar:
+            mock_get_calendar.return_value = calendar
+
+            with patch.object(service, "calendar_adapter") as mock_adapter:
+                mock_adapter.create_event.return_value = CalendarEventAdapterOutputData(
+                    external_id="ext123",
+                    title=event_data.title,
+                    description=event_data.description,
+                    start_time=event_data.start_time,
+                    end_time=event_data.end_time,
+                    timezone=event_data.timezone,
+                    attendees=[],
+                    recurrence_rule=None,
+                    calendar_external_id=calendar.external_id,
+                )
+
+                # Initialize service with user context
+                service.initialize_without_provider(user_or_token=user, organization=organization)
+
+                # Create the event
+                created_event = service.create_event(calendar.id, event_data)
+
+                # Check that both calendar and event tokens exist
+                calendar_token = CalendarManagementToken.objects.get(
+                    calendar_fk=calendar,
+                    user=user,
+                    organization=organization,
+                )
+                event_token = CalendarManagementToken.objects.get(
+                    event_fk=created_event,
+                    user=user,
+                    organization=organization,
+                )
+
+                assert calendar_token is not None
+                assert event_token is not None
+
+                # Check that both have appropriate permissions
+                calendar_permissions = list(
+                    calendar_token.permissions.values_list("permission", flat=True)
+                )
+                event_permissions = list(
+                    event_token.permissions.values_list("permission", flat=True)
+                )
+
+                assert set(calendar_permissions) == set(DEFAULT_CALENDAR_OWNER_PERMISSIONS)
+                assert set(event_permissions) == set(DEFAULT_ATTENDEE_PERMISSIONS)

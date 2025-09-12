@@ -2,10 +2,7 @@ from typing import Protocol
 
 from allauth.socialaccount.models import SocialAccount
 
-from calendar_integration.models import (
-    CalendarEventUpdateToken,
-    GoogleCalendarServiceAccount,
-)
+from calendar_integration.models import GoogleCalendarServiceAccount
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
 from organizations.models import Organization
@@ -31,7 +28,7 @@ class BaseCalendarService(Protocol):
 
     def initialize_without_provider(
         self,
-        user: User | CalendarEventUpdateToken | SystemUser | None = None,
+        user_or_token: User | str | SystemUser | None = None,
         organization: Organization | None = None,
     ) -> None:
         ...

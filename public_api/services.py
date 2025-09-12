@@ -1,4 +1,4 @@
-from public_api.authentication import (
+from common.utils.authentication_utils import (
     generate_long_lived_token,
     hash_long_lived_token,
     verify_long_lived_token,

@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable
 from functools import lru_cache
 from typing import Annotated, Any, Literal, cast
 
+from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Q
 
@@ -26,7 +27,7 @@ from calendar_integration.models import (
     BlockedTimeRecurrenceException,
     Calendar,
     CalendarEvent,
-    CalendarEventUpdateToken,
+    CalendarManagementToken,
     CalendarOrganizationResourcesImport,
     CalendarOwnership,
     CalendarSync,
@@ -42,6 +43,7 @@ from calendar_integration.models import (
     ResourceAllocation,
 )
 from calendar_integration.recurrence_utils import OccurrenceValidator, RecurrenceRuleSplitter
+from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
@@ -52,6 +54,7 @@ from calendar_integration.services.dataclasses import (
     CalendarEventData,
     CalendarEventInputData,
     CalendarResourceData,
+    CalendarSettingsData,
     EventAttendanceInputData,
     EventAttendeeData,
     EventExternalAttendanceInputData,
@@ -76,7 +79,7 @@ from users.models import User
 
 class CalendarService(BaseCalendarService):
     organization: Organization | None
-    user: User | CalendarEventUpdateToken | SystemUser | None
+    user_or_token: User | str | SystemUser | None
     account: SocialAccount | GoogleCalendarServiceAccount | None
     calendar_adapter: CalendarAdapter | None
 
@@ -86,12 +89,90 @@ class CalendarService(BaseCalendarService):
         calendar_side_effects_service: Annotated[
             "CalendarSideEffectsService | None", Provide["calendar_side_effects_service"]
         ] = None,
+        calendar_permission_service: Annotated[
+            "CalendarPermissionService | None", Provide["calendar_permission_service"]
+        ] = None,
     ) -> None:
         """Initialize a CalendarService instance. Call authenticate() before using calendar operations."""
         self.organization = None
+        self.user_or_token = None
         self.account = None
         self.calendar_adapter = None
         self.calendar_side_effects_service = calendar_side_effects_service
+        self.calendar_permission_service = calendar_permission_service
+
+    def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None:
+        """
+        Grant calendar management permissions to all owners of a calendar.
+        """
+        if not self.calendar_permission_service:
+            return
+
+        # Grant permissions to all calendar owners
+        calendar_owners = User.objects.filter(
+            calendar_ownerships__calendar=calendar,
+            calendar_ownerships__organization=calendar.organization,
+        ).distinct()
+
+        for owner in calendar_owners:
+            # Check if user already has a token for this calendar
+            existing_token = CalendarManagementToken.objects.filter(
+                user=owner,
+                calendar_fk_id=calendar.id,
+                organization_id=calendar.organization_id,
+                event_fk_id__isnull=True,
+                revoked_at__isnull=True,
+            ).first()
+
+            if not existing_token:
+                self.calendar_permission_service.create_calendar_owner_token(
+                    organization_id=calendar.organization_id,
+                    user=owner,
+                    calendar_id=calendar.id,
+                )
+
+    def _grant_event_attendee_permissions(self, event: CalendarEvent) -> None:
+        """
+        Grant event management permissions to all attendees of an event.
+        """
+        if not self.calendar_permission_service:
+            return
+
+        # Grant permissions to internal attendees
+        for attendance in event.attendances.all():
+            # Check if user already has a token for this event
+            existing_token = CalendarManagementToken.objects.filter(
+                user=attendance.user,
+                event_fk_id=event.id,
+                organization_id=event.organization_id,
+                revoked_at__isnull=True,
+            ).first()
+
+            if not existing_token:
+                self.calendar_permission_service.create_attendee_token(
+                    organization_id=attendance.organization_id,
+                    user=attendance.user,
+                    event_id=event.id,
+                )
+
+        # Grant permissions to external attendees
+        for external_attendance in event.external_attendances.filter_by_organization(  # type: ignore
+            event.organization_id
+        ):
+            # Check if external attendee already has a token for this event
+            existing_token = CalendarManagementToken.objects.filter(
+                organization_id=event.organization_id,
+                external_attendee_fk_id=external_attendance.external_attendee_fk_id,
+                event_fk_id=event.id,
+                revoked_at__isnull=True,
+            ).first()
+
+            if not existing_token:
+                self.calendar_permission_service.create_external_attendee_update_token(
+                    organization_id=external_attendance.organization_id,
+                    event_id=event.id,
+                    external_attendee_id=external_attendance.external_attendee_fk_id,  # type: ignore
+                )
 
     def _serialize_event_internal_attendee(
         self, attendance: EventAttendance
@@ -126,6 +207,10 @@ class CalendarService(BaseCalendarService):
             timezone=event.timezone,
             title=event.title,
             description=event.description,
+            calendar_settings=CalendarSettingsData(
+                manage_available_windows=event.calendar_fk.manage_available_windows,  # type: ignore
+                accepts_public_scheduling=event.calendar_fk.accepts_public_scheduling,  # type: ignore
+            ),
             original_payload=event.meta.get("latest_original_payload", {})
             if hasattr(event, "meta") and event.meta
             else {},
@@ -255,13 +340,13 @@ class CalendarService(BaseCalendarService):
         :param account: Social account instance or GoogleCalendarServiceAccount instance.
         :param organization: Calendar organization instance.
         """
-        self.user = account if isinstance(account, User) else None
+        self.user_or_token = account if isinstance(account, User) else None
         self.organization = organization
         self.calendar_adapter, self.account = self.get_calendar_adapter_for_account(account)
 
     def initialize_without_provider(
         self,
-        user: User | CalendarEventUpdateToken | SystemUser | None = None,
+        user_or_token: User | str | SystemUser | None = None,
         organization: Organization | None = None,
     ):
         """
@@ -269,7 +354,7 @@ class CalendarService(BaseCalendarService):
         :param organization: Calendar organization instance.
         """
         self.organization = organization
-        self.user = user
+        self.user_or_token = user_or_token
         self.account = None
         self.calendar_adapter = None
 
@@ -400,8 +485,17 @@ class CalendarService(BaseCalendarService):
             provider=self.calendar_adapter.provider
             if self.calendar_adapter
             else CalendarProvider.INTERNAL,
-            original_payload=created_calendar.original_payload or {},
+            meta={"latest_original_payload": created_calendar.original_payload} or {},
         )
+
+        # Create calendar ownership for the user who created it
+        if isinstance(self.user_or_token, User):
+            CalendarOwnership.objects.create(
+                organization=organization,
+                calendar=calendar,
+                user=self.user_or_token,
+                is_default=False,
+            )
 
         if self.calendar_adapter:
             if isinstance(self.account, GoogleCalendarServiceAccount):
@@ -413,6 +507,9 @@ class CalendarService(BaseCalendarService):
                 end_datetime=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=365),
                 should_update_events=True,
             )
+
+        # Grant permissions to calendar owners
+        self._grant_calendar_owner_permissions(calendar)
 
         return created_calendar
 
@@ -490,6 +587,10 @@ class CalendarService(BaseCalendarService):
                 user=self.account.user if self.account else None,
                 defaults={"is_default": calendar_data.is_default},
             )
+
+            # Grant permissions to calendar owners
+            self._grant_calendar_owner_permissions(calendar)
+
             self.request_calendar_sync(
                 calendar=calendar,
                 start_datetime=datetime.datetime.now(datetime.UTC),
@@ -512,7 +613,7 @@ class CalendarService(BaseCalendarService):
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
 
-        return Calendar.objects.create(
+        calendar = Calendar.objects.create(
             organization=self.organization,
             name=name,
             description=description,
@@ -520,6 +621,20 @@ class CalendarService(BaseCalendarService):
             calendar_type=CalendarType.VIRTUAL,
             original_payload={},
         )
+
+        # Create calendar ownership for the user who created it
+        if isinstance(self.user_or_token, User):
+            CalendarOwnership.objects.create(
+                organization=self.organization,
+                calendar=calendar,
+                user=self.user_or_token,
+                is_default=False,
+            )
+
+        # Grant permissions to calendar owners
+        self._grant_calendar_owner_permissions(calendar)
+
+        return calendar
 
     @transaction.atomic()
     def create_bundle_calendar(
@@ -572,6 +687,19 @@ class CalendarService(BaseCalendarService):
                 organization=self.organization,
                 is_primary=is_primary,
             )
+
+        # Create calendar ownership for the user who created it
+        if isinstance(self.user_or_token, User):
+            CalendarOwnership.objects.create(
+                organization=self.organization,
+                calendar=bundle_calendar,
+                user=self.user_or_token,
+                is_default=False,
+            )
+
+        # Grant permissions to calendar owners
+        self._grant_calendar_owner_permissions(bundle_calendar)
+
         return bundle_calendar
 
     def _create_bundle_event(
@@ -754,6 +882,92 @@ class CalendarService(BaseCalendarService):
 
         return datetime_obj.replace(tzinfo=target_tz)
 
+    def _serialize_event_data_input(
+        self, event: CalendarEvent, event_data: CalendarEventInputData
+    ) -> CalendarEventData:
+        new_attendance_user_ids = [a.user_id for a in event_data.attendances]
+        new_external_attendances_attendee_ids = [
+            a.external_attendee.id for a in event_data.external_attendances
+        ]
+        attendances_users_by_id = {
+            u.id: u for u in User.objects.filter(id__in=new_attendance_user_ids)
+        }
+        existing_attendances_by_user_id = {
+            a.user_id: a
+            for a in EventAttendance.objects.filter(
+                event=event, user__id__in=new_attendance_user_ids
+            )
+        }
+        existing_external_attendances_by_attendee_id = {
+            a.external_attendee.id: a
+            for a in EventExternalAttendance.objects.filter(
+                event=event, external_attendee__id__in=new_external_attendances_attendee_ids
+            )
+        }
+        return CalendarEventData(
+            id=event.id,
+            calendar_id=event.calendar_fk_id,  # type: ignore
+            start_time=event_data.start_time,
+            end_time=event_data.end_time,
+            timezone=event_data.timezone,
+            title=event_data.title,
+            description=event_data.description,
+            calendar_settings=CalendarSettingsData(
+                manage_available_windows=event.calendar_fk.manage_available_windows,  # type: ignore
+                accepts_public_scheduling=event.calendar_fk.accepts_public_scheduling,  # type: ignore
+            ),
+            original_payload={},  # doesn't matter
+            attendees=[
+                EventInternalAttendeeData(
+                    user_id=attendance.user_id,
+                    email=attendances_users_by_id[attendance.user_id].email,
+                    name=attendances_users_by_id[attendance.user_id].get_full_name(),
+                    status=cast(
+                        Literal["accepted", "declined", "pending"],
+                        existing_attendances_by_user_id.get(attendance.user_id, "pending"),
+                    ),
+                )
+                # For recurring instances, get attendances from the parent event; for regular events, use their own
+                for attendance in event_data.attendances
+            ],
+            external_attendees=[
+                EventExternalAttendeeData(
+                    email=external_attendance.external_attendee.email,
+                    name=external_attendance.external_attendee.name,
+                    status=cast(
+                        Literal["accepted", "declined", "pending"],
+                        existing_external_attendances_by_attendee_id.get(
+                            external_attendance.external_attendee.id, "pending"
+                        ),
+                    ),
+                )
+                # For recurring instances, get external attendances from the parent event; for regular events, use their own
+                for external_attendance in event_data.external_attendances
+            ],
+            resources=[
+                ResourceData(
+                    title=resource_allocation.calendar.name,
+                    email=resource_allocation.calendar.email,
+                    external_id=resource_allocation.calendar.external_id,
+                    status=cast(
+                        Literal["accepted", "declined", "pending"],
+                        resource_allocation.status,
+                    ),
+                )
+                # For recurring instances, get resource allocations from the parent event; for regular events, use their own
+                for resource_allocation in Calendar.objects.filter(
+                    organization=self.organization,
+                    id__in=[r.resource_id for r in event_data.resource_allocations],
+                    calendar_type=CalendarType.RESOURCE,
+                )
+            ],
+            external_id=event.external_id,
+            recurrence_rule=event_data.recurrence_rule,
+            status="confirmed",
+            is_recurring=bool(event_data.recurrence_rule),
+            recurring_event_id=None,
+        )
+
     @transaction.atomic()
     def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
         """
@@ -766,6 +980,29 @@ class CalendarService(BaseCalendarService):
             raise
 
         calendar = self._get_calendar_by_id(calendar_id)
+
+        if isinstance(self.user_or_token, str):
+            self.calendar_permission_service.initialize_with_token(
+                self.user_or_token, organization_id=calendar.organization_id
+            )
+        elif isinstance(self.user_or_token, User):
+            self.calendar_permission_service.initialize_with_user(
+                self.user_or_token,
+                organization_id=calendar.organization_id,
+                calendar_id=calendar_id,
+            )
+        elif isinstance(self.user_or_token, SystemUser):
+            raise PermissionDenied("Events cannot be created through the Public API.")
+
+        if not self.calendar_permission_service.can_perform_scheduling(
+            calendar_id=calendar_id,
+            calendar_settings=CalendarSettingsData(
+                manage_available_windows=calendar.manage_available_windows,
+                accepts_public_scheduling=calendar.accepts_public_scheduling,
+            ),
+            event=event_data,
+        ):
+            raise PermissionDenied("You do not have permission to update this event.")
 
         if calendar.calendar_type == CalendarType.BUNDLE:
             return self._create_bundle_event(bundle_calendar=calendar, event_data=event_data)
@@ -910,9 +1147,19 @@ class CalendarService(BaseCalendarService):
             ]
         )
 
+        # Grant permissions to event attendees
+        self._grant_event_attendee_permissions(event)
+
         transaction.on_commit(
             lambda: self.calendar_side_effects_service.on_create_event(
-                actor=self.user,
+                actor=(
+                    self.calendar_permission_service.token.user
+                    if (
+                        self.calendar_permission_service.token
+                        and self.calendar_permission_service.token.user
+                    )
+                    else self.calendar_permission_service.token
+                ),
                 event=self._serialize_event(event),
                 organization=event.organization,
             )
@@ -1001,6 +1248,24 @@ class CalendarService(BaseCalendarService):
             id=event_id,
             organization_id=self.organization.id,
         )
+
+        if isinstance(self.user_or_token, str):
+            self.calendar_permission_service.initialize_with_token(
+                self.user_or_token, organization_id=event.organization_id
+            )
+        elif isinstance(self.user_or_token, User):
+            self.calendar_permission_service.initialize_with_user(
+                self.user_or_token, organization_id=event.organization_id, event_id=event_id
+            )
+        elif isinstance(self.user_or_token, SystemUser):
+            raise PermissionDenied("Events cannot be created through the Public API.")
+
+        serialized_old_event = self._serialize_event(event)
+        if not self.calendar_permission_service.can_perform_update(
+            old_event=serialized_old_event,
+            new_event=self._serialize_event_data_input(event, event_data),
+        ):
+            raise PermissionDenied("You do not have permission to update this event.")
 
         if event.is_bundle_primary:
             return self._update_bundle_event(event, event_data)
@@ -1191,6 +1456,46 @@ class CalendarService(BaseCalendarService):
             maintained_attendees_ids.append(attendance_data.user_id)
 
         EventAttendance.objects.bulk_create(event_attendances_to_create)
+
+        # Grant permissions to newly added internal attendees
+        if event_attendances_to_create and self.calendar_permission_service:
+            for attendance in event_attendances_to_create:
+                user = User.objects.get(id=attendance.user_id)
+                # Check if user already has a token for this event
+                existing_token = CalendarManagementToken.objects.filter(
+                    user=user,
+                    event_fk_id=event.id,
+                    organization_id=self.organization.id,
+                    revoked_at__isnull=True,
+                ).first()
+
+                if not existing_token:
+                    self.calendar_permission_service.create_attendee_token(
+                        organization_id=event.organization_id,
+                        user=user,
+                        permissions=None,  # Will use default attendee permissions
+                        event_id=event.id,
+                    )
+
+        # Grant permissions to newly added external attendees
+        if external_attendances_to_create and self.calendar_permission_service:
+            for external_attendance in external_attendances_to_create:
+                # Check if external attendee already has a token for this event
+                existing_token = CalendarManagementToken.objects.filter(
+                    organization_id=event.organization_id,
+                    external_attendee_fk_id=external_attendance.external_attendee.id,
+                    event_fk_id=event.id,
+                    revoked_at__isnull=True,
+                ).first()
+
+                if not existing_token:
+                    self.calendar_permission_service.create_external_attendee_update_token(
+                        organization_id=event.organization_id,
+                        event_id=event.id,
+                        external_attendee_id=external_attendance.external_attendee.id,
+                        permissions=None,  # Will use default external attendee permissions
+                    )
+
         attendances_to_delete = set(existing_attendances.keys()) - set(maintained_attendees_ids)
         attendances_instances_to_delete = EventAttendance.objects.filter_by_organization(
             self.organization.id
@@ -1224,39 +1529,51 @@ class CalendarService(BaseCalendarService):
             if not self.calendar_side_effects_service:
                 return
 
+            actor = (
+                self.calendar_permission_service.token.user
+                if (
+                    self.calendar_permission_service.token
+                    and self.calendar_permission_service.token.user
+                )
+                else self.calendar_permission_service.token
+            )
             self.calendar_side_effects_service.on_update_event(
-                actor=self.user,
+                actor=actor,
                 event=self._serialize_event(event),
                 organization=event.organization,
             )
             for payload in serialized_attendances_to_create:
                 self.calendar_side_effects_service.on_add_attendee_to_event(
-                    actor=self.user,
+                    actor=actor,
                     event=self._serialize_event(event),
                     attendee=payload,
                     organization=event.organization,
                 )
             for payload in serialized_attendances_to_delete:
                 self.calendar_side_effects_service.on_remove_attendee_from_event(
-                    actor=self._serialize_event(event),
+                    actor=actor,
+                    event=self._serialize_event(event),
                     attendee=payload,
                     organization=event.organization,
                 )
             for payload in serialized_external_attendances_to_create:
                 self.calendar_side_effects_service.on_add_attendee_to_event(
-                    actor=self._serialize_event(event),
+                    actor=actor,
+                    event=self._serialize_event(event),
                     attendee=payload,
                     organization=event.organization,
                 )
             for payload in serialized_external_attendances_to_delete:
                 self.calendar_side_effects_service.on_remove_attendee_from_event(
-                    actor=self._serialize_event(event),
+                    actor=actor,
+                    event=self._serialize_event(event),
                     attendee=payload,
                     organization=event.organization,
                 )
             for payload in serialized_external_attendances_to_update:
                 self.calendar_side_effects_service.on_update_attendee_on_event(
-                    actor=self._serialize_event(event),
+                    actor=actor,
+                    event=self._serialize_event(event),
                     attendee=payload,
                     organization=event.organization,
                 )
@@ -1698,6 +2015,23 @@ class CalendarService(BaseCalendarService):
             id=event_id,
             organization_id=self.organization.id,
         )
+        if isinstance(self.user_or_token, str):
+            self.calendar_permission_service.initialize_with_token(
+                self.user_or_token, organization_id=event.organization_id
+            )
+        elif isinstance(self.user_or_token, User):
+            self.calendar_permission_service.initialize_with_user(
+                self.user_or_token, organization_id=event.organization_id, event_id=event_id
+            )
+        elif isinstance(self.user_or_token, SystemUser):
+            raise PermissionDenied("Events cannot be created through the Public API.")
+
+        serialized_old_event = self._serialize_event(event)
+        if not self.calendar_permission_service.can_perform_update(
+            old_event=serialized_old_event,
+            new_event=None,
+        ):
+            raise PermissionDenied("You do not have permission to update this event.")
 
         if event.is_bundle_primary:
             self._delete_bundle_event(event)
@@ -1739,7 +2073,14 @@ class CalendarService(BaseCalendarService):
 
         transaction.on_commit(
             lambda: self.calendar_side_effects_service.on_delete_event(
-                actor=self.user,
+                actor=(
+                    self.calendar_permission_service.token.user
+                    if (
+                        self.calendar_permission_service.token
+                        and self.calendar_permission_service.token.user
+                    )
+                    else self.calendar_permission_service.token
+                ),
                 event=serialized_event,
                 organization=event.organization,
             )

@@ -7,7 +7,6 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from cuid2 import Cuid
 from encrypted_fields.fields import EncryptedCharField  # type:ignore
 
 from calendar_integration.constants import (
@@ -15,7 +14,7 @@ from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncStatus,
     CalendarType,
-    EventUpdatePermissions,
+    EventManagementPermissions,
     RecurrenceFrequency,
     RecurrenceWeekday,
     RSVPStatus,
@@ -78,6 +77,12 @@ class Calendar(OrganizationModel):
         help_text=(
             "If true, this calendar can manage its own available time windows. If not, it will "
             "use the available time windows of the external calendar it's attached to."
+        ),
+    )
+    accepts_public_scheduling = models.BooleanField(
+        default=False,
+        help_text=(
+            "If true, this event can be scheduled by external users through public scheduling links."
         ),
     )
 
@@ -1380,23 +1385,24 @@ class GoogleCalendarServiceAccount(OrganizationModel):
         return f"Service Account for {self.calendar} ({self.email})"
 
 
-def generate_unique_id() -> str:
-    cuid_generator = Cuid(length=64)
-    return cuid_generator.generate()
-
-
-class CalendarEventUpdateToken(OrganizationModel):
+class CalendarManagementToken(OrganizationModel):
     """
     Represents a token used to allow updates to calendar events without authentication.
     """
 
+    calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        null=True,
+        related_name="management_tokens",
+    )
     event = OrganizationForeignKey(
         CalendarEvent,
         on_delete=models.CASCADE,
         null=True,
-        related_name="update_tokens",
+        related_name="management_tokens",
     )
-    token = models.CharField(max_length=255, unique=True, default=generate_unique_id, db_index=True)
+    token_hash = models.TextField()
     used_at = models.DateTimeField(null=True)
     revoked_at = models.DateTimeField(null=True)
 
@@ -1404,34 +1410,34 @@ class CalendarEventUpdateToken(OrganizationModel):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         null=True,
-        related_name="calendar_event_update_tokens",
+        related_name="calendar_event_management_tokens",
     )
-    external_attendee = models.ForeignKey(
+    external_attendee = OrganizationForeignKey(
         ExternalAttendee,
         on_delete=models.CASCADE,
         null=True,
-        related_name="calendar_event_update_tokens",
+        related_name="calendar_event_management_tokens",
     )
 
-    permissions: "RelatedManager[CalendarEventUpdateTokenPermission]"
+    permissions: "RelatedManager[CalendarManagementTokenPermission]"
 
     def __str__(self):
         used_at = "" if self.used_at is None else f"(used at: {self.used_at.isoformat()})"
         return f"Update Token from {self.user or self.external_attendee} for {self.event}{used_at}"
 
 
-class CalendarEventUpdateTokenPermission(OrganizationModel):
+class CalendarManagementTokenPermission(OrganizationModel):
     """
     Represents a permission associated with a CalendarEventUpdateToken.
     """
 
     token = OrganizationForeignKey(
-        CalendarEventUpdateToken,
+        CalendarManagementToken,
         on_delete=models.CASCADE,
         null=True,
         related_name="permissions",
     )
-    permission = models.CharField(max_length=100, choices=EventUpdatePermissions)
+    permission = models.CharField(max_length=100, choices=EventManagementPermissions)
 
     def __str__(self):
         return f"Permission {self.permission} for Token {self.token}"

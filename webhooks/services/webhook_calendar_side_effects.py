@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING, Annotated
 
 from dependency_injector.wiring import Provide, inject
 
-from calendar_integration.models import CalendarEventUpdateToken
+from calendar_integration.models import CalendarManagementToken
 from calendar_integration.services.dataclasses import (
     CalendarEventData,
     EventExternalAttendeeData,
@@ -52,7 +52,7 @@ class WebhookCalendarEventSideEffectsService:
 
     def on_create_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         organization: Organization,
     ) -> None:
@@ -64,7 +64,7 @@ class WebhookCalendarEventSideEffectsService:
 
     def on_update_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         organization: Organization,
     ) -> None:
@@ -76,7 +76,7 @@ class WebhookCalendarEventSideEffectsService:
 
     def on_delete_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         organization: Organization,
     ) -> None:
@@ -88,7 +88,7 @@ class WebhookCalendarEventSideEffectsService:
 
     def on_add_attendee_to_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         attendance: EventInternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
@@ -101,7 +101,7 @@ class WebhookCalendarEventSideEffectsService:
 
     def on_remove_attendee_from_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         attendance: EventInternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
@@ -114,7 +114,7 @@ class WebhookCalendarEventSideEffectsService:
 
     def on_update_attendee_in_event(
         self,
-        actor: User | CalendarEventUpdateToken | SystemUser | None,
+        actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         attendance: EventInternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,

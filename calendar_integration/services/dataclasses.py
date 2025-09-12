@@ -192,6 +192,12 @@ class EventExternalAttendeeData:
 
 
 @dataclass
+class CalendarSettingsData:
+    manage_available_windows: bool
+    accepts_public_scheduling: bool
+
+
+@dataclass
 class CalendarEventData:
     id: int  # noqa: A003
     calendar_id: int
@@ -201,6 +207,7 @@ class CalendarEventData:
     title: str
     description: str
     external_id: str
+    calendar_settings: CalendarSettingsData | None
     status: Literal["confirmed", "cancelled"]
     attendees: list[EventInternalAttendeeData]
     external_attendees: list[EventExternalAttendeeData]
