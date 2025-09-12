@@ -1048,7 +1048,7 @@ class CalendarService(BaseCalendarService):
                                 and hasattr(users_by_id[a.user_id].profile, "__str__")
                                 else None
                             )
-                            or users_by_id[a.user_id].username,
+                            or users_by_id[a.user_id].email,
                             status="pending",
                         )
                         for a in event_data.attendances
@@ -1316,7 +1316,7 @@ class CalendarService(BaseCalendarService):
                                 and hasattr(users_by_id[a.user_id].profile, "__str__")
                                 else None
                             )
-                            or users_by_id[a.user_id].username,
+                            or users_by_id[a.user_id].email,
                             status=(
                                 attendance_by_user_id[a.user_id].status
                                 if a.user_id in attendance_by_user_id

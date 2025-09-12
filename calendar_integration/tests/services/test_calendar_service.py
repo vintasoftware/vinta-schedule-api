@@ -191,9 +191,7 @@ def mock_ms_adapter():
 @pytest.fixture
 def social_account(db):
     """Create a social account for testing."""
-    user = User.objects.create_user(
-        username="testuser", email="test@example.com", password="testpass123"
-    )
+    user = User.objects.create_user(email="test@example.com", password="testpass123")
     # Create a profile for the user to avoid RelatedObjectDoesNotExist errors
     Profile.objects.create(user=user)
     account = SocialAccount.objects.create(user=user, provider=CalendarProvider.GOOGLE, uid="12345")
@@ -365,8 +363,8 @@ def sample_event_input_data():
 @pytest.fixture
 def sample_event_input_data_with_attendances(db):
     """Sample event input data with attendances for testing."""
-    user1 = User.objects.create_user(username="user1", email="user1@example.com")
-    user2 = User.objects.create_user(username="user2", email="user2@example.com")
+    user1 = User.objects.create_user(email="user1@example.com")
+    user2 = User.objects.create_user(email="user2@example.com")
 
     return CalendarEventInputData(
         title="Event with Attendances",
@@ -1364,9 +1362,7 @@ def test_create_recurring_exception_on_master_preserves_attendances_and_resource
     mock_google_adapter.provider = CalendarProvider.GOOGLE
 
     # Create additional user and resource for testing
-    additional_user = User.objects.create_user(
-        username="attendee", email="attendee@example.com", password="testpass123"
-    )
+    additional_user = User.objects.create_user(email="attendee@example.com", password="testpass123")
     resource_calendar = Calendar.objects.create(
         name="Test Resource",
         external_id="resource_123",
@@ -2859,7 +2855,7 @@ def test_update_event_with_attendances(
 ):
     """Test updating an event with attendances and external attendances."""
     # Create initial attendances
-    user1 = User.objects.create_user(username="initial_user1", email="initial1@example.com")
+    user1 = User.objects.create_user(email="initial1@example.com")
     Profile.objects.create(user=user1, first_name="Initial", last_name="User")
 
     EventAttendance.objects.create(
@@ -2879,8 +2875,8 @@ def test_update_event_with_attendances(
     )
 
     # Create new users for updated attendances
-    new_user1 = User.objects.create_user(username="new_user1", email="new1@example.com")
-    new_user2 = User.objects.create_user(username="new_user2", email="new2@example.com")
+    new_user1 = User.objects.create_user(email="new1@example.com")
+    new_user2 = User.objects.create_user(email="new2@example.com")
     Profile.objects.create(user=new_user1, first_name="New", last_name="User 1")
     Profile.objects.create(user=new_user2, first_name="New", last_name="User 2")
 
@@ -3618,9 +3614,7 @@ def test_process_event_attendees_new_user(
 ):
     """Test processing event attendees with a new user."""
     # Create a user that matches the attendee email
-    User.objects.create_user(
-        username="attendee", email="attendee@example.com", password="testpass123"
-    )
+    User.objects.create_user(email="attendee@example.com", password="testpass123")
 
     event_data = CalendarEventAdapterOutputData(
         calendar_external_id="cal_123",
@@ -5160,9 +5154,7 @@ def test_apply_sync_changes_attendances_to_create(
     )
 
     # Create user for attendance
-    user = User.objects.create_user(
-        username="attendee", email="attendee@example.com", password="testpass123"
-    )
+    user = User.objects.create_user(email="attendee@example.com", password="testpass123")
 
     changes = EventsSyncChanges()
 
@@ -7235,9 +7227,7 @@ def test_delete_event_calls_side_effects(
 @pytest.fixture
 def calendar_owner_user(db):
     """Create a calendar owner user for testing."""
-    return User.objects.create_user(
-        username="calendar_owner", email="owner@example.com", password="testpass123"
-    )
+    return User.objects.create_user(email="owner@example.com", password="testpass123")
 
 
 @pytest.fixture
@@ -7292,9 +7282,7 @@ def owned_calendar(db, organization, calendar_owner_user):
 @pytest.fixture
 def unrelated_user(db):
     """Create an unrelated user for testing."""
-    user = User.objects.create_user(
-        username="unrelated_user", email="unrelated@example.com", password="testpass123"
-    )
+    user = User.objects.create_user(email="unrelated@example.com", password="testpass123")
     Profile.objects.create(user=user)
     return user
 
@@ -7379,9 +7367,7 @@ def test_get_write_adapter_prefers_default_owner(
 ):
     """Test that _get_write_adapter_for_calendar prefers owners with is_default=True."""
     # Create another user who also owns the calendar but is not default
-    other_owner = User.objects.create_user(
-        username="other_owner", email="other@example.com", password="testpass123"
-    )
+    other_owner = User.objects.create_user(email="other@example.com", password="testpass123")
     other_social_account = SocialAccount.objects.create(
         user=other_owner, provider=CalendarProvider.GOOGLE, uid="other123"
     )
@@ -7439,9 +7425,7 @@ def test_get_write_adapter_returns_self_adapter_when_no_valid_owner(
     )
 
     # Create user without social account
-    user_no_social = User.objects.create_user(
-        username="user_no_social", email="nosocial@example.com", password="testpass123"
-    )
+    user_no_social = User.objects.create_user(email="nosocial@example.com", password="testpass123")
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=calendar_no_owner,

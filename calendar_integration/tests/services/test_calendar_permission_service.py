@@ -1,4 +1,5 @@
 import base64
+import uuid
 from datetime import timedelta
 
 from django.utils import timezone
@@ -48,10 +49,8 @@ def user(db):
 @pytest.fixture
 def another_user(db):
     """Create another test user."""
-    import uuid
-
     unique_email = f"another+{uuid.uuid4().hex[:8]}@example.com"
-    user = User.objects.create(email=unique_email, username=unique_email)
+    user = User.objects.create(email=unique_email)
     Profile.objects.create(user=user)
     return user
 

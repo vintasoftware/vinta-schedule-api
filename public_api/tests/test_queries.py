@@ -631,8 +631,8 @@ class TestGraphQLQueries:
         mock_rate_limiter.return_value = iter([None])
 
         user_model = get_user_model()
-        # Create user with profile first and last name
-        user = baker.make(user_model, email="alice@example.com", username="alice1")
+        # Create user with profile first and last nam
+        user = baker.make(user_model, email="alice@example.com")
         baker.make(OrganizationMembership, user=user, organization=organization)
         # Create profile for the user with given names
         baker.make(
@@ -643,7 +643,7 @@ class TestGraphQLQueries:
         )
 
         # Create another user that should not match
-        other = baker.make(user_model, email="bob@example.com", username="bob1")
+        other = baker.make(user_model, email="bob@example.com")
         baker.make(OrganizationMembership, user=other, organization=organization)
         baker.make(
             "users.Profile",
@@ -680,10 +680,10 @@ class TestGraphQLQueries:
         mock_rate_limiter.return_value = iter([None])
 
         user_model = get_user_model()
-        user = baker.make(user_model, email="carol@example.com", username="carol1")
+        user = baker.make(user_model, email="carol@example.com")
         baker.make(OrganizationMembership, user=user, organization=organization)
 
-        baker.make(user_model, email="dave@other.com", username="dave1")
+        baker.make(user_model, email="dave@other.com")
 
         query = """
             query GetUsers($email: String) {
@@ -1464,7 +1464,7 @@ class TestGraphQLQueries:
 
         # Create another user in the same organization to ensure filtering works
         user_model = get_user_model()
-        other_user = baker.make(user_model, email="other@example.com", username="otheruser")
+        other_user = baker.make(user_model, email="other@example.com")
         baker.make(
             OrganizationMembership,
             user=other_user,
@@ -1476,7 +1476,6 @@ class TestGraphQLQueries:
                 users(userId: $userId, offset: $offset, limit: $limit) {
                     id
                     email
-                    username
                 }
             }
         """
@@ -1709,7 +1708,7 @@ class TestGraphQLQueries:
 
         # Create multiple users
         for i in range(5):
-            user = baker.make(user_model, email=f"user{i}@test.com", username=f"user{i}")
+            user = baker.make(user_model, email=f"user{i}@test.com")
             baker.make(OrganizationMembership, user=user, organization=organization)
             users.append(user)
 
@@ -1718,7 +1717,6 @@ class TestGraphQLQueries:
                 users {
                     id
                     email
-                    username
                 }
             }
         """
@@ -1747,7 +1745,7 @@ class TestGraphQLQueries:
 
         # Create multiple users
         for i in range(10):
-            user = baker.make(user_model, email=f"user{i}@test.com", username=f"user{i}")
+            user = baker.make(user_model, email=f"user{i}@test.com")
             baker.make(OrganizationMembership, user=user, organization=organization)
             users.append(user)
 
@@ -1756,7 +1754,6 @@ class TestGraphQLQueries:
                 users(offset: $offset, limit: $limit) {
                     id
                     email
-                    username
                 }
             }
         """

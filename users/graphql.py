@@ -18,7 +18,6 @@ class ProfileGraphQLType:
 @strawberry_django.type(User)
 class UserGraphQLType:
     id: strawberry.auto  # noqa: A003
-    username: strawberry.auto
     email: strawberry.auto
     phone_number: strawberry.auto
     is_active: strawberry.auto

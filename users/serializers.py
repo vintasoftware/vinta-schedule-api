@@ -38,7 +38,6 @@ class UserSerializer(VirtualModelSerializer):
             "id",
             "email",
             "phone_number",
-            "username",
             "profile",
             "is_active",
             "is_staff",

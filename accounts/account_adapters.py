@@ -37,7 +37,6 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
             # If the instance is a User, use the UserSerializer to serialize it
             return {
                 "id": instance.id,
-                "username": instance.username,
                 "email": instance.email,
                 "phone_number": instance.phone_number,
                 "is_active": instance.is_active,
@@ -205,7 +204,6 @@ class AccountAdapter(DefaultAccountAdapter):
             "Sending verification code %s to %s for user %s.",
             code,
             phone,
-            user.username,
         )
         self.notification_service.create_notification(
             user_id=user.id,

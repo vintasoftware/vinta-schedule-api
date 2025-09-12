@@ -1,7 +1,6 @@
 from typing import TYPE_CHECKING
 
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
-from django.core.validators import MinLengthValidator, RegexValidator
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
@@ -16,24 +15,6 @@ if TYPE_CHECKING:
 
 
 class User(AbstractBaseUser, PermissionsMixin, BaseModel):
-    username = models.CharField(
-        max_length=150,
-        unique=True,
-        help_text=_("Required. 150 characters or fewer. Letters, digits and @/./+/-/_ only."),
-        validators=[
-            RegexValidator(
-                regex=r"^[\w.-]+$",
-                message=_(
-                    "Enter a valid username. This value may contain only letters, numbers and ./-/_ characters."
-                ),
-            ),
-            MinLengthValidator(
-                limit_value=3,
-                message=_("Username must be at least 3 characters long."),
-            ),
-        ],
-        db_index=True,
-    )
     email = models.EmailField(max_length=255, unique=True)
     phone_number = models.CharField(max_length=20)
 
@@ -54,7 +35,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
     profile: "Profile"
     billing_profile: "BillingProfile"
 
-    USERNAME_FIELD = "username"
+    USERNAME_FIELD = "email"
 
     def get_full_name(self):
         return str(self.profile)

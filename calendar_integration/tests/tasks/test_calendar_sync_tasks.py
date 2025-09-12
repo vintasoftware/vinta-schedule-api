@@ -24,9 +24,7 @@ from users.models import User
 @pytest.fixture
 def social_account(db):
     """Create a social account for testing."""
-    user = User.objects.create_user(
-        username="testuser", email="test@example.com", password="testpass123"
-    )
+    user = User.objects.create_user(email="test@example.com", password="testpass123")
     account = SocialAccount.objects.create(user=user, provider=CalendarProvider.GOOGLE, uid="12345")
     return account
 
