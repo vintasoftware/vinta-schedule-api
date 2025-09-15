@@ -1,6 +1,8 @@
 import datetime
 from unittest.mock import Mock
 
+from django.db.utils import IntegrityError
+
 import pytest
 from model_bakery import baker
 
@@ -146,9 +148,10 @@ class TestOrganizationService:
         )
 
         # Create second organization
-        org2 = organization_service.create_organization(
-            creator=user, name="Organization 2", should_sync_rooms=True
-        )
+        with pytest.raises(IntegrityError):
+            org2 = organization_service.create_organization(
+                creator=user, name="Organization 2", should_sync_rooms=True
+            )
 
         # Verify both organizations exist and are different
         assert org1.id != org2.id
