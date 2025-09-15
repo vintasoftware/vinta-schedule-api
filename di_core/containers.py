@@ -14,6 +14,7 @@ from calendar_integration.services.calendar_permission_service import CalendarPe
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from organizations.organization_subscription_plan_factory import OrganizationSubscriptionPlanFactory
+from organizations.services import OrganizationService
 from payments.services.payment_adapters.mercadopago_payment_adapter import MercadoPagoPaymentAdapter
 from payments.services.payment_service import PaymentService
 from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
@@ -94,6 +95,11 @@ class AppContainer(containers.DeclarativeContainer):
         CalendarService,
         calendar_side_effects_service=calendar_side_effects_service,
         calendar_permission_service=calendar_permission_service,
+    )
+
+    organization_service = providers.Factory(
+        OrganizationService,
+        calendar_service=calendar_service,
     )
 
     public_api_auth_service = providers.Factory(

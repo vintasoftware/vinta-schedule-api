@@ -1,8 +1,21 @@
-from organizations.models import Organization
+import datetime
+from typing import Annotated
+
+from dependency_injector.wiring import Provide, inject
+
+from calendar_integration.services.calendar_service import CalendarService
+from organizations.models import Organization, OrganizationMembership
+from users.models import User
 
 
 class OrganizationService:
-    def create_organization(self, name: str, should_sync_rooms: bool = False) -> Organization:
+    @inject
+    def __init__(self, calendar_service: Annotated[CalendarService, Provide["calendar_service"]]):
+        self.calendar_service = calendar_service
+
+    def create_organization(
+        self, creator: User, name: str, should_sync_rooms: bool = False
+    ) -> Organization:
         """
         Create a new calendar organization.
         :param name: Name of the calendar organization.
@@ -13,4 +26,15 @@ class OrganizationService:
             name=name,
             should_sync_rooms=should_sync_rooms,
         )
+        OrganizationMembership.objects.create(user=creator, organization=self.organization)
+
+        if should_sync_rooms:
+            self.calendar_service.initialize_without_provider(
+                user_or_token=creator, organization=self.organization
+            )
+            now = datetime.datetime.now(tz=datetime.UTC)
+            self.calendar_service.request_organization_calendar_resources_import(
+                start_time=now,
+                end_time=now + datetime.timedelta(days=365),
+            )
         return self.organization

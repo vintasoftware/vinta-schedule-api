@@ -11,6 +11,7 @@ from rest_framework.routers import DefaultRouter
 from strawberry.django.views import GraphQLView
 
 from calendar_integration.routes import routes as calendar_integration_routes
+from organizations.routes import routes as organizations_routes
 from payments.routes import routes as payments_routes
 from public_api.schema import schema
 from users.routes import routes as users_routes
@@ -21,6 +22,7 @@ router = DefaultRouter(use_regex_path=False)
 
 routes = (
     *calendar_integration_routes,
+    *organizations_routes,
     *payments_routes,
     *users_routes,
     *webhooks_routes,

@@ -339,6 +339,24 @@ class CreateAndReadVintaScheduleModelViewSet(
     pass
 
 
+class NoListVintaScheduleModelViewSet(
+    ViewSetMixin,
+    FilterOnlyOnListMixin,
+    v.GenericVirtualModelViewMixin,
+    mixins.RetrieveModelMixin,
+    UpdateModelMixin,
+    CreateModelMixin,
+    mixins.DestroyModelMixin,
+    generics.GenericAPIView,
+):
+    """
+    A viewset that does not allow update of instances.
+    It only allows read and create operations.
+    """
+
+    pass
+
+
 class NoDetailsVintaScheduleModelViewSet(
     ViewSetMixin,
     FilterOnlyOnListMixin,
