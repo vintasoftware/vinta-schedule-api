@@ -101,6 +101,40 @@ class OrganizationMembership(BaseModel):
         return f"{self.user} in {self.organization}"
 
 
+class OrganizationInvitation(BaseModel):
+    """
+    Represents an invitation to join a calendar organization.
+    This is used to invite users to join their respective calendar organizations.
+    """
+
+    email = models.EmailField(unique=True)
+    first_name = models.CharField(max_length=150, blank=True)
+    last_name = models.CharField(max_length=150, blank=True)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="invitations",
+    )
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="sent_organization_invitations",
+    )
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    token_hash = models.TextField()
+    expires_at = models.DateTimeField()
+    membership = models.OneToOneField(
+        OrganizationMembership,
+        on_delete=models.CASCADE,
+        related_name="invitation",
+        null=True,
+        blank=True,
+    )
+
+    def __str__(self):
+        return f"Invitation for {self.email} to join {self.organization}"
+
+
 class OrganizationModel(BaseModel):
     """
     Represents a model that can be associated with a calendar organization.

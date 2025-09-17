@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from vintasend.services.dataclasses import Notification
+from vintasend.services.dataclasses import Notification, OneOffNotification
 from vintasend.services.notification_template_renderers.base import (
     BaseNotificationTemplateRenderer,
     NotificationSendInput,
@@ -18,7 +18,7 @@ class TemplatedSMS(NotificationSendInput):
 
 class BaseTemplatedSMSRenderer(BaseNotificationTemplateRenderer):
     def render(
-        self, notification: Notification, context: "NotificationContextDict"
+        self, notification: Notification | OneOffNotification, context: "NotificationContextDict"
     ) -> TemplatedSMS:
         raise NotImplementedError(
             "This method should be implemented in subclasses to render the SMS body."

@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 from django.template.loader import render_to_string
 
 from vintasend.exceptions import NotificationBodyTemplateRenderingError
-from vintasend.services.dataclasses import Notification
+from vintasend.services.dataclasses import Notification, OneOffNotification
 
 from vintasend_django_sms_template_renderer.services.notification_template_renderers.base_sms_template_renderer import (
     BaseTemplatedSMSRenderer,
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 class DjangoTemplatedSMSRenderer(BaseTemplatedSMSRenderer):
     def render(
-        self, notification: Notification, context: "NotificationContextDict"
+        self, notification: Notification | OneOffNotification, context: "NotificationContextDict"
     ) -> TemplatedSMS:
         body_template = notification.body_template
 

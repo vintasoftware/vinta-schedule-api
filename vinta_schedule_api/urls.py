@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.http import Http404
 from django.urls import include, path
 from django.views.decorators.csrf import csrf_exempt
 
@@ -30,6 +31,16 @@ routes = (
 for route in routes:
     router.register(route["regex"], route["viewset"], basename=route["basename"])
 
+
+def frontend_view(request, *args, **kwargs):
+    raise Http404()
+
+
+referenced_frontend_urlpatterns = [
+    path("invitation/<str:key>/", frontend_view, name="invitation"),
+]
+
+
 urlpatterns = [
     path("auth/", include("accounts.urls")),
     path("auth/", include("allauth.socialaccount.urls")),
@@ -52,4 +63,5 @@ urlpatterns = [
         name="redoc",
     ),
     path("graphql/", csrf_exempt(GraphQLView.as_view(schema=schema))),
+    *referenced_frontend_urlpatterns,
 ]
