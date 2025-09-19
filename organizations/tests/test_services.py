@@ -6,6 +6,7 @@ from django.db.utils import IntegrityError
 import pytest
 from model_bakery import baker
 
+from organizations.exceptions import InvalidInvitationTokenError, InvitationNotFoundError
 from organizations.models import Organization
 from organizations.services import OrganizationService
 from users.models import User
@@ -397,7 +398,7 @@ class TestOrganizationService:
 
         # Try to accept with wrong token
         wrong_token = generate_long_lived_token()
-        with pytest.raises(ValueError, match="Invalid or expired token"):
+        with pytest.raises(InvalidInvitationTokenError, match="Invalid or expired token"):
             organization_service.accept_invitation(token=wrong_token, user=user)
 
     def test_accept_invitation_expired_token(self, organization_service, user, organization):
@@ -422,7 +423,7 @@ class TestOrganizationService:
         )
 
         # Try to accept expired invitation
-        with pytest.raises(ValueError, match="Invalid or expired token"):
+        with pytest.raises(InvalidInvitationTokenError, match="Invalid or expired token"):
             organization_service.accept_invitation(token=token, user=user)
 
     def test_accept_invitation_no_matching_email(self, organization_service, organization):
@@ -434,7 +435,7 @@ class TestOrganizationService:
 
         # Try to accept with a random token
         token = generate_long_lived_token()
-        with pytest.raises(ValueError, match="Invalid or expired token"):
+        with pytest.raises(InvalidInvitationTokenError, match="Invalid or expired token"):
             organization_service.accept_invitation(token=token, user=different_user)
 
     def test_revoke_invitation_existing_invitation(self, organization_service, user, organization):
@@ -463,7 +464,7 @@ class TestOrganizationService:
         """Test revoking a non-existent invitation."""
         fake_id = "999999"  # Use a string that can be converted to int
 
-        with pytest.raises(ValueError, match="Invitation does not exist"):
+        with pytest.raises(InvitationNotFoundError, match="Invitation does not exist"):
             organization_service.revoke_invitation(invitation_id=fake_id)
 
     def test_accept_invitation_already_accepted(self, organization_service, organization):

@@ -10,6 +10,7 @@ from model_bakery import baker
 from rest_framework import status
 
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
+from organizations.exceptions import InvalidInvitationTokenError
 from organizations.models import (
     Organization,
     OrganizationInvitation,
@@ -726,7 +727,7 @@ class TestAcceptInvitationView:
         self, mock_accept_invitation, auth_client, user
     ):
         """Test accepting an invitation with invalid token"""
-        mock_accept_invitation.side_effect = ValueError("Invalid or expired token")
+        mock_accept_invitation.side_effect = InvalidInvitationTokenError("Invalid or expired token")
 
         url = reverse("accept-invitation")
         data = {

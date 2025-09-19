@@ -12,3 +12,8 @@ class PaymentExternalIdMissingInNotificationError(PaymentAdapterError):
 
 class SubscriptionExternalIdMissingInNotificationError(PaymentAdapterError):
     pass
+
+
+class MissingBillingProfileError(PaymentError):
+    def __init__(self, message="User does not have a billing profile"):
+        super().__init__(message)

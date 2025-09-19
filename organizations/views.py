@@ -9,6 +9,11 @@ from common.utils.view_utils import (
     NoListVintaScheduleModelViewSet,
     NoUpdateVintaScheduleModelViewSet,
 )
+from organizations.exceptions import (
+    DuplicateInvitationError,
+    InvalidInvitationTokenError,
+    InvitationNotFoundError,
+)
 from organizations.filtersets import OrganizationInvitationFilterSet
 from organizations.models import Organization, OrganizationInvitation
 from organizations.permissions import (
@@ -97,11 +102,20 @@ class AcceptInvitationView(generics.CreateAPIView):
 
         try:
             membership = serializer.create(serializer.validated_data)
-        except ValueError as e:
-            # Handle invalid or expired token errors
+        except InvalidInvitationTokenError as e:
             return Response(
                 {"error": str(e)},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        except DuplicateInvitationError as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except InvitationNotFoundError as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_404_NOT_FOUND,
             )
 
         return Response(

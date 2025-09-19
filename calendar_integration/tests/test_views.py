@@ -1293,7 +1293,7 @@ class TestCalendarViewSet:
 
         response = auth_client.get(url, params)
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        assert "Invalid datetime format" in str(response.data)
+        assert "Invalid isoformat string" in str(response.data)
 
     def test_get_unavailable_windows(self, auth_client, calendar, user):
         """Test getting unavailable time windows for a calendar"""

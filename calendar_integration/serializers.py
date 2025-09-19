@@ -11,6 +11,7 @@ from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
 from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.exceptions import CalendarServiceNotInjectedError
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -280,7 +281,7 @@ class EventRecurringExceptionSerializer(serializers.Serializer):
         )
 
         if not self.calendar_service:
-            raise ValueError(
+            raise CalendarServiceNotInjectedError(
                 "calendar_service is not defined, please configure your DI container correctly"
             )
 
@@ -761,7 +762,9 @@ class CalendarEventSerializer(VirtualModelSerializer):
 
     def create(self, validated_data):
         if not self.calendar_service:
-            raise ValueError(
+            from calendar_integration.exceptions import CalendarServiceNotInjectedError
+
+            raise CalendarServiceNotInjectedError(
                 "calendar_service is not defined, please configure your DI container correctly"
             )
 
@@ -833,7 +836,9 @@ class CalendarEventSerializer(VirtualModelSerializer):
 
     def update(self, instance: CalendarEvent, validated_data: dict) -> CalendarEvent:
         if not self.calendar_service:
-            raise ValueError(
+            from calendar_integration.exceptions import CalendarServiceNotInjectedError
+
+            raise CalendarServiceNotInjectedError(
                 "calendar_service is not defined, please configure your DI container correctly"
             )
 
@@ -1074,7 +1079,7 @@ class BlockedTimeSerializer(VirtualModelSerializer):
 
     def create(self, validated_data: dict):
         if not self.calendar_service:
-            raise ValueError(
+            raise CalendarServiceNotInjectedError(
                 "calendar_service is not defined, please configure your DI container correctly"
             )
 
@@ -1301,7 +1306,7 @@ class AvailableTimeSerializer(VirtualModelSerializer):
 
     def create(self, validated_data: dict):
         if not self.calendar_service:
-            raise ValueError(
+            raise CalendarServiceNotInjectedError(
                 "calendar_service is not defined, please configure your DI container correctly"
             )
 
@@ -1448,7 +1453,9 @@ class BulkBlockedTimeSerializer(serializers.Serializer):
     def save(self, **kwargs):
         """Create multiple blocked times using calendar service."""
         if not self.calendar_service:
-            raise ValueError(
+            from calendar_integration.exceptions import CalendarServiceNotInjectedError
+
+            raise CalendarServiceNotInjectedError(
                 "calendar_service is not defined, please configure your DI container correctly"
             )
 
@@ -1503,7 +1510,7 @@ class BulkAvailableTimeSerializer(serializers.Serializer):
     def save(self, **kwargs):
         """Create multiple available times using calendar service."""
         if not self.calendar_service:
-            raise ValueError(
+            raise CalendarServiceNotInjectedError(
                 "calendar_service is not defined, please configure your DI container correctly"
             )
 
@@ -1596,7 +1603,7 @@ class BlockedTimeRecurringExceptionSerializer(serializers.Serializer):
         parent_blocked_time = self.context["parent_blocked_time"]
 
         if not self.calendar_service:
-            raise ValueError(
+            raise CalendarServiceNotInjectedError(
                 "calendar_service is not defined, please configure your DI container correctly"
             )
 

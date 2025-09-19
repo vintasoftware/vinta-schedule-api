@@ -9,6 +9,7 @@ from django.http import (
 from dependency_injector.wiring import Provide, inject
 
 from organizations.models import Organization
+from public_api.exceptions import InvalidAuthorizationHeaderError, PublicAPIServiceUnavailableError
 from public_api.models import SystemUser
 from public_api.services import PublicAPIAuthService
 from public_api.types import PublicApiHttpRequest
@@ -28,17 +29,17 @@ class PublicApiSystemUserMiddleware:
         """
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            raise ValueError("Invalid Authorization header format")
+            raise InvalidAuthorizationHeaderError()
 
         try:
             system_user_id_str, token = auth_header.split("Bearer ")[-1].split(":", 1)
         except ValueError as e:
-            raise ValueError("Invalid Authorization header format") from e
+            raise InvalidAuthorizationHeaderError() from e
 
         try:
             system_user_id = int(system_user_id_str)
         except ValueError as e:
-            raise ValueError("Invalid Authorization header format") from e
+            raise InvalidAuthorizationHeaderError() from e
 
         return system_user_id, token
 
@@ -51,19 +52,23 @@ class PublicApiSystemUserMiddleware:
         ] = None,
     ) -> SystemUser | None:
         if public_api_auth_service is None:
-            raise ValueError("PublicAPIAuthService is not available")
+            raise PublicAPIServiceUnavailableError()
 
         try:
             system_user_id, token = self._get_credentials_from_request(request)
-        except ValueError:
-            return None
+        except Exception as e:
+            if isinstance(e, InvalidAuthorizationHeaderError):
+                return None
+            raise
 
         try:
             system_user, authenticated = public_api_auth_service.check_system_user_token(
                 system_user_id, token
             )
-        except (SystemUser.DoesNotExist, ValueError):
-            return None
+        except (SystemUser.DoesNotExist, Exception) as e:
+            if isinstance(e, InvalidAuthorizationHeaderError):
+                return None
+            raise
 
         return None if not authenticated or not system_user.is_active else system_user
 

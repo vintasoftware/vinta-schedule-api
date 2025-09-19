@@ -1,6 +1,13 @@
 import base64
 from collections.abc import Iterable
 
+from calendar_integration.exceptions import (
+    InvalidParameterCombinationError,
+    InvalidTokenError,
+    MissingRequiredParameterError,
+    NoPermissionsSpecifiedError,
+    PermissionServiceInitializationError,
+)
 from calendar_integration.models import (
     CalendarManagementToken,
     EventManagementPermissions,
@@ -59,10 +66,10 @@ class CalendarPermissionService:
             )
         except CalendarManagementToken.DoesNotExist as e:
             # Handle any exceptions that occur during initialization
-            raise ValueError("Invalid token string provided.") from e
+            raise InvalidTokenError("Invalid token string provided.") from e
 
         if not verify_long_lived_token(token_str, token.token_hash):
-            raise ValueError("Invalid token string provided.")
+            raise InvalidTokenError("Invalid token string provided.")
 
         self.token = token
 
@@ -74,10 +81,12 @@ class CalendarPermissionService:
         calendar_id: int | None = None,
     ):
         if calendar_id is not None and event_id is not None:
-            raise ValueError("Specify either calendar_id or event_id, not both.")
+            raise InvalidParameterCombinationError(
+                "Specify either calendar_id or event_id, not both."
+            )
 
         if calendar_id is None and event_id is None:
-            raise ValueError("Either calendar_id or event_id must be specified.")
+            raise MissingRequiredParameterError("Either calendar_id or event_id must be specified.")
 
         try:
             if event_id is not None:
@@ -107,11 +116,11 @@ class CalendarPermissionService:
                 )
         except CalendarManagementToken.DoesNotExist as e:
             # Handle any exceptions that occur during initialization
-            raise ValueError(f"Error initializing CalendarPermissionCheckService: {e}") from e
+            raise PermissionServiceInitializationError(str(e)) from e
 
     def has_permission(self, permission: EventManagementPermissions) -> bool:
         if not hasattr(self, "token") or self.token is None:
-            raise ValueError(
+            raise PermissionServiceInitializationError(
                 "Service not initialized. Call initialize_with_token or initialize_with_user first."
             )
 
@@ -337,7 +346,9 @@ class CalendarPermissionService:
             permissions = DEFAULT_CALENDAR_OWNER_PERMISSIONS
 
         if len(permissions) == 0:
-            raise ValueError("At least one permission must be specified to create a token.")
+            raise NoPermissionsSpecifiedError(
+                "At least one permission must be specified to create a token."
+            )
 
         token, _ = CalendarManagementToken.objects.get_or_create(
             organization_id=organization_id,

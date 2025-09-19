@@ -7,6 +7,13 @@ from django.utils import timezone
 import pytest
 
 from calendar_integration.constants import EventManagementPermissions
+from calendar_integration.exceptions import (
+    InvalidParameterCombinationError,
+    InvalidTokenError,
+    MissingRequiredParameterError,
+    NoPermissionsSpecifiedError,
+    PermissionServiceInitializationError,
+)
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
@@ -185,7 +192,7 @@ class TestCalendarPermissionServiceInitialization:
         invalid_token = "99999:invalid_token_string"
         token_b64 = base64.b64encode(invalid_token.encode()).decode()
 
-        with pytest.raises(ValueError, match="Invalid token string provided"):
+        with pytest.raises(InvalidTokenError, match="Invalid token string provided"):
             permission_service.initialize_with_token(token_b64, organization.id)
 
     def test_initialize_with_invalid_token_string(
@@ -196,7 +203,7 @@ class TestCalendarPermissionServiceInitialization:
         invalid_token = f"{token.id}:invalid_token_string"
         token_b64 = base64.b64encode(invalid_token.encode()).decode()
 
-        with pytest.raises(ValueError, match="Invalid token string provided"):
+        with pytest.raises(InvalidTokenError, match="Invalid token string provided"):
             permission_service.initialize_with_token(token_b64, organization.id)
 
     def test_initialize_with_revoked_token(self, permission_service, event_token, organization):
@@ -208,7 +215,7 @@ class TestCalendarPermissionServiceInitialization:
         token_id_and_str = f"{token.id}:{token_str}"
         token_b64 = base64.b64encode(token_id_and_str.encode()).decode()
 
-        with pytest.raises(ValueError, match="Invalid token string provided"):
+        with pytest.raises(InvalidTokenError, match="Invalid token string provided"):
             permission_service.initialize_with_token(token_b64, organization.id)
 
     def test_initialize_with_user_and_event(
@@ -237,7 +244,10 @@ class TestCalendarPermissionServiceInitialization:
         self, permission_service, user, organization
     ):
         """Test initialization fails when both event_id and calendar_id are provided."""
-        with pytest.raises(ValueError, match="Specify either calendar_id or event_id, not both"):
+        with pytest.raises(
+            InvalidParameterCombinationError,
+            match="Specify either calendar_id or event_id, not both",
+        ):
             permission_service.initialize_with_user(
                 user, organization.id, event_id=1, calendar_id=1
             )
@@ -246,12 +256,17 @@ class TestCalendarPermissionServiceInitialization:
         self, permission_service, user, organization
     ):
         """Test initialization fails when neither event_id nor calendar_id are provided."""
-        with pytest.raises(ValueError, match="Either calendar_id or event_id must be specified"):
+        with pytest.raises(
+            MissingRequiredParameterError, match="Either calendar_id or event_id must be specified"
+        ):
             permission_service.initialize_with_user(user, organization.id)
 
     def test_initialize_with_user_nonexistent_token(self, permission_service, user, organization):
         """Test initialization fails when token doesn't exist for user."""
-        with pytest.raises(ValueError, match="Error initializing CalendarPermissionCheckService"):
+        with pytest.raises(
+            PermissionServiceInitializationError,
+            match="Error initializing CalendarPermissionCheckService",
+        ):
             permission_service.initialize_with_user(user, organization.id, event_id=99999)
 
 
@@ -300,7 +315,7 @@ class TestCalendarPermissionServicePermissionChecking:
 
     def test_has_permission_without_initialization(self, permission_service):
         """Test that checking permissions without initialization raises error."""
-        with pytest.raises(ValueError, match="Service not initialized"):
+        with pytest.raises(PermissionServiceInitializationError, match="Service not initialized"):
             permission_service.has_permission(EventManagementPermissions.CREATE)
 
 
@@ -784,7 +799,9 @@ class TestCalendarPermissionServiceTokenCreation:
         self, permission_service, user, calendar, organization
     ):
         """Test that creating token with empty permissions raises error."""
-        with pytest.raises(ValueError, match="At least one permission must be specified"):
+        with pytest.raises(
+            NoPermissionsSpecifiedError, match="At least one permission must be specified"
+        ):
             permission_service.create_calendar_owner_token(
                 organization.id, user, calendar.id, permissions=[]
             )

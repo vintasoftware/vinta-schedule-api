@@ -18,6 +18,7 @@ from calendar_integration.constants import (
     CalendarSyncStatus,
     CalendarType,
 )
+from calendar_integration.exceptions import InvalidCalendarTokenError
 from calendar_integration.models import (
     AvailableTime,
     AvailableTimeBulkModification,
@@ -298,7 +299,9 @@ class CalendarService(BaseCalendarService):
         )
 
         if not token:
-            raise ValueError("User doesn't have a valid calendar token. Please reauthenticate")
+            raise InvalidCalendarTokenError(
+                "User doesn't have a valid calendar token. Please reauthenticate"
+            )
 
         if token.account.provider == CalendarProvider.GOOGLE:
             from calendar_integration.services.calendar_adapters.google_calendar_adapter import (

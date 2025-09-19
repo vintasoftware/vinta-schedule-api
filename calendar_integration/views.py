@@ -11,6 +11,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
+from calendar_integration.exceptions import CalendarIntegrationError
 from calendar_integration.filtersets import (
     AvailableTimeFilterSet,
     BlockedTimeFilterSet,
@@ -147,21 +148,15 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                 start_datetime_str.replace("Z", "+00:00")
             )
             end_datetime = datetime.datetime.fromisoformat(end_datetime_str.replace("Z", "+00:00"))
-        except ValueError as e:
-            raise ValidationError(
-                {
-                    "non_field_errors": [
-                        "Invalid datetime format. Use ISO format (YYYY-MM-DDTHH:MM:SS)"
-                    ]
-                }
-            ) from e
+        except (ValueError, CalendarIntegrationError) as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+        # Get social account for authentication
+        social_account = SocialAccount.objects.filter(
+            user=request.user, provider=calendar.provider
+        ).first()
 
         try:
-            # Get social account for authentication
-            social_account = SocialAccount.objects.filter(
-                user=request.user, provider=calendar.provider
-            ).first()
-
             calendar_service.authenticate(
                 account=social_account,
                 organization=calendar.organization,
@@ -175,7 +170,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
 
             serializer = AvailableTimeWindowSerializer(available_windows, many=True)
             return Response(serializer.data)
-        except ValueError as e:
+        except (ValueError, CalendarIntegrationError) as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
     @extend_schema(
@@ -258,7 +253,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
 
             serializer = UnavailableTimeWindowSerializer(unavailable_windows, many=True)
             return Response(serializer.data)
-        except ValueError as e:
+        except (ValueError, CalendarIntegrationError) as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
 
@@ -313,7 +308,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
                 event_id=instance.id,
             )
             return Response(status=status.HTTP_204_NO_CONTENT)
-        except ValueError as e:
+        except (ValueError, CalendarIntegrationError) as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
     @extend_schema(
@@ -367,7 +362,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
                     ).data,
                     status=status.HTTP_201_CREATED,
                 )
-        except ValueError as e:
+        except (ValueError, CalendarIntegrationError) as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
     @extend_schema(
@@ -411,7 +406,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
                 CalendarEventSerializer(result, context=self.get_serializer_context()).data,
                 status=status.HTTP_200_OK,
             )
-        except ValueError as e:
+        except (ValueError, CalendarIntegrationError) as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
 
@@ -589,7 +584,7 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
                     ).data,
                     status=status.HTTP_201_CREATED,
                 )
-        except ValueError as e:
+        except (ValueError, CalendarIntegrationError) as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
     @extend_schema(
