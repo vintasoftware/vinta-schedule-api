@@ -9,6 +9,7 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 
+from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import (
     Organization,
     OrganizationInvitation,
@@ -765,6 +766,33 @@ class TestAcceptInvitationView:
         response = auth_client.post(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_accept_invitation_already_accepted(self, auth_client, user, organization):
+        """Test accepting an invitation for a user who is already a member."""
+        from django.db.utils import IntegrityError
+
+        # Create a membership for the user in the organization
+        OrganizationTestFactory.create_organization_membership(user, organization)
+
+        # Create an invitation for the same user's email
+        invitation = OrganizationTestFactory.create_organization_invitation(
+            organization, email=user.email
+        )
+
+        # Generate a valid token for the invitation
+        token = generate_long_lived_token()
+        invitation.token_hash = hash_long_lived_token(token)
+        invitation.save()
+
+        url = reverse("accept-invitation")
+        data = {
+            "token": token,
+        }
+
+        # This should fail with an IntegrityError because the user already has a membership
+        # In Django tests, unhandled exceptions are re-raised instead of becoming HTTP 500s
+        with pytest.raises(IntegrityError, match="duplicate key value violates unique constraint"):
+            auth_client.post(url, data, format="json")
 
 
 @pytest.mark.django_db

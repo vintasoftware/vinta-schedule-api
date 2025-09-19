@@ -88,16 +88,12 @@ class OrganizationInvitationSerializer(VirtualModelSerializer):
         """Validate that email is properly formatted and not already invited."""
         # Check if there's already a pending invitation for this email in this organization
         organization = self.context["organization"]
-        existing_invitation = OrganizationInvitation.objects.filter(
-            email=value,
-            organization=organization,
-            accepted_at__isnull=True,
-            membership__isnull=True,
-        ).first()
 
-        if existing_invitation:
-            # This will reset the existing invitation, which is expected behavior
-            pass
+        existing_member = organization.members.filter(email__iexact=value).first()
+        if existing_member:
+            raise serializers.ValidationError(
+                "This email is already associated with a member of the organization."
+            )
 
         return value
 
@@ -106,7 +102,7 @@ class OrganizationInvitationSerializer(VirtualModelSerializer):
         organization = self.context["organization"]
         invited_by = self.context["request"].user
 
-        self.organization_service.invite_user_to_organization(
+        invitation = self.organization_service.invite_user_to_organization(
             email=validated_data["email"],
             first_name=validated_data["first_name"],
             last_name=validated_data["last_name"],
@@ -114,13 +110,6 @@ class OrganizationInvitationSerializer(VirtualModelSerializer):
             organization=organization,
         )
 
-        # Return the created/updated invitation
-        invitation = OrganizationInvitation.objects.get(
-            email=validated_data["email"],
-            organization=organization,
-            accepted_at__isnull=True,
-            membership__isnull=True,
-        )
         return invitation
 
 

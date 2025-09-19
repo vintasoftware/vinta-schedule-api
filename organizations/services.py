@@ -67,7 +67,7 @@ class OrganizationService:
         last_name: str,
         invited_by: User,
         organization: Organization,
-    ) -> None:
+    ) -> OrganizationInvitation:
         """
         Invite a user to join the organization. if the invitation already exists, resets the token
         and the expiration date.
@@ -126,6 +126,7 @@ class OrganizationService:
                 subject_template="organizations/emails/organization_invitation.subject.txt",
             )
         )
+        return invitation
 
     def accept_invitation(self, token: str, user: User) -> OrganizationMembership:
         """
