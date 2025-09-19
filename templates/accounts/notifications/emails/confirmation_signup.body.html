@@ -5,17 +5,17 @@
 
 {% block email_content %}
 
-  <p>{% blocktranslate %}You're receiving this email because user {{ user.profile.first_name }} has given your email address to register an account on https://vinta_schedule.com.br/.{% endblocktranslate %}</p>
+  <p>{% blocktrans %}You're receiving this email because user {{ user.profile.first_name }} has given your email address to register an account on https://vinta_schedule.com.br/.{% endblocktrans %}</p>
 
-  <p>{% if code %}{% blocktranslate %}Your email verification code is listed below. Please enter it in your open browser window.{% endblocktranslate %}</p>
+  <p>{% if code %}{% blocktrans %}Your email verification code is listed below. Please enter it in your open browser window.{% endblocktrans %}</p>
 
   <h3 style="text-align: center;">{{ code }}</h3>
-  {% else %}{% blocktranslate %}><p>To confirm this is correct, go to <a href="{{ activate_url }}">{{ activate_url }}</a>.</p>{% endblocktranslate %}
+  {% else %}{% blocktrans %}><p>To confirm this is correct, go to <a href="{{ activate_url }}">{{ activate_url }}</a>.</p>{% endblocktrans %}
   {% endif %}
 
 {% endblock %}
 
 {% block email_footer %}
-  <p><small>{% blocktranslate %}This is an automated message. Please do not reply to this email.{% endblocktranslate %}</small></p>
-  <p><small>{% blocktranslate %}For more information, visit our <a href="{{ base_url }}">website</a>.{% endblocktranslate %}</small></p>
+  <p><small>{% blocktrans %}This is an automated message. Please do not reply to this email.{% endblocktrans %}</small></p>
+  <p><small>{% blocktrans %}For more information, visit our <a href="{{ base_url }}">website</a>.{% endblocktrans %}</small></p>
 {% endblock %}

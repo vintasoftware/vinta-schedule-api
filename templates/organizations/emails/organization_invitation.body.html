@@ -1,0 +1,21 @@
+{% load i18n %}
+{% block email_header %}
+  <h1>Confirmation Signup</h1>
+{% endblock %}
+
+{% block email_content %}
+<p>{% blocktrans %}Dear {% if invitation.first_name or invitation.last_name %}{{ invitation.first_name }}{% if invitation.last_name %} {{ invitation.last_name }}{% endif %}{% else %}user,{% endif %} }},{% endblocktrans %}</p>
+{% blocktrans %}You're receiving this email because you were invited by {{invitation.invited_by_name}} to join the organization {{invitation.organization_name}} in Vinta Schedule.
+Click the link below to join the organization.{% endblocktrans %}
+
+<p>
+  <a href="{{ organization_join_url }}">{{ organization_join_url }}</a>
+</p>
+
+{% blocktrans %}The email address used to invite you was {{ email }}. If you don't recognize this email, please ignore it.{% endblocktrans %}{% endif %}
+{% endblock %}
+
+{% block email_footer %}
+  <p><small>{% blocktrans %}This is an automated message. Please do not reply to this email.{% endblocktrans %}</small></p>
+  <p><small>{% blocktrans %}For more information, visit our <a href="{{ base_url }}">website</a>.{% endblocktrans %}</small></p>
+{% endblock %}

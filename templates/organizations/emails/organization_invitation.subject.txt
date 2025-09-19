@@ -1,0 +1,2 @@
+{% load i18n %}
+{% blocktrans %}You have been invited to join {{invitation.organization_name}} at Vinta Schedule{% endblocktrans %}

@@ -3127,19 +3127,19 @@ rpds-py = ">=0.7.0"
 
 [[package]]
 name = "requests"
-version = "2.32.3"
+version = "2.32.5"
 description = "Python HTTP for Humans."
 optional = false
-python-versions = ">=3.8"
+python-versions = ">=3.9"
 groups = ["main", "dev"]
 files = [
-    {file = "requests-2.32.3-py3-none-any.whl", hash = "sha256:70761cfe03c773ceb22aa2f671b4757976145175cdfca038c02654d061d6dcc6"},
-    {file = "requests-2.32.3.tar.gz", hash = "sha256:55365417734eb18255590a9ff9eb97e9e1da868d4ccd6402399eaf68af20a760"},
+    {file = "requests-2.32.5-py3-none-any.whl", hash = "sha256:2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6"},
+    {file = "requests-2.32.5.tar.gz", hash = "sha256:dbba0bac56e100853db0ea71b82b4dfd5fe2bf6d3754a8893c3af500cec7d7cf"},
 ]
 
 [package.dependencies]
 certifi = ">=2017.4.17"
-charset-normalizer = ">=2,<4"
+charset_normalizer = ">=2,<4"
 idna = ">=2.5,<4"
 urllib3 = ">=1.21.1,<3"
 
@@ -3830,52 +3830,54 @@ files = [
 
 [[package]]
 name = "vintasend"
-version = "0.1.4"
+version = "1.0.1"
 description = "A flexible package for implementing transactional notifications"
 optional = false
 python-versions = "<3.14,>=3.9"
 groups = ["main"]
 files = [
-    {file = "vintasend-0.1.4-py3-none-any.whl", hash = "sha256:c840a5ffa045d19cf7651b726d60aa25ef21b62c4e0190182bddf2d08ca5870e"},
-    {file = "vintasend-0.1.4.tar.gz", hash = "sha256:7eedd356804941f6ffa5af329b93eace678ba2cff6b865356a8388eb47d435bb"},
+    {file = "vintasend-1.0.1-py3-none-any.whl", hash = "sha256:b409341598bf160cd0aeafea05761eea55c7ecc5401795c7403e98c895049662"},
+    {file = "vintasend-1.0.1.tar.gz", hash = "sha256:df389c11343d91168681bd0c8e8de532c4d65c50efb18371c566f9c0e3c82ba6"},
 ]
 
 [package.dependencies]
+packaging = ">=25.0,<26.0"
 pytest-asyncio = ">=0.24.0,<0.25.0"
+requests = ">=2.32.5,<3.0.0"
 typing-extensions = ">=4.12.2,<5.0.0"
 
 [[package]]
 name = "vintasend-celery"
-version = "0.1.4"
+version = "1.0.1"
 description = "Celery adapter for VintaSend"
 optional = false
 python-versions = "<3.14,>=3.10"
 groups = ["main"]
 files = [
-    {file = "vintasend_celery-0.1.4-py3-none-any.whl", hash = "sha256:366618f2dff44476b191b7f003b42f73b474fec43505e4ca5e3afb0e2cf9e937"},
-    {file = "vintasend_celery-0.1.4.tar.gz", hash = "sha256:1ff784b507616b405e1642e2369ab95026e692f42090fc8e1857fee8234665ee"},
+    {file = "vintasend_celery-1.0.1-py3-none-any.whl", hash = "sha256:3eef7d8b288766265fafc5cecf0ab2595cab1283a68b31ee702e99c5ee3c07ba"},
+    {file = "vintasend_celery-1.0.1.tar.gz", hash = "sha256:274dfd46fe72d6ae07ec9e4c247fe784f5717b2aaca3909b32c0d265cdc8c78b"},
 ]
 
 [package.dependencies]
 celery = ">=5.4.0,<6.0.0"
-vintasend = "0.1.4"
+vintasend = ">=1.0.1,<2.0.0"
 
 [[package]]
 name = "vintasend-django"
-version = "0.1.4"
+version = "1.0.1"
 description = "A flexible package for implementing transactional notifications"
 optional = false
 python-versions = "<3.14,>=3.10"
 groups = ["main"]
 files = [
-    {file = "vintasend_django-0.1.4-py3-none-any.whl", hash = "sha256:56b5301cb552855a32ea264e1ad8e3b8c046953b1a4ebe78785b1d05325f3df0"},
-    {file = "vintasend_django-0.1.4.tar.gz", hash = "sha256:eeb2a80002ecbe1dd138af4ee9591cf12d39c4d6cb87e553c473de65db5af3b2"},
+    {file = "vintasend_django-1.0.1-py3-none-any.whl", hash = "sha256:0eedbfcfc93bc6306417bbe426b80a5a0b9617edc6a7da025307aa464d265217"},
+    {file = "vintasend_django-1.0.1.tar.gz", hash = "sha256:e1c96b29418443b0ad7739b18ce5df84bab040fc13d393ca7d996864a77e64e8"},
 ]
 
 [package.dependencies]
 django = ">=3.2,<5.3"
 django-model-utils = ">=5.0.0,<6.0.0"
-vintasend = "0.1.4"
+vintasend = "1.0.1"
 
 [[package]]
 name = "virtualenv"
@@ -4047,4 +4049,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "~3.13"
-content-hash = "d9a05c8b28ef06ebcec9b5b05000b624decad3a3389d7ecd556b1cc56b893f8e"
+content-hash = "f06bc2910e73543d15a886464f04fe51cdbb900e921dbe9d54f8dd6ce117195e"

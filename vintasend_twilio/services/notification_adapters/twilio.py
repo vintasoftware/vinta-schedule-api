@@ -7,7 +7,7 @@ from twilio.rest import Client
 from vintasend.app_settings import NotificationSettings
 from vintasend.constants import NotificationTypes
 from vintasend.exceptions import NotificationSendError
-from vintasend.services.dataclasses import Notification
+from vintasend.services.dataclasses import Notification, OneOffNotification
 from vintasend.services.notification_adapters.base import BaseNotificationAdapter
 from vintasend.services.notification_backends.base import BaseNotificationBackend
 
@@ -30,9 +30,18 @@ T = TypeVar("T", bound=BaseTemplatedSMSRenderer)
 class TwilioSMSNotificationAdapter(Generic[B, T], BaseNotificationAdapter[B, T]):
     notification_type = NotificationTypes.SMS
 
+    def _is_valid_phone(self, phone_number: str) -> bool:
+        # Basic validation: check if the phone number is not empty and has at least 10 digits
+        digits = [c for c in phone_number if c.isdigit()]
+        return len(digits) >= 10
+
+    def _clean_phone(self, phone_number: str) -> str:
+        # Remove spaces, dashes, and parentheses
+        return "".join(c for c in phone_number if c.isdigit() or c == "+")
+
     def send(
         self,
-        notification: Notification,
+        notification: Notification | OneOffNotification,
         context: "NotificationContextDict",
         headers: dict[str, str] | None = None,
     ) -> None:
@@ -44,10 +53,21 @@ class TwilioSMSNotificationAdapter(Generic[B, T], BaseNotificationAdapter[B, T])
         """
         notification_settings = NotificationSettings()
 
-        user = User.objects.get(id=notification.user_id)
+        if isinstance(notification, Notification):
+            user = User.objects.get(id=notification.user_id)
 
-        if not user.phone_number:
-            raise NotificationSendError("User does not have a verified phone number.")
+            if not user.phone_number:
+                raise NotificationSendError("User does not have a verified phone number.")
+
+            phone_number = user.phone_number
+        else:
+            if not notification.email_or_phone:
+                raise NotificationSendError("No phone number provided for one-off notification.")
+
+            if not self._is_valid_phone(notification.email_or_phone):
+                raise NotificationSendError("Invalid phone number format.")
+
+            phone_number = self._clean_phone(notification.email_or_phone)
 
         context_with_base_url: NotificationContextDict = context.copy()
         context_with_base_url[
@@ -61,5 +81,5 @@ class TwilioSMSNotificationAdapter(Generic[B, T], BaseNotificationAdapter[B, T])
         client.messages.create(
             body=template.body,
             from_=settings.TWILIO_NUMBER,
-            to=user.phone_number,
+            to=phone_number,
         )
