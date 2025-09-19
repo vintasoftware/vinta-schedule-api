@@ -44,13 +44,37 @@
 				"charliermarsh.ruff",
 				"streetsidesoftware.code-spell-checker",
 				"ms-python.mypy-type-checker",
+				"ms-azuretools.vscode-docker",
+				"github.vscode-github-actions",
+				"timonwong.shellcheck",
 				"eamodio.gitlens", // GitLens is a Git supercharged
 				"GrapeCity.gc-excelviewer", // Excel/CSV Viewer
 				"wmaurer.change-case", // Change text Case
 				"njpwerner.autodocstring" // AutoDocstring
 			],
 			"settings": {
-				"terminal.integrated.inheritEnv": true,
+				"terminal.integrated.defaultProfile.linux": "zsh",
+				"terminal.integrated.fontFamily": "FiraCode Nerd Font",
+				"terminal.integrated.profiles.linux": {
+					"bash": {
+						"path": "bash",
+						"icon": "terminal-bash"
+					},
+					"zsh": {
+						"path": "zsh"
+					},
+					"fish": {
+						"path": "fish"
+					},
+					"tmux": {
+						"path": "tmux",
+						"icon": "terminal-tmux"
+					},
+					"pwsh": {
+						"path": "pwsh",
+						"icon": "terminal-powershell"
+					}
+				},
 				"python.defaultInterpreterPath": "/home/user/app/.venv/bin/python",
 				"python.analysis.autoImportCompletions": true,
 				"python.analysis.typeCheckingMode": "off",
@@ -80,8 +104,8 @@
 				]
 			}
 		}
-	}
+	},
 
 	// Uncomment to connect as an existing user other than the container default. More info: https://aka.ms/dev-containers-non-root.
-	// "remoteUser": "devcontainer"
+	"remoteUser": "user"
 }
