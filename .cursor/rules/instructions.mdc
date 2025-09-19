@@ -7,6 +7,20 @@ alwaysApply: false
 
 Welcome to the Vinta Schedule project! This guide provides instructions for contributing to the codebase, with details on architecture, patterns, and best practices.
 
+## General good practices
+- Follow PEP 8 style guidelines.
+- Make imports absolute instead of relative.
+- Try to import at the top of the file, unless there's a specific reason not to.
+- Use f-strings for string formatting.
+- Use list/dict/set comprehensions instead of `map` and `filter` when possible
+- Use `is` and `is not` for comparing to `None`, `True`, and `False`.
+- Create and use custom exceptions for error handling.
+- Use logging instead of print statements for debugging and information messages.
+- Write docstrings for all public classes, methods, and functions.
+- Use type hints for function signatures and variable declarations.
+- Write unit tests for new features and bug fixes.
+- Ensure code is well-documented and follows the project's coding standards.
+
 ## Dependency Injection
 - We use [`dependency_injector`](https://python-dependency-injector.ets-labs.org/) for dependency injection.
 - The `di_core` app contains our DI containers and configuration. All services and components should be registered in the container defined in `di_core/containers.py`.
