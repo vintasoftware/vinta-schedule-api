@@ -89,7 +89,7 @@ class OrganizationInvitationSerializer(VirtualModelSerializer):
         # Check if there's already a pending invitation for this email in this organization
         organization = self.context["organization"]
 
-        existing_member = organization.members.filter(email__iexact=value).first()
+        existing_member = organization.memberships.filter(user__email__iexact=value).first()
         if existing_member:
             raise serializers.ValidationError(
                 "This email is already associated with a member of the organization."
