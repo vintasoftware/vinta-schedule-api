@@ -6,6 +6,7 @@ from django.urls import reverse
 
 from allauth.utils import build_absolute_uri
 from dependency_injector.wiring import Provide, inject
+from psycopg import IntegrityError
 from vintasend.services.notification_service import (
     NotificationContextDict,
     NotificationService,
@@ -77,19 +78,24 @@ class OrganizationService:
         token_hash = hash_long_lived_token(token)
         now = datetime.datetime.now(tz=datetime.UTC)
         seven_days_from_now = now + datetime.timedelta(days=7)
-        invitation, created = OrganizationInvitation.objects.get_or_create(
-            email=email,
-            organization=organization,
-            accepted_at__isnull=True,
-            membership__isnull=True,
-            defaults={
-                "invited_by": invited_by,
-                "first_name": first_name,
-                "last_name": last_name,
-                "token_hash": token_hash,
-                "expires_at": seven_days_from_now,
-            },
-        )
+        try:
+            invitation, created = OrganizationInvitation.objects.get_or_create(
+                email=email,
+                organization=organization,
+                accepted_at__isnull=True,
+                membership__isnull=True,
+                defaults={
+                    "invited_by": invited_by,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "token_hash": token_hash,
+                    "expires_at": seven_days_from_now,
+                },
+            )
+        except IntegrityError as e:
+            # Handle the case where the invitation with this email already exists
+            raise ValueError("An active invitation for this email already exists.") from e
+
         if not created:
             invitation.token_hash = token_hash
             invitation.expires_at = seven_days_from_now
