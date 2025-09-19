@@ -116,7 +116,9 @@ class CalendarPermissionService:
                 )
         except CalendarManagementToken.DoesNotExist as e:
             # Handle any exceptions that occur during initialization
-            raise PermissionServiceInitializationError(str(e)) from e
+            raise PermissionServiceInitializationError(
+                "Error initializing CalendarPermissionCheckService: " + str(e)
+            ) from e
 
     def has_permission(self, permission: EventManagementPermissions) -> bool:
         if not hasattr(self, "token") or self.token is None:
