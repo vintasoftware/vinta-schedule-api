@@ -65,9 +65,7 @@ class OrganizationTestFactory:
             "last_name": "User",
             "token_hash": "test_token_hash",
             "expires_at": timezone.now() + timezone.timedelta(days=7),
-        }
-        defaults.update(kwargs)
-
+        } | kwargs
         return baker.make(
             OrganizationInvitation, organization=organization, invited_by=invited_by, **defaults
         )
