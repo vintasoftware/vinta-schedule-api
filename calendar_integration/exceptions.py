@@ -10,7 +10,12 @@ class CalendarServiceNotInjectedError(ImproperlyConfigured):
 class CalendarIntegrationError(Exception):
     """Base exception for calendar integration errors"""
 
-    pass
+    default_message = ""
+
+    def __init__(self, message: str | None = None):
+        if message is None:
+            message = self.default_message
+        super().__init__(message)
 
 
 class CalendarAuthenticationError(CalendarIntegrationError):
@@ -20,8 +25,7 @@ class CalendarAuthenticationError(CalendarIntegrationError):
 
 
 class InvalidCalendarTokenError(CalendarAuthenticationError):
-    def __init__(self, message="User doesn't have a valid calendar token. Please reauthenticate"):
-        super().__init__(message)
+    default_message = "User doesn't have a valid calendar token. Please reauthenticate"
 
 
 class BundleCalendarError(CalendarIntegrationError):
@@ -31,23 +35,19 @@ class BundleCalendarError(CalendarIntegrationError):
 
 
 class InvalidPrimaryCalendarError(BundleCalendarError):
-    def __init__(self, message="Primary calendar must be one of the child calendars"):
-        super().__init__(message)
+    default_message = "Primary calendar must be one of the child calendars"
 
 
 class BundleCalendarNotFoundError(BundleCalendarError):
-    def __init__(self, message="Calendar must be a bundle calendar"):
-        super().__init__(message)
+    default_message = "Calendar must be a bundle calendar"
 
 
 class EmptyBundleCalendarError(BundleCalendarError):
-    def __init__(self, message="Bundle calendar has no child calendars"):
-        super().__init__(message)
+    default_message = "Bundle calendar has no child calendars"
 
 
 class NoPrimaryCalendarError(BundleCalendarError):
-    def __init__(self, message="Bundle calendar has no designated primary child calendar"):
-        super().__init__(message)
+    default_message = "Bundle calendar has no designated primary child calendar"
 
 
 class CalendarUnavailableError(BundleCalendarError):
@@ -67,18 +67,15 @@ class InvalidTimezoneError(EventManagementError):
 
 
 class NoAvailableTimeWindowsError(EventManagementError):
-    def __init__(self, message="No available time windows for the event."):
-        super().__init__(message)
+    default_message = "No available time windows for the event."
 
 
 class InvalidEventTypeError(EventManagementError):
-    def __init__(self, message="Event must be a bundle primary event"):
-        super().__init__(message)
+    default_message = "Event must be a bundle primary event"
 
 
 class MissingOrganizationError(EventManagementError):
-    def __init__(self, message="Organization is required for bundle operations"):
-        super().__init__(message)
+    default_message = "Organization is required for bundle operations"
 
 
 class ExceptionToNonRecurringEventError(EventManagementError):
@@ -87,13 +84,11 @@ class ExceptionToNonRecurringEventError(EventManagementError):
 
 
 class InvalidCalendarOperationError(EventManagementError):
-    def __init__(self, message="This calendar does not manage available windows."):
-        super().__init__(message)
+    default_message = "This calendar does not manage available windows."
 
 
 class MissingCallbackError(EventManagementError):
-    def __init__(self, message="create_continuation_callback is required when not cancelling"):
-        super().__init__(message)
+    default_message = "create_continuation_callback is required when not cancelling"
 
 
 # Calendar Adapters - External API Errors
@@ -127,13 +122,11 @@ class GoogleCredentialsError(InvalidCredentialsError, GoogleCalendarAdapterError
 
 
 class GoogleServiceAccountError(InvalidCredentialsError, GoogleCalendarAdapterError):
-    def __init__(self, message="Invalid or expired Google service account credentials provided."):
-        super().__init__(message)
+    default_message = "Invalid or expired Google service account credentials provided."
 
 
 class MSGraphCredentialsError(InvalidCredentialsError, MSOutlookAdapterError):
-    def __init__(self, message="Invalid or expired Microsoft Graph credentials provided."):
-        super().__init__(message)
+    default_message = "Invalid or expired Microsoft Graph credentials provided."
 
 
 class UnsupportedRRuleError(MSOutlookAdapterError):
@@ -166,13 +159,11 @@ class RequiredParameterError(CalendarAPIError):
 
 
 class NotificationURLRequiredError(RequiredParameterError):
-    def __init__(self, message="notification_url is required for webhook subscriptions"):
-        super().__init__(message)
+    default_message = "notification_url is required for webhook subscriptions"
 
 
 class RoomEmailRequiredError(RequiredParameterError):
-    def __init__(self, message="room_email is required for room event subscriptions"):
-        super().__init__(message)
+    default_message = "room_email is required for room event subscriptions"
 
 
 # Calendar Permission Service Errors
@@ -183,28 +174,23 @@ class CalendarPermissionError(CalendarIntegrationError):
 
 
 class InvalidTokenError(CalendarPermissionError):
-    def __init__(self, message="Invalid token string provided."):
-        super().__init__(message)
+    default_message = "Invalid token string provided."
 
 
 class InvalidParameterCombinationError(CalendarPermissionError):
-    def __init__(self, message="Specify either calendar_id or event_id, not both."):
-        super().__init__(message)
+    default_message = "Specify either calendar_id or event_id, not both."
 
 
 class MissingRequiredParameterError(CalendarPermissionError):
-    def __init__(self, message="Either calendar_id or event_id must be specified."):
-        super().__init__(message)
+    default_message = "Either calendar_id or event_id must be specified."
 
 
 class PermissionServiceInitializationError(CalendarPermissionError):
-    def __init__(self, error: str):
-        super().__init__(f"Error initializing CalendarPermissionCheckService: {error}")
+    default_message = "Error initializing CalendarPermissionCheckService."
 
 
 class NoPermissionsSpecifiedError(CalendarPermissionError):
-    def __init__(self, message="At least one permission must be specified to create a token."):
-        super().__init__(message)
+    default_message = "At least one permission must be specified to create a token."
 
 
 # Model Level Errors
@@ -215,13 +201,11 @@ class CalendarModelError(CalendarIntegrationError):
 
 
 class RecurrenceExceptionError(CalendarModelError):
-    def __init__(self, message="Cannot create exception for non-recurring event"):
-        super().__init__(message)
+    default_message = "Cannot create exception for non-recurring event"
 
 
 class MissingOrganizationForExceptionError(CalendarModelError):
-    def __init__(self, message="CalendarEvent is missing organization (cannot create exception)"):
-        super().__init__(message)
+    default_message = "CalendarEvent is missing organization (cannot create exception)"
 
 
 # Other Service Errors
@@ -241,7 +225,7 @@ class ServiceNotInitializedError(CalendarServiceStateError):
         super().__init__(message)
 
 
-class CalenderServiceOrganizationNotSetError(CalendarServiceStateError):
+class CalendarServiceOrganizationNotSetError(CalendarServiceStateError):
     def __init__(self, message="Calendar service is not initialized or authenticated"):
         super().__init__(message)
 
@@ -254,5 +238,4 @@ class RecurrenceError(CalendarIntegrationError):
 
 
 class NoRecurrenceRuleError(RecurrenceError):
-    def __init__(self, message="No recurrence rule provided"):
-        super().__init__(message)
+    default_message = "No recurrence rule provided"

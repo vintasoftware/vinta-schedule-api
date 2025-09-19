@@ -762,8 +762,6 @@ class CalendarEventSerializer(VirtualModelSerializer):
 
     def create(self, validated_data):
         if not self.calendar_service:
-            from calendar_integration.exceptions import CalendarServiceNotInjectedError
-
             raise CalendarServiceNotInjectedError(
                 "calendar_service is not defined, please configure your DI container correctly"
             )

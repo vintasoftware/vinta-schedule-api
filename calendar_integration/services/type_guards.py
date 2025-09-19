@@ -1,7 +1,7 @@
 from typing import TypeGuard
 
 from calendar_integration.exceptions import (
-    CalenderServiceOrganizationNotSetError,
+    CalendarServiceOrganizationNotSetError,
     ServiceNotAuthenticatedError,
     ServiceNotInitializedError,
 )
@@ -109,6 +109,6 @@ def is_initialized_or_authenticated_calendar_service(
     if not raise_error:
         return False
 
-    raise CalenderServiceOrganizationNotSetError(
+    raise CalendarServiceOrganizationNotSetError(
         "Calendar service is not initialized or authenticated"
     )
