@@ -14,6 +14,10 @@ from calendar_integration.constants import (
     CalendarType,
     EventManagementPermissions,
 )
+from calendar_integration.exceptions import (
+    InvalidCalendarTokenError,
+    ServiceNotAuthenticatedError,
+)
 from calendar_integration.models import (
     AvailableTime,
     AvailableTimeBulkModification,
@@ -467,7 +471,7 @@ def test_calendar_service_initialization_with_account_without_adapter(
     social_token.account = social_account
     social_token.save()
 
-    with pytest.raises(ValueError, match="User doesn't have a valid calendar token"):
+    with pytest.raises(InvalidCalendarTokenError, match="User doesn't have a valid calendar token"):
         service = CalendarService()
         service.authenticate(account=social_account.user, organization=organization)
 
@@ -514,7 +518,7 @@ def test_get_calendar_adapter_unsupported_provider(social_account, social_token)
     social_account.provider = "unsupported"
     social_account.save()
 
-    with pytest.raises(ValueError, match="User doesn't have a valid calendar token"):
+    with pytest.raises(InvalidCalendarTokenError, match="User doesn't have a valid calendar token"):
         CalendarService.get_calendar_adapter_for_account(social_account.user)
 
 
@@ -691,7 +695,7 @@ def test_import_account_calendars_not_authenticated():
     service = CalendarService()
 
     # Should fail because no authentication
-    with pytest.raises(ValueError):
+    with pytest.raises(ServiceNotAuthenticatedError):
         service.import_account_calendars()
 
 

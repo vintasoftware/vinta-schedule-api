@@ -19,6 +19,11 @@ from common.utils.authentication_utils import (
     hash_long_lived_token,
     verify_long_lived_token,
 )
+from organizations.exceptions import (
+    DuplicateInvitationError,
+    InvalidInvitationTokenError,
+    InvitationNotFoundError,
+)
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from users.models import User
 
@@ -94,7 +99,7 @@ class OrganizationService:
             )
         except IntegrityError as e:
             # Handle the case where the invitation with this email already exists
-            raise ValueError("An active invitation for this email already exists.") from e
+            raise DuplicateInvitationError() from e
 
         if not created:
             invitation.token_hash = token_hash
@@ -147,7 +152,7 @@ class OrganizationService:
                 invitation.save()
                 return membership
 
-        raise ValueError("Invalid or expired token")
+        raise InvalidInvitationTokenError()
 
     def revoke_invitation(self, invitation_id: str) -> None:
         """
@@ -159,4 +164,4 @@ class OrganizationService:
             invitation.expires_at = datetime.datetime.now(tz=datetime.UTC)
             invitation.save()
         except OrganizationInvitation.DoesNotExist as e:
-            raise ValueError("Invitation does not exist") from e
+            raise InvitationNotFoundError() from e

@@ -36,24 +36,6 @@ class OrganizationResourceAccess(BasePermission):
         "users": PublicAPIResources.USER,
     }
 
-    def _get_credentials_from_request(self, request: HttpRequest) -> tuple[str, str]:
-        """
-        Extracts the system user ID and token from the request headers.
-        The expected format is:
-        Authorization: Bearer <system_user_id>:<token>
-        Returns a tuple of (system_user_id, token).
-        """
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise ValueError("Invalid Authorization header format")
-
-        try:
-            system_user_id, token = auth_header.split("Bearer ")[-1].split(":", 1)
-        except ValueError as e:
-            raise ValueError("Invalid Authorization header format") from e
-
-        return system_user_id, token
-
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
         request: HttpRequest = info.context.request
         # request.public_api_system_user is set by public_api.middlewares.PublicApiSystemUserMiddleware
