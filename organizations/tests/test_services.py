@@ -34,8 +34,7 @@ class TestOrganizationService:
 
         """Create OrganizationService instance with mocked dependencies."""
         with container.calendar_service.override(mock_calendar_service):
-            service = OrganizationService()
-            yield service
+            yield OrganizationService()
 
     def test_create_organization_without_sync_rooms(
         self, organization_service, user, mock_calendar_service

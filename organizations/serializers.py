@@ -146,5 +146,4 @@ class AcceptInvitationSerializer(serializers.Serializer):
         user = self.context["request"].user
         token = validated_data["token"]
 
-        membership = self.organization_service.accept_invitation(token=token, user=user)
-        return membership
+        return self.organization_service.accept_invitation(token=token, user=user)
