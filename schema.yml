@@ -3112,6 +3112,293 @@ paths:
               schema:
                 $ref: '#/components/schemas/Calendar'
           description: ''
+  /invitations/:
+    get:
+      operationId: invitations_list
+      description: A viewset for managing organization invitations.
+      parameters:
+      - in: query
+        name: email
+        schema:
+          type: string
+        description: Filter by partial email match
+      - in: query
+        name: invited_by
+        schema:
+          type: number
+        description: Filter by inviter user ID
+      - in: query
+        name: is_accepted
+        schema:
+          type: boolean
+        description: Filter by acceptance status
+      - in: query
+        name: is_expired
+        schema:
+          type: boolean
+        description: Filter by expiration status
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - invitations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedOrganizationInvitationList'
+          description: ''
+    post:
+      operationId: invitations_create
+      description: A viewset for managing organization invitations.
+      tags:
+      - invitations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+  /invitations{format}:
+    get:
+      operationId: invitations_formatted_list
+      description: A viewset for managing organization invitations.
+      parameters:
+      - in: query
+        name: email
+        schema:
+          type: string
+        description: Filter by partial email match
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: query
+        name: invited_by
+        schema:
+          type: number
+        description: Filter by inviter user ID
+      - in: query
+        name: is_accepted
+        schema:
+          type: boolean
+        description: Filter by acceptance status
+      - in: query
+        name: is_expired
+        schema:
+          type: boolean
+        description: Filter by expiration status
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - invitations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedOrganizationInvitationList'
+          description: ''
+    post:
+      operationId: invitations_formatted_create
+      description: A viewset for managing organization invitations.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - invitations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+  /invitations/{id}/:
+    get:
+      operationId: invitations_retrieve
+      description: A viewset for managing organization invitations.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - invitations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+    delete:
+      operationId: invitations_destroy
+      description: A viewset for managing organization invitations.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - invitations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /invitations/{id}{format}:
+    get:
+      operationId: invitations_formatted_retrieve
+      description: A viewset for managing organization invitations.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - invitations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+    delete:
+      operationId: invitations_formatted_destroy
+      description: A viewset for managing organization invitations.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - invitations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /invitations/accept:
+    post:
+      operationId: invitations_accept_create
+      description: Public endpoint for accepting organization invitations.
+      tags:
+      - invitations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcceptInvitation'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AcceptInvitation'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AcceptInvitation'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptInvitation'
+          description: ''
   /organizations/:
     post:
       operationId: organizations_create
@@ -4331,6 +4618,14 @@ paths:
           description: ''
 components:
   schemas:
+    AcceptInvitation:
+      type: object
+      description: Serializer for accepting invitations via public endpoint.
+      properties:
+        token:
+          type: string
+      required:
+      - token
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.
@@ -5075,6 +5370,55 @@ components:
       - id
       - modified
       - name
+    OrganizationInvitation:
+      type: object
+      description: Serializer for managing OrganizationInvitation instances.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        first_name:
+          type: string
+          maxLength: 150
+        last_name:
+          type: string
+          maxLength: 150
+        organization:
+          type: integer
+          readOnly: true
+        invited_by:
+          type: integer
+          readOnly: true
+        accepted_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - accepted_at
+      - created
+      - email
+      - expires_at
+      - id
+      - invited_by
+      - modified
+      - organization
     PaginatedAvailableTimeList:
       type: object
       required:
@@ -5190,6 +5534,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Calendar'
+    PaginatedOrganizationInvitationList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationInvitation'
     PaginatedUnavailableTimeWindowList:
       type: object
       required:

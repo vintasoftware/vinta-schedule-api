@@ -1,6 +1,6 @@
 from common.types import RouteDict
 
-from .views import OrganizationViewSet
+from .views import OrganizationInvitationViewSet, OrganizationViewSet
 
 
 routes: list[RouteDict] = [
@@ -8,5 +8,10 @@ routes: list[RouteDict] = [
         "regex": r"organizations",
         "viewset": OrganizationViewSet,
         "basename": "Organizations",
+    },
+    {
+        "regex": r"invitations",
+        "viewset": OrganizationInvitationViewSet,
+        "basename": "OrganizationInvitations",
     },
 ]

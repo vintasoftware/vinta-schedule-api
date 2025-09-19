@@ -13,6 +13,7 @@ from strawberry.django.views import GraphQLView
 
 from calendar_integration.routes import routes as calendar_integration_routes
 from organizations.routes import routes as organizations_routes
+from organizations.views import AcceptInvitationView
 from payments.routes import routes as payments_routes
 from public_api.schema import schema
 from users.routes import routes as users_routes
@@ -37,7 +38,7 @@ def frontend_view(request, *args, **kwargs):
 
 
 referenced_frontend_urlpatterns = [
-    path("invitation/<str:key>/", frontend_view, name="invitation"),
+    path("accept-invitation/<str:key>/", frontend_view, name="invitation"),
 ]
 
 
@@ -47,6 +48,11 @@ urlpatterns = [
     path("auth/", include("allauth.socialaccount.providers.google.urls")),
     path("auth/", include("allauth.headless.urls")),
     path("", include((router.urls, "api")), name="api"),
+    path(
+        "invitations/accept",
+        AcceptInvitationView.as_view(),
+        name="accept-invitation",
+    ),
     path("s3direct/", include("s3direct.urls")),
     path("super/", admin.site.urls, name="admin"),
     path("super/defender/", include("defender.urls")),
@@ -63,5 +69,5 @@ urlpatterns = [
         name="redoc",
     ),
     path("graphql/", csrf_exempt(GraphQLView.as_view(schema=schema))),
-    *referenced_frontend_urlpatterns,
+    # *referenced_frontend_urlpatterns,
 ]

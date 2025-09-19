@@ -84,6 +84,8 @@ class OrganizationService:
             membership__isnull=True,
             defaults={
                 "invited_by": invited_by,
+                "first_name": first_name,
+                "last_name": last_name,
                 "token_hash": token_hash,
                 "expires_at": seven_days_from_now,
             },
@@ -92,6 +94,8 @@ class OrganizationService:
             invitation.token_hash = token_hash
             invitation.expires_at = seven_days_from_now
             invitation.invited_by = invited_by
+            invitation.first_name = first_name
+            invitation.last_name = last_name
             invitation.accepted_at = None
             invitation.membership = None
             invitation.save()
