@@ -567,6 +567,9 @@ class ParentEventSerializer(VirtualModelSerializer):
 
 
 class CalendarEventSerializer(VirtualModelSerializer):
+    user: User | None
+    token: str | None
+
     provider = serializers.CharField(required=False, write_only=True)
     recurrence_rule = RecurrenceRuleSerializer(
         required=False,
@@ -632,9 +635,41 @@ class CalendarEventSerializer(VirtualModelSerializer):
     ):
         self.calendar_service = calendar_service
         super().__init__(*args, **kwargs)
+
+        # Check if we have token context (for token-based requests)
+        token = self.context.get("token") if self.context else None
+        token_str_base64 = self.context.get("token_str_base64") if self.context else None
+        organization = self.context.get("organization") if self.context else None
+
+        # For token-based requests, user will be None - that's expected
         user = (
-            self.context["request"].user if self.context and self.context.get("request") else None
+            self.context["request"].user
+            if self.context and self.context.get("request") and not token
+            else None
         )
+
+        # Store user, token, and organization as instance attributes for use in create/update methods
+        self.user = user
+        self.token = token
+        self.token_str_base64 = token_str_base64
+        self.organization = organization
+
+        # Determine organization_id from either user or token context
+        organization_id = None
+        if organization:
+            # Token-based request - use organization from context
+            organization_id = organization.id
+        elif (
+            user
+            and user.is_authenticated
+            and hasattr(user, "organization_membership")
+            and user.organization_membership
+        ):
+            # Regular authenticated user request
+            organization_id = user.organization_membership.organization_id
+
+        # Use organization_id to set up querysets
+        user_is_authenticated = (user and user.is_authenticated) or bool(token)
 
         # Initialize nested serializers with context
         self.fields["resource_allocations"] = ResourceAllocationSerializer(
@@ -651,10 +686,8 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 many=False,
                 required=False,
                 queryset=(
-                    RecurrenceRule.objects.filter_by_organization(
-                        user.organization_membership.organization_id
-                    ).all()
-                    if user and user.is_authenticated and user.organization_membership
+                    RecurrenceRule.objects.filter_by_organization(organization_id).all()
+                    if user_is_authenticated and organization_id
                     else RecurrenceRule.original_manager.none()
                 ),
                 write_only=True,
@@ -664,10 +697,8 @@ class CalendarEventSerializer(VirtualModelSerializer):
         # organization_id
         self.fields["google_calendar_service_account"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                GoogleCalendarServiceAccount.objects.filter_by_organization(
-                    user.organization_membership.organization_id
-                ).all()
-                if user and user.is_authenticated and user.organization_membership
+                GoogleCalendarServiceAccount.objects.filter_by_organization(organization_id).all()
+                if user_is_authenticated and organization_id
                 else GoogleCalendarServiceAccount.original_manager.none()
             ),
             required=False,
@@ -675,10 +706,8 @@ class CalendarEventSerializer(VirtualModelSerializer):
         )
         self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                Calendar.objects.filter_by_organization(
-                    user.organization_membership.organization_id
-                ).all()
-                if user and user.is_authenticated and user.organization_membership
+                Calendar.objects.filter_by_organization(organization_id).all()
+                if user_is_authenticated and organization_id
                 else Calendar.original_manager.none()
             ),
             required=False,
@@ -702,8 +731,9 @@ class CalendarEventSerializer(VirtualModelSerializer):
         if not provider:
             return provider
 
-        user = self.context["request"].user
-        if not SocialAccount.objects.filter(user=user, provider=provider).exists():
+        # Use the stored user (works for both regular and token-based requests)
+        user = self.user
+        if user and not SocialAccount.objects.filter(user=user, provider=provider).exists():
             raise serializers.ValidationError(
                 "User does not have a social account from the selected provider linked."
             )
@@ -718,17 +748,31 @@ class CalendarEventSerializer(VirtualModelSerializer):
 
     def validate(self, attrs):
         calendar = attrs.get("calendar")
+
+        # For token-based requests, we can infer the calendar from the token context
+        # Only check for calendar/provider/service account during creation for non-token requests
         if (
-            not calendar
+            not self.instance  # This is a creation, not an update
+            and not calendar
             and not attrs.get("provider")
             and not attrs.get("google_calendar_service_account")
+            and not self.token  # No token present - require explicit calendar/provider/service account
         ):
             raise serializers.ValidationError(
                 "You need to select either a calendar, provider, or a service account to create "
                 "an event."
             )
 
-        if attrs["start_time"] >= attrs["end_time"]:
+        # Validate start_time and end_time only if both are provided or if this is a creation
+        start_time = attrs.get("start_time")
+        end_time = attrs.get("end_time")
+
+        # For updates, use existing instance values if not provided in attrs
+        if self.instance:
+            start_time = start_time or self.instance.start_time_tz_unaware
+            end_time = end_time or self.instance.end_time_tz_unaware
+
+        if start_time and end_time and start_time >= end_time:
             raise serializers.ValidationError("End time must be after start time.")
 
         # Validate recurrence fields
@@ -746,17 +790,31 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 "Cannot specify recurrence rule for event instances. Recurrence rules are only for master events."
             )
 
-        if not calendar:
-            user = self.context["request"].user
-            organization_id = user.organization_membership.organization_id
-            if attrs.get("provider"):
-                attrs["calendar"] = CalendarOwnership.objects.filter(
-                    organization=organization_id,
-                    calendar__provider=attrs.get("provider"),
-                    is_default=True,
-                ).first()
-            if not attrs.get("google_calendar_service_account"):
-                attrs["calendar"] = attrs.get("google_calendar_service_account").calendar
+        # Only auto-assign calendar during creation, not updates
+        if not calendar and not self.instance:
+            if self.token:
+                # For token-based requests, we'll infer the calendar in the create method
+                # after the calendar service is initialized, so we can skip calendar assignment here
+                pass
+            else:
+                # Use stored user or organization from regular authentication
+                if self.user and hasattr(self.user, "organization_membership"):
+                    organization_id = self.user.organization_membership.organization_id
+                elif self.organization:
+                    organization_id = self.organization.id
+                else:
+                    raise serializers.ValidationError(
+                        "Cannot determine organization for calendar selection."
+                    )
+
+                if attrs.get("provider"):
+                    attrs["calendar"] = CalendarOwnership.objects.filter(
+                        organization=organization_id,
+                        calendar__provider=attrs.get("provider"),
+                        is_default=True,
+                    ).first()
+                elif attrs.get("google_calendar_service_account"):
+                    attrs["calendar"] = attrs.get("google_calendar_service_account").calendar
 
         return attrs
 
@@ -766,18 +824,67 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 "calendar_service is not defined, please configure your DI container correctly"
             )
 
-        calendar: Calendar = validated_data.pop("calendar")
-        user = self.context["request"].user
-        if validated_data.get("google_calendar_service_account"):
-            account = validated_data.get("google_calendar_service_account")
-            self.calendar_service.authenticate(
-                account=account,
-                organization=calendar.organization,
+        calendar: Calendar | None = validated_data.pop("calendar", None)
+
+        # Use token or user for authentication
+        if self.token_str_base64:
+            # Token-based authentication - initialize without provider
+            # We need to get the organization from the token context first
+            organization = self.organization
+            if not organization:
+                raise serializers.ValidationError(
+                    "Organization context is required for token-based authentication"
+                )
+
+            self.calendar_service.initialize_without_provider(
+                user_or_token=self.token_str_base64, organization=organization
             )
+
+            # If no calendar was provided, infer it from the token after service initialization
+            if not calendar:
+                # The calendar service now has the permission service initialized with the token
+                permission_service = self.calendar_service.calendar_permission_service
+                if permission_service and permission_service.token:
+                    if permission_service.token.calendar_fk:
+                        # Calendar-level token - use the token's calendar
+                        calendar = permission_service.token.calendar_fk
+                    elif permission_service.token.event_fk:
+                        # Event-level token - use the event's calendar
+                        calendar = permission_service.token.event_fk.calendar_fk
+                    else:
+                        raise serializers.ValidationError(
+                            "Unable to determine calendar from token context."
+                        )
+                else:
+                    raise serializers.ValidationError(
+                        "Token authentication failed or calendar could not be determined."
+                    )
+        elif self.user:
+            # Regular user authentication
+            if not calendar:
+                raise serializers.ValidationError(
+                    "Calendar is required for user-based authentication"
+                )
+
+            user = self.user
+            if validated_data.get("google_calendar_service_account"):
+                account = validated_data.get("google_calendar_service_account")
+                self.calendar_service.authenticate(
+                    account=account,
+                    organization=calendar.organization,
+                )
+            else:
+                self.calendar_service.authenticate(
+                    account=user,
+                    organization=calendar.organization,
+                )
         else:
-            self.calendar_service.authenticate(
-                account=user,
-                organization=calendar.organization,
+            raise serializers.ValidationError(
+                {
+                    "non_field_errors": [
+                        "You need either an authenticated user or a Calendar Management Token"
+                    ]
+                }
             )
 
         resource_allocations = validated_data.pop("resource_allocations", [])
@@ -841,19 +948,36 @@ class CalendarEventSerializer(VirtualModelSerializer):
             )
 
         calendar: Calendar = validated_data.pop("calendar", instance.calendar)
-        user: User = self.context["request"].user
-        if validated_data.get("google_calendar_service_account"):
-            account: GoogleCalendarServiceAccount = validated_data[
-                "google_calendar_service_account"
-            ]
-            self.calendar_service.authenticate(
-                account=account,
-                organization=calendar.organization,
+
+        # Use token or user for authentication
+        if self.token_str_base64:
+            # Token-based authentication - initialize without provider
+            self.calendar_service.initialize_without_provider(
+                user_or_token=self.token_str_base64, organization=calendar.organization
             )
+        elif self.user:
+            # Regular user authentication
+            user: User = self.user
+            if validated_data.get("google_calendar_service_account"):
+                account: GoogleCalendarServiceAccount = validated_data[
+                    "google_calendar_service_account"
+                ]
+                self.calendar_service.authenticate(
+                    account=account,
+                    organization=calendar.organization,
+                )
+            else:
+                self.calendar_service.authenticate(
+                    account=user,
+                    organization=calendar.organization,
+                )
         else:
-            self.calendar_service.authenticate(
-                account=user,
-                organization=calendar.organization,
+            raise serializers.ValidationError(
+                {
+                    "non_field_errors": [
+                        "You need either an authenticated user or a Calendar Management Token"
+                    ]
+                }
             )
 
         resource_allocations = validated_data.pop(

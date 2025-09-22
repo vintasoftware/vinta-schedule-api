@@ -4030,6 +4030,190 @@ paths:
               schema:
                 $ref: '#/components/schemas/Profile'
           description: ''
+  /public/organizations/{organization_id}/events/:
+    get:
+      operationId: public_organizations_events_list
+      description: List events with token-based authentication.
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: path
+        name: organization_id
+        schema:
+          type: string
+          pattern: ^\d+$
+        required: true
+      tags:
+      - public
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarEventList'
+          description: ''
+    post:
+      operationId: public_organizations_events_create
+      description: Create an event with token-based authentication checked first.
+      parameters:
+      - in: path
+        name: organization_id
+        schema:
+          type: string
+          pattern: ^\d+$
+        required: true
+      tags:
+      - public
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarEvent'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarEvent'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarEvent'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+  /public/organizations/{organization_id}/events/{id}/:
+    get:
+      operationId: public_organizations_events_retrieve
+      description: Retrieve a single event with token-based authentication.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this calendar event.
+        required: true
+      - in: path
+        name: organization_id
+        schema:
+          type: string
+          pattern: ^\d+$
+        required: true
+      tags:
+      - public
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+    put:
+      operationId: public_organizations_events_update
+      description: Update an event with token-based authentication checked first.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this calendar event.
+        required: true
+      - in: path
+        name: organization_id
+        schema:
+          type: string
+          pattern: ^\d+$
+        required: true
+      tags:
+      - public
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarEvent'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarEvent'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarEvent'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+    patch:
+      operationId: public_organizations_events_partial_update
+      description: Partial update an event with token-based authentication checked
+        first.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this calendar event.
+        required: true
+      - in: path
+        name: organization_id
+        schema:
+          type: string
+          pattern: ^\d+$
+        required: true
+      tags:
+      - public
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarEvent'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarEvent'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarEvent'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+    delete:
+      operationId: public_organizations_events_destroy
+      description: Delete an event with token-based authentication checked first.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this calendar event.
+        required: true
+      - in: path
+        name: organization_id
+        schema:
+          type: string
+          pattern: ^\d+$
+        required: true
+      tags:
+      - public
+      responses:
+        '204':
+          description: No response body
   /webhook-configurations/:
     get:
       operationId: webhook_configurations_list

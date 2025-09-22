@@ -1,9 +1,10 @@
 import base64
 from collections.abc import Iterable
 
+from django.core.exceptions import PermissionDenied
+
 from calendar_integration.exceptions import (
     InvalidParameterCombinationError,
-    InvalidTokenError,
     MissingRequiredParameterError,
     NoPermissionsSpecifiedError,
     PermissionServiceInitializationError,
@@ -53,10 +54,15 @@ class CalendarPermissionService:
     token: CalendarManagementToken | None
 
     def initialize_with_token(self, token_str_base64: str, organization_id: int):
-        token_full_str = base64.b64decode(token_str_base64).decode("utf-8")
-        token_parts = token_full_str.split(":")
-        token_id = token_parts[0]
-        token_str = token_parts[1]
+        try:
+            token_full_str = base64.b64decode(token_str_base64).decode("utf-8")
+            token_parts = token_full_str.split(":")
+            if len(token_parts) != 2:
+                raise ValueError("Invalid token format")
+            token_id = token_parts[0]
+            token_str = token_parts[1]
+        except (ValueError, UnicodeDecodeError) as e:
+            raise PermissionDenied("Invalid token format") from e
 
         try:
             token = (
@@ -66,10 +72,10 @@ class CalendarPermissionService:
             )
         except CalendarManagementToken.DoesNotExist as e:
             # Handle any exceptions that occur during initialization
-            raise InvalidTokenError("Invalid token string provided.") from e
+            raise PermissionDenied("Invalid or revoked token") from e
 
         if not verify_long_lived_token(token_str, token.token_hash):
-            raise InvalidTokenError("Invalid token string provided.")
+            raise PermissionDenied("Invalid token") from None
 
         self.token = token
 
@@ -116,8 +122,10 @@ class CalendarPermissionService:
                 )
         except CalendarManagementToken.DoesNotExist as e:
             # Handle any exceptions that occur during initialization
-            raise PermissionServiceInitializationError(
-                "Error initializing CalendarPermissionCheckService: " + str(e)
+            from django.core.exceptions import PermissionDenied
+
+            raise PermissionDenied(
+                "No valid token found for the specified user and resource"
             ) from e
 
     def has_permission(self, permission: EventManagementPermissions) -> bool:
