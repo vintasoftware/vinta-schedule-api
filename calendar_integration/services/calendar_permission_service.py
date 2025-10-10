@@ -1,10 +1,9 @@
 import base64
 from collections.abc import Iterable
 
-from django.core.exceptions import PermissionDenied
-
 from calendar_integration.exceptions import (
     InvalidParameterCombinationError,
+    InvalidTokenError,
     MissingRequiredParameterError,
     NoPermissionsSpecifiedError,
     PermissionServiceInitializationError,
@@ -62,20 +61,21 @@ class CalendarPermissionService:
             token_id = token_parts[0]
             token_str = token_parts[1]
         except (ValueError, UnicodeDecodeError) as e:
-            raise PermissionDenied("Invalid token format") from e
+            raise InvalidTokenError("Invalid token format") from e
 
         try:
             token = (
                 CalendarManagementToken.objects.prefetch_related("permissions")
                 .select_related("calendar", "event")
-                .get(organization_id=organization_id, id=token_id, revoked_at__isnull=True)
+                .filter(organization_id=organization_id)
+                .get(id=token_id, revoked_at__isnull=True)
             )
         except CalendarManagementToken.DoesNotExist as e:
             # Handle any exceptions that occur during initialization
-            raise PermissionDenied("Invalid or revoked token") from e
+            raise InvalidTokenError("Invalid token string provided") from e
 
         if not verify_long_lived_token(token_str, token.token_hash):
-            raise PermissionDenied("Invalid token") from None
+            raise InvalidTokenError("Invalid token string provided") from None
 
         self.token = token
 
@@ -100,8 +100,8 @@ class CalendarPermissionService:
                 self.token = (
                     CalendarManagementToken.objects.prefetch_related("permissions")
                     .select_related("calendar", "event")
+                    .filter(organization_id=organization_id)
                     .get(
-                        organization_id=organization_id,
                         event_fk_id=event_id,
                         user=user,
                         revoked_at__isnull=True,
@@ -112,8 +112,8 @@ class CalendarPermissionService:
                 self.token = (
                     CalendarManagementToken.objects.prefetch_related("permissions")
                     .select_related("calendar", "event")
+                    .filter(organization_id=organization_id)
                     .get(
-                        organization_id=organization_id,
                         calendar_fk_id=calendar_id,
                         event_fk_id__isnull=True,
                         user=user,
@@ -121,11 +121,8 @@ class CalendarPermissionService:
                     )
                 )
         except CalendarManagementToken.DoesNotExist as e:
-            # Handle any exceptions that occur during initialization
-            from django.core.exceptions import PermissionDenied
-
-            raise PermissionDenied(
-                "No valid token found for the specified user and resource"
+            raise PermissionServiceInitializationError(
+                "Error initializing CalendarPermissionCheckService"
             ) from e
 
     def has_permission(self, permission: EventManagementPermissions) -> bool:

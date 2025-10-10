@@ -1,4 +1,4 @@
-from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import ImproperlyConfigured, PermissionDenied
 
 
 # API Validation Errors
@@ -167,7 +167,7 @@ class RoomEmailRequiredError(RequiredParameterError):
 
 
 # Calendar Permission Service Errors
-class CalendarPermissionError(CalendarIntegrationError):
+class CalendarPermissionError(CalendarIntegrationError, PermissionDenied):
     """Base class for calendar permission errors"""
 
     pass
