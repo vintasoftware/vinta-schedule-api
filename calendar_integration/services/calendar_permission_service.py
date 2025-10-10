@@ -53,23 +53,29 @@ class CalendarPermissionService:
     token: CalendarManagementToken | None
 
     def initialize_with_token(self, token_str_base64: str, organization_id: int):
-        token_full_str = base64.b64decode(token_str_base64).decode("utf-8")
-        token_parts = token_full_str.split(":")
-        token_id = token_parts[0]
-        token_str = token_parts[1]
+        try:
+            token_full_str = base64.b64decode(token_str_base64).decode("utf-8")
+            token_parts = token_full_str.split(":")
+            if len(token_parts) != 2:
+                raise ValueError("Invalid token format")
+            token_id = token_parts[0]
+            token_str = token_parts[1]
+        except (ValueError, UnicodeDecodeError) as e:
+            raise InvalidTokenError("Invalid token format") from e
 
         try:
             token = (
                 CalendarManagementToken.objects.prefetch_related("permissions")
                 .select_related("calendar", "event")
-                .get(organization_id=organization_id, id=token_id, revoked_at__isnull=True)
+                .filter(organization_id=organization_id)
+                .get(id=token_id, revoked_at__isnull=True)
             )
         except CalendarManagementToken.DoesNotExist as e:
             # Handle any exceptions that occur during initialization
-            raise InvalidTokenError("Invalid token string provided.") from e
+            raise InvalidTokenError("Invalid token string provided") from e
 
         if not verify_long_lived_token(token_str, token.token_hash):
-            raise InvalidTokenError("Invalid token string provided.")
+            raise InvalidTokenError("Invalid token string provided") from None
 
         self.token = token
 
@@ -94,8 +100,8 @@ class CalendarPermissionService:
                 self.token = (
                     CalendarManagementToken.objects.prefetch_related("permissions")
                     .select_related("calendar", "event")
+                    .filter(organization_id=organization_id)
                     .get(
-                        organization_id=organization_id,
                         event_fk_id=event_id,
                         user=user,
                         revoked_at__isnull=True,
@@ -106,8 +112,8 @@ class CalendarPermissionService:
                 self.token = (
                     CalendarManagementToken.objects.prefetch_related("permissions")
                     .select_related("calendar", "event")
+                    .filter(organization_id=organization_id)
                     .get(
-                        organization_id=organization_id,
                         calendar_fk_id=calendar_id,
                         event_fk_id__isnull=True,
                         user=user,
@@ -115,9 +121,8 @@ class CalendarPermissionService:
                     )
                 )
         except CalendarManagementToken.DoesNotExist as e:
-            # Handle any exceptions that occur during initialization
             raise PermissionServiceInitializationError(
-                "Error initializing CalendarPermissionCheckService: " + str(e)
+                "Error initializing CalendarPermissionCheckService"
             ) from e
 
     def has_permission(self, permission: EventManagementPermissions) -> bool:

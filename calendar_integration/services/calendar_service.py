@@ -361,6 +361,15 @@ class CalendarService(BaseCalendarService):
         self.account = None
         self.calendar_adapter = None
 
+        if (
+            self.calendar_permission_service
+            and self.organization
+            and isinstance(self.user_or_token, str)
+        ):
+            self.calendar_permission_service.initialize_with_token(
+                self.user_or_token, organization_id=self.organization.id
+            )
+
     def request_organization_calendar_resources_import(
         self,
         start_time: datetime.datetime,
@@ -984,11 +993,7 @@ class CalendarService(BaseCalendarService):
 
         calendar = self._get_calendar_by_id(calendar_id)
 
-        if isinstance(self.user_or_token, str):
-            self.calendar_permission_service.initialize_with_token(
-                self.user_or_token, organization_id=calendar.organization_id
-            )
-        elif isinstance(self.user_or_token, User):
+        if isinstance(self.user_or_token, User):
             self.calendar_permission_service.initialize_with_user(
                 self.user_or_token,
                 organization_id=calendar.organization_id,
@@ -1252,11 +1257,7 @@ class CalendarService(BaseCalendarService):
             organization_id=self.organization.id,
         )
 
-        if isinstance(self.user_or_token, str):
-            self.calendar_permission_service.initialize_with_token(
-                self.user_or_token, organization_id=event.organization_id
-            )
-        elif isinstance(self.user_or_token, User):
+        if isinstance(self.user_or_token, User):
             self.calendar_permission_service.initialize_with_user(
                 self.user_or_token, organization_id=event.organization_id, event_id=event_id
             )
@@ -2018,11 +2019,7 @@ class CalendarService(BaseCalendarService):
             id=event_id,
             organization_id=self.organization.id,
         )
-        if isinstance(self.user_or_token, str):
-            self.calendar_permission_service.initialize_with_token(
-                self.user_or_token, organization_id=event.organization_id
-            )
-        elif isinstance(self.user_or_token, User):
+        if isinstance(self.user_or_token, User):
             self.calendar_permission_service.initialize_with_user(
                 self.user_or_token, organization_id=event.organization_id, event_id=event_id
             )
