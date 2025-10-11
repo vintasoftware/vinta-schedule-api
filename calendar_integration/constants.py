@@ -60,3 +60,10 @@ class EventManagementPermissions(TextChoices):
     UPDATE_DETAILS = "update_details", "Update Event Details"
     CANCEL = "cancel", "Cancel Event"
     RESCHEDULE = "reschedule", "Reschedule Event"
+
+
+class IncomingWebhookProcessingStatus(TextChoices):
+    PENDING = "pending", "Pending"
+    PROCESSED = "processed", "Processed"
+    FAILED = "failed", "Failed"
+    IGNORED = "ignored", "Ignored"

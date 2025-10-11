@@ -50,6 +50,19 @@ class NoPrimaryCalendarError(BundleCalendarError):
     default_message = "Bundle calendar has no designated primary child calendar"
 
 
+# Webhook Exceptions
+class WebhookValidationError(CalendarIntegrationError):
+    """Raised when webhook payload validation fails"""
+
+    default_message = "Invalid webhook payload received"
+
+
+class WebhookAuthenticationError(CalendarIntegrationError):
+    """Raised when webhook authentication/verification fails"""
+
+    default_message = "Webhook authentication failed"
+
+
 class CalendarUnavailableError(BundleCalendarError):
     def __init__(self, calendar_name: str):
         super().__init__(f"No availability in child calendar {calendar_name}")

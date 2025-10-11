@@ -15,6 +15,7 @@ from calendar_integration.constants import (
     CalendarSyncStatus,
     CalendarType,
     EventManagementPermissions,
+    IncomingWebhookProcessingStatus,
     RecurrenceFrequency,
     RecurrenceWeekday,
     RSVPStatus,
@@ -1441,3 +1442,105 @@ class CalendarManagementTokenPermission(OrganizationModel):
 
     def __str__(self):
         return f"Permission {self.permission} for Token {self.token}"
+
+
+class CalendarWebhookSubscription(OrganizationModel):
+    """Tracks active webhook subscriptions for calendars."""
+
+    calendar = OrganizationForeignKey(
+        Calendar, on_delete=models.CASCADE, related_name="webhook_subscriptions"
+    )
+    provider = models.CharField(max_length=50, choices=CalendarProvider)
+    external_subscription_id = models.CharField(
+        max_length=255, help_text="Provider's subscription ID"
+    )
+    external_resource_id = models.CharField(
+        max_length=255, help_text="Provider's resource/calendar ID"
+    )
+    callback_url = models.URLField(max_length=500)
+    channel_id = models.CharField(
+        max_length=255, default="", blank=True, help_text="Google Calendar channel ID"
+    )
+    resource_uri = models.CharField(
+        max_length=500, default="", blank=True, help_text="Google Calendar resource URI"
+    )
+    verification_token = models.CharField(
+        max_length=255, default="", blank=True, help_text="Webhook verification token"
+    )
+    expires_at = models.DateTimeField(null=True, blank=True, help_text="When subscription expires")
+    is_active = models.BooleanField(default=True)
+    last_notification_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = (("organization", "calendar_fk", "provider"),)
+        indexes = (
+            models.Index(fields=["provider", "external_subscription_id"]),
+            models.Index(fields=["expires_at"]),
+            models.Index(fields=["is_active", "created"]),
+            models.Index(
+                fields=["organization", "provider", "external_subscription_id", "is_active"],
+                name="cal_webhook_sub_lookup_idx",
+            ),
+        )
+
+    def __str__(self):
+        return f"WebhookSubscription({self.provider}:{self.calendar.name})"
+
+
+class CalendarWebhookEvent(OrganizationModel):
+    """Logs incoming webhook notifications for debugging and monitoring."""
+
+    subscription = OrganizationForeignKey(
+        CalendarWebhookSubscription,
+        on_delete=models.CASCADE,
+        related_name="webhook_events",
+        null=True,
+        blank=True,  # In case subscription is deleted but we want to keep logs
+    )
+    provider = models.CharField(max_length=50, choices=CalendarProvider)
+    event_type = models.CharField(
+        max_length=100, help_text="Type of webhook event (created, updated, deleted)"
+    )
+    external_calendar_id = models.CharField(
+        max_length=255, help_text="External calendar ID from webhook"
+    )
+    external_event_id = models.CharField(
+        max_length=255, default="", blank=True, help_text="External event ID if available"
+    )
+    raw_payload = models.JSONField(help_text="Full webhook payload for debugging")
+    headers = models.JSONField(default=dict, help_text="Request headers")
+    processed_at = models.DateTimeField(null=True, blank=True)
+    processing_status = models.CharField(
+        max_length=50,
+        choices=IncomingWebhookProcessingStatus,
+        default=IncomingWebhookProcessingStatus.PENDING,
+    )
+    calendar_sync = OrganizationForeignKey(
+        CalendarSync,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Associated calendar sync if triggered",
+    )
+
+    class Meta:
+        indexes = (
+            models.Index(fields=["provider", "created"]),
+            models.Index(fields=["processing_status", "created"]),
+            models.Index(fields=["external_calendar_id", "created"]),
+        )
+
+    def __str__(self):
+        return f"WebhookEvent({self.provider}:{self.event_type}:{self.created})"
+
+    @property
+    def sync_triggered(self) -> bool:
+        """Whether calendar sync was triggered - derived from calendar_sync field."""
+        return self.calendar_sync is not None
+
+    @property
+    def error_message(self) -> str | None:
+        """Error message from associated calendar sync if failed."""
+        if self.calendar_sync and self.calendar_sync.status == CalendarSyncStatus.FAILED:
+            return self.calendar_sync.error_message
+        return None
