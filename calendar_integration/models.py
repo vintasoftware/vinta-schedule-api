@@ -1472,11 +1472,15 @@ class CalendarWebhookSubscription(OrganizationModel):
     last_notification_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        unique_together = (("organization", "calendar", "provider"),)
+        unique_together = (("organization", "calendar_fk", "provider"),)
         indexes = (
             models.Index(fields=["provider", "external_subscription_id"]),
             models.Index(fields=["expires_at"]),
             models.Index(fields=["is_active", "created"]),
+            models.Index(
+                fields=["organization", "provider", "external_subscription_id", "is_active"],
+                name="cal_webhook_sub_lookup_idx",
+            ),
         )
 
     def __str__(self):

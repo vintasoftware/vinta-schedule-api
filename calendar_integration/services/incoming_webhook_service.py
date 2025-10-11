@@ -6,6 +6,8 @@ from django.utils import timezone
 from calendar_integration.constants import CalendarProvider, IncomingWebhookProcessingStatus
 from calendar_integration.exceptions import WebhookAuthenticationError, WebhookValidationError
 from calendar_integration.models import CalendarWebhookEvent, CalendarWebhookSubscription
+from calendar_integration.webhook_parsers import WEBHOOK_PARSERS
+from calendar_integration.webhook_validators import WEBHOOK_VALIDATORS
 from organizations.models import Organization
 
 
@@ -25,7 +27,7 @@ class CalendarIncomingWebhookService:
 
     def validate_webhook_signature(
         self,
-        provider: str,
+        provider: CalendarProvider,
         headers: dict[str, str],
         body: bytes,
         subscription_id: str | None = None,
@@ -45,67 +47,15 @@ class CalendarIncomingWebhookService:
         Raises:
             WebhookAuthenticationError: If signature validation fails
         """
-        if provider == CalendarProvider.GOOGLE:
-            return self._validate_google_webhook_signature(headers, body)
-        elif provider == CalendarProvider.MICROSOFT:
-            return self._validate_microsoft_webhook_signature(headers, body, subscription_id)
-        else:
-            raise WebhookValidationError(f"Unsupported provider: {provider}")
+        validator = WEBHOOK_VALIDATORS.get(provider)
+        if not validator:
+            raise WebhookValidationError(f"Unsupported webhook provider: {provider}")
 
-    def _validate_google_webhook_signature(self, headers: dict[str, str], body: bytes) -> bool:
-        """
-        Validate Google Calendar webhook signature.
-
-        Google Calendar webhooks don't use signature validation but rely on:
-        1. HTTPS callback URLs
-        2. Channel ID validation
-        3. Resource ID validation
-        """
-        # Google Calendar webhooks are validated by checking required headers
-        required_headers = ["X-Goog-Channel-ID", "X-Goog-Resource-ID", "X-Goog-Resource-State"]
-
-        for header in required_headers:
-            if header not in headers:
-                raise WebhookAuthenticationError(
-                    f"Missing required Google webhook header: {header}"
-                )
-
-        return True
-
-    def _validate_microsoft_webhook_signature(
-        self, headers: dict[str, str], body: bytes, subscription_id: str | None = None
-    ) -> bool:
-        """
-        Validate Microsoft Graph webhook signature.
-
-        Microsoft Graph webhooks use validation tokens and client state validation.
-        """
-        # For validation requests, we just need to return the validation token
-        validation_token = headers.get("validationToken")
-        if validation_token:
-            return True
-
-        # For actual notifications, validate the client state if we have a subscription
-        if subscription_id:
-            try:
-                CalendarWebhookSubscription.objects.get(
-                    organization=self.organization,
-                    external_subscription_id=subscription_id,
-                    provider=CalendarProvider.MICROSOFT,
-                    is_active=True,
-                )
-                # Additional validation could be added here
-                return True
-            except CalendarWebhookSubscription.DoesNotExist:
-                raise WebhookAuthenticationError(
-                    f"Unknown subscription: {subscription_id}"
-                ) from None
-
-        return True
+        return validator.validate(headers, body, subscription_id, self.organization.id)
 
     def process_webhook_notification(
         self,
-        provider: str,
+        provider: CalendarProvider,
         headers: dict[str, str],
         payload: dict[str, Any] | str,
         validation_token: str | None = None,
@@ -127,6 +77,9 @@ class CalendarIncomingWebhookService:
             logger.info("Microsoft webhook validation request: %s", validation_token)
             return validation_token
 
+        # Parse event information early for better traceability
+        event_type, external_calendar_id = self._parse_webhook_content(provider, headers, payload)
+
         # Validate the webhook
         try:
             self.validate_webhook_signature(provider, headers, b"", None)
@@ -134,41 +87,36 @@ class CalendarIncomingWebhookService:
             logger.error("Webhook validation failed: %s", e)
             raise
 
-        # Create initial webhook event record
+        # Look up associated subscription and set subscription field
+        subscription = None
+        if provider == CalendarProvider.GOOGLE:
+            channel_id = headers.get("X-Goog-Channel-ID")
+            if channel_id:
+                subscription = self._get_subscription_by_channel_id(channel_id)
+        elif provider == CalendarProvider.MICROSOFT:
+            # For Microsoft, we would extract subscription_id from headers or payload
+            # This is a placeholder for Phase 2 implementation
+            pass
+
+        # Create webhook event record with parsed values and subscription
         webhook_event = CalendarWebhookEvent.objects.create(
             organization=self.organization,
             provider=provider,
-            event_type="unknown",  # Will be updated after parsing
-            external_calendar_id="unknown",  # Will be updated after parsing
+            event_type=event_type,
+            external_calendar_id=external_calendar_id,
             raw_payload=payload if isinstance(payload, dict) else {"raw": str(payload)},
             headers=headers,
             processing_status=IncomingWebhookProcessingStatus.PENDING,
+            subscription=subscription,
         )
 
         # Process the webhook - for now, just mark as processed
         # TODO: Implement webhook processing logic in Phase 2
         try:
-            # Parse basic webhook information to update the event record
-            if provider == CalendarProvider.GOOGLE:
-                event_type = headers.get("X-Goog-Resource-State", "unknown")
-                calendar_id = self._extract_google_calendar_id(
-                    headers.get("X-Goog-Resource-URI", "")
-                )
-            elif provider == CalendarProvider.MICROSOFT:
-                event_type = "notification"
-                calendar_id = "unknown"  # Will be extracted from payload in Phase 2
-            else:
-                event_type = "unknown"
-                calendar_id = "unknown"
-
-            # Update webhook event with parsed information
-            webhook_event.event_type = event_type
-            webhook_event.external_calendar_id = calendar_id
-            webhook_event.processing_status = IncomingWebhookProcessingStatus.PROCESSED
-            webhook_event.processed_at = timezone.now()
-            webhook_event.save()
-
-            logger.info("Processed webhook for provider %s, calendar %s", provider, calendar_id)
+            self._process_webhook_content(webhook_event)
+            logger.info(
+                "Processed webhook for provider %s, calendar %s", provider, external_calendar_id
+            )
             return webhook_event
 
         except Exception as e:
@@ -178,19 +126,47 @@ class CalendarIncomingWebhookService:
             logger.exception("Failed to process webhook: %s", e)
             raise
 
-    def _extract_google_calendar_id(self, resource_uri: str) -> str:
-        """Extract calendar ID from Google Calendar resource URI."""
-        if not resource_uri:
-            return "unknown"
+    def _parse_webhook_content(
+        self, provider: CalendarProvider, headers: dict[str, str], payload: dict[str, Any] | str
+    ) -> tuple[str, str]:
+        """Parse webhook headers and payload to extract event information."""
+        parser = WEBHOOK_PARSERS.get(provider)
+        if not parser:
+            logger.warning("No parser available for provider: %s", provider)
+            return "unknown", "unknown"
 
-        # Format: https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events
-        import re
+        try:
+            return parser.parse(headers, payload)
+        except (ValueError, KeyError, AttributeError) as exc:
+            logger.error("Error parsing webhook content: %s", exc)
+            logger.info("Raw payload: %s", payload)
+            logger.info("Headers: %s", headers)
+            return "unknown", "unknown"
 
-        match = re.search(r"/calendars/([^/]+)/events", resource_uri)
-        return match.group(1) if match else "unknown"
+    def _get_subscription_by_channel_id(
+        self, channel_id: str
+    ) -> CalendarWebhookSubscription | None:
+        """Get webhook subscription by Google Calendar channel ID."""
+        try:
+            return CalendarWebhookSubscription.objects.get(
+                organization=self.organization,
+                provider=CalendarProvider.GOOGLE,
+                channel_id=channel_id,
+                is_active=True,
+            )
+        except CalendarWebhookSubscription.DoesNotExist:
+            logger.warning("No subscription found for channel ID: %s", channel_id)
+            return None
+
+    def _process_webhook_content(self, webhook_event: CalendarWebhookEvent) -> None:
+        """Process webhook content and update event status."""
+        # Mark as processed for now - actual processing logic will be in Phase 2
+        webhook_event.processing_status = IncomingWebhookProcessingStatus.PROCESSED
+        webhook_event.processed_at = timezone.now()
+        webhook_event.save()
 
     def get_webhook_subscription(
-        self, provider: str, external_subscription_id: str
+        self, provider: CalendarProvider, external_subscription_id: str
     ) -> CalendarWebhookSubscription | None:
         """
         Get webhook subscription by provider and external subscription ID.
@@ -206,12 +182,17 @@ class CalendarIncomingWebhookService:
             return None
 
     def update_subscription_last_notification(
-        self, provider: str, external_subscription_id: str
+        self, provider: CalendarProvider, external_subscription_id: str
     ) -> None:
         """
         Update the last notification timestamp for a subscription.
         """
-        subscription = self.get_webhook_subscription(provider, external_subscription_id)
-        if subscription:
+        if subscription := self.get_webhook_subscription(provider, external_subscription_id):
             subscription.last_notification_at = timezone.now()
             subscription.save(update_fields=["last_notification_at"])
+        else:
+            logger.warning(
+                "No subscription found for provider '%s' and external_subscription_id '%s' when updating last notification",
+                provider,
+                external_subscription_id,
+            )

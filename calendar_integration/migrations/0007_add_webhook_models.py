@@ -72,7 +72,7 @@ class Migration(migrations.Migration):
         ),
         migrations.AlterUniqueTogether(
             name='calendarwebhooksubscription',
-            unique_together={('organization', 'calendar', 'provider')},
+            unique_together={('organization', 'calendar_fk', 'provider')},
         ),
         migrations.AddIndex(
             model_name='calendarwebhookevent',
