@@ -57,9 +57,10 @@ class GoogleWebhookValidator(BaseWebhookValidator):
         organization_id: int | None = None,
     ) -> bool:
         """Validate Google Calendar webhook headers."""
-        # Check required headers
+        # Normalize header keys to lower-case for case-insensitive validation
+        normalized_headers = {k.lower(): v for k, v in headers.items()}
         for header in self.REQUIRED_HEADERS:
-            if header not in headers:
+            if header.lower() not in normalized_headers:
                 logger.warning("Google webhook missing required header: %s", header)
                 raise WebhookAuthenticationError(f"Missing Google header: {header}")
 

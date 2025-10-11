@@ -72,7 +72,7 @@ class GoogleWebhookParser(BaseWebhookParser):
         # Google Calendar resource URI format:
         # https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events?alt=json
         match = re.search(r"/calendars/([^/]+)/events", resource_uri)
-        return match.group(1) if match else ""
+        return match[1] if match else ""
 
 
 class MicrosoftWebhookParser(BaseWebhookParser):

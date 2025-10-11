@@ -77,15 +77,15 @@ class CalendarIncomingWebhookService:
             logger.info("Microsoft webhook validation request: %s", validation_token)
             return validation_token
 
-        # Parse event information early for better traceability
-        event_type, external_calendar_id = self._parse_webhook_content(provider, headers, payload)
-
-        # Validate the webhook
+        # Validate the webhook signature before parsing event data
         try:
             self.validate_webhook_signature(provider, headers, b"", None)
         except (WebhookAuthenticationError, WebhookValidationError) as e:
             logger.error("Webhook validation failed: %s", e)
             raise
+
+        # Parse event information after successful validation
+        event_type, external_calendar_id = self._parse_webhook_content(provider, headers, payload)
 
         # Look up associated subscription and set subscription field
         subscription = None
