@@ -330,7 +330,9 @@ class GoogleCalendarWebhookViewTest(TestCase):
             provider=CalendarProvider.GOOGLE,
             external_id="test-calendar-id",
         )
-        self.webhook_url = reverse("calendar_webhooks:google-calendar-webhook")
+        self.webhook_url = reverse(
+            "calendar_integration:google_webhook", kwargs={"organization_id": self.organization.id}
+        )
 
     def test_google_webhook_sync_notification_ignored(self):
         """Test that sync notifications are ignored."""
@@ -451,7 +453,9 @@ class GoogleCalendarWebhookIntegrationTest(TestCase):
         mock_service.calendar_adapter = Mock()
         mock_service_class.return_value = mock_service
 
-        webhook_url = reverse("calendar_webhooks:google-calendar-webhook")
+        webhook_url = reverse(
+            "calendar_integration:google_webhook", kwargs={"organization_id": self.organization.id}
+        )
 
         headers = {
             "HTTP_X_GOOG_CHANNEL_ID": "test-channel-id",

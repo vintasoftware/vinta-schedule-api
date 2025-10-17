@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal, cast
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Q
+from django.urls import reverse
 
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from dependency_injector.wiring import Provide, inject
@@ -3868,7 +3869,7 @@ class CalendarService(BaseCalendarService):
     def create_calendar_webhook_subscription(
         self,
         calendar: Calendar,
-        callback_url: str,
+        callback_url: str | None = None,
         expiration_hours: int = 24,
     ) -> CalendarWebhookSubscription:
         """
@@ -3877,7 +3878,7 @@ class CalendarService(BaseCalendarService):
 
         Args:
             calendar: Calendar to create subscription for
-            callback_url: URL to receive webhook notifications
+            callback_url: URL to receive webhook notifications (optional, will generate if not provided)
             expiration_hours: Hours until subscription expires
 
         Returns:
@@ -3891,6 +3892,31 @@ class CalendarService(BaseCalendarService):
 
         if not self.calendar_adapter:
             raise ValueError("Calendar adapter not available")
+
+        # Generate callback URL if not provided
+        if not callback_url:
+            if calendar.provider == CalendarProvider.GOOGLE:
+                callback_url = reverse(
+                    "calendar_integration:google_webhook",
+                    kwargs={"organization_id": calendar.organization_id},
+                )
+            elif calendar.provider == CalendarProvider.MICROSOFT:
+                callback_url = reverse(
+                    "calendar_integration:microsoft_webhook",
+                    kwargs={"organization_id": calendar.organization_id},
+                )
+            else:
+                raise ValueError(
+                    f"Webhook subscriptions not supported for provider: {calendar.provider}"
+                )
+
+            # Convert to absolute URL if needed
+            # In production, you might want to configure the domain via settings
+            if callback_url.startswith("/"):
+                from django.conf import settings
+
+                domain = getattr(settings, "WEBHOOK_DOMAIN", "https://your-domain.com")
+                callback_url = f"{domain.rstrip('/')}{callback_url}"
 
         # Use adapter-specific subscription creation
         if calendar.provider == CalendarProvider.GOOGLE:

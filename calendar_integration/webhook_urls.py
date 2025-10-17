@@ -10,17 +10,17 @@ from calendar_integration.webhook_views import (
 )
 
 
-app_name = "calendar_webhooks"
+app_name = "calendar_integration"
 
 urlpatterns = [
     path(
-        "webhooks/google-calendar/",
+        "webhooks/google-calendar/<int:organization_id>/",
         GoogleCalendarWebhookView.as_view(),
-        name="google-calendar-webhook",
+        name="google_webhook",
     ),
     path(
-        "webhooks/microsoft-calendar/",
+        "webhooks/microsoft-calendar/<int:organization_id>/",
         MicrosoftCalendarWebhookView.as_view(),
-        name="microsoft-calendar-webhook",
+        name="microsoft_webhook",
     ),
 ]
