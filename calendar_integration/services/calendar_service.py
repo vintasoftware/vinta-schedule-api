@@ -3910,11 +3910,15 @@ class CalendarService(BaseCalendarService):
         # Calculate expiration datetime
         expiration_timestamp = subscription_data.get("expiration")
         expires_at = None
-        if expiration_timestamp:
-            # Google returns expiration as milliseconds since epoch
-            expires_at = datetime.datetime.fromtimestamp(
-                int(expiration_timestamp) / 1000, tz=datetime.UTC
-            )
+        if expiration_timestamp is not None:
+            try:
+                # Google returns expiration as milliseconds since epoch
+                expires_at = datetime.datetime.fromtimestamp(
+                    int(expiration_timestamp) / 1000, tz=datetime.UTC
+                )
+            except (ValueError, TypeError):
+                # Log or handle malformed expiration value gracefully
+                expires_at = None
 
         # Create tracking record
         webhook_subscription = CalendarWebhookSubscription.objects.create(
