@@ -18,7 +18,8 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
 
 
 def is_authenticated_calendar_service(
-    calendar_service: BaseCalendarService, raise_error: bool = True
+    calendar_service: BaseCalendarService | InitializedOrAuthenticatedCalendarService,
+    raise_error: bool = True,
 ) -> TypeGuard[AuthenticatedCalendarService]:
     """
     Check if the calendar service is authenticated.

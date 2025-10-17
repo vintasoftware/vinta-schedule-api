@@ -9,6 +9,8 @@ from calendar_integration.models import (
     BlockedTime,
     Calendar,
     CalendarEvent,
+    CalendarSync,
+    CalendarWebhookEvent,
     EventAttendance,
     EventExternalAttendance,
     GoogleCalendarServiceAccount,
@@ -226,4 +228,18 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
         ...
 
     def _grant_event_attendee_permissions(self, event: CalendarEvent) -> None:
+        ...
+
+    def request_calendar_sync(
+        self,
+        calendar: Calendar,
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+        should_update_events: bool,
+    ) -> CalendarSync:
+        ...
+
+    def request_webhook_triggered_sync(
+        self, external_calendar_id: str, webhook_event: CalendarWebhookEvent
+    ) -> CalendarSync:
         ...

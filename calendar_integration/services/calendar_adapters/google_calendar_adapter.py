@@ -1,5 +1,7 @@
 import datetime
+import re
 import time
+import uuid
 from collections.abc import Iterable
 from typing import Any, Literal, TypedDict
 
@@ -655,3 +657,150 @@ class GoogleCalendarAdapter(CalendarAdapter):
             self.client.channels().stop(body={"id": f"{resource_id}-subscription"}).execute()
         except Exception as e:  # noqa: BLE001
             raise ValueError(f"Failed to unsubscribe from calendar events: {e!s}") from e
+
+    def validate_webhook_notification(
+        self,
+        headers: dict[str, str],
+        body: bytes | str,
+        expected_channel_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Validate incoming Google Calendar webhook notification.
+        Returns parsed webhook data if valid.
+
+        Args:
+            headers: HTTP headers from the webhook request
+            body: Request body (unused for Google Calendar webhooks)
+            expected_channel_id: Optional channel ID to validate against
+
+        Returns:
+            Dictionary containing parsed webhook data
+
+        Raises:
+            ValueError: If webhook validation fails
+        """
+        # Google Calendar webhooks have specific headers
+        resource_id = headers.get("X-Goog-Resource-ID")
+        resource_uri = headers.get("X-Goog-Resource-URI")
+        resource_state = headers.get("X-Goog-Resource-State")
+        channel_id = headers.get("X-Goog-Channel-ID")
+        channel_token = headers.get("X-Goog-Channel-Token")
+
+        if not resource_id or not resource_uri or not resource_state or not channel_id:
+            raise ValueError("Missing required Google webhook headers")
+
+        # Validate channel ID if provided
+        if expected_channel_id and channel_id != expected_channel_id:
+            raise ValueError(
+                f"Channel ID mismatch: expected {expected_channel_id}, got {channel_id}"
+            )
+
+        # Parse resource URI to extract calendar ID
+        # Format: https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events
+
+        calendar_id_match = re.search(r"/calendars/([^/]+)/events", resource_uri)
+        calendar_id = calendar_id_match.group(1) if calendar_id_match else None
+
+        if not calendar_id:
+            raise ValueError(f"Could not extract calendar ID from resource URI: {resource_uri}")
+
+        return {
+            "provider": "google",
+            "calendar_id": calendar_id,
+            "resource_id": resource_id,
+            "resource_uri": resource_uri,
+            "resource_state": resource_state,
+            "channel_id": channel_id,
+            "channel_token": channel_token,
+            "event_type": resource_state,  # 'sync', 'exists', 'not_exists'
+        }
+
+    @staticmethod
+    def validate_webhook_notification_static(
+        headers: dict[str, str],
+        body: bytes | str,
+        expected_channel_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Static version of validate_webhook_notification for use without adapter instance.
+        """
+        # Google Calendar webhooks have specific headers
+        resource_id = headers.get("X-Goog-Resource-ID")
+        resource_uri = headers.get("X-Goog-Resource-URI")
+        resource_state = headers.get("X-Goog-Resource-State")
+        channel_id = headers.get("X-Goog-Channel-ID")
+        channel_token = headers.get("X-Goog-Channel-Token")
+
+        if not resource_id or not resource_uri or not resource_state or not channel_id:
+            raise ValueError("Missing required Google webhook headers")
+
+        # Validate channel ID if provided
+        if expected_channel_id and channel_id != expected_channel_id:
+            raise ValueError(
+                f"Channel ID mismatch: expected {expected_channel_id}, got {channel_id}"
+            )
+
+        # Parse resource URI to extract calendar ID
+        # Format: https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events
+        calendar_id_match = re.search(r"/calendars/([^/]+)/events", resource_uri)
+        calendar_id = calendar_id_match.group(1) if calendar_id_match else None
+
+        if not calendar_id:
+            raise ValueError(f"Could not extract calendar ID from resource URI: {resource_uri}")
+
+        return {
+            "provider": "google",
+            "calendar_id": calendar_id,
+            "resource_id": resource_id,
+            "resource_uri": resource_uri,
+            "resource_state": resource_state,
+            "channel_id": channel_id,
+            "channel_token": channel_token,
+            "event_type": resource_state,  # 'sync', 'exists', 'not_exists'
+        }
+
+    def create_webhook_subscription_with_tracking(
+        self,
+        resource_id: str,
+        callback_url: str,
+        tracking_params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Enhanced version of subscribe_to_calendar_events that returns subscription details.
+
+        Args:
+            calendar_id: Google Calendar ID to subscribe to
+            callback_url: URL to receive webhook notifications
+            tracking_params: Optional dictionary of tracking parameters to include in the callback URL
+                channel_id: Optional custom channel ID
+                ttl_seconds: Time-to-live for the subscription
+
+        Returns:
+            Dictionary containing subscription details
+        """
+        channel_id = tracking_params.get("channel_id") if tracking_params else None
+        ttl_seconds = tracking_params.get("ttl_seconds") if tracking_params else 3600
+
+        if not channel_id:
+            channel_id = f"calendar-{resource_id}-{uuid.uuid4().hex[:8]}"
+
+        body = {
+            "id": channel_id,
+            "type": "web_hook",
+            "address": callback_url,
+            "params": {
+                "ttl": str(ttl_seconds),
+            },
+        }
+
+        write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
+        response = self.client.events().watch(calendarId=resource_id, body=body).execute()
+
+        return {
+            "channel_id": response.get("id"),
+            "resource_id": response.get("resourceId"),
+            "resource_uri": response.get("resourceUri"),
+            "expiration": response.get("expiration"),
+            "calendar_id": resource_id,
+            "callback_url": callback_url,
+        }

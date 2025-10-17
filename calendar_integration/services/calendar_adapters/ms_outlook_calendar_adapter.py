@@ -1051,3 +1051,55 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
 
         except MSGraphAPIError as e:
             raise ValueError(f"Failed to get room events: {e}") from e
+
+    def create_webhook_subscription_with_tracking(
+        self,
+        resource_id: str,
+        callback_url: str,
+        tracking_params: dict | None = None,
+    ) -> dict[str, Any]:
+        """
+        Create a webhook subscription with tracking parameters.
+        :param organization_id: ID of the organization.
+        :param resource_id: ID of the calendar resource to subscribe to.
+        :param callback_url: URL to receive webhook notifications.
+        :param tracking_params: Optional dictionary of tracking parameters.
+        :return: A dict.
+        """
+
+        # TODO: Implement tracking parameters in subscription creation if supported
+        return {}
+
+    def validate_webhook_notification(
+        self,
+        headers: dict[str, str],
+        body: bytes | str,
+        expected_channel_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Validate an incoming webhook notification.
+        :param headers: Headers from the webhook request.
+        :param body: Body from the webhook request.
+        :param expected_channel_id: Optional expected channel ID for validation.
+        :return: Parsed notification data.
+        """
+
+        # TODO: Implement webhook validation logic
+        return {}
+
+    @staticmethod
+    def validate_webhook_notification_static(
+        headers: dict[str, str],
+        body: bytes | str,
+        expected_channel_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Validate an incoming webhook notification (static method).
+        :param headers: Headers from the webhook request.
+        :param body: Body from the webhook request.
+        :param expected_channel_id: Optional expected channel ID for validation.
+        :return: Parsed notification data.
+        """
+
+        # TODO: Implement static webhook validation logic
+        return {}

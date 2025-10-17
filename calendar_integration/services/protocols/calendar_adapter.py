@@ -1,6 +1,6 @@
 import datetime
 from collections.abc import Iterable
-from typing import Protocol
+from typing import Any, Protocol
 
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
@@ -112,4 +112,50 @@ class CalendarAdapter(Protocol):
         ...
 
     def subscribe_to_calendar_events(self, resource_id: str, callback_url: str) -> None:
+        ...
+
+    def create_webhook_subscription_with_tracking(
+        self,
+        resource_id: str,
+        callback_url: str,
+        tracking_params: dict | None = None,
+    ) -> dict[str, Any]:
+        """
+        Create a webhook subscription with tracking parameters.
+        :param organization_id: ID of the organization.
+        :param resource_id: ID of the calendar resource to subscribe to.
+        :param callback_url: URL to receive webhook notifications.
+        :param tracking_params: Optional dictionary of tracking parameters.
+        :return: A dict.
+        """
+        ...
+
+    def validate_webhook_notification(
+        self,
+        headers: dict[str, str],
+        body: bytes | str,
+        expected_channel_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Validate an incoming webhook notification.
+        :param headers: Headers from the webhook request.
+        :param body: Body from the webhook request.
+        :param expected_channel_id: Optional expected channel ID for validation.
+        :return: Parsed notification data.
+        """
+        ...
+
+    @staticmethod
+    def validate_webhook_notification_static(
+        headers: dict[str, str],
+        body: bytes | str,
+        expected_channel_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Validate an incoming webhook notification (static method).
+        :param headers: Headers from the webhook request.
+        :param body: Body from the webhook request.
+        :param expected_channel_id: Optional expected channel ID for validation.
+        :return: Parsed notification data.
+        """
         ...

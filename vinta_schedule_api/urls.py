@@ -49,6 +49,7 @@ urlpatterns = [
     path("auth/", include("allauth.headless.urls")),
     path("", include((router.urls, "api")), name="api"),
     path("public/", include("calendar_integration.token_urls")),
+    path("api/", include("calendar_integration.webhook_urls")),
     path(
         "invitations/accept",
         AcceptInvitationView.as_view(),
