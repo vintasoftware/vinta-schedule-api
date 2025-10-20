@@ -1,8 +1,10 @@
 import logging
+import re
 from typing import Annotated
 
 from django.http import HttpRequest, HttpResponse
 from django.utils.decorators import method_decorator
+from django.utils.html import escape
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 
@@ -106,15 +108,15 @@ class MicrosoftCalendarWebhookView(View):
         if validation_token:
             # Sanitize validation token to prevent XSS attacks
             # Microsoft validation tokens are UUIDs, so we can validate the format
-            import re
-
             if re.match(
                 r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
                 validation_token,
                 re.IGNORECASE,
             ):
-                # Return validation token as plain text for subscription verification
-                return HttpResponse(validation_token, content_type="text/plain")
+                # Escape the validation token to prevent any potential XSS
+                # Even though it's validated as UUID format, we escape for security
+                escaped_token = escape(validation_token)
+                return HttpResponse(escaped_token, content_type="text/plain")
             else:
                 logger.warning(
                     "Invalid validation token format received",
