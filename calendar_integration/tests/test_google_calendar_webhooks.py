@@ -15,7 +15,10 @@ from calendar_integration.constants import (
     CalendarSyncStatus,
     IncomingWebhookProcessingStatus,
 )
-from calendar_integration.exceptions import ServiceNotAuthenticatedError
+from calendar_integration.exceptions import (
+    ServiceNotAuthenticatedError,
+    WebhookProcessingFailedError,
+)
 from calendar_integration.models import (
     Calendar,
     CalendarSync,
@@ -71,12 +74,18 @@ class GoogleCalendarAdapterWebhookTest(TestCase):
             # Missing other required headers
         }
 
-        with pytest.raises(ValueError, match="Missing required Google webhook headers"):
+        from calendar_integration.exceptions import WebhookProcessingFailedError
+
+        with pytest.raises(
+            WebhookProcessingFailedError, match="Missing required Google webhook headers"
+        ):
             adapter.validate_webhook_notification(headers, "")
 
     @patch("calendar_integration.services.calendar_adapters.google_calendar_adapter.build")
     def test_validate_webhook_notification_invalid_resource_uri(self, mock_build):
         """Test validation with invalid resource URI."""
+        from calendar_integration.exceptions import WebhookProcessingFailedError
+
         adapter = GoogleCalendarAdapter(self.credentials)
 
         headers = {
@@ -87,7 +96,7 @@ class GoogleCalendarAdapterWebhookTest(TestCase):
             "X-Goog-Channel-Token": "test-token",
         }
 
-        with pytest.raises(ValueError, match="Could not extract calendar ID"):
+        with pytest.raises(WebhookProcessingFailedError, match="Could not extract calendar ID"):
             adapter.validate_webhook_notification(headers, "")
 
     def test_validate_webhook_notification_static(self):
@@ -105,6 +114,21 @@ class GoogleCalendarAdapterWebhookTest(TestCase):
         assert result["provider"] == "google"
         assert result["calendar_id"] == "test-calendar"
         assert result["event_type"] == "exists"
+
+    def test_validate_webhook_notification_sync_ignored(self):
+        """Test that sync notifications are ignored."""
+        from calendar_integration.exceptions import WebhookIgnoredError
+
+        headers = {
+            "X-Goog-Resource-ID": "test-resource-id",
+            "X-Goog-Resource-URI": "https://www.googleapis.com/calendar/v3/calendars/test-calendar/events",
+            "X-Goog-Resource-State": "sync",
+            "X-Goog-Channel-ID": "test-channel-id",
+            "X-Goog-Channel-Token": "test-token",
+        }
+
+        with pytest.raises(WebhookIgnoredError, match="Skip sync notification"):
+            GoogleCalendarAdapter.validate_webhook_notification_static(headers, "")
 
     @patch("calendar_integration.services.calendar_adapters.google_calendar_adapter.build")
     @patch(
@@ -311,7 +335,9 @@ class CalendarServiceWebhookTest(TestCase):
             "X-Goog-Channel-Token": "test-token",
         }
 
-        result = self.service.process_webhook_notification(provider="google", headers=headers)
+        result = self.service.process_webhook_notification(
+            provider="google", calendar_external_id="test-calendar-id", headers=headers
+        )
 
         assert isinstance(result, CalendarWebhookEvent)
         assert result.provider == "google"
@@ -350,18 +376,13 @@ class GoogleCalendarWebhookViewTest(TestCase):
         # No webhook event should be created for sync notifications
         assert CalendarWebhookEvent.objects.filter(organization=self.organization).count() == 0
 
-    def test_google_webhook_exists_notification(self):
+    @patch("calendar_integration.services.calendar_service.CalendarService.handle_webhook")
+    def test_google_webhook_exists_notification(self, mock_handle_webhook):
         """Test processing exists notification."""
-        # Create webhook subscription to help with organization lookup
-        CalendarWebhookSubscription.objects.create(
-            calendar=self.calendar,
-            organization=self.organization,
-            provider=CalendarProvider.GOOGLE,
-            external_subscription_id="test-sub-id",
-            channel_id="test-channel-id",
-            callback_url="https://example.com/webhook",
-            verification_token="test-token",
-        )
+        # Mock the service to return a webhook event
+        mock_webhook_event = Mock()
+        mock_webhook_event.id = 1
+        mock_handle_webhook.return_value = mock_webhook_event
 
         headers = {
             "HTTP_X_GOOG_CHANNEL_ID": "test-channel-id",
@@ -373,22 +394,21 @@ class GoogleCalendarWebhookViewTest(TestCase):
 
         response = self.client.post(self.webhook_url, **headers)
 
-        # Webhook should always return 200, even if service isn't fully authenticated
         assert response.status_code == 200
+        mock_handle_webhook.assert_called_once()
+        # Verify the call was made with "google" as provider and HttpRequest as second argument
+        args = mock_handle_webhook.call_args[0]
+        assert args[0] == CalendarProvider.GOOGLE
+        assert hasattr(args[1], "META")  # Check it's an HttpRequest object
 
-        # Verify webhook event was created
-        assert (
-            CalendarWebhookEvent.objects.filter(
-                organization=self.organization,
-                provider=CalendarProvider.GOOGLE,
-                external_calendar_id="test-calendar-id",
-            ).count()
-            == 1
+    @patch("calendar_integration.services.calendar_service.CalendarService.handle_webhook")
+    def test_google_webhook_missing_headers(self, mock_handle_webhook):
+        """Test webhook with missing required headers."""
+        # Mock the service to raise a validation error
+        mock_handle_webhook.side_effect = WebhookProcessingFailedError(
+            "Missing required Google webhook headers"
         )
 
-    def test_google_webhook_missing_headers(self):
-        """Test webhook with missing required headers."""
-        # Missing most required headers
         headers = {
             "HTTP_X_GOOG_CHANNEL_ID": "test-channel-id",
         }
@@ -399,6 +419,11 @@ class GoogleCalendarWebhookViewTest(TestCase):
 
     def test_google_webhook_no_organization_found(self):
         """Test webhook when organization cannot be determined."""
+        # Test with an invalid organization ID in the URL
+        invalid_webhook_url = reverse(
+            "calendar_integration:google_webhook", kwargs={"organization_id": 99999}
+        )
+
         headers = {
             "HTTP_X_GOOG_CHANNEL_ID": "nonexistent-channel-id",
             "HTTP_X_GOOG_RESOURCE_ID": "test-resource-id",
@@ -407,15 +432,10 @@ class GoogleCalendarWebhookViewTest(TestCase):
             "HTTP_X_GOOG_CHANNEL_TOKEN": "test-token",
         }
 
-        response = self.client.post(self.webhook_url, **headers)
+        response = self.client.post(invalid_webhook_url, **headers)
 
-        # Webhook should still return 200 even when organization can't be determined
-        # The fallback logic in the webhook view handles this by using the first available org
-        assert response.status_code == 200
-
-        # Verify webhook event was still created (using fallback organization)
-        # Use the test organization to check since we know it exists
-        assert CalendarWebhookEvent.objects.filter(organization=self.organization).count() >= 1
+        # Should return 404 when organization is not found
+        assert response.status_code == 404
 
 
 class GoogleCalendarWebhookIntegrationTest(TestCase):
@@ -431,8 +451,8 @@ class GoogleCalendarWebhookIntegrationTest(TestCase):
         )
 
     @patch("calendar_integration.tasks.sync_calendar_task.delay")
-    @patch("calendar_integration.webhook_views.CalendarService")
-    def test_end_to_end_webhook_processing(self, mock_service_class, mock_sync_task):
+    @patch("calendar_integration.services.calendar_service.CalendarService.handle_webhook")
+    def test_end_to_end_webhook_processing(self, mock_handle_webhook, mock_sync_task):
         """Test complete webhook processing flow."""
         # Create webhook subscription
         CalendarWebhookSubscription.objects.create(
@@ -446,12 +466,9 @@ class GoogleCalendarWebhookIntegrationTest(TestCase):
         )
 
         # Mock CalendarService
-        mock_service = CalendarService()
-        mock_service.organization = self.organization
-        mock_service.account = Mock()
-        mock_service.account.id = 1
-        mock_service.calendar_adapter = Mock()
-        mock_service_class.return_value = mock_service
+        mock_webhook_event = Mock()
+        mock_webhook_event.id = 1
+        mock_handle_webhook.return_value = mock_webhook_event
 
         webhook_url = reverse(
             "calendar_integration:google_webhook", kwargs={"organization_id": self.organization.id}
@@ -469,5 +486,52 @@ class GoogleCalendarWebhookIntegrationTest(TestCase):
 
         assert response.status_code == 200
 
-        # Verify webhook event was created
-        assert CalendarWebhookEvent.objects.filter(organization=self.organization).count() == 1
+        # Verify service was called correctly
+        mock_handle_webhook.assert_called_once()
+        # Verify the call was made with "google" as provider and HttpRequest as second argument
+        args = mock_handle_webhook.call_args[0]
+        assert args[0] == CalendarProvider.GOOGLE
+        assert hasattr(args[1], "META")  # Check it's an HttpRequest object
+
+
+class MicrosoftCalendarWebhookSecurityTest(TestCase):
+    """Test Microsoft Calendar webhook security features."""
+
+    def setUp(self):
+        self.organization = Organization.objects.create(name="Test Org")
+        self.webhook_url = reverse(
+            "calendar_integration:microsoft_webhook",
+            kwargs={"organization_id": self.organization.id},
+        )
+
+    def test_microsoft_webhook_valid_validation_token(self):
+        """Test Microsoft webhook with valid validation token."""
+        response = self.client.post(
+            self.webhook_url + "?validationToken=123e4567-e89b-12d3-a456-426614174000"
+        )
+
+        assert response.status_code == 200
+        assert response.content == b"123e4567-e89b-12d3-a456-426614174000"
+        assert response["Content-Type"] == "text/plain"
+
+    def test_microsoft_webhook_invalid_validation_token(self):
+        """Test Microsoft webhook with invalid validation token (potential XSS)."""
+        response = self.client.post(
+            self.webhook_url + "?validationToken=<script>alert('xss')</script>"
+        )
+
+        assert response.status_code == 400
+
+    def test_microsoft_webhook_malformed_uuid_validation_token(self):
+        """Test Microsoft webhook with malformed UUID validation token."""
+        response = self.client.post(
+            self.webhook_url + "?validationToken=123e4567-e89b-12d3-a456-42661417400g"
+        )
+
+        assert response.status_code == 400
+
+    def test_microsoft_webhook_no_validation_token(self):
+        """Test Microsoft webhook without validation token."""
+        response = self.client.post(self.webhook_url)
+
+        assert response.status_code == 200  # Should handle normal webhook processing

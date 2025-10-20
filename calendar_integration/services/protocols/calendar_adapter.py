@@ -2,6 +2,8 @@ import datetime
 from collections.abc import Iterable
 from typing import Any, Protocol
 
+from django.http import HttpHeaders, HttpRequest
+
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
@@ -15,6 +17,14 @@ class CalendarAdapter(Protocol):
     provider: str
 
     def __init__(self, credentials: dict | None = None):
+        ...
+
+    @staticmethod
+    def parse_webhook_headers(headers: HttpHeaders) -> dict[str, str]:
+        ...
+
+    @staticmethod
+    def extract_calendar_external_id_from_webhook_request(request: HttpRequest) -> str:
         ...
 
     def create_application_calendar(self, name: str) -> ApplicationCalendarData:

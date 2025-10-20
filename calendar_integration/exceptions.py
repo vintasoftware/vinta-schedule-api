@@ -252,3 +252,17 @@ class RecurrenceError(CalendarIntegrationError):
 
 class NoRecurrenceRuleError(RecurrenceError):
     default_message = "No recurrence rule provided"
+
+
+class WebhookProcessingError(CalendarIntegrationError):
+    """Errors during webhook processing"""
+
+    pass
+
+
+class WebhookIgnoredError(WebhookProcessingError):
+    default_message = "Webhook event ignored as per processing rules"
+
+
+class WebhookProcessingFailedError(WebhookProcessingError):
+    default_message = "Webhook event processing failed due to an internal error"

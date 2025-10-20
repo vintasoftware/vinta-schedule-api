@@ -7,6 +7,7 @@ from typing import Any, Literal, TypedDict
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.http import HttpHeaders, HttpRequest
 
 import google.auth.crypt
 import google.auth.jwt
@@ -16,6 +17,7 @@ from googleapiclient.discovery import build
 from pyrate_limiter import Duration, Limiter, Rate, RedisBucket
 
 from calendar_integration.constants import CalendarProvider
+from calendar_integration.exceptions import WebhookIgnoredError, WebhookProcessingFailedError
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
@@ -27,6 +29,9 @@ from calendar_integration.services.dataclasses import (
 from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
 from common.redis import redis_connection
 
+
+# Precompiled regex for extracting calendar ID from Google Calendar resource URIs
+_CALENDAR_ID_RE = re.compile(r"/calendars/([^/]+)/events")
 
 read_quote_limiter = Limiter(
     RedisBucket.init(
@@ -183,6 +188,20 @@ class GoogleCalendarAdapter(CalendarAdapter):
                 "account_id": f"service-{service_account_credentials['account_id']}",
             }
         )
+
+    @staticmethod
+    def parse_webhook_headers(headers: HttpHeaders) -> dict[str, str]:
+        return {
+            "X-Goog-Channel-ID": headers.get("X-Goog-Channel-ID", ""),
+            "X-Goog-Resource-State": headers.get("X-Goog-Resource-State", ""),
+            "X-Goog-Resource-ID": headers.get("X-Goog-Resource-ID", ""),
+            "X-Goog-Resource-URI": headers.get("X-Goog-Resource-URI", ""),
+            "X-Goog-Channel-Token": headers.get("X-Goog-Channel-Token", ""),
+        }
+
+    @staticmethod
+    def extract_calendar_external_id_from_webhook_request(request: HttpRequest) -> str:
+        return request.headers.get("X-Goog-Resource-ID", "")
 
     def get_account_calendars(self) -> Iterable[CalendarResourceData]:
         read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
@@ -679,30 +698,50 @@ class GoogleCalendarAdapter(CalendarAdapter):
         Raises:
             ValueError: If webhook validation fails
         """
-        # Google Calendar webhooks have specific headers
+        return self._parse_webhook_notification(headers, expected_channel_id)
+
+    @staticmethod
+    def _parse_webhook_notification(
+        headers: dict[str, str],
+        expected_channel_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Shared helper for parsing Google Calendar webhook notifications.
+
+        Args:
+            headers: HTTP headers from the webhook request
+            expected_channel_id: Optional channel ID to validate against
+
+        Returns:
+            Dictionary containing parsed webhook data
+
+        Raises:
+            ValueError: If webhook validation fails
+        """
         resource_id = headers.get("X-Goog-Resource-ID")
         resource_uri = headers.get("X-Goog-Resource-URI")
         resource_state = headers.get("X-Goog-Resource-State")
         channel_id = headers.get("X-Goog-Channel-ID")
         channel_token = headers.get("X-Goog-Channel-Token")
 
-        if not resource_id or not resource_uri or not resource_state or not channel_id:
-            raise ValueError("Missing required Google webhook headers")
+        if resource_state == "sync":
+            # Ignore sync notifications
+            raise WebhookIgnoredError("Skip sync notification")
 
-        # Validate channel ID if provided
+        if not (resource_id and resource_uri and resource_state and channel_id):
+            raise WebhookProcessingFailedError("Missing required Google webhook headers")
+
         if expected_channel_id and channel_id != expected_channel_id:
-            raise ValueError(
+            raise WebhookProcessingFailedError(
                 f"Channel ID mismatch: expected {expected_channel_id}, got {channel_id}"
             )
 
-        # Parse resource URI to extract calendar ID
-        # Format: https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events
-
-        calendar_id_match = re.search(r"/calendars/([^/]+)/events", resource_uri)
-        calendar_id = calendar_id_match.group(1) if calendar_id_match else None
-
-        if not calendar_id:
-            raise ValueError(f"Could not extract calendar ID from resource URI: {resource_uri}")
+        match = _CALENDAR_ID_RE.search(resource_uri)
+        if not match:
+            raise WebhookProcessingFailedError(
+                f"Could not extract calendar ID from resource URI: {resource_uri}"
+            )
+        calendar_id = match.group(1)
 
         return {
             "provider": "google",
@@ -712,7 +751,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
             "resource_state": resource_state,
             "channel_id": channel_id,
             "channel_token": channel_token,
-            "event_type": resource_state,  # 'sync', 'exists', 'not_exists'
+            "event_type": resource_state,
         }
 
     @staticmethod
@@ -724,40 +763,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
         """
         Static version of validate_webhook_notification for use without adapter instance.
         """
-        # Google Calendar webhooks have specific headers
-        resource_id = headers.get("X-Goog-Resource-ID")
-        resource_uri = headers.get("X-Goog-Resource-URI")
-        resource_state = headers.get("X-Goog-Resource-State")
-        channel_id = headers.get("X-Goog-Channel-ID")
-        channel_token = headers.get("X-Goog-Channel-Token")
-
-        if not resource_id or not resource_uri or not resource_state or not channel_id:
-            raise ValueError("Missing required Google webhook headers")
-
-        # Validate channel ID if provided
-        if expected_channel_id and channel_id != expected_channel_id:
-            raise ValueError(
-                f"Channel ID mismatch: expected {expected_channel_id}, got {channel_id}"
-            )
-
-        # Parse resource URI to extract calendar ID
-        # Format: https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events
-        calendar_id_match = re.search(r"/calendars/([^/]+)/events", resource_uri)
-        calendar_id = calendar_id_match.group(1) if calendar_id_match else None
-
-        if not calendar_id:
-            raise ValueError(f"Could not extract calendar ID from resource URI: {resource_uri}")
-
-        return {
-            "provider": "google",
-            "calendar_id": calendar_id,
-            "resource_id": resource_id,
-            "resource_uri": resource_uri,
-            "resource_state": resource_state,
-            "channel_id": channel_id,
-            "channel_token": channel_token,
-            "event_type": resource_state,  # 'sync', 'exists', 'not_exists'
-        }
+        return GoogleCalendarAdapter._parse_webhook_notification(headers, expected_channel_id)
 
     def create_webhook_subscription_with_tracking(
         self,

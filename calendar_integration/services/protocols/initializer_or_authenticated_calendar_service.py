@@ -46,6 +46,9 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
     def _get_calendar_by_id(self, calendar_id: int) -> Calendar:
         ...
 
+    def _get_calendar_by_external_id(self, calendar_external_id: str) -> Calendar:
+        ...
+
     def _create_bundle_event(
         self, bundle_calendar: Calendar, event_data: "CalendarEventInputData"
     ) -> CalendarEvent:

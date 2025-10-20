@@ -8,6 +8,8 @@ from django.views.decorators.csrf import csrf_exempt
 
 from dependency_injector.wiring import Provide, inject
 
+from calendar_integration.constants import CalendarProvider
+from calendar_integration.exceptions import WebhookProcessingFailedError
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization
 
@@ -39,12 +41,6 @@ class GoogleCalendarWebhookView(View):
             organization_id: Organization ID from URL path
             calendar_service: Injected calendar service
 
-        Expected headers:
-        - X-Goog-Channel-ID: Channel ID for the subscription
-        - X-Goog-Resource-State: State of the resource (sync, exists, not_exists)
-        - X-Goog-Resource-ID: Resource ID
-        - X-Goog-Resource-URI: Resource URI
-
         Returns:
         - 200: Webhook processed successfully
         - 400: Invalid webhook payload
@@ -52,54 +48,29 @@ class GoogleCalendarWebhookView(View):
         - 500: Internal server error
         """
         try:
-            logger.info("Google Calendar webhook received")
-
-            # Get organization from URL parameter
-            try:
-                organization = Organization.objects.get(id=organization_id)
-            except Organization.DoesNotExist:
-                logger.warning("Organization not found: %s", organization_id)
-                return HttpResponse(status=404)
-
-            # Extract webhook headers
-            headers = {
-                "X-Goog-Channel-ID": request.headers.get("X-Goog-Channel-ID", ""),
-                "X-Goog-Resource-State": request.headers.get("X-Goog-Resource-State", ""),
-                "X-Goog-Resource-ID": request.headers.get("X-Goog-Resource-ID", ""),
-                "X-Goog-Resource-URI": request.headers.get("X-Goog-Resource-URI", ""),
-                "X-Goog-Channel-Token": request.headers.get("X-Goog-Channel-Token", ""),
-            }
-
-            # Log incoming webhook for debugging
             logger.info(
-                "Google Calendar webhook received",
-                extra={
-                    "headers": headers,
-                    "channel_id": headers.get("X-Goog-Channel-ID"),
-                    "resource_state": headers.get("X-Goog-Resource-State"),
-                    "organization_id": organization_id,
-                },
+                "Google Calendar webhook received", extra={"organization_id": organization_id}
             )
 
-            # Skip 'sync' state notifications (initial subscription verification)
-            resource_state = headers.get("X-Goog-Resource-State")
-            if resource_state == "sync":
+            result = calendar_service.handle_webhook(CalendarProvider.GOOGLE, request)
+
+            # None result means sync notification was skipped
+            if result is None:
                 logger.info("Received Google Calendar sync notification, acknowledging")
-                return HttpResponse(status=200)
-
-            # Set organization context on the service
-            calendar_service.organization = organization
-
-            # Process the webhook notification
-            calendar_service.process_webhook_notification(
-                provider="google",
-                headers=headers,
-            )
 
             logger.info("Google Calendar webhook processed successfully")
             return HttpResponse(status=200)
 
         except ValueError as e:
+            # This handles organization not found errors
+            error_msg = str(e)
+            if "Organization not found" in error_msg:
+                logger.warning("Organization not found: %s", organization_id)
+                return HttpResponse(status=404)
+            logger.warning("Invalid Google Calendar webhook: %s", error_msg)
+            return HttpResponse(status=400)
+        except WebhookProcessingFailedError as e:
+            # This handles webhook validation errors
             logger.warning("Invalid Google Calendar webhook: %s", str(e))
             return HttpResponse(status=400)
         except Exception as e:
@@ -133,8 +104,23 @@ class MicrosoftCalendarWebhookView(View):
         # Check for validation token (subscription setup)
         validation_token = request.GET.get("validationToken")
         if validation_token:
-            # Return validation token as plain text for subscription verification
-            return HttpResponse(validation_token, content_type="text/plain")
+            # Sanitize validation token to prevent XSS attacks
+            # Microsoft validation tokens are UUIDs, so we can validate the format
+            import re
+
+            if re.match(
+                r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+                validation_token,
+                re.IGNORECASE,
+            ):
+                # Return validation token as plain text for subscription verification
+                return HttpResponse(validation_token, content_type="text/plain")
+            else:
+                logger.warning(
+                    "Invalid validation token format received",
+                    extra={"organization_id": organization_id},
+                )
+                return HttpResponse(status=400)
 
         # TODO: Implement Microsoft webhook processing in Phase 3
         logger.info(

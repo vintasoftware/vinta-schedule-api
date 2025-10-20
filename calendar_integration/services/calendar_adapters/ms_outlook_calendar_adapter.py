@@ -25,6 +25,7 @@ from typing import Any, ClassVar, Literal, TypedDict, TypeGuard
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.http import HttpHeaders, HttpRequest
 
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_client import (
@@ -154,6 +155,14 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         # Test the connection
         if not self.client.test_connection():
             raise ValueError("Invalid or expired Microsoft Graph credentials provided.")
+
+    @staticmethod
+    def parse_webhook_headers(headers: HttpHeaders) -> dict[str, str]:
+        return {}
+
+    @staticmethod
+    def extract_calendar_external_id_from_webhook_request(request: HttpRequest) -> str:
+        return ""
 
     def _convert_ms_event_to_calendar_event_data(
         self, ms_event: MSGraphEvent, calendar_id: str

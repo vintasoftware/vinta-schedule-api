@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal, cast
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Q
+from django.http import HttpRequest
 from django.urls import reverse
 
 from allauth.socialaccount.models import SocialAccount, SocialToken
@@ -22,7 +23,11 @@ from calendar_integration.constants import (
     CalendarType,
     IncomingWebhookProcessingStatus,
 )
-from calendar_integration.exceptions import InvalidCalendarTokenError
+from calendar_integration.exceptions import (
+    InvalidCalendarTokenError,
+    ServiceNotAuthenticatedError,
+    WebhookIgnoredError,
+)
 from calendar_integration.models import (
     AvailableTime,
     AvailableTimeBulkModification,
@@ -268,6 +273,24 @@ class CalendarService(BaseCalendarService):
         )
 
     @staticmethod
+    def _get_calendar_adapter_cls_for_provider(provider: CalendarProvider):
+        if provider == CalendarProvider.GOOGLE:
+            from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
+                GoogleCalendarAdapter,
+            )
+
+            return GoogleCalendarAdapter
+
+        if provider == CalendarProvider.MICROSOFT:
+            from calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter import (
+                MSOutlookCalendarAdapter,
+            )
+
+            return MSOutlookCalendarAdapter
+
+        raise NotImplementedError(f"Calendar adapter for provider {provider} is not implemented.")
+
+    @staticmethod
     def get_calendar_adapter_for_account(
         account: User | GoogleCalendarServiceAccount,
     ) -> tuple[CalendarAdapter, SocialAccount | GoogleCalendarServiceAccount]:
@@ -309,35 +332,17 @@ class CalendarService(BaseCalendarService):
                 "User doesn't have a valid calendar token. Please reauthenticate"
             )
 
-        if token.account.provider == CalendarProvider.GOOGLE:
-            from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
-                GoogleCalendarAdapter,
-            )
-
-            return GoogleCalendarAdapter(
-                credentials_dict={
-                    "token": token.token,
-                    "refresh_token": token.token_secret,
-                    "account_id": f"social-{token.account_id}",
-                }
-            ), token.account
-
-        if token.account.provider == CalendarProvider.MICROSOFT:
-            from calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter import (
-                MSOutlookCalendarAdapter,
-            )
-
-            return MSOutlookCalendarAdapter(
-                credentials_dict={
-                    "token": token.token,
-                    "refresh_token": token.token_secret,
-                    "account_id": f"social-{token.account_id}",
-                }
-            ), token.account
-
-        raise NotImplementedError(
-            f"Calendar adapter for provider {token.account.provider} is not implemented."
+        calendar_adapter_cls = CalendarService._get_calendar_adapter_cls_for_provider(
+            token.account.provider
         )
+
+        return calendar_adapter_cls(
+            credentials_dict={
+                "token": token.token,
+                "refresh_token": token.token_secret,
+                "account_id": f"social-{token.account_id}",
+            }
+        ), token.account
 
     def authenticate(
         self,
@@ -3964,13 +3969,14 @@ class CalendarService(BaseCalendarService):
     def process_webhook_notification(
         self,
         provider: str,
+        calendar_external_id: str,
         headers: dict[str, str],
         payload: dict | str | None = None,
         validation_token: str | None = None,
-    ) -> CalendarWebhookEvent | str:
+    ) -> CalendarWebhookEvent | None:
         """
         Process incoming webhook notification using adapter validation.
-        Returns CalendarWebhookEvent for notifications or validation token for validation requests.
+        Returns CalendarWebhookEvent for notification
 
         Args:
             provider: Calendar provider (google, microsoft)
@@ -3979,7 +3985,7 @@ class CalendarService(BaseCalendarService):
             validation_token: Validation token for subscription setup
 
         Returns:
-            CalendarWebhookEvent for notifications or validation token for validation
+            CalendarWebhookEvent for notifications
 
         Raises:
             ValueError: If validation fails or provider not supported
@@ -3987,32 +3993,39 @@ class CalendarService(BaseCalendarService):
         logger = logging.getLogger(__name__)
 
         if not is_initialized_or_authenticated_calendar_service(self):
-            raise ValueError("Calendar service not initialized")
-
-        # Handle provider-specific validation/parsing
-        if provider == "google":
-            from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
-                GoogleCalendarAdapter,
+            # For webhook processing, we can proceed with limited functionality
+            logger.warning(
+                "Webhook received but calendar service not authenticated, webhook event recorded for later processing"
             )
 
-            if not self.calendar_adapter or self.calendar_adapter.provider != "google":
-                # Initialize Google adapter for validation (we might not have it authenticated)
-                parsed_data = GoogleCalendarAdapter.validate_webhook_notification_static(
-                    headers, json.dumps(payload) if payload else ""
-                )
-            else:
-                parsed_data = self.calendar_adapter.validate_webhook_notification(
-                    headers, json.dumps(payload) if payload else ""
-                )
+        # Try to get calendar and adapter, but don't fail if not authenticated
+        calendar = None
+        calendar_adapter = None
 
-        elif provider == "microsoft":
-            if validation_token:
-                return validation_token  # Return validation token for subscription setup
+        try:
+            calendar = self._get_calendar_by_external_id(calendar_external_id)
+            calendar_adapter = self._get_write_adapter_for_calendar(calendar)
+        except (ServiceNotAuthenticatedError, Calendar.DoesNotExist):
+            # Calendar not found or not authenticated - we'll still record the webhook event
+            pass
 
-            # This will be implemented in Phase 3
-            raise ValueError("Microsoft webhook validation not yet implemented")
+        # Handle provider-specific validation/parsing
+        # Use static validation if we don't have an authenticated adapter
+        if calendar_adapter:
+            parsed_data = calendar_adapter.validate_webhook_notification(
+                headers, json.dumps(payload) if payload else ""
+            )
         else:
-            raise ValueError(f"Unsupported webhook provider: {provider}")
+            # Use static validation method
+            calendar_adapter_cls = self._get_calendar_adapter_cls_for_provider(
+                CalendarProvider(provider)
+            )
+            parsed_data = calendar_adapter_cls.validate_webhook_notification_static(
+                headers, json.dumps(payload) if payload else ""
+            )
+
+        if not self.organization:
+            raise ValueError("Organization context not set on calendar service")
 
         # Create webhook event record
         webhook_event = CalendarWebhookEvent.objects.create(
@@ -4058,3 +4071,54 @@ class CalendarService(BaseCalendarService):
             # Don't re-raise the exception - webhook event is recorded
 
         return webhook_event
+
+    def handle_webhook(
+        self, provider: CalendarProvider, request: HttpRequest
+    ) -> CalendarWebhookEvent | None:
+        """
+        Handle Google Calendar webhook processing with organization context.
+
+        Args:
+            request: HttpRequest object containing webhook data
+
+        Returns:
+            CalendarWebhookEvent if processed successfully, None for sync notifications
+
+        Raises:
+            ValueError: If webhook validation fails or organization not found
+            Exception: If processing fails
+        """
+
+        if not request.resolver_match:
+            raise ValueError("Invalid request object")
+
+        # Extract organization ID from URL path
+        organization_id = request.resolver_match.kwargs.get("organization_id")
+        if not organization_id:
+            raise ValueError("Organization ID not found in request")
+
+        # Get organization
+        try:
+            organization = Organization.objects.get(id=organization_id)
+        except Organization.DoesNotExist as exc:
+            raise ValueError(f"Organization not found: {organization_id}") from exc
+
+        calendar_adapter_cls = self._get_calendar_adapter_cls_for_provider(provider)
+
+        headers = calendar_adapter_cls.parse_webhook_headers(request.headers)
+        calendar_external_id = (
+            calendar_adapter_cls.extract_calendar_external_id_from_webhook_request(request)
+        )
+
+        # Set organization context on the service
+        self.organization = organization
+
+        # Process the webhook notification
+        try:
+            return self.process_webhook_notification(
+                provider=provider,
+                calendar_external_id=calendar_external_id,
+                headers=headers,
+            )
+        except WebhookIgnoredError:
+            return None
