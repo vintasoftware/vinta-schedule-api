@@ -19,7 +19,10 @@ Implementation Notes:
 """
 
 import datetime
+import json
 import logging
+import re
+import uuid
 from collections.abc import Iterable
 from typing import Any, ClassVar, Literal, TypedDict, TypeGuard
 
@@ -28,6 +31,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpHeaders, HttpRequest
 
 from calendar_integration.constants import CalendarProvider
+from calendar_integration.exceptions import WebhookProcessingFailedError
 from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_client import (
     MSGraphAPIError,
     MSGraphEvent,
@@ -158,11 +162,52 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
 
     @staticmethod
     def parse_webhook_headers(headers: HttpHeaders) -> dict[str, str]:
-        return {}
+        """
+        Parse Microsoft Graph webhook headers.
+
+        Microsoft webhooks don't use custom headers like Google Calendar,
+        but we return the standard headers that might be useful for validation.
+        """
+        return {
+            "Content-Type": headers.get("Content-Type", ""),
+            "User-Agent": headers.get("User-Agent", ""),
+            "Host": headers.get("Host", ""),
+        }
 
     @staticmethod
     def extract_calendar_external_id_from_webhook_request(request: HttpRequest) -> str:
-        return ""
+        """
+        Extract calendar external ID from Microsoft Graph webhook request.
+
+        For Microsoft webhooks, we need to parse the request body to get the resource
+        information since it's not available in headers like Google Calendar.
+        """
+        try:
+            # For validation requests, we don't have a calendar ID
+            if request.GET.get("validationToken"):
+                return ""
+
+            # For notification requests, we need to parse the JSON body
+            if request.body:
+                payload = json.loads(request.body)
+                if payload.get("value"):
+                    # Get the first notification's resource
+                    notification = payload["value"][0]
+                    resource = notification.get("resource", "")
+
+                    # Parse calendar ID from resource
+                    # Format: "/me/events/{eventId}" or "/me/calendars/{calendarId}/events/{eventId}"
+                    if "/calendars/" in resource:
+                        match = re.search(r"/calendars/([^/]+)/events", resource)
+                        if match:
+                            return match.group(1)
+                    elif "/me/events" in resource:
+                        return "primary"  # Default calendar
+
+            return ""
+
+        except (json.JSONDecodeError, KeyError, IndexError):
+            return ""
 
     def _convert_ms_event_to_calendar_event_data(
         self, ms_event: MSGraphEvent, calendar_id: str
@@ -1069,15 +1114,56 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
     ) -> dict[str, Any]:
         """
         Create a webhook subscription with tracking parameters.
-        :param organization_id: ID of the organization.
-        :param resource_id: ID of the calendar resource to subscribe to.
-        :param callback_url: URL to receive webhook notifications.
-        :param tracking_params: Optional dictionary of tracking parameters.
-        :return: A dict.
-        """
+        Enhanced version of subscribe_to_calendar_events that returns subscription details.
 
-        # TODO: Implement tracking parameters in subscription creation if supported
-        return {}
+        Args:
+            resource_id: ID of the calendar resource to subscribe to
+            callback_url: URL to receive webhook notifications
+            tracking_params: Optional dictionary of tracking parameters
+                - client_state: Custom verification token
+                - expiration_hours: Hours until subscription expires (max 4230 minutes = ~70 hours)
+
+        Returns:
+            Dictionary containing subscription details
+        """
+        if not tracking_params:
+            tracking_params = {}
+
+        client_state = tracking_params.get("client_state")
+        expiration_hours = tracking_params.get("expiration_hours", 24)
+
+        if not client_state:
+            client_state = f"vinta-schedule-{uuid.uuid4().hex[:16]}"
+
+        # Calculate expiration (Microsoft max is 4230 minutes = ~70 hours)
+        expiration_hours = min(expiration_hours, 70)
+        expiration = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+            hours=expiration_hours
+        )
+
+        try:
+            subscription = self.client.subscribe_to_calendar_events(
+                calendar_id=resource_id,
+                notification_url=callback_url,
+                change_types=["created", "updated", "deleted"],
+                client_state=client_state,
+                expiration_datetime=expiration,
+            )
+
+            return {
+                "subscription_id": subscription.get("id"),
+                "resource": subscription.get("resource"),
+                "calendar_id": resource_id,
+                "callback_url": callback_url,
+                "client_state": client_state,
+                "expiration": expiration.isoformat().replace("+00:00", "Z"),
+                "change_types": subscription.get("changeType", "created,updated,deleted").split(
+                    ","
+                ),
+            }
+
+        except MSGraphAPIError as e:
+            raise ValueError(f"Failed to create Microsoft webhook subscription: {e}") from e
 
     def validate_webhook_notification(
         self,
@@ -1086,15 +1172,102 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         expected_channel_id: str | None = None,
     ) -> dict[str, Any]:
         """
-        Validate an incoming webhook notification.
-        :param headers: Headers from the webhook request.
-        :param body: Body from the webhook request.
-        :param expected_channel_id: Optional expected channel ID for validation.
-        :return: Parsed notification data.
-        """
+        Validate incoming Microsoft Graph webhook notification.
+        Returns parsed webhook data if valid.
 
-        # TODO: Implement webhook validation logic
-        return {}
+        Args:
+            headers: HTTP headers from the webhook request
+            body: Request body containing the notification payload
+            expected_channel_id: Optional channel ID to validate against (unused for Microsoft)
+
+        Returns:
+            Dictionary containing parsed webhook data
+
+        Raises:
+            WebhookProcessingFailedError: If webhook validation fails
+        """
+        return self._parse_webhook_notification(body)
+
+    @staticmethod
+    def _parse_webhook_notification(body: bytes | str) -> dict[str, Any]:
+        """
+        Shared helper for parsing Microsoft Graph webhook notifications.
+
+        Args:
+            body: Request body containing the notification payload
+
+        Returns:
+            Dictionary containing parsed webhook data
+
+        Raises:
+            WebhookProcessingFailedError: If webhook validation fails
+        """
+        try:
+            if isinstance(body, bytes):
+                body = body.decode("utf-8")
+
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise WebhookProcessingFailedError(f"Invalid JSON payload: {e}") from e
+
+        if not payload.get("value"):
+            raise WebhookProcessingFailedError(
+                "Invalid Microsoft Graph webhook payload: missing 'value' field"
+            )
+
+        notifications = payload["value"]
+        processed_notifications = []
+
+        for notification in notifications:
+            # Extract notification details
+            subscription_id = notification.get("subscriptionId")
+            change_type = notification.get("changeType")  # created, updated, deleted
+            resource = notification.get("resource")  # e.g., "/me/events/eventId"
+            client_state = notification.get("clientState")  # Our verification token
+
+            if not all([subscription_id, change_type, resource]):
+                raise WebhookProcessingFailedError(
+                    "Missing required Microsoft webhook notification fields"
+                )
+
+            # Parse calendar and event IDs from resource
+            # Format: "/me/events/{eventId}" or "/me/calendars/{calendarId}/events/{eventId}"
+            calendar_id = "primary"  # Default for "/me/events"
+            event_id = None
+
+            if "/calendars/" in resource:
+                match = re.search(r"/calendars/([^/]+)/events/([^/]+)", resource)
+                if match:
+                    calendar_id, event_id = match.groups()
+            elif "/events/" in resource:
+                match = re.search(r"/events/([^/]+)", resource)
+                if match:
+                    event_id = match.group(1)
+
+            processed_notifications.append(
+                {
+                    "provider": "microsoft",
+                    "subscription_id": subscription_id,
+                    "change_type": change_type,
+                    "calendar_id": calendar_id,
+                    "event_id": event_id,
+                    "resource": resource,
+                    "client_state": client_state,
+                    "event_type": change_type,  # created, updated, deleted
+                }
+            )
+
+        return {
+            "provider": "microsoft",
+            "notifications": processed_notifications,
+            # For compatibility with the service layer, we return the first notification's calendar_id
+            "calendar_id": processed_notifications[0]["calendar_id"]
+            if processed_notifications
+            else "",
+            "event_type": processed_notifications[0]["event_type"]
+            if processed_notifications
+            else "unknown",
+        }
 
     @staticmethod
     def validate_webhook_notification_static(
@@ -1103,12 +1276,14 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         expected_channel_id: str | None = None,
     ) -> dict[str, Any]:
         """
-        Validate an incoming webhook notification (static method).
-        :param headers: Headers from the webhook request.
-        :param body: Body from the webhook request.
-        :param expected_channel_id: Optional expected channel ID for validation.
-        :return: Parsed notification data.
-        """
+        Static version of validate_webhook_notification for use without adapter instance.
 
-        # TODO: Implement static webhook validation logic
-        return {}
+        Args:
+            headers: HTTP headers from the webhook request (unused for Microsoft)
+            body: Request body containing the notification payload
+            expected_channel_id: Optional channel ID to validate against (unused for Microsoft)
+
+        Returns:
+            Dictionary containing parsed webhook data
+        """
+        return MSOutlookCalendarAdapter._parse_webhook_notification(body)
