@@ -13,7 +13,6 @@ from dependency_injector.wiring import Provide, inject
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.exceptions import WebhookProcessingFailedError
 from calendar_integration.services.calendar_service import CalendarService
-from organizations.models import Organization
 
 
 logger = logging.getLogger(__name__)
@@ -88,20 +87,30 @@ class MicrosoftCalendarWebhookView(View):
     This will be implemented in Phase 3 of the plan.
     """
 
-    def post(self, request: HttpRequest, organization_id: int) -> HttpResponse:
+    @inject
+    def post(
+        self,
+        request: HttpRequest,
+        organization_id: int,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
+    ) -> HttpResponse:
         """
         Handle Microsoft Graph webhook notifications.
 
         Args:
             request: HTTP request object
             organization_id: Organization ID from URL path
+            calendar_service: Injected calendar service
+
+        Returns:
+        - 200: Webhook processed successfully or validation token returned
+        - 400: Invalid webhook payload or validation token
+        - 404: Organization not found
+        - 500: Internal server error
         """
-        # Get organization from URL parameter
-        try:
-            organization = Organization.objects.get(id=organization_id)  # noqa: F841
-        except Organization.DoesNotExist:
-            logger.warning("Organization not found: %s", organization_id)
-            return HttpResponse(status=404)
+        logger.info(
+            "Microsoft Calendar webhook received", extra={"organization_id": organization_id}
+        )
 
         # Check for validation token (subscription setup)
         validation_token = request.GET.get("validationToken")
@@ -124,9 +133,33 @@ class MicrosoftCalendarWebhookView(View):
                 )
                 return HttpResponse(status=400)
 
-        # TODO: Implement Microsoft webhook processing in Phase 3
-        logger.info(
-            "Microsoft Calendar webhook received (not yet implemented)",
-            extra={"organization_id": organization_id},
-        )
-        return HttpResponse(status=200)
+        # Process Microsoft webhook notification
+        try:
+            logger.info(
+                "Microsoft Calendar webhook received", extra={"organization_id": organization_id}
+            )
+
+            result = calendar_service.handle_webhook(CalendarProvider.MICROSOFT, request)
+
+            # None result means notification was processed but no sync was needed
+            if result is None:
+                logger.info("Microsoft Calendar webhook processed successfully (no sync needed)")
+
+            logger.info("Microsoft Calendar webhook processed successfully")
+            return HttpResponse(status=200)
+
+        except ValueError as e:
+            # This handles organization not found errors and validation failures
+            error_msg = str(e)
+            if "Organization not found" in error_msg:
+                logger.warning("Organization not found: %s", organization_id)
+                return HttpResponse(status=404)
+            logger.warning("Invalid Microsoft Calendar webhook: %s", error_msg)
+            return HttpResponse(status=400)
+        except WebhookProcessingFailedError as e:
+            # This handles webhook validation errors
+            logger.warning("Invalid Microsoft Calendar webhook: %s", str(e))
+            return HttpResponse(status=400)
+        except Exception as e:
+            logger.exception("Error processing Microsoft Calendar webhook: %s", str(e))
+            return HttpResponse(status=500)

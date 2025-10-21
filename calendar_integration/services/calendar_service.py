@@ -3931,8 +3931,11 @@ class CalendarService(BaseCalendarService):
                 tracking_params={"ttl_seconds": expiration_hours * 3600},
             )
         elif calendar.provider == CalendarProvider.MICROSOFT:
-            # This will be implemented in Phase 3
-            raise ValueError("Microsoft webhook subscriptions not yet implemented")
+            subscription_data = self.calendar_adapter.create_webhook_subscription_with_tracking(
+                resource_id=calendar.external_id,
+                callback_url=callback_url,
+                tracking_params={"expiration_hours": expiration_hours},
+            )
         else:
             raise ValueError(
                 f"Webhook subscriptions not supported for provider: {calendar.provider}"
@@ -3943,11 +3946,19 @@ class CalendarService(BaseCalendarService):
         expires_at = None
         if expiration_timestamp is not None:
             try:
-                # Google returns expiration as milliseconds since epoch
-                expires_at = datetime.datetime.fromtimestamp(
-                    int(expiration_timestamp) / 1000, tz=datetime.UTC
-                )
+                if calendar.provider == CalendarProvider.GOOGLE:
+                    # Google returns expiration as milliseconds since epoch
+                    expires_at = datetime.datetime.fromtimestamp(
+                        int(expiration_timestamp) / 1000, tz=datetime.UTC
+                    )
+                elif calendar.provider == CalendarProvider.MICROSOFT:
+                    # Microsoft returns expiration as ISO 8601 string
+                    expires_at = datetime.datetime.fromisoformat(
+                        expiration_timestamp.replace("Z", "+00:00")
+                    )
             except (ValueError, TypeError):
+                # Log or handle malformed expiration value gracefully
+                expires_at = None
                 # Log or handle malformed expiration value gracefully
                 expires_at = None
 
