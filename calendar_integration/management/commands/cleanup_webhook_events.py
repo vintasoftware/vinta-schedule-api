@@ -11,7 +11,7 @@ from organizations.models import Organization
 class Command(BaseCommand):
     """Management command for cleaning up old webhook events."""
 
-    help_text = "Clean up old webhook events to manage database size"
+    help = "Clean up old webhook events to manage database size"  # noqa: A003
 
     def add_arguments(self, parser: CommandParser) -> None:
         """Add command arguments."""

@@ -51,6 +51,7 @@ class TestWebhookAnalyticsService:
             processing_status=IncomingWebhookProcessingStatus.PROCESSED,
             created=start_time,
             processed_at=start_time + datetime.timedelta(seconds=5),
+            raw_payload={"test": "payload"},
         )
 
         CalendarWebhookEvent.objects.create(
@@ -60,6 +61,7 @@ class TestWebhookAnalyticsService:
             external_calendar_id="test-cal",
             processing_status=IncomingWebhookProcessingStatus.FAILED,
             created=start_time,
+            raw_payload={"test": "payload"},
         )
 
         stats = self.analytics_service.get_webhook_delivery_stats(hours_back=24)
@@ -98,6 +100,7 @@ class TestWebhookAnalyticsService:
             processing_status=IncomingWebhookProcessingStatus.PROCESSED,
             created=start_time,
             processed_at=start_time + datetime.timedelta(seconds=2),  # 2 second latency
+            raw_payload={"test": "payload"},
         )
 
         CalendarWebhookEvent.objects.create(
@@ -108,6 +111,7 @@ class TestWebhookAnalyticsService:
             processing_status=IncomingWebhookProcessingStatus.PROCESSED,
             created=start_time,
             processed_at=start_time + datetime.timedelta(seconds=4),  # 4 second latency
+            raw_payload={"test": "payload"},
         )
 
         metrics = self.analytics_service.get_webhook_latency_metrics(hours_back=24)
@@ -129,6 +133,7 @@ class TestWebhookAnalyticsService:
                 external_calendar_id=f"test-cal-{i}",
                 processing_status=IncomingWebhookProcessingStatus.PROCESSED,
                 created=now - datetime.timedelta(minutes=30),
+                raw_payload={"test": "payload"},
             )
 
         alert = self.analytics_service.generate_webhook_failure_alert(
@@ -151,6 +156,7 @@ class TestWebhookAnalyticsService:
                 external_calendar_id=f"test-cal-success-{i}",
                 processing_status=IncomingWebhookProcessingStatus.PROCESSED,
                 created=now - datetime.timedelta(minutes=30),
+                raw_payload={"test": "payload"},
             )
 
         for i in range(7):
@@ -161,6 +167,7 @@ class TestWebhookAnalyticsService:
                 external_calendar_id=f"test-cal-fail-{i}",
                 processing_status=IncomingWebhookProcessingStatus.FAILED,
                 created=now - datetime.timedelta(minutes=30),
+                raw_payload={"test": "payload"},
             )
 
         alert = self.analytics_service.generate_webhook_failure_alert(
@@ -193,6 +200,7 @@ class TestWebhookAnalyticsService:
             event_type="created",
             external_calendar_id="old-event",
             created=old_time,
+            raw_payload={"test": "payload"},
         )
 
         CalendarWebhookEvent.objects.create(
@@ -201,6 +209,7 @@ class TestWebhookAnalyticsService:
             event_type="created",
             external_calendar_id="recent-event",
             created=recent_time,
+            raw_payload={"test": "payload"},
         )
 
         # Cleanup events older than 30 days
@@ -226,21 +235,21 @@ class TestWebhookManagementCommands(TestCase):
         from calendar_integration.management.commands.webhook_health_check import Command
 
         command = Command()
-        assert command.help == "Check webhook system health and generate diagnostic reports"
+        assert command.help == "Check webhook system health and generate diagnostic reports"  # noqa: A003
 
     def test_cleanup_webhook_events_command_import(self):
         """Test that cleanup command can be imported."""
         from calendar_integration.management.commands.cleanup_webhook_events import Command
 
         command = Command()
-        assert command.help == "Clean up old webhook events to manage database size"
+        assert command.help == "Clean up old webhook events to manage database size"  # noqa: A003
 
     def test_refresh_webhook_subscriptions_command_import(self):
         """Test that refresh command can be imported."""
         from calendar_integration.management.commands.refresh_webhook_subscriptions import Command
 
         command = Command()
-        assert command.help == "Refresh expiring webhook subscriptions"
+        assert command.help == "Refresh expiring webhook subscriptions"  # noqa: A003
 
 
 class TestWebhookAdmin(TestCase):
