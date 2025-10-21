@@ -5,11 +5,12 @@ import logging
 import zoneinfo
 from collections.abc import Callable, Iterable
 from functools import lru_cache
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Any, Literal, TypedDict, cast
 
+from django.conf import settings
 from django.core.exceptions import PermissionDenied
-from django.db import transaction
-from django.db.models import Q
+from django.db import models, transaction
+from django.db.models import Q, QuerySet
 from django.http import HttpRequest
 from django.urls import reverse
 
@@ -87,6 +88,16 @@ from calendar_integration.services.type_guards import (
 from organizations.models import Organization
 from public_api.models import SystemUser
 from users.models import User
+
+
+class WebhookHealthStatus(TypedDict):
+    total_subscriptions: int
+    active_subscriptions: int
+    expired_subscriptions: int
+    expiring_soon_subscriptions: int
+    recent_events_count: int
+    failed_events_count: int
+    success_rate: float
 
 
 class CalendarService(BaseCalendarService):
@@ -1727,8 +1738,6 @@ class CalendarService(BaseCalendarService):
             # will perform explicit adapter calls when truncating the master series.
 
             # Return the updated master object
-            from django.db import models
-
             parent_model = cast(models.Model, parent_object)
             return parent_object.__class__.objects.get(
                 organization_id=parent_object.organization_id, id=parent_model.pk
@@ -3918,8 +3927,6 @@ class CalendarService(BaseCalendarService):
             # Convert to absolute URL if needed
             # In production, you might want to configure the domain via settings
             if callback_url.startswith("/"):
-                from django.conf import settings
-
                 domain = getattr(settings, "WEBHOOK_DOMAIN", "https://your-domain.com")
                 callback_url = f"{domain.rstrip('/')}{callback_url}"
 
@@ -4137,3 +4144,148 @@ class CalendarService(BaseCalendarService):
             )
         except WebhookIgnoredError:
             return None
+
+    def list_webhook_subscriptions(self) -> QuerySet[CalendarWebhookSubscription]:
+        """List all active webhook subscriptions for the organization.
+
+        Returns:
+            QuerySet of CalendarWebhookSubscription objects for the organization
+
+        Raises:
+            ValueError: If organization is not set
+        """
+        if not self.organization:
+            raise ValueError("Organization must be set")
+
+        return CalendarWebhookSubscription.objects.filter(
+            organization=self.organization, is_active=True
+        ).select_related("calendar")
+
+    def delete_webhook_subscription(self, subscription_id: int) -> bool:
+        """Delete a webhook subscription from provider and database.
+
+        Args:
+            subscription_id: ID of the subscription to delete
+
+        Returns:
+            True if successfully deleted, False if subscription not found
+
+        Raises:
+            ValueError: If organization is not set or subscription not found
+        """
+        if not self.organization:
+            raise ValueError("Organization must be set")
+
+        try:
+            subscription = CalendarWebhookSubscription.objects.get(
+                id=subscription_id, organization=self.organization
+            )
+        except CalendarWebhookSubscription.DoesNotExist:
+            return False
+
+        # TODO: Add provider-specific subscription deletion when implementing
+        # Google Calendar and Microsoft Graph subscription deletion APIs
+        # For now, just mark as inactive
+        subscription.is_active = False
+        subscription.save(update_fields=["is_active", "modified"])
+
+        return True
+
+    def refresh_webhook_subscription(
+        self, subscription_id: int
+    ) -> CalendarWebhookSubscription | None:
+        """Refresh/renew a webhook subscription with the provider.
+
+        Args:
+            subscription_id: ID of the subscription to refresh
+
+        Returns:
+            Updated CalendarWebhookSubscription if successful, None if not found
+
+        Raises:
+            ValueError: If organization is not set
+        """
+        if not self.organization:
+            raise ValueError("Organization must be set")
+
+        try:
+            subscription = CalendarWebhookSubscription.objects.get(
+                id=subscription_id, organization=self.organization, is_active=True
+            )
+        except CalendarWebhookSubscription.DoesNotExist:
+            return None
+
+        # TODO: Implement provider-specific subscription renewal
+        # For now, extend expiration by default duration based on provider
+        now = datetime.datetime.now(tz=datetime.UTC)
+        if subscription.provider == CalendarProvider.GOOGLE:
+            # Google allows max 7 days (604800 seconds)
+            new_expiration = now + datetime.timedelta(days=7)
+        elif subscription.provider == CalendarProvider.MICROSOFT:
+            # Microsoft allows max ~70 hours (4230 minutes)
+            new_expiration = now + datetime.timedelta(minutes=4230)
+        else:
+            # Default to 1 day for other providers
+            new_expiration = now + datetime.timedelta(days=1)
+
+        subscription.expires_at = new_expiration
+        subscription.save(update_fields=["expires_at", "modified"])
+
+        return subscription
+
+    def get_webhook_health_status(self) -> WebhookHealthStatus:
+        """Get webhook system health status for the organization.
+
+        Returns:
+            WebhookHealthStatus with webhook health metrics
+
+        Raises:
+            ValueError: If organization is not set
+        """
+        if not self.organization:
+            raise ValueError("Organization must be set")
+
+        # Time boundaries
+        now = datetime.datetime.now(tz=datetime.UTC)
+        twenty_four_hours_ago = now - datetime.timedelta(hours=24)
+        expiring_soon_threshold = now + datetime.timedelta(hours=24)
+
+        # Subscription counts
+        subscriptions_qs = CalendarWebhookSubscription.objects.filter(
+            organization=self.organization
+        )
+        total_subscriptions = subscriptions_qs.count()
+        active_subscriptions = subscriptions_qs.filter(is_active=True).count()
+        expired_subscriptions = subscriptions_qs.filter(is_active=True, expires_at__lt=now).count()
+        expiring_soon_subscriptions = subscriptions_qs.filter(
+            is_active=True,
+            expires_at__gte=now,
+            expires_at__lte=expiring_soon_threshold,
+        ).count()
+
+        # Event counts in last 24 hours
+        events_qs = CalendarWebhookEvent.objects.filter(
+            organization=self.organization, created__gte=twenty_four_hours_ago
+        )
+        recent_events_count = events_qs.count()
+        failed_events_count = events_qs.filter(
+            processing_status=IncomingWebhookProcessingStatus.FAILED
+        ).count()
+
+        # Calculate success rate
+        if recent_events_count > 0:
+            success_rate = ((recent_events_count - failed_events_count) / recent_events_count) * 100
+        else:
+            success_rate = 100.0
+
+        return WebhookHealthStatus(
+            {
+                "total_subscriptions": total_subscriptions,
+                "active_subscriptions": active_subscriptions,
+                "expired_subscriptions": expired_subscriptions,
+                "expiring_soon_subscriptions": expiring_soon_subscriptions,
+                "recent_events_count": recent_events_count,
+                "failed_events_count": failed_events_count,
+                "success_rate": success_rate,
+            }
+        )

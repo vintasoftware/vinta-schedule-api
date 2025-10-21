@@ -17,7 +17,10 @@ from calendar_integration.graphql import (
     BlockedTimeGraphQLType,
     CalendarEventGraphQLType,
     CalendarGraphQLType,
+    CalendarWebhookEventGraphQLType,
+    CalendarWebhookSubscriptionGraphQLType,
     UnavailableTimeWindowGraphQLType,
+    WebhookSubscriptionStatusGraphQLType,
 )
 from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarEvent
 from public_api.permissions import (
@@ -314,3 +317,81 @@ class Query:
             )
             for w in unavailable_windows
         ]
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def webhook_subscriptions(
+        self,
+        info: strawberry.Info,
+        calendar_id: int | None = None,
+        provider: str | None = None,
+    ) -> list[CalendarWebhookSubscriptionGraphQLType]:
+        """Get webhook subscriptions filtered by user's organization."""
+        org = _get_org(info)
+        deps = get_query_dependencies()
+
+        # Set organization context on service
+        deps.calendar_service.organization = org
+
+        subscriptions = deps.calendar_service.list_webhook_subscriptions()
+
+        if calendar_id is not None:
+            subscriptions = subscriptions.filter(calendar__id=calendar_id)
+        if provider is not None:
+            subscriptions = subscriptions.filter(provider=provider)
+
+        return list(subscriptions)  # type: ignore
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def webhook_events(
+        self,
+        info: strawberry.Info,
+        subscription_id: int | None = None,
+        processing_status: str | None = None,
+        hours_back: int = 24,
+        limit: int = 50,
+    ) -> list[CalendarWebhookEventGraphQLType]:
+        """Get recent webhook events filtered by user's organization."""
+        org = _get_org(info)
+
+        import datetime
+
+        from calendar_integration.models import CalendarWebhookEvent
+
+        start_time = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=hours_back)
+
+        queryset = (
+            CalendarWebhookEvent.objects.filter(organization=org, created__gte=start_time)
+            .select_related("subscription")
+            .order_by("-created")
+        )
+
+        if subscription_id is not None:
+            queryset = queryset.filter(subscription__id=subscription_id)
+        if processing_status is not None:
+            queryset = queryset.filter(processing_status=processing_status)
+
+        return list(queryset[:limit])
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def webhook_health(
+        self,
+        info: strawberry.Info,
+    ) -> WebhookSubscriptionStatusGraphQLType:
+        """Get webhook system health status for the organization."""
+        org = _get_org(info)
+        deps = get_query_dependencies()
+
+        # Set organization context on service
+        deps.calendar_service.organization = org
+
+        health_data = deps.calendar_service.get_webhook_health_status()
+
+        return WebhookSubscriptionStatusGraphQLType(
+            total_subscriptions=health_data["total_subscriptions"],
+            active_subscriptions=health_data["active_subscriptions"],
+            expired_subscriptions=health_data["expired_subscriptions"],
+            expiring_soon_subscriptions=health_data["expiring_soon_subscriptions"],
+            recent_events_count=health_data["recent_events_count"],
+            failed_events_count=health_data["failed_events_count"],
+            success_rate=health_data["success_rate"],
+        )

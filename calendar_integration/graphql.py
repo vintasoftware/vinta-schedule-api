@@ -10,6 +10,8 @@ from calendar_integration.models import (
     BlockedTimeRecurrenceException,
     Calendar,
     CalendarEvent,
+    CalendarWebhookEvent,
+    CalendarWebhookSubscription,
     EventAttendance,
     EventExternalAttendance,
     EventRecurrenceException,
@@ -253,3 +255,56 @@ class UnavailableTimeWindowGraphQLType:
     end_time: datetime.datetime
     id: int  # noqa: A003
     reason: str
+
+
+@strawberry_django.type(CalendarWebhookSubscription)
+class CalendarWebhookSubscriptionGraphQLType:
+    """GraphQL type for calendar webhook subscriptions."""
+
+    id: strawberry.auto  # noqa: A003
+    provider: strawberry.auto
+    external_subscription_id: strawberry.auto
+    external_resource_id: strawberry.auto
+    callback_url: strawberry.auto
+    channel_id: strawberry.auto
+    resource_uri: strawberry.auto
+    verification_token: strawberry.auto
+    expires_at: strawberry.auto
+    is_active: strawberry.auto
+    last_notification_at: strawberry.auto
+    created: datetime.datetime
+    modified: datetime.datetime
+
+    calendar: CalendarGraphQLType
+
+
+@strawberry_django.type(CalendarWebhookEvent)
+class CalendarWebhookEventGraphQLType:
+    """GraphQL type for calendar webhook events."""
+
+    id: strawberry.auto  # noqa: A003
+    provider: strawberry.auto
+    event_type: strawberry.auto
+    external_calendar_id: strawberry.auto
+    external_event_id: strawberry.auto
+    processed_at: strawberry.auto
+    processing_status: strawberry.auto
+    sync_triggered: bool
+    error_message: str | None
+    created: datetime.datetime
+    modified: datetime.datetime
+
+    subscription: CalendarWebhookSubscriptionGraphQLType | None
+
+
+@strawberry.type
+class WebhookSubscriptionStatusGraphQLType:
+    """GraphQL type for webhook subscription health status."""
+
+    total_subscriptions: int
+    active_subscriptions: int
+    expired_subscriptions: int
+    expiring_soon_subscriptions: int  # expiring within 24 hours
+    recent_events_count: int  # events in last 24 hours
+    failed_events_count: int  # failed events in last 24 hours
+    success_rate: float  # percentage of successful events in last 24 hours
