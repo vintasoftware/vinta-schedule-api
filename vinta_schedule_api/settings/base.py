@@ -440,6 +440,7 @@ if config("GOOGLE_CLIENT_ID", default=""):
             "openid",
             "profile",
             "email",
+            "calendar",
         ],
         "AUTH_PARAMS": {
             "access_type": "online",
