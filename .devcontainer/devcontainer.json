@@ -47,6 +47,7 @@
 				"ms-azuretools.vscode-docker",
 				"github.vscode-github-actions",
 				"timonwong.shellcheck",
+				"anthropic.claude-code",
 				"eamodio.gitlens", // GitLens is a Git supercharged
 				"GrapeCity.gc-excelviewer", // Excel/CSV Viewer
 				"wmaurer.change-case", // Change text Case
@@ -78,6 +79,46 @@
 				"python.defaultInterpreterPath": "/home/user/app/.venv/bin/python",
 				"python.analysis.autoImportCompletions": true,
 				"python.analysis.typeCheckingMode": "off",
+				"chat.mcp.discovery.enabled": {
+					"claude-desktop": true,
+					"cursor-global": true,
+					"cursor-workspace": true,
+					"windsurf": true
+				},
+				"chat.mcp.autostart": "newAndOutdated",
+				"mcp": {
+				"servers": {
+						"django-ai-boost": {
+							"command": "poetry",
+							"args": ["run", "django-ai-boost", "--settings", "myproject.settings"],
+							"env": {
+								"DJANGO_SETTINGS_MODULE": "vinta_schedule_api.settings.local"
+							}
+						}
+					}
+				},
+				"chat.mcp.serverSampling": {
+					"app/.vscode/mcp.json: django-ai-boost": {
+						"allowedModels": [
+							"copilot/gpt-5-mini",
+							"copilot/auto",
+							"copilot/claude-haiku-4.5",
+							"copilot/claude-sonnet-4",
+							"copilot/claude-sonnet-4.5",
+							"copilot/gemini-2.5-pro",
+							"copilot/gemini-3-pro-preview",
+							"copilot/gpt-4.1",
+							"copilot/gpt-4o",
+							"copilot/gpt-5",
+							"copilot/gpt-5-codex",
+							"copilot/gpt-5.1",
+							"copilot/gpt-5.1-codex",
+							"copilot/gpt-5.1-codex-mini",
+							"copilot/grok-code-fast-1",
+							"copilot/oswe-vscode-prime"
+						]
+					}
+				},
 				"emmet.includeLanguages": {
 					"django-html": "html"
 				},

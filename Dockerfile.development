@@ -29,10 +29,10 @@ USER user
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
 
 # Configure terminal - copy files first, then run setup
-COPY --chown=user:user ./.devcontainer/setup.sh /home/user/app/.devcontainer/setup.sh
+COPY --chown=user:user ./.devcontainer/setup-zsh.sh /home/user/app/.devcontainer/setup-zsh.sh
 COPY --chown=user:user ./.devcontainer/config-files/* /home/user/app/.devcontainer/config-files/
-RUN chmod +x /home/user/app/.devcontainer/setup.sh
-RUN /home/user/app/.devcontainer/setup.sh
+RUN chmod +x /home/user/app/.devcontainer/setup-zsh.sh
+RUN /home/user/app/.devcontainer/setup-zsh.sh
 
 # Install poetry as user
 # use official curl to respect $POETRY_VERSION & $POETRY_HOME

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "django-ai-boost": {
+      "command": "poetry",
+      "args": ["run", "django-ai-boost", "--settings", "vinta_schedule_api.settings.local"],
+      "env": {
+        "DJANGO_SETTINGS_MODULE": "vinta_schedule_api.settings.local"
+      }
+    }
+  }
+}
