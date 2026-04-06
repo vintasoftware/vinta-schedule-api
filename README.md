@@ -32,6 +32,20 @@
 -   To stop the project, run:
     `make down`
 
+#### Creating credentials for the API:
+
+Create super user:
+
+```sh
+docker compose run --rm api python manage.py createsuperuser
+```
+
+Get JWT from super user:
+
+```sh
+docker compose run --rm api python manage.py shell -c "from django.contrib.auth import get_user_model; from rest_framework_simplejwt.tokens import RefreshToken; U=get_user_model(); u=U.objects.get(email='pedro.fernandes@vinta.com.br'); print(str(RefreshToken.for_user(u).access_token))"
+```
+
 #### Adding new dependencies
 
 -   Open a new command line window and go to the project's directory
