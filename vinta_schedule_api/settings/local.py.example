@@ -17,6 +17,8 @@ if USE_LOCALSTACK:
     # External endpoint for browser/frontend access (S3Direct)
     S3DIRECT_ENDPOINT = config("LOCALSTACK_EXTERNAL_ENDPOINT", default="http://localhost:4566")
     AWS_MEDIA_REGION = AWS_S3_REGION_NAME
+    S3DIRECT_DESTINATIONS.setdefault("providers_documents", {})
+    S3DIRECT_DESTINATIONS.setdefault("healthcare_entities_documents", {})
     S3DIRECT_DESTINATIONS["providers_documents"]["bucket"] = AWS_MEDIA_BUCKET_NAME
     S3DIRECT_DESTINATIONS["providers_documents"]["acl"] = "private"
     S3DIRECT_DESTINATIONS["providers_documents"]["endpoint"] = S3DIRECT_ENDPOINT
@@ -45,6 +47,8 @@ else:
     AWS_MEDIA_REGION = AWS_S3_REGION_NAME
     AWS_CLOUDFRONT_KEY_ID = config("AWS_CLOUDFRONT_KEY_ID")
     AWS_CLOUDFRONT_KEY = config("AWS_CLOUDFRONT_KEY")
+    S3DIRECT_DESTINATIONS.setdefault("providers_documents", {})
+    S3DIRECT_DESTINATIONS.setdefault("healthcare_entities_documents", {})
     S3DIRECT_DESTINATIONS["providers_documents"]["bucket"] = AWS_MEDIA_BUCKET_NAME
     S3DIRECT_DESTINATIONS["providers_documents"]["acl"] = "private"
     S3DIRECT_DESTINATIONS["providers_documents"]["endpoint"] = S3DIRECT_ENDPOINT
