@@ -1,12 +1,13 @@
 import datetime
 from collections.abc import Iterable
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from django.db import transaction
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
 
+from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.exceptions import (
     CalendarGroupHasFutureEventsError,
     CalendarGroupSlotInUseError,
@@ -14,6 +15,7 @@ from calendar_integration.exceptions import (
     CalendarServiceOrganizationNotSetError,
 )
 from calendar_integration.models import (
+    BlockedTime,
     Calendar,
     CalendarEvent,
     CalendarEventGroupSelection,
@@ -25,12 +27,20 @@ from calendar_integration.querysets import CalendarEventQuerySet
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.dataclasses import (
     BookableSlotProposal,
+    CalendarEventInputData,
+    CalendarGroupEventInputData,
     CalendarGroupInputData,
     CalendarGroupRangeAvailability,
     CalendarGroupSlotAvailability,
     CalendarGroupSlotInputData,
+    EventAttendanceInputData,
 )
 from organizations.models import Organization
+from users.models import User
+
+
+if TYPE_CHECKING:
+    from calendar_integration.services.calendar_service import CalendarService
 
 
 class CalendarGroupService:
@@ -39,14 +49,24 @@ class CalendarGroupService:
     @inject
     def __init__(
         self,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
         calendar_permission_service: Annotated[
             "CalendarPermissionService | None", Provide["calendar_permission_service"]
         ] = None,
     ) -> None:
         self.organization = None
+        self.calendar_service = calendar_service
         self.calendar_permission_service = calendar_permission_service
 
     def initialize(self, organization: Organization) -> None:
+        """Initialize the service with the tenant organization.
+
+        For methods that need to delegate event creation to `CalendarService`
+        (i.e. `create_grouped_event`), the caller must also separately initialize
+        or authenticate `self.calendar_service` with the same organization — the
+        grouped-event flow needs external-provider adapters if any of the
+        selected calendars is backed by one.
+        """
         self.organization = organization
 
     def _assert_initialized(self) -> None:
@@ -319,6 +339,282 @@ class CalendarGroupService:
                 )
             )
         return results
+
+    # ------------------------------------------------------------------
+    # Grouped event creation
+    # ------------------------------------------------------------------
+    @transaction.atomic()
+    def create_grouped_event(self, data: CalendarGroupEventInputData) -> CalendarEvent:
+        """Create an event booked through a CalendarGroup.
+
+        Persistence strategy (per the plan — "Option B"): the event is created
+        on the primary calendar via `CalendarService.create_event` so existing
+        side-effects, permissions, and external-provider sync run unchanged.
+        Non-primary selected calendars get `BlockedTime` rows so they appear as
+        busy. A `CalendarEventGroupSelection` row is written for every
+        (slot, calendar) pick.
+
+        The primary calendar is the first `calendar_id` listed in the
+        lowest-`order` slot of the group.
+
+        Preconditions:
+          - `self.calendar_service` is set and initialized/authenticated for
+            the same organization. The caller owns that setup because the
+            primary calendar's provider dictates which flavor of CalendarService
+            init is appropriate (authenticate vs initialize_without_provider).
+        """
+        self._assert_initialized()
+        if self.calendar_service is None:
+            raise CalendarGroupValidationError(
+                "CalendarGroupService.calendar_service must be provided to create grouped events."
+            )
+        if self.calendar_service.organization is None:
+            raise CalendarGroupValidationError(
+                "The injected CalendarService is not initialized with an organization."
+            )
+        if self.calendar_service.organization.id != self.organization.id:
+            raise CalendarGroupValidationError(
+                "The injected CalendarService is initialized with a different organization."
+            )
+
+        group = self._get_group_by_id(data.group_id)
+        slots = list(group.slots.order_by("order", "id"))
+        if not slots:
+            raise CalendarGroupValidationError("CalendarGroup has no slots to satisfy.")
+
+        selections_by_slot_id = self._validate_selections(group, slots, data.slot_selections)
+        all_selected_ids = {cid for sel in data.slot_selections for cid in sel.calendar_ids}
+        self._assert_calendars_available(all_selected_ids, data.start_time, data.end_time)
+
+        primary_slot = slots[0]
+        primary_calendar_id = selections_by_slot_id[primary_slot.id].calendar_ids[0]
+
+        selected_calendars = {
+            c.id: c
+            for c in Calendar.objects.filter_by_organization(self.organization.id).filter(
+                id__in=all_selected_ids
+            )
+        }
+        primary_calendar = selected_calendars[primary_calendar_id]
+
+        owners_by_calendar_id = self._collect_owners_by_calendar(all_selected_ids)
+        merged_attendances = self._merge_attendances(
+            explicit=data.attendances, owners_by_calendar_id=owners_by_calendar_id
+        )
+
+        event_input = CalendarEventInputData(
+            title=data.title,
+            description=data.description,
+            start_time=data.start_time,
+            end_time=data.end_time,
+            timezone=data.timezone,
+            attendances=merged_attendances,
+            external_attendances=list(data.external_attendances),
+        )
+        event = self.calendar_service.create_event(
+            calendar_id=primary_calendar_id, event_data=event_input
+        )
+
+        event.calendar_group_fk = group
+        event.save(update_fields=["calendar_group_fk"])
+
+        CalendarEventGroupSelection.objects.bulk_create(
+            [
+                CalendarEventGroupSelection(
+                    organization=self.organization,
+                    event_fk=event,
+                    slot_fk_id=sel.slot_id,
+                    calendar_fk_id=cid,
+                )
+                for sel in data.slot_selections
+                for cid in sel.calendar_ids
+            ]
+        )
+
+        self._create_non_primary_blocked_times(
+            event=event,
+            primary_calendar=primary_calendar,
+            selected_calendars=selected_calendars,
+            owners_by_calendar_id=owners_by_calendar_id,
+            start_time=data.start_time,
+            end_time=data.end_time,
+            tz=data.timezone,
+        )
+
+        return event
+
+    def _validate_selections(
+        self,
+        group: CalendarGroup,
+        slots: list[CalendarGroupSlot],
+        selections,
+    ) -> dict[int, "object"]:
+        slot_by_id = {s.id: s for s in slots}
+
+        seen_slot_ids: set[int] = set()
+        selections_by_slot_id: dict[int, object] = {}
+        for sel in selections:
+            if sel.slot_id in seen_slot_ids:
+                raise CalendarGroupValidationError(
+                    f"Duplicate slot_id {sel.slot_id} in slot_selections."
+                )
+            seen_slot_ids.add(sel.slot_id)
+            if sel.slot_id not in slot_by_id:
+                raise CalendarGroupValidationError(
+                    f"slot_id {sel.slot_id} does not belong to group {group.id}."
+                )
+            if not sel.calendar_ids:
+                raise CalendarGroupValidationError(
+                    f"Selection for slot {sel.slot_id} has no calendars."
+                )
+            if len(set(sel.calendar_ids)) != len(sel.calendar_ids):
+                raise CalendarGroupValidationError(
+                    f"Selection for slot {sel.slot_id} contains duplicate calendars."
+                )
+            selections_by_slot_id[sel.slot_id] = sel
+
+        # Every slot must be covered with >= required_count picks, all from its pool.
+        for slot in slots:
+            sel = selections_by_slot_id.get(slot.id)
+            if sel is None:
+                raise CalendarGroupValidationError(f"Slot {slot.name!r} has no selection.")
+            if len(sel.calendar_ids) < slot.required_count:
+                raise CalendarGroupValidationError(
+                    f"Slot {slot.name!r} requires {slot.required_count} calendar(s); "
+                    f"got {len(sel.calendar_ids)}."
+                )
+            pool = set(slot.memberships.values_list("calendar_fk_id", flat=True))
+            outside_pool = set(sel.calendar_ids) - pool
+            if outside_pool:
+                raise CalendarGroupValidationError(
+                    f"Calendars {sorted(outside_pool)} are not in the pool of "
+                    f"slot {slot.name!r}."
+                )
+        return selections_by_slot_id
+
+    def _collect_owners_by_calendar(
+        self, selected_calendar_ids: Iterable[int]
+    ) -> dict[int, set[int]]:
+        """Map each selected calendar's id → set of owner user ids."""
+        selected_calendar_ids = list(selected_calendar_ids)
+        if not selected_calendar_ids:
+            return {}
+        rows = User.objects.filter(
+            calendar_ownerships__calendar_fk_id__in=selected_calendar_ids,
+            calendar_ownerships__organization_id=self.organization.id,
+        ).values_list("calendar_ownerships__calendar_fk_id", "id")
+        owners_by_calendar: dict[int, set[int]] = {}
+        for cal_id, user_id in rows:
+            owners_by_calendar.setdefault(cal_id, set()).add(user_id)
+        return owners_by_calendar
+
+    def _merge_attendances(
+        self,
+        explicit: Iterable[EventAttendanceInputData],
+        owners_by_calendar_id: dict[int, set[int]],
+    ) -> list[EventAttendanceInputData]:
+        """Return `explicit` attendances plus one entry per owner of every
+        selected calendar. Mirrors the bundle-event behavior so non-primary
+        physicians (etc.) get invited to the primary event and see it in their
+        own provider calendar, rather than only observing a local BlockedTime.
+
+        Resource calendars typically have no owners, so they contribute nothing
+        here — deciding whether to attach them via `resource_allocations` is out
+        of scope for this PR.
+        """
+        user_ids: set[int] = {a.user_id for a in explicit}
+        merged = list(explicit)
+        for owners in owners_by_calendar_id.values():
+            for user_id in owners:
+                if user_id in user_ids:
+                    continue
+                user_ids.add(user_id)
+                merged.append(EventAttendanceInputData(user_id=user_id))
+        return merged
+
+    def _assert_calendars_available(
+        self,
+        calendar_ids: Iterable[int],
+        start: datetime.datetime,
+        end: datetime.datetime,
+    ) -> None:
+        calendar_ids = set(calendar_ids)
+        if not calendar_ids:
+            return
+        available_ids = set(
+            Calendar.objects.filter_by_organization(self.organization.id)
+            .filter(id__in=calendar_ids)
+            .only_calendars_available_in_ranges([(start, end)])
+            .values_list("id", flat=True)
+        )
+        unavailable = calendar_ids - available_ids
+        if unavailable:
+            raise CalendarGroupValidationError(
+                f"Selected calendars {sorted(unavailable)} are not available for "
+                f"the requested time window."
+            )
+
+    def _create_non_primary_blocked_times(
+        self,
+        event: CalendarEvent,
+        primary_calendar: Calendar,
+        selected_calendars: dict[int, Calendar],
+        owners_by_calendar_id: dict[int, set[int]],
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        tz: str,
+    ) -> None:
+        """Create a BlockedTime on every non-primary selected calendar *unless*
+        the external-provider invite sync will reliably produce an equivalent
+        CalendarEvent on that calendar.
+
+        The skip only applies when we can be confident the sync will land:
+          - The primary and non-primary calendars use the **same** external
+            provider (e.g. Google→Google or Microsoft→Microsoft). Same-provider
+            invites sync natively through the provider graph.
+          - That provider is not INTERNAL (INTERNAL events don't leave the app).
+          - The non-primary calendar has an owner who ends up on the attendee
+            list, so the provider actually has someone to deliver the event to.
+
+        Everything else — resource calendars, ownerless calendars, INTERNAL
+        calendars, and **cross-provider** pairings (Google↔Microsoft) — gets a
+        local BlockedTime. Cross-provider invites rely on email/iCalendar and
+        whether the recipient's mailbox happens to be wired into their calendar
+        client; we don't trust that enough to drop the local busy marker.
+        """
+        non_primary_ids = set(selected_calendars.keys()) - {primary_calendar.id}
+        if not non_primary_ids:
+            return
+
+        primary_provider = primary_calendar.provider
+        primary_can_send_invites = primary_provider != CalendarProvider.INTERNAL
+
+        for cid in non_primary_ids:
+            calendar = selected_calendars[cid]
+            if calendar.calendar_type == CalendarType.BUNDLE:
+                raise CalendarGroupValidationError(
+                    "Bundle calendars cannot be selected for grouped events."
+                )
+
+            invite_will_sync_event = (
+                primary_can_send_invites
+                and calendar.provider == primary_provider
+                and bool(owners_by_calendar_id.get(cid))
+            )
+            if invite_will_sync_event:
+                # The provider will create the event on this calendar; a local
+                # BlockedTime would be a duplicate.
+                continue
+
+            BlockedTime.objects.create(
+                organization=self.organization,
+                calendar=calendar,
+                start_time_tz_unaware=start_time,
+                end_time_tz_unaware=end_time,
+                timezone=tz,
+                reason=f"Group booking: {event.title}",
+                external_id=f"group-event-{event.id}-cal-{cid}",
+            )
 
     def find_bookable_slots(
         self,
