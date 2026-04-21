@@ -2,7 +2,11 @@ import datetime
 from collections.abc import Iterable
 
 from calendar_integration.querysets import (
+    CalendarEventGroupSelectionQuerySet,
     CalendarEventQuerySet,
+    CalendarGroupQuerySet,
+    CalendarGroupSlotMembershipQuerySet,
+    CalendarGroupSlotQuerySet,
     CalendarQuerySet,
     CalendarSyncQuerySet,
     RecurringQuerySetMixin,
@@ -156,3 +160,40 @@ class AvailableTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
         from calendar_integration.querysets import AvailableTimeQuerySet
 
         return AvailableTimeQuerySet(self.model, using=self._db)
+
+
+class CalendarGroupManager(BaseOrganizationModelManager):
+    """Custom manager for CalendarGroup model to handle specific queries."""
+
+    def get_queryset(self) -> CalendarGroupQuerySet:
+        return CalendarGroupQuerySet(self.model, using=self._db)
+
+    def only_groups_bookable_in_ranges(
+        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
+    ):
+        """
+        Returns groups where every slot has at least `required_count` calendars
+        from its pool available in every requested range.
+        """
+        return self.get_queryset().only_groups_bookable_in_ranges(ranges=ranges)
+
+
+class CalendarGroupSlotManager(BaseOrganizationModelManager):
+    """Custom manager for CalendarGroupSlot model to handle specific queries."""
+
+    def get_queryset(self) -> CalendarGroupSlotQuerySet:
+        return CalendarGroupSlotQuerySet(self.model, using=self._db)
+
+
+class CalendarGroupSlotMembershipManager(BaseOrganizationModelManager):
+    """Custom manager for CalendarGroupSlotMembership model to handle specific queries."""
+
+    def get_queryset(self) -> CalendarGroupSlotMembershipQuerySet:
+        return CalendarGroupSlotMembershipQuerySet(self.model, using=self._db)
+
+
+class CalendarEventGroupSelectionManager(BaseOrganizationModelManager):
+    """Custom manager for CalendarEventGroupSelection model to handle specific queries."""
+
+    def get_queryset(self) -> CalendarEventGroupSelectionQuerySet:
+        return CalendarEventGroupSelectionQuerySet(self.model, using=self._db)

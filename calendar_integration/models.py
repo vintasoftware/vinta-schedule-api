@@ -23,7 +23,11 @@ from calendar_integration.constants import (
 from calendar_integration.managers import (
     AvailableTimeManager,
     BlockedTimeManager,
+    CalendarEventGroupSelectionManager,
     CalendarEventManager,
+    CalendarGroupManager,
+    CalendarGroupSlotManager,
+    CalendarGroupSlotMembershipManager,
     CalendarManager,
     CalendarSyncManager,
 )
@@ -192,6 +196,115 @@ class CalendarOwnership(OrganizationModel):
 
     def __str__(self):
         return f"{self.calendar} owned by {self.user}"
+
+
+class CalendarGroup(OrganizationModel):
+    """
+    Aggregates calendars into named slots so a single booking can be made by
+    selecting one (or more) calendar from each slot, while guaranteeing all
+    selected calendars are simultaneously available.
+
+    Example: a clinic appointment group with a "Physicians" slot and a "Rooms"
+    slot. Booking requires picking one physician calendar and one room calendar.
+    """
+
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+
+    objects: CalendarGroupManager = CalendarGroupManager()
+
+    slots: "RelatedManager[CalendarGroupSlot]"
+    events: "RelatedManager[CalendarEvent]"
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("organization", "name"),
+                name="calendargroup_unique_name_per_org",
+            ),
+        )
+
+    def __str__(self):
+        return self.name
+
+
+class CalendarGroupSlot(OrganizationModel):
+    """
+    A required role inside a CalendarGroup, holding a pool of candidate
+    calendars. A booking must select `required_count` calendars from this pool.
+    """
+
+    group = OrganizationForeignKey(
+        CalendarGroup,
+        on_delete=models.CASCADE,
+        related_name="slots",
+    )
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    order = models.PositiveSmallIntegerField(default=0)
+    required_count = models.PositiveSmallIntegerField(
+        default=1,
+        help_text=(
+            "How many calendars from the pool must be selected when booking. "
+            "Default 1; use larger values when a slot needs multiple calendars "
+            "(e.g. two nurses)."
+        ),
+    )
+
+    calendars: "models.ManyToManyField[Calendar, CalendarGroupSlotMembership]" = (
+        models.ManyToManyField(
+            Calendar,
+            through="CalendarGroupSlotMembership",
+            through_fields=("slot", "calendar"),
+            related_name="group_slots",
+        )
+    )
+
+    objects: CalendarGroupSlotManager = CalendarGroupSlotManager()
+
+    memberships: "RelatedManager[CalendarGroupSlotMembership]"
+
+    class Meta:
+        ordering = ("order", "id")
+        constraints = (
+            models.UniqueConstraint(
+                fields=("group_fk", "name"),
+                name="calendargroupslot_unique_name_per_group",
+            ),
+        )
+
+    def __str__(self):
+        return f"{self.name} (group: {self.group_fk_id})"
+
+
+class CalendarGroupSlotMembership(OrganizationModel):
+    """
+    Through model linking a Calendar to a CalendarGroupSlot's pool.
+    """
+
+    slot = OrganizationForeignKey(
+        CalendarGroupSlot,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+    )
+    calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        related_name="group_slot_memberships",
+    )
+
+    objects: CalendarGroupSlotMembershipManager = CalendarGroupSlotMembershipManager()
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("slot_fk", "calendar_fk"),
+                name="calendargroupslotmembership_unique_slot_calendar",
+            ),
+        )
+
+    def __str__(self):
+        return f"{self.calendar_fk_id} in slot {self.slot_fk_id}"
 
 
 class ExternalAttendee(OrganizationModel):
@@ -890,6 +1003,17 @@ class CalendarEvent(RecurringMixin):
         help_text="If this is a continuation of a split series",
     )
 
+    # Calendar group booking: when set, this event was booked through a
+    # CalendarGroup and `group_selections` records the per-slot picks.
+    calendar_group = OrganizationForeignKey(
+        CalendarGroup,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="events",
+        help_text="If this event was booked through a CalendarGroup, references it",
+    )
+
     attendees = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
         related_name="calendar_events",
@@ -910,6 +1034,7 @@ class CalendarEvent(RecurringMixin):
     attendances: "RelatedManager[EventAttendance]"
     external_attendances: "RelatedManager[EventExternalAttendance]"
     recurring_instances: "RelatedManager[CalendarEvent]"
+    group_selections: "RelatedManager[CalendarEventGroupSelection]"
 
     objects: CalendarEventManager = CalendarEventManager()
 
@@ -958,6 +1083,43 @@ class CalendarEvent(RecurringMixin):
             recurrence_rule_fk=self.recurrence_rule,
             recurrence_id=occurrence_start_time,
         )
+
+
+class CalendarEventGroupSelection(OrganizationModel):
+    """
+    Records which calendars were chosen for each slot of a CalendarGroup
+    booking. One row per (event, slot, calendar). A slot's `required_count`
+    is enforced at the service layer.
+    """
+
+    event = OrganizationForeignKey(
+        "CalendarEvent",
+        on_delete=models.CASCADE,
+        related_name="group_selections",
+    )
+    slot = OrganizationForeignKey(
+        CalendarGroupSlot,
+        on_delete=models.PROTECT,
+        related_name="selections",
+    )
+    calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.PROTECT,
+        related_name="group_selections",
+    )
+
+    objects: CalendarEventGroupSelectionManager = CalendarEventGroupSelectionManager()
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("event_fk", "slot_fk", "calendar_fk"),
+                name="calendareventgroupselection_unique",
+            ),
+        )
+
+    def __str__(self):
+        return f"event={self.event_fk_id} slot={self.slot_fk_id} calendar={self.calendar_fk_id}"
 
 
 class RecurrenceExceptionMixin(OrganizationModel):
