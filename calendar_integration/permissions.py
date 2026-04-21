@@ -36,3 +36,34 @@ class CalendarAvailabilityPermission(BasePermission):
     def has_permission(self, request, view):
         # Only authenticated users can check availability
         return request.user.is_authenticated
+
+
+class CalendarGroupPermission(BasePermission):
+    """
+    Permission for CalendarGroup REST endpoints.
+
+    - `has_permission` requires an authenticated user with an active
+      organization membership; list/create are org-scoped by the viewset.
+    - `has_object_permission` additionally requires the user to own at least
+      one calendar inside the group's slots — matching the plan's "owns at
+      least one calendar in the group" heuristic. An org-admin override is a
+      follow-up.
+    """
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user.is_authenticated:
+            return False
+        return getattr(user, "organization_membership", None) is not None
+
+    def has_object_permission(self, request, view, obj):
+        if obj.organization_id != request.user.organization_membership.organization_id:
+            return False
+        return (
+            CalendarOwnership.objects.filter_by_organization(obj.organization_id)
+            .filter(
+                user=request.user,
+                calendar__group_slots__group_fk=obj,
+            )
+            .exists()
+        )
