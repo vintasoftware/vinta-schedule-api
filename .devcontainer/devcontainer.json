@@ -19,7 +19,16 @@
 	"workspaceFolder": "/home/user/app",
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
-	// "features": {},
+	"features": {
+		"ghcr.io/devcontainers/features/node:1": {},
+		"ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+	},
+
+	"mounts": [
+		"source=${localEnv:HOME}/.claude,target=/home/user/.claude,type=bind",
+		"source=${localEnv:HOME}/.claude.json,target=/home/user/.claude.json,type=bind"
+	],
+
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
@@ -75,7 +84,7 @@
 						"icon": "terminal-powershell"
 					}
 				},
-				"python.defaultInterpreterPath": "/home/user/app/.venv/bin/python",
+				"python.defaultInterpreterPath": "/opt/venv/bin/python",
 				"python.analysis.autoImportCompletions": true,
 				"python.analysis.typeCheckingMode": "off",
 				"emmet.includeLanguages": {

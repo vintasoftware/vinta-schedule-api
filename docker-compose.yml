@@ -1,3 +1,14 @@
+x-python-service: &python-service
+  build:
+    dockerfile: Dockerfile.development
+    context: .
+  env_file: .env
+  volumes:
+    - ./:/home/user/app/
+    - virtualenv:/opt/venv
+  stdin_open: true
+  tty: true
+
 services:
   db:
     image: "postgres:alpine"
@@ -19,39 +30,23 @@ services:
     - "6379:6379"
 
   api:
-    build:
-      dockerfile: Dockerfile.development
-      context: .
+    <<: *python-service
     ports:
       - "8000:8000"
-    volumes:
-      - ./:/home/user/app/
-      - virtualenv:/home/user/app/.venv:delegated
-    env_file: .env
     depends_on:
       - db
       - broker
       - result
       - mailpit
       - localstack
-    stdin_open: true
-    tty: true
 
   worker:
-    build:
-      dockerfile: Dockerfile.development
-      context: .
-    command: poetry run celery --app=vinta_schedule_api worker --loglevel=info
-    volumes:
-      - ./:/home/user/app/
-      - virtualenv:/home/user/app/.venv:delegated
-    env_file: .env
+    <<: *python-service
+    command: celery --app=vinta_schedule_api worker --loglevel=info
     depends_on:
       - db
       - broker
       - result
-    stdin_open: true
-    tty: true
 
   mailpit:
     image: axllent/mailpit
