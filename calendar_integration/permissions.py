@@ -1,6 +1,8 @@
+from dependency_injector.wiring import Provide, inject
 from rest_framework.permissions import BasePermission
 
 from calendar_integration.models import CalendarOwnership
+from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 
 
 class CalendarEventPermission(BasePermission):
@@ -44,11 +46,19 @@ class CalendarGroupPermission(BasePermission):
 
     - `has_permission` requires an authenticated user with an active
       organization membership; list/create are org-scoped by the viewset.
-    - `has_object_permission` additionally requires the user to own at least
-      one calendar inside the group's slots — matching the plan's "owns at
-      least one calendar in the group" heuristic. An org-admin override is a
-      follow-up.
+    - `has_object_permission` delegates the "can this user manage this group"
+      decision to `CalendarPermissionService.can_manage_calendar_group` so the
+      rule (and future org-admin override) has a single implementation.
     """
+
+    @inject
+    def __init__(
+        self,
+        calendar_permission_service: "CalendarPermissionService | None" = Provide[
+            "calendar_permission_service"
+        ],
+    ):
+        self.calendar_permission_service = calendar_permission_service
 
     def has_permission(self, request, view):
         user = request.user
@@ -59,11 +69,13 @@ class CalendarGroupPermission(BasePermission):
     def has_object_permission(self, request, view, obj):
         if obj.organization_id != request.user.organization_membership.organization_id:
             return False
-        return (
-            CalendarOwnership.objects.filter_by_organization(obj.organization_id)
-            .filter(
-                user=request.user,
-                calendar__group_slots__group_fk=obj,
+        if self.calendar_permission_service is None:
+            # Fallback if DI isn't wired (should not happen in normal flows).
+            return (
+                CalendarOwnership.objects.filter_by_organization(obj.organization_id)
+                .filter(user=request.user, calendar_fk__group_slots__group_fk=obj)
+                .exists()
             )
-            .exists()
+        return self.calendar_permission_service.can_manage_calendar_group(
+            user=request.user, group=obj
         )
