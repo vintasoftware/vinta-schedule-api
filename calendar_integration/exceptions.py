@@ -266,3 +266,31 @@ class WebhookIgnoredError(WebhookProcessingError):
 
 class WebhookProcessingFailedError(WebhookProcessingError):
     default_message = "Webhook event processing failed due to an internal error"
+
+
+# Calendar Group errors
+class CalendarGroupError(CalendarIntegrationError):
+    """Base class for CalendarGroup-related errors."""
+
+    pass
+
+
+class CalendarGroupValidationError(CalendarGroupError):
+    """Raised when CalendarGroup input data is invalid."""
+
+    pass
+
+
+class CalendarGroupSlotInUseError(CalendarGroupError):
+    """Raised when a slot/membership cannot be removed because it is used by
+    future bookings."""
+
+    default_message = (
+        "Cannot remove slot or calendar because it is referenced by future group bookings."
+    )
+
+
+class CalendarGroupHasFutureEventsError(CalendarGroupError):
+    """Raised when a group cannot be deleted because it has future bookings."""
+
+    default_message = "Cannot delete CalendarGroup because it has future bookings."
