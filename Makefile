@@ -14,6 +14,9 @@ setup:
 	docker compose run --rm api python manage.py spectacular --color --file schema.yml
 	./scripts/init_localstack.sh
 
+install:
+	docker compose run --rm api poetry install --no-root --no-interaction --no-ansi --with=dev
+
 test:
 	docker compose run --rm api python -m pytest $(ARG) -vs -n auto --no-header --reuse-db
 
