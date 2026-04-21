@@ -43,6 +43,20 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
     def get_short_name(self):
         return self.profile.first_name
 
+    def is_organization_admin(self, organization) -> bool:
+        """True iff this user has an admin-role membership in `organization`.
+
+        Accepts either an `Organization` instance or an id. Avoids importing
+        the organizations app to prevent a circular import.
+        """
+        membership = getattr(self, "organization_membership", None)
+        if membership is None:
+            return False
+        organization_id = getattr(organization, "id", organization)
+        return membership.organization_id == organization_id and getattr(
+            membership, "is_admin", False
+        )
+
     def __str__(self):
         return f"{self.profile} <{self.email}>"
 

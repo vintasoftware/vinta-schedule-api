@@ -80,6 +80,18 @@ class OrganizationOneToOneField(TenantSafeOneToOneField):
     tenant_field = "organization_id"
 
 
+class OrganizationRole(models.TextChoices):
+    """Role a user holds within an organization.
+
+    A flat two-role model — enough for current permission needs. Richer
+    hierarchies (e.g. owner/admin/member) can be layered later without a
+    disruptive migration.
+    """
+
+    MEMBER = "member", "Member"
+    ADMIN = "admin", "Admin"
+
+
 class OrganizationMembership(BaseModel):
     """
     Represents a membership of a user in a calendar organization.
@@ -96,9 +108,24 @@ class OrganizationMembership(BaseModel):
         on_delete=models.CASCADE,
         related_name="memberships",
     )
+    role = models.CharField(
+        max_length=20,
+        choices=OrganizationRole,
+        default=OrganizationRole.MEMBER,
+        help_text=(
+            "Role the user holds in this organization. Admins can manage "
+            "organization-scoped resources (e.g. CalendarGroups) regardless of "
+            "direct ownership."
+        ),
+    )
 
     def __str__(self):
         return f"{self.user} in {self.organization}"
+
+    @property
+    def is_admin(self) -> bool:
+        """True if this membership confers admin rights in the organization."""
+        return self.role == OrganizationRole.ADMIN
 
 
 class OrganizationInvitation(BaseModel):
