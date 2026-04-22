@@ -15,24 +15,14 @@ from calendar_integration.graphql import (
     AvailableTimeGraphQLType,
     AvailableTimeWindowGraphQLType,
     BlockedTimeGraphQLType,
-    BookableSlotProposalGraphQLType,
     CalendarEventGraphQLType,
     CalendarGraphQLType,
-    CalendarGroupGraphQLType,
-    CalendarGroupRangeAvailabilityGraphQLType,
-    CalendarGroupSlotAvailabilityGraphQLType,
     CalendarWebhookEventGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
     UnavailableTimeWindowGraphQLType,
     WebhookSubscriptionStatusGraphQLType,
 )
-from calendar_integration.models import (
-    AvailableTime,
-    BlockedTime,
-    Calendar,
-    CalendarEvent,
-    CalendarGroup,
-)
+from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarEvent
 from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
@@ -43,24 +33,19 @@ from users.models import User
 
 
 if TYPE_CHECKING:
-    from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_service import CalendarService
 
 
 @dataclass
 class QueryDependencies:
     calendar_service: "CalendarService"
-    calendar_group_service: "CalendarGroupService"
 
 
 @inject
 def get_query_dependencies(
     calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
-    calendar_group_service: Annotated[
-        "CalendarGroupService | None", Provide["calendar_group_service"]
-    ] = None,
 ) -> QueryDependencies:
-    required_dependencies = [calendar_service, calendar_group_service]
+    required_dependencies = [calendar_service]
     if any(dep is None for dep in required_dependencies):
         raise GraphQLError(
             f"Missing required dependency {', '.join([str(dep) for dep in required_dependencies if dep is None])}"
@@ -68,7 +53,6 @@ def get_query_dependencies(
 
     return QueryDependencies(
         calendar_service=cast("CalendarService", calendar_service),
-        calendar_group_service=cast("CalendarGroupService", calendar_group_service),
     )
 
 
@@ -101,14 +85,6 @@ def _prepare_service_and_calendar(
     )
     cal = Calendar.objects.filter_by_organization(org.id).get(id=calendar_id)
     return deps.calendar_service, cal
-
-
-@strawberry.input
-class DateTimeRangeInput:
-    """A single [start_time, end_time] window used by calendar-group availability queries."""
-
-    start_time: datetime.datetime
-    end_time: datetime.datetime
 
 
 @strawberry.type
@@ -419,102 +395,3 @@ class Query:
             failed_events_count=health_data["failed_events_count"],
             success_rate=health_data["success_rate"],
         )
-
-    # ------------------------------------------------------------------
-    # CalendarGroup queries
-    # ------------------------------------------------------------------
-    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def calendar_group(
-        self, info: strawberry.Info, group_id: int
-    ) -> CalendarGroupGraphQLType | None:
-        """Fetch a single CalendarGroup scoped to the caller's organization."""
-        org = _get_org(info)
-        return CalendarGroup.objects.filter_by_organization(org.id).filter(id=group_id).first()
-
-    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def calendar_groups(
-        self,
-        info: strawberry.Info,
-        offset: int = 0,
-        limit: int = 100,
-    ) -> list[CalendarGroupGraphQLType]:
-        """List CalendarGroups for the caller's organization."""
-        org = _get_org(info)
-        qs = CalendarGroup.objects.filter_by_organization(org.id).order_by("pk")
-        return cast(list[CalendarGroupGraphQLType], list(_slice_qs(qs, offset, limit)))
-
-    @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def calendar_group_availability(
-        self,
-        info: strawberry.Info,
-        group_id: int,
-        ranges: list[DateTimeRangeInput],
-    ) -> list[CalendarGroupRangeAvailabilityGraphQLType]:
-        """For each range, list which calendars in each slot's pool are available."""
-        org = _get_org(info)
-        deps = get_query_dependencies()
-        deps.calendar_group_service.initialize(organization=org)
-
-        result = deps.calendar_group_service.check_group_availability(
-            group_id=group_id,
-            ranges=[(r.start_time, r.end_time) for r in ranges],
-        )
-        return [
-            CalendarGroupRangeAvailabilityGraphQLType(
-                start_time=r.start_time,
-                end_time=r.end_time,
-                slots=[
-                    CalendarGroupSlotAvailabilityGraphQLType(
-                        slot_id=s.slot_id,
-                        available_calendar_ids=s.available_calendar_ids,
-                    )
-                    for s in r.slots
-                ],
-            )
-            for r in result
-        ]
-
-    @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def calendar_group_bookable_slots(
-        self,
-        info: strawberry.Info,
-        group_id: int,
-        search_window_start: datetime.datetime,
-        search_window_end: datetime.datetime,
-        duration_seconds: int,
-        slot_step_seconds: int = 15 * 60,
-    ) -> list[BookableSlotProposalGraphQLType]:
-        """Return time windows within the search range where every slot in the
-        group has enough available calendars to satisfy its required_count."""
-        org = _get_org(info)
-        deps = get_query_dependencies()
-        deps.calendar_group_service.initialize(organization=org)
-
-        proposals = deps.calendar_group_service.find_bookable_slots(
-            group_id=group_id,
-            search_window_start=search_window_start,
-            search_window_end=search_window_end,
-            duration=datetime.timedelta(seconds=duration_seconds),
-            slot_step=datetime.timedelta(seconds=slot_step_seconds),
-        )
-        return [
-            BookableSlotProposalGraphQLType(start_time=p.start_time, end_time=p.end_time)
-            for p in proposals
-        ]
-
-    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def calendar_group_events(
-        self,
-        info: strawberry.Info,
-        group_id: int,
-        start_datetime: datetime.datetime,
-        end_datetime: datetime.datetime,
-    ) -> list[CalendarEventGraphQLType]:
-        """Return events booked under a CalendarGroup overlapping the window."""
-        org = _get_org(info)
-        deps = get_query_dependencies()
-        deps.calendar_group_service.initialize(organization=org)
-        events = deps.calendar_group_service.get_group_events(
-            group_id=group_id, start=start_datetime, end=end_datetime
-        )
-        return cast(list[CalendarEventGraphQLType], list(events))

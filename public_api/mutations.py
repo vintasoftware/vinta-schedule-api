@@ -5,7 +5,6 @@ import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
-from calendar_integration.mutations import CalendarGroupMutations
 from public_api.models import SystemUser
 from public_api.services import PublicAPIAuthService
 
@@ -38,7 +37,7 @@ class AuthPayload:
 
 
 @strawberry.type
-class Mutation(CalendarGroupMutations):
+class Mutation:
     @strawberry.mutation
     def check_token(
         self,

@@ -34,11 +34,6 @@ class OrganizationResourceAccess(BasePermission):
         "availabilityWindows": PublicAPIResources.AVAILABILITY_WINDOWS,
         "unavailableWindows": PublicAPIResources.UNAVAILABLE_WINDOWS,
         "users": PublicAPIResources.USER,
-        "calendarGroup": PublicAPIResources.CALENDAR_GROUP,
-        "calendarGroups": PublicAPIResources.CALENDAR_GROUP,
-        "calendarGroupAvailability": PublicAPIResources.CALENDAR_GROUP,
-        "calendarGroupBookableSlots": PublicAPIResources.CALENDAR_GROUP,
-        "calendarGroupEvents": PublicAPIResources.CALENDAR_GROUP,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
