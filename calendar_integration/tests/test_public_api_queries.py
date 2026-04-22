@@ -15,14 +15,9 @@ class TestQueryDependencies:
     def test_init(self) -> None:
         """Test dependency initialization."""
         calendar_service = Mock()
-        calendar_group_service = Mock()
-        dependencies = QueryDependencies(
-            calendar_service=calendar_service,
-            calendar_group_service=calendar_group_service,
-        )
+        dependencies = QueryDependencies(calendar_service=calendar_service)
 
         assert dependencies.calendar_service == calendar_service
-        assert dependencies.calendar_group_service == calendar_group_service
 
 
 class TestGetQueryDependencies:
@@ -31,16 +26,11 @@ class TestGetQueryDependencies:
     def test_get_dependencies_success(self) -> None:
         """Test getting dependencies when all are provided."""
         calendar_service = Mock()
-        calendar_group_service = Mock()
 
-        dependencies = get_query_dependencies(
-            calendar_service=calendar_service,
-            calendar_group_service=calendar_group_service,
-        )
+        dependencies = get_query_dependencies(calendar_service=calendar_service)
 
         assert isinstance(dependencies, QueryDependencies)
         assert dependencies.calendar_service == calendar_service
-        assert dependencies.calendar_group_service == calendar_group_service
 
     def test_get_dependencies_missing_calendar_service(self) -> None:
         """Test getting dependencies when calendar_service is missing."""
@@ -101,10 +91,8 @@ class TestCalendarQueries:
         calendar_service.get_available_times_expanded.return_value = []
         calendar_service.get_blocked_times_expanded.return_value = []
         calendar_service.list_webhook_subscriptions.return_value = []
-        calendar_group_service = Mock()
         return QueryDependencies(
             calendar_service=calendar_service,
-            calendar_group_service=calendar_group_service,
         )
 
     def test_calendars_query_success(self, mock_request, calendar, mock_dependencies) -> None:

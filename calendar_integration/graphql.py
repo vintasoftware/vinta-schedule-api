@@ -10,9 +10,6 @@ from calendar_integration.models import (
     BlockedTimeRecurrenceException,
     Calendar,
     CalendarEvent,
-    CalendarEventGroupSelection,
-    CalendarGroup,
-    CalendarGroupSlot,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
     EventAttendance,
@@ -148,10 +145,6 @@ class CalendarEventGraphQLType:
     attendees: list[UserGraphQLType] = strawberry_django.field()
     external_attendees: list[ExternalAttendeeGraphQLType] = strawberry_django.field()
     resources: list[CalendarGraphQLType] = strawberry_django.field()
-
-    # Calendar group linkage (when booked through a CalendarGroup)
-    calendar_group: "CalendarGroupGraphQLType | None" = strawberry_django.field()
-    group_selections: list["CalendarEventGroupSelectionGraphQLType"] = strawberry_django.field()
 
     # Bundle representations - events that represent this primary event in child calendars
     bundle_representations: list["CalendarEventGraphQLType"] = strawberry_django.field()
@@ -315,65 +308,3 @@ class WebhookSubscriptionStatusGraphQLType:
     recent_events_count: int  # events in last 24 hours
     failed_events_count: int  # failed events in last 24 hours
     success_rate: float  # percentage of successful events in last 24 hours
-
-
-# ---------------------------------------------------------------------------
-# CalendarGroup types
-# ---------------------------------------------------------------------------
-@strawberry_django.type(CalendarGroupSlot)
-class CalendarGroupSlotGraphQLType:
-    id: strawberry.auto  # noqa: A003
-    name: strawberry.auto
-    description: strawberry.auto
-    order: strawberry.auto
-    required_count: strawberry.auto
-    created: datetime.datetime
-    modified: datetime.datetime
-
-    calendars: list[CalendarGraphQLType] = strawberry_django.field()
-
-
-@strawberry_django.type(CalendarGroup)
-class CalendarGroupGraphQLType:
-    id: strawberry.auto  # noqa: A003
-    name: strawberry.auto
-    description: strawberry.auto
-    created: datetime.datetime
-    modified: datetime.datetime
-
-    slots: list[CalendarGroupSlotGraphQLType] = strawberry_django.field()
-
-
-@strawberry_django.type(CalendarEventGroupSelection)
-class CalendarEventGroupSelectionGraphQLType:
-    id: strawberry.auto  # noqa: A003
-    created: datetime.datetime
-    modified: datetime.datetime
-
-    slot: CalendarGroupSlotGraphQLType = strawberry_django.field()
-    calendar: CalendarGraphQLType = strawberry_django.field()
-
-
-@strawberry.type
-class CalendarGroupSlotAvailabilityGraphQLType:
-    """How many of a slot's pool calendars are available for a given range."""
-
-    slot_id: int
-    available_calendar_ids: list[int]
-
-
-@strawberry.type
-class CalendarGroupRangeAvailabilityGraphQLType:
-    """Per-slot availability for a single range."""
-
-    start_time: datetime.datetime
-    end_time: datetime.datetime
-    slots: list[CalendarGroupSlotAvailabilityGraphQLType]
-
-
-@strawberry.type
-class BookableSlotProposalGraphQLType:
-    """A concrete time window where every slot in a group is satisfied."""
-
-    start_time: datetime.datetime
-    end_time: datetime.datetime
