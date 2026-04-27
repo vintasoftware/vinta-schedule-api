@@ -2606,6 +2606,813 @@ paths:
           description: ''
         '204':
           description: No response body
+  /calendar-groups/:
+    get:
+      operationId: calendar_groups_list
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarGroupList'
+          description: ''
+    post:
+      operationId: calendar_groups_create
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarGroup'
+          description: ''
+  /calendar-groups{format}:
+    get:
+      operationId: calendar_groups_formatted_list
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarGroupList'
+          description: ''
+    post:
+      operationId: calendar_groups_formatted_create
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarGroup'
+          description: ''
+  /calendar-groups/{id}/:
+    get:
+      operationId: calendar_groups_retrieve
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarGroup'
+          description: ''
+    put:
+      operationId: calendar_groups_update
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarGroup'
+          description: ''
+    patch:
+      operationId: calendar_groups_partial_update
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarGroup'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarGroup'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarGroup'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarGroup'
+          description: ''
+    delete:
+      operationId: calendar_groups_destroy
+      description: Delete a CalendarGroup. Fails with 400 if the group has any bookings.
+      summary: Delete calendar group
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /calendar-groups/{id}{format}:
+    get:
+      operationId: calendar_groups_formatted_retrieve
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarGroup'
+          description: ''
+    put:
+      operationId: calendar_groups_formatted_update
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarGroup'
+          description: ''
+    patch:
+      operationId: calendar_groups_formatted_partial_update
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarGroup'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarGroup'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarGroup'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarGroup'
+          description: ''
+    delete:
+      operationId: calendar_groups_formatted_destroy
+      description: Delete a CalendarGroup. Fails with 400 if the group has any bookings.
+      summary: Delete calendar group
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /calendar-groups/{id}/availability/:
+    post:
+      operationId: calendar_groups_availability_create
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      summary: Per-slot availability for requested ranges
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarGroupRangeAvailabilityList'
+          description: ''
+  /calendar-groups/{id}/availability{format}:
+    post:
+      operationId: calendar_groups_availability_formatted_create
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      summary: Per-slot availability for requested ranges
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarGroupRangeAvailabilityList'
+          description: ''
+  /calendar-groups/{id}/bookable-slots/:
+    get:
+      operationId: calendar_groups_bookable_slots_list
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      summary: Bookable slot proposals for the group within a search window
+      parameters:
+      - in: query
+        name: duration_seconds
+        schema:
+          type: integer
+        description: Desired event duration, in seconds
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: search_window_end
+        schema:
+          type: string
+        description: End of the search window (ISO 8601)
+        required: true
+      - in: query
+        name: search_window_start
+        schema:
+          type: string
+        description: Start of the search window (ISO 8601)
+        required: true
+      - in: query
+        name: slot_step_seconds
+        schema:
+          type: integer
+        description: Search step, in seconds (default 900 = 15min)
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBookableSlotProposalList'
+          description: ''
+  /calendar-groups/{id}/bookable-slots{format}:
+    get:
+      operationId: calendar_groups_bookable_slots_formatted_list
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      summary: Bookable slot proposals for the group within a search window
+      parameters:
+      - in: query
+        name: duration_seconds
+        schema:
+          type: integer
+        description: Desired event duration, in seconds
+        required: true
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: search_window_end
+        schema:
+          type: string
+        description: End of the search window (ISO 8601)
+        required: true
+      - in: query
+        name: search_window_start
+        schema:
+          type: string
+        description: Start of the search window (ISO 8601)
+        required: true
+      - in: query
+        name: slot_step_seconds
+        schema:
+          type: integer
+        description: Search step, in seconds (default 900 = 15min)
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBookableSlotProposalList'
+          description: ''
+  /calendar-groups/{id}/booked-events/:
+    get:
+      operationId: calendar_groups_booked_events_list
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      summary: List events booked under this group
+      parameters:
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End datetime in ISO format
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start datetime in ISO format
+        required: true
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarEventList'
+          description: ''
+  /calendar-groups/{id}/booked-events{format}:
+    get:
+      operationId: calendar_groups_booked_events_formatted_list
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      summary: List events booked under this group
+      parameters:
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End datetime in ISO format
+        required: true
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start datetime in ISO format
+        required: true
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarEventList'
+          description: ''
+  /calendar-groups/{id}/events/:
+    post:
+      operationId: calendar_groups_events_create
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      summary: Create grouped event
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupEventCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupEventCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupEventCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+  /calendar-groups/{id}/events{format}:
+    post:
+      operationId: calendar_groups_events_formatted_create
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      summary: Create grouped event
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupEventCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupEventCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupEventCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
   /calendar/{id}/:
     get:
       operationId: calendar_retrieve
@@ -5148,6 +5955,18 @@ components:
           description: True if cancelling the occurrence, False if modifying
       required:
       - exception_date
+    BookableSlotProposal:
+      type: object
+      properties:
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+      required:
+      - end_time
+      - start_time
     BulkAvailableTime:
       type: object
       description: Serializer for creating multiple available times.
@@ -5338,6 +6157,160 @@ components:
       - start_time
       - timezone
       - title
+    CalendarGroup:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarGroupSlot'
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created
+      - id
+      - modified
+      - name
+      - slots
+    CalendarGroupAvailabilityQuery:
+      type: object
+      description: 'Input for the availability action: list of [start, end] windows.'
+      properties:
+        ranges:
+          type: array
+          items:
+            $ref: '#/components/schemas/_RangeInput'
+      required:
+      - ranges
+    CalendarGroupEventCreate:
+      type: object
+      description: |-
+        Input for booking an event through a CalendarGroup.
+
+        On `save()` this delegates to `CalendarGroupService.create_grouped_event`
+        and returns the created `CalendarEvent`. The view is responsible for
+        serializing the result (typically with `CalendarEventSerializer`).
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+          default: ''
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        slot_selections:
+          type: array
+          items:
+            $ref: '#/components/schemas/_CalendarGroupSlotSelectionInput'
+        attendances:
+          type: array
+          items:
+            type: object
+            additionalProperties: {}
+        external_attendances:
+          type: array
+          items:
+            type: object
+            additionalProperties: {}
+      required:
+      - end_time
+      - slot_selections
+      - start_time
+      - timezone
+      - title
+    CalendarGroupRangeAvailability:
+      type: object
+      properties:
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarGroupSlotAvailability'
+      required:
+      - end_time
+      - slots
+      - start_time
+    CalendarGroupSlot:
+      type: object
+      description: |-
+        Nested slot representation used inside CalendarGroupSerializer.
+
+        On write, accepts `calendar_ids: list[int]`; on read exposes the calendar
+        pool via `calendars` (the M2M). We deliberately keep slot writes to
+        payload-time data only — persistence happens through
+        `CalendarGroupSerializer` which delegates to `CalendarGroupService`.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        order:
+          type: integer
+          maximum: 32767
+          minimum: 0
+        required_count:
+          type: integer
+          maximum: 32767
+          minimum: 0
+          description: How many calendars from the pool must be selected when booking.
+            Default 1; use larger values when a slot needs multiple calendars (e.g.
+            two nurses).
+        calendars:
+          type: array
+          items:
+            $ref: '#/components/schemas/Calendar'
+          readOnly: true
+        calendar_ids:
+          type: array
+          items:
+            type: integer
+          writeOnly: true
+      required:
+      - calendar_ids
+      - calendars
+      - id
+      - name
+    CalendarGroupSlotAvailability:
+      type: object
+      properties:
+        slot_id:
+          type: integer
+        available_calendar_ids:
+          type: array
+          items:
+            type: integer
+      required:
+      - available_calendar_ids
+      - slot_id
     CalendarTypeEnum:
       enum:
       - personal
@@ -5672,6 +6645,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BlockedTime'
+    PaginatedBookableSlotProposalList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookableSlotProposal'
     PaginatedCalendarEventList:
       type: object
       required:
@@ -5695,6 +6691,52 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CalendarEvent'
+    PaginatedCalendarGroupList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarGroup'
+    PaginatedCalendarGroupRangeAvailabilityList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarGroupRangeAvailability'
     PaginatedCalendarList:
       type: object
       required:
@@ -6122,6 +7164,29 @@ components:
         calendar:
           type: integer
           writeOnly: true
+    PatchedCalendarGroup:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarGroupSlot'
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
     PatchedOrganization:
       type: object
       properties:
@@ -6517,6 +7582,30 @@ components:
         * `FR` - Friday
         * `SA` - Saturday
         * `SU` - Sunday
+    _CalendarGroupSlotSelectionInput:
+      type: object
+      properties:
+        slot_id:
+          type: integer
+        calendar_ids:
+          type: array
+          items:
+            type: integer
+      required:
+      - calendar_ids
+      - slot_id
+    _RangeInput:
+      type: object
+      properties:
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+      required:
+      - end_time
+      - start_time
   securitySchemes:
     cookieAuth:
       type: apiKey

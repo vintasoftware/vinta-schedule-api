@@ -1,6 +1,12 @@
 from django_filters import rest_framework as filters
 
-from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarEvent
+from calendar_integration.models import (
+    AvailableTime,
+    BlockedTime,
+    Calendar,
+    CalendarEvent,
+    CalendarGroup,
+)
 
 
 class CalendarEventFilterSet(filters.FilterSet):
@@ -93,6 +99,35 @@ class BlockedTimeFilterSet(filters.FilterSet):
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="calendar_fk_id",
             label="Filter by calendar ID",
+            queryset=(
+                Calendar.objects.filter_by_organization(
+                    self.request.user.organization_membership.organization_id
+                )
+                if self.request.user and self.request.user.is_authenticated
+                else Calendar.objects.none()
+            ),
+        )
+
+
+class CalendarGroupFilterSet(filters.FilterSet):
+    """FilterSet for CalendarGroup."""
+
+    name = filters.CharFilter(
+        field_name="name",
+        lookup_expr="icontains",
+        label="Filter by partial name match",
+    )
+
+    class Meta:
+        model = CalendarGroup
+        fields = ("name",)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.filters["calendar"] = filters.ModelChoiceFilter(
+            field_name="slots__memberships__calendar_fk_id",
+            label="Filter to groups whose slot pools include this calendar",
             queryset=(
                 Calendar.objects.filter_by_organization(
                     self.request.user.organization_membership.organization_id

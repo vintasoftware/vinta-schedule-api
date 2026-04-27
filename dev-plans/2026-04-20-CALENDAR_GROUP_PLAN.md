@@ -351,6 +351,65 @@ All mutations enforce permissions via `CalendarPermissionService` (extend it wit
 
 ---
 
+## API (Internal REST)
+
+The project also exposes a Django REST Framework viewset-based API for internal (session-authenticated) clients, under `calendar_integration/views.py`, `calendar_integration/serializers.py`, `calendar_integration/filtersets.py` and `calendar_integration/routes.py`. We add `CalendarGroup` endpoints here so internal UIs don't have to go through GraphQL.
+
+### Virtual models ([calendar_integration/virtual_models.py](calendar_integration/virtual_models.py))
+
+Add `CalendarGroupSlotMembershipVirtualModel`, `CalendarGroupSlotVirtualModel`, `CalendarGroupVirtualModel`, and `CalendarEventGroupSelectionVirtualModel` mirroring the existing pattern (so `VirtualModelSerializer` can prefetch efficiently). Extend `CalendarEventVirtualModel` with `group_selections` and `calendar_group` relations.
+
+### Serializers ([calendar_integration/serializers.py](calendar_integration/serializers.py))
+
+- `CalendarGroupSlotMembershipSerializer` — read-only nested representation (`id`, `calendar`).
+- `CalendarGroupSlotSerializer` — nested slot representation with `id`, `name`, `description`, `order`, `required_count`, and a writable `calendar_ids: list[int]` alongside the read-only `calendars` field.
+- `CalendarGroupSerializer` — `id`, `name`, `description`, nested `slots`, timestamps. On `create`/`update`, delegates to `CalendarGroupService.create_group` / `update_group`, converting nested slot payloads to `CalendarGroupInputData`.
+- `CalendarEventGroupSelectionSerializer` — read-only, `id`, `slot`, `calendar`.
+- `CalendarGroupEventCreateSerializer` — write-only input for creating a grouped event. Fields: `group_id`, `title`, `description`, `start_time`, `end_time`, `timezone`, `slot_selections: list[{slot_id, calendar_ids: list[int]}]`, `attendances`, `external_attendances`. On `save()`, delegates to `CalendarGroupService.create_grouped_event` and returns the full `CalendarEvent`. The response is serialized with `CalendarEventSerializer`.
+- `CalendarGroupAvailabilityRangeSerializer` / `CalendarGroupSlotAvailabilitySerializer` — output for the availability action.
+- `BookableSlotProposalSerializer` — output for the bookable-slots action.
+
+Service errors (`CalendarGroupValidationError`, `CalendarGroupSlotInUseError`, `CalendarGroupHasFutureEventsError`) are translated to DRF `ValidationError` with a per-exception `non_field_errors` payload.
+
+### Permissions ([calendar_integration/permissions.py](calendar_integration/permissions.py))
+
+Add `CalendarGroupPermission`: authenticated user with an active `OrganizationMembership` matching the group's organization. For object-level access we check that the user owns at least one calendar in the group (via `CalendarOwnership`) — mirroring the "likely permission model" noted above. Org-admin override is a follow-up.
+
+### FilterSet ([calendar_integration/filtersets.py](calendar_integration/filtersets.py))
+
+`CalendarGroupFilterSet` — `name` (icontains), `calendar` (ModelChoiceFilter — returns groups whose slots include that calendar).
+
+### ViewSet ([calendar_integration/views.py](calendar_integration/views.py))
+
+`CalendarGroupViewSet(VintaScheduleModelViewSet)`:
+
+- Standard CRUD: `list`, `retrieve`, `create`, `update`, `partial_update`, `destroy`. CRUD methods mirror the webhook-mutations pattern — the serializer delegates to `CalendarGroupService`. `destroy` raises `ValidationError` when the service raises `CalendarGroupHasFutureEventsError`.
+- Custom actions:
+  - `POST /calendar-groups/{id}/events/` (`url_path="events"`, `url_name="create-event"`) — accepts `CalendarGroupEventCreateSerializer`; returns the created `CalendarEvent`.
+  - `GET /calendar-groups/{id}/events/?start_datetime=…&end_datetime=…` (`url_path="events"`, `url_name="list-events"`, `methods=["GET"]`) — lists grouped events in range. Note that a single `@action` can accept both `GET` and `POST`; we'll keep them split for clarity.
+  - `POST /calendar-groups/{id}/availability/` — body is `{ "ranges": [{"start_time", "end_time"}, ...] }`, returns per-range, per-slot availability. `POST` to avoid long query-string range payloads.
+  - `GET /calendar-groups/{id}/bookable-slots/?search_window_start&search_window_end&duration_seconds&slot_step_seconds` — returns `[BookableSlotProposal]`.
+
+Each action authenticates the underlying `CalendarService`/`CalendarGroupService` via `initialize_without_provider(organization=user.organization_membership.organization)` — the grouped-event flow needs provider adapters when the primary calendar is Google/Microsoft, so the viewset uses `authenticate(account=social_account, organization=…)` when a matching `SocialAccount` exists for the primary calendar's provider.
+
+### Routes ([calendar_integration/routes.py](calendar_integration/routes.py))
+
+Register `CalendarGroupViewSet` under `r"calendar-groups"` with basename `CalendarGroups`.
+
+### Testing
+
+- `calendar_integration/tests/test_views_calendar_group.py`:
+  - CRUD happy paths (`list`, `retrieve`, `create`, `update`, `destroy`).
+  - `create` validation surfaces from the service (duplicate slot name, cross-org calendar, empty pool).
+  - `destroy` blocked by `CalendarGroupHasFutureEventsError`.
+  - `events` POST: creates grouped event, returns `CalendarEvent` payload, persists `CalendarEventGroupSelection` rows.
+  - `events` GET: returns events scoped to the group within the range.
+  - `availability` POST returns per-range slot availability.
+  - `bookable-slots` GET returns proposals.
+  - Object-level permission blocks users who don't own any of the group's calendars.
+
+---
+
 ## Migrations
 
 Single new migration `calendar_integration/migrations/00XX_calendar_group.py` containing:
@@ -426,10 +485,16 @@ Land in this order; each step is independently mergeable.
    - Types, queries, mutations, permission checks.
    - Schema snapshot test (if the project has one).
 
-5. **PR 5 — follow-ups (separate tickets)**
+5. **PR 5 — Internal REST API**
+   - Virtual models, serializers, filterset, permission class, viewset with CRUD + `events` (GET/POST), `availability` (POST), `bookable-slots` (GET) actions.
+   - Route registration.
+   - Full viewset test suite.
+
+6. **PR 6 — follow-ups (separate tickets)**
    - `*_with_bulk_modifications` parity for groups.
    - Bundle-based persistence for non-primary selections (Option A) if Option B proves insufficient.
    - Performance: replace Python-loop `find_bookable_slots` with a SQL `generate_series`-based approach for large windows.
+   - `CalendarPermissionService.can_manage_calendar_group` + org-admin override for the REST permission class.
 
 ---
 
