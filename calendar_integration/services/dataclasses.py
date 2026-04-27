@@ -253,3 +253,81 @@ class AvailableTimeInputData:
     recurrence_rule: str | None = None
     parent_object_id: int | None = None
     is_recurring_exception: bool = False
+
+
+@dataclass
+class CalendarGroupSlotInputData:
+    """Input data describing a slot (pool) inside a CalendarGroup."""
+
+    name: str
+    calendar_ids: list[int]
+    required_count: int = 1
+    description: str = ""
+    order: int = 0
+
+
+@dataclass
+class CalendarGroupInputData:
+    """Input data for creating/updating a CalendarGroup with its slots."""
+
+    name: str
+    description: str = ""
+    slots: list[CalendarGroupSlotInputData] = dataclass_field(default_factory=list)
+
+
+@dataclass
+class CalendarGroupSlotSelectionInputData:
+    """Per-slot calendar picks for a grouped booking. `len(calendar_ids)` must be
+    >= the slot's `required_count`."""
+
+    slot_id: int
+    calendar_ids: list[int]
+
+
+@dataclass
+class CalendarGroupEventInputData:
+    """CalendarEventInputData-like payload + per-slot calendar selections used
+    when booking an event through a CalendarGroup."""
+
+    title: str
+    description: str
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+    group_id: int
+    slot_selections: list[CalendarGroupSlotSelectionInputData] = dataclass_field(
+        default_factory=list
+    )
+    attendances: list[EventAttendanceInputData] = dataclass_field(default_factory=list)
+    external_attendances: list[EventExternalAttendanceInputData] = dataclass_field(
+        default_factory=list
+    )
+
+
+@dataclass
+class CalendarGroupSlotAvailability:
+    """Per-slot view of which calendars in its pool are available for a range."""
+
+    slot_id: int
+    available_calendar_ids: list[int]
+
+    @property
+    def is_satisfied_for_required_count(self) -> bool:
+        return len(self.available_calendar_ids) > 0
+
+
+@dataclass
+class CalendarGroupRangeAvailability:
+    """Availability of every slot in a group for a single range."""
+
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    slots: list[CalendarGroupSlotAvailability]
+
+
+@dataclass
+class BookableSlotProposal:
+    """A concrete time window where every slot of a group is satisfied."""
+
+    start_time: datetime.datetime
+    end_time: datetime.datetime
