@@ -121,6 +121,17 @@ class CalendarManager(BaseOrganizationModelManager):
         """
         return self.get_queryset().only_calendars_available_in_ranges(ranges=ranges)
 
+    def only_calendars_available_in_ranges_with_bulk_modifications(
+        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
+    ):
+        """
+        Same as `only_calendars_available_in_ranges` but expands recurring events
+        through their bulk-modification continuations.
+        """
+        return self.get_queryset().only_calendars_available_in_ranges_with_bulk_modifications(
+            ranges=ranges
+        )
+
 
 class CalendarEventManager(BaseOrganizationModelManager, RecurringManagerMixin):
     """Custom manager for CalendarEvent model to handle specific queries."""
@@ -176,6 +187,18 @@ class CalendarGroupManager(BaseOrganizationModelManager):
         from its pool available in every requested range.
         """
         return self.get_queryset().only_groups_bookable_in_ranges(ranges=ranges)
+
+    def only_groups_bookable_in_ranges_with_bulk_modifications(
+        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
+    ):
+        """
+        Same as `only_groups_bookable_in_ranges` but expands recurring events
+        through their bulk-modification continuations when computing calendar
+        availability per slot.
+        """
+        return self.get_queryset().only_groups_bookable_in_ranges_with_bulk_modifications(
+            ranges=ranges
+        )
 
 
 class CalendarGroupSlotManager(BaseOrganizationModelManager):

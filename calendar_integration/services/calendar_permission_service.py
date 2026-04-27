@@ -9,7 +9,9 @@ from calendar_integration.exceptions import (
     PermissionServiceInitializationError,
 )
 from calendar_integration.models import (
+    CalendarGroup,
     CalendarManagementToken,
+    CalendarOwnership,
     EventManagementPermissions,
 )
 from calendar_integration.services.dataclasses import (
@@ -338,6 +340,24 @@ class CalendarPermissionService:
             return self.has_permission(EventManagementPermissions.CREATE)
 
         return False
+
+    def can_manage_calendar_group(self, user: User, group: CalendarGroup) -> bool:
+        """Return True if `user` may create/update/delete `group` and create
+        events against it.
+
+        Current rule: the user must own at least one calendar inside the group's
+        slot pools, within the same organization. An org-admin override would
+        slot in here once an explicit admin role is introduced on
+        `OrganizationMembership`; until then, ownership is the only signal.
+        """
+        return (
+            CalendarOwnership.objects.filter_by_organization(group.organization_id)
+            .filter(
+                user=user,
+                calendar_fk__group_slots__group_fk=group,
+            )
+            .exists()
+        )
 
     def create_calendar_owner_token(
         self,

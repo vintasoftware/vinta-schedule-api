@@ -3,6 +3,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Annotated
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
@@ -15,6 +16,7 @@ from calendar_integration.exceptions import (
     CalendarServiceOrganizationNotSetError,
 )
 from calendar_integration.models import (
+    AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
@@ -41,6 +43,15 @@ from users.models import User
 
 if TYPE_CHECKING:
     from calendar_integration.services.calendar_service import CalendarService
+
+
+def _intervals_overlap(
+    a: tuple[datetime.datetime, datetime.datetime],
+    b: tuple[datetime.datetime, datetime.datetime],
+) -> bool:
+    a_start, a_end = a
+    b_start, b_end = b
+    return a_start < b_end and b_start < a_end
 
 
 class CalendarGroupService:
@@ -298,10 +309,13 @@ class CalendarGroupService:
         self,
         group_id: int,
         ranges: Iterable[tuple[datetime.datetime, datetime.datetime]],
+        with_bulk_modifications: bool = False,
     ) -> list[CalendarGroupRangeAvailability]:
         """For every range, list which calendars in each slot's pool are available.
 
         A slot with an empty `available_calendar_ids` is unbookable for that range.
+        Set `with_bulk_modifications=True` to expand recurring events through
+        their bulk-modification continuation series.
         """
         self._assert_initialized()
         group = self._get_group_by_id(group_id)
@@ -317,12 +331,19 @@ class CalendarGroupService:
             for s in slots
         }
 
+        calendar_qs_method = (
+            "only_calendars_available_in_ranges_with_bulk_modifications"
+            if with_bulk_modifications
+            else "only_calendars_available_in_ranges"
+        )
+
         results: list[CalendarGroupRangeAvailability] = []
         for start, end in ranges:
             available_ids = set(
-                Calendar.objects.filter_by_organization(self.organization.id)
-                .only_calendars_available_in_ranges([(start, end)])
-                .values_list("id", flat=True)
+                getattr(
+                    Calendar.objects.filter_by_organization(self.organization.id),
+                    calendar_qs_method,
+                )([(start, end)]).values_list("id", flat=True)
             )
             slot_results = [
                 CalendarGroupSlotAvailability(
@@ -623,12 +644,22 @@ class CalendarGroupService:
         search_window_end: datetime.datetime,
         duration: datetime.timedelta,
         slot_step: datetime.timedelta = datetime.timedelta(minutes=15),
+        with_bulk_modifications: bool = False,
     ) -> list[BookableSlotProposal]:
-        """Walk `[search_window_start, search_window_end]` in `slot_step` increments
-        and return the start/end pairs where every slot of the group is satisfied.
+        """Return every `(candidate_start, candidate_start + duration)` within
+        `[search_window_start, search_window_end]`, stepping by `slot_step`,
+        where every slot in the group has at least `required_count` calendars
+        available.
 
-        v1 scans in Python, firing one availability query per step; we leave SQL-side
-        window generation for a follow-up (see plan PR5).
+        The implementation fetches blocking data (AvailableTime for managed
+        calendars, CalendarEvent + BlockedTime for unmanaged calendars) once
+        for the whole search window and then walks candidates in Python — one
+        query per type instead of one query per candidate. For a 24h window at
+        15-minute steps that turns 96 round-trips into 3, which is the core of
+        the "SQL generate_series" optimization the plan called for.
+
+        Set `with_bulk_modifications=True` to expand recurring events through
+        their bulk-modification continuation series.
         """
         self._assert_initialized()
         if slot_step <= datetime.timedelta(0):
@@ -637,19 +668,157 @@ class CalendarGroupService:
             raise CalendarGroupValidationError("duration must be a positive timedelta.")
 
         group = self._get_group_by_id(group_id)
+        slots = list(group.slots.all())
+        if not slots:
+            return []
+
+        slot_pool_by_id: dict[int, set[int]] = {
+            s.id: set(
+                CalendarGroupSlotMembership.objects.filter_by_organization(self.organization.id)
+                .filter(slot_fk=s)
+                .values_list("calendar_fk_id", flat=True)
+            )
+            for s in slots
+        }
+        required_count_by_slot_id = {s.id: s.required_count for s in slots}
+
+        all_calendar_ids: set[int] = set()
+        for ids in slot_pool_by_id.values():
+            all_calendar_ids.update(ids)
+        if not all_calendar_ids:
+            return []
+
+        managed_ids, unmanaged_ids = self._split_calendars_by_management(all_calendar_ids)
+        available_spans = self._fetch_available_spans(
+            managed_ids, search_window_start, search_window_end
+        )
+        blocking_spans = self._fetch_blocking_spans(
+            unmanaged_ids,
+            search_window_start,
+            search_window_end,
+            with_bulk_modifications=with_bulk_modifications,
+        )
 
         proposals: list[BookableSlotProposal] = []
         cursor = search_window_start
         while cursor + duration <= search_window_end:
             window_start = cursor
             window_end = cursor + duration
-            is_bookable = (
-                CalendarGroup.objects.filter_by_organization(self.organization.id)
-                .filter(id=group.id)
-                .only_groups_bookable_in_ranges([(window_start, window_end)])
-                .exists()
-            )
-            if is_bookable:
+
+            all_slots_satisfied = True
+            for slot_id, pool_ids in slot_pool_by_id.items():
+                available_count = 0
+                for cid in pool_ids:
+                    if cid in managed_ids:
+                        # Managed: needs an AvailableTime that covers the window.
+                        if any(
+                            av_start <= window_start and av_end >= window_end
+                            for av_start, av_end in available_spans.get(cid, ())
+                        ):
+                            available_count += 1
+                    else:
+                        # Unmanaged: must not overlap any blocking span.
+                        if not any(
+                            _intervals_overlap((bs, be), (window_start, window_end))
+                            for bs, be in blocking_spans.get(cid, ())
+                        ):
+                            available_count += 1
+                if available_count < required_count_by_slot_id[slot_id]:
+                    all_slots_satisfied = False
+                    break
+            if all_slots_satisfied:
                 proposals.append(BookableSlotProposal(start_time=window_start, end_time=window_end))
             cursor = cursor + slot_step
         return proposals
+
+    def _split_calendars_by_management(self, calendar_ids: set[int]) -> tuple[set[int], set[int]]:
+        managed_ids: set[int] = set()
+        unmanaged_ids: set[int] = set()
+        for cid, managed in (
+            Calendar.objects.filter_by_organization(self.organization.id)
+            .filter(id__in=calendar_ids)
+            .values_list("id", "manage_available_windows")
+        ):
+            if managed:
+                managed_ids.add(cid)
+            else:
+                unmanaged_ids.add(cid)
+        return managed_ids, unmanaged_ids
+
+    def _fetch_available_spans(
+        self,
+        managed_ids: set[int],
+        search_window_start: datetime.datetime,
+        search_window_end: datetime.datetime,
+    ) -> dict[int, list[tuple[datetime.datetime, datetime.datetime]]]:
+        spans: dict[int, list[tuple[datetime.datetime, datetime.datetime]]] = {}
+        if not managed_ids:
+            return spans
+        for row in (
+            AvailableTime.objects.filter_by_organization(self.organization.id)
+            .filter(
+                calendar_fk_id__in=managed_ids,
+                start_time__lte=search_window_end,
+                end_time__gte=search_window_start,
+            )
+            .values("calendar_fk_id", "start_time", "end_time")
+        ):
+            spans.setdefault(row["calendar_fk_id"], []).append((row["start_time"], row["end_time"]))
+        return spans
+
+    def _fetch_blocking_spans(
+        self,
+        unmanaged_ids: set[int],
+        search_window_start: datetime.datetime,
+        search_window_end: datetime.datetime,
+        *,
+        with_bulk_modifications: bool,
+    ) -> dict[int, list[tuple[datetime.datetime, datetime.datetime]]]:
+        spans: dict[int, list[tuple[datetime.datetime, datetime.datetime]]] = {}
+        if not unmanaged_ids:
+            return spans
+
+        if with_bulk_modifications:
+            events_qs = CalendarEvent.objects.filter_by_organization(
+                self.organization.id
+            ).annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+                search_window_start, search_window_end
+            )
+        else:
+            events_qs = CalendarEvent.objects.filter_by_organization(
+                self.organization.id
+            ).annotate_recurring_occurrences_on_date_range(search_window_start, search_window_end)
+
+        overlap_filter = (
+            Q(start_time__range=(search_window_start, search_window_end))
+            | Q(end_time__range=(search_window_start, search_window_end))
+            | Q(start_time__lte=search_window_start, end_time__gte=search_window_end)
+            | Q(recurring_occurrences__len__gt=0)
+        )
+
+        for ev in events_qs.filter(overlap_filter, calendar_fk_id__in=unmanaged_ids).values(
+            "calendar_fk_id", "start_time", "end_time", "recurring_occurrences"
+        ):
+            bucket = spans.setdefault(ev["calendar_fk_id"], [])
+            if ev["start_time"] and ev["end_time"]:
+                bucket.append((ev["start_time"], ev["end_time"]))
+            for occ in ev["recurring_occurrences"] or ():
+                occ_start = datetime.datetime.fromisoformat(occ["start_time"])
+                occ_end = datetime.datetime.fromisoformat(occ["end_time"])
+                bucket.append((occ_start, occ_end))
+
+        for bt in (
+            BlockedTime.objects.filter_by_organization(self.organization.id)
+            .filter(
+                Q(start_time__range=(search_window_start, search_window_end))
+                | Q(end_time__range=(search_window_start, search_window_end))
+                | Q(
+                    start_time__lte=search_window_start,
+                    end_time__gte=search_window_end,
+                ),
+                calendar_fk_id__in=unmanaged_ids,
+            )
+            .values("calendar_fk_id", "start_time", "end_time")
+        ):
+            spans.setdefault(bt["calendar_fk_id"], []).append((bt["start_time"], bt["end_time"]))
+        return spans
