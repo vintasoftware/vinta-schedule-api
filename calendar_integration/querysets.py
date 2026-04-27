@@ -2,7 +2,7 @@ import datetime
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from django.db.models import OuterRef, Prefetch, Q, Subquery
+from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q, Subquery
 
 from calendar_integration.constants import CalendarSyncStatus, CalendarType
 from calendar_integration.database_functions import (
@@ -366,6 +366,69 @@ class BlockedTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin)
                 "id", start, end, max_occurrences
             )
         )
+
+
+class CalendarGroupQuerySet(BaseOrganizationModelQuerySet):
+    """
+    Custom QuerySet for CalendarGroup model to handle specific queries.
+    """
+
+    def only_groups_bookable_in_ranges(
+        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
+    ):
+        """
+        Returns groups where, for every range, every slot has at least
+        `required_count` calendars from its pool available
+        (per CalendarQuerySet.only_calendars_available_in_ranges).
+        """
+        from calendar_integration.models import Calendar, CalendarGroupSlot
+
+        ranges = list(ranges)
+        if not ranges:
+            return self.none()
+
+        qs = self
+        for start_datetime, end_datetime in ranges:
+            available_calendar_ids = (
+                Calendar.objects.get_queryset()
+                .filter(organization_id=OuterRef("organization_id"))
+                .only_calendars_available_in_ranges([(start_datetime, end_datetime)])
+                .values("id")
+            )
+            unsatisfied_slot = (
+                CalendarGroupSlot.objects.get_queryset()
+                .filter(group_fk_id=OuterRef("id"))
+                .annotate(
+                    available_in_slot=Count(
+                        "memberships",
+                        filter=Q(memberships__calendar_fk_id__in=Subquery(available_calendar_ids)),
+                        distinct=True,
+                    ),
+                )
+                .filter(available_in_slot__lt=F("required_count"))
+            )
+
+            qs = qs.filter(~Exists(unsatisfied_slot))
+
+        return qs
+
+
+class CalendarGroupSlotQuerySet(BaseOrganizationModelQuerySet):
+    """
+    Custom QuerySet for CalendarGroupSlot model to handle specific queries.
+    """
+
+
+class CalendarGroupSlotMembershipQuerySet(BaseOrganizationModelQuerySet):
+    """
+    Custom QuerySet for CalendarGroupSlotMembership model to handle specific queries.
+    """
+
+
+class CalendarEventGroupSelectionQuerySet(BaseOrganizationModelQuerySet):
+    """
+    Custom QuerySet for CalendarEventGroupSelection model to handle specific queries.
+    """
 
 
 class AvailableTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin):
