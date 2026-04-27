@@ -9,7 +9,9 @@ from calendar_integration.exceptions import (
     PermissionServiceInitializationError,
 )
 from calendar_integration.models import (
+    CalendarGroup,
     CalendarManagementToken,
+    CalendarOwnership,
     EventManagementPermissions,
 )
 from calendar_integration.services.dataclasses import (
@@ -338,6 +340,29 @@ class CalendarPermissionService:
             return self.has_permission(EventManagementPermissions.CREATE)
 
         return False
+
+    def can_manage_calendar_group(self, user: User, group: CalendarGroup) -> bool:
+        """Return True if `user` may create/update/delete `group` and create
+        events against it.
+
+        Rules, in order:
+          1. Org admins in the group's organization can always manage it —
+             matches "admin-of-org can administer org-scoped resources" so
+             schedulers/ops who don't personally own any pool calendar still
+             work.
+          2. Otherwise, the user must own at least one calendar inside the
+             group's slot pools (scoped to the group's organization).
+        """
+        if user.is_organization_admin(group.organization_id):
+            return True
+        return (
+            CalendarOwnership.objects.filter_by_organization(group.organization_id)
+            .filter(
+                user=user,
+                calendar_fk__group_slots__group_fk=group,
+            )
+            .exists()
+        )
 
     def create_calendar_owner_token(
         self,

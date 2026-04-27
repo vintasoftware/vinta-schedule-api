@@ -9,7 +9,14 @@ from django.http import HttpRequest
 from django.utils.html import format_html
 
 from calendar_integration.constants import IncomingWebhookProcessingStatus
-from calendar_integration.models import CalendarWebhookEvent, CalendarWebhookSubscription
+from calendar_integration.models import (
+    CalendarEventGroupSelection,
+    CalendarGroup,
+    CalendarGroupSlot,
+    CalendarGroupSlotMembership,
+    CalendarWebhookEvent,
+    CalendarWebhookSubscription,
+)
 
 
 class CalendarWebhookEventInline(admin.TabularInline):
@@ -296,6 +303,99 @@ class CalendarWebhookEventAdmin(admin.ModelAdmin):
             processed_at=None,
         )
         self.message_user(request, f"Reset {count} events for reprocessing.")
+
+
+class CalendarGroupSlotMembershipInline(admin.TabularInline):
+    """Inline admin for memberships within a CalendarGroupSlot."""
+
+    model = CalendarGroupSlotMembership
+    fk_name = "slot_fk"
+    fields = ("calendar_fk",)
+    extra = 1
+
+
+class CalendarGroupSlotInline(admin.TabularInline):
+    """Inline admin for slots within a CalendarGroup."""
+
+    model = CalendarGroupSlot
+    fk_name = "group_fk"
+    fields = ("name", "order", "required_count", "description")
+    extra = 1
+
+
+@admin.register(CalendarGroup)
+class CalendarGroupAdmin(admin.ModelAdmin):
+    """Admin interface for CalendarGroup."""
+
+    list_display = ("id", "name", "organization", "slot_count", "created")
+    list_filter = ("organization", "created")
+    search_fields = ("name", "description")
+    readonly_fields = ("created", "modified")
+    fields = ("organization", "name", "description", "created", "modified")
+    inlines: ClassVar = [CalendarGroupSlotInline]
+
+    def get_queryset(self, request: HttpRequest):
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("organization")
+            .annotate(_slot_count=Count("slots"))
+        )
+
+    @admin.display(description="Slots", ordering="_slot_count")
+    def slot_count(self, obj: CalendarGroup) -> int:
+        return getattr(obj, "_slot_count", obj.slots.count())
+
+
+@admin.register(CalendarGroupSlot)
+class CalendarGroupSlotAdmin(admin.ModelAdmin):
+    """Admin interface for CalendarGroupSlot."""
+
+    list_display = ("id", "name", "group", "order", "required_count", "calendar_count")
+    list_filter = ("group_fk", "organization")
+    search_fields = ("name", "group_fk__name")
+    readonly_fields = ("created", "modified")
+    fields = (
+        "organization",
+        "group_fk",
+        "name",
+        "description",
+        "order",
+        "required_count",
+        "created",
+        "modified",
+    )
+    inlines: ClassVar = [CalendarGroupSlotMembershipInline]
+
+    def get_queryset(self, request: HttpRequest):
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("organization", "group_fk")
+            .annotate(_calendar_count=Count("memberships"))
+        )
+
+    @admin.display(description="Calendars", ordering="_calendar_count")
+    def calendar_count(self, obj: CalendarGroupSlot) -> int:
+        return getattr(obj, "_calendar_count", obj.memberships.count())
+
+
+@admin.register(CalendarEventGroupSelection)
+class CalendarEventGroupSelectionAdmin(admin.ModelAdmin):
+    """Admin interface for CalendarEventGroupSelection."""
+
+    list_display = ("id", "event", "slot", "calendar", "created")
+    list_filter = ("organization", "created")
+    search_fields = ("event_fk__title", "slot_fk__name", "calendar_fk__name")
+    readonly_fields = ("created", "modified")
+    fields = ("organization", "event_fk", "slot_fk", "calendar_fk", "created", "modified")
+
+    def get_queryset(self, request: HttpRequest):
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("organization", "event_fk", "slot_fk", "calendar_fk")
+        )
 
 
 class WebhookHealthDashboard:

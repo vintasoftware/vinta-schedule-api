@@ -11,12 +11,16 @@ from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
 from calendar_integration.constants import CalendarProvider, CalendarType
-from calendar_integration.exceptions import CalendarServiceNotInjectedError
+from calendar_integration.exceptions import CalendarGroupError, CalendarServiceNotInjectedError
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
+    CalendarEventGroupSelection,
+    CalendarGroup,
+    CalendarGroupSlot,
+    CalendarGroupSlotMembership,
     CalendarOwnership,
     EventAttendance,
     EventExternalAttendance,
@@ -30,6 +34,10 @@ from calendar_integration.services.dataclasses import (
     BlockedTimeData,
     CalendarEventAdapterOutputData,
     CalendarEventInputData,
+    CalendarGroupEventInputData,
+    CalendarGroupInputData,
+    CalendarGroupSlotInputData,
+    CalendarGroupSlotSelectionInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
@@ -39,7 +47,11 @@ from calendar_integration.services.dataclasses import (
 from calendar_integration.virtual_models import (
     AvailableTimeVirtualModel,
     BlockedTimeVirtualModel,
+    CalendarEventGroupSelectionVirtualModel,
     CalendarEventVirtualModel,
+    CalendarGroupSlotMembershipVirtualModel,
+    CalendarGroupSlotVirtualModel,
+    CalendarGroupVirtualModel,
     CalendarOwnershipVirtualModel,
     CalendarVirtualModel,
     EventAttendanceVirtualModel,
@@ -56,6 +68,7 @@ from users.serializers import UserSerializer
 
 
 if TYPE_CHECKING:
+    from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_service import CalendarService
 
 
@@ -2057,3 +2070,284 @@ class AvailableTimeBulkModificationSerializer(serializers.Serializer):
             modified_end_time_offset=self.validated_data.get("modified_end_time_offset"),
             modification_rrule_string=final_rrule_string,
         )
+
+
+# ---------------------------------------------------------------------------
+# CalendarGroup REST serializers
+# ---------------------------------------------------------------------------
+def _translate_group_error(exc: CalendarGroupError) -> serializers.ValidationError:
+    return serializers.ValidationError({"non_field_errors": [str(exc)]})
+
+
+class CalendarGroupSlotMembershipSerializer(VirtualModelSerializer):
+    calendar = CalendarSerializer(read_only=True)
+
+    class Meta:
+        model = CalendarGroupSlotMembership
+        virtual_model = CalendarGroupSlotMembershipVirtualModel
+        fields = ("id", "calendar")
+
+
+class CalendarGroupSlotSerializer(VirtualModelSerializer):
+    """Nested slot representation used inside CalendarGroupSerializer.
+
+    On write, accepts `calendar_ids: list[int]`; on read exposes the calendar
+    pool via `calendars` (the M2M). We deliberately keep slot writes to
+    payload-time data only — persistence happens through
+    `CalendarGroupSerializer` which delegates to `CalendarGroupService`.
+    """
+
+    calendars = CalendarSerializer(many=True, read_only=True)
+    calendar_ids = serializers.ListField(
+        child=serializers.IntegerField(), write_only=True, required=True
+    )
+
+    class Meta:
+        model = CalendarGroupSlot
+        virtual_model = CalendarGroupSlotVirtualModel
+        fields = (
+            "id",
+            "name",
+            "description",
+            "order",
+            "required_count",
+            "calendars",
+            "calendar_ids",
+        )
+        read_only_fields = ("id",)
+
+
+class CalendarGroupSerializer(VirtualModelSerializer):
+    slots = CalendarGroupSlotSerializer(many=True)
+
+    class Meta:
+        model = CalendarGroup
+        virtual_model = CalendarGroupVirtualModel
+        fields = (
+            "id",
+            "name",
+            "description",
+            "slots",
+            "created",
+            "modified",
+        )
+        read_only_fields = ("id", "created", "modified")
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_group_service: Annotated[
+            "CalendarGroupService | None", Provide["calendar_group_service"]
+        ] = None,
+        **kwargs,
+    ):
+        self.calendar_group_service = calendar_group_service
+        super().__init__(*args, **kwargs)
+
+    def _organization(self) -> Organization:
+        request = self.context.get("request") if self.context else None
+        if not request or not getattr(request, "user", None):
+            raise serializers.ValidationError(
+                {"non_field_errors": ["Authenticated user with organization is required."]}
+            )
+        membership = getattr(request.user, "organization_membership", None)
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
+        return membership.organization
+
+    def _to_input_data(self, validated_data: dict) -> CalendarGroupInputData:
+        return CalendarGroupInputData(
+            name=validated_data["name"],
+            description=validated_data.get("description", ""),
+            slots=[
+                CalendarGroupSlotInputData(
+                    name=slot["name"],
+                    calendar_ids=list(slot["calendar_ids"]),
+                    required_count=slot.get("required_count", 1),
+                    description=slot.get("description", ""),
+                    order=slot.get("order", 0),
+                )
+                for slot in validated_data.get("slots", [])
+            ],
+        )
+
+    def create(self, validated_data: dict) -> CalendarGroup:
+        if not self.calendar_group_service:
+            raise CalendarServiceNotInjectedError(
+                "calendar_group_service is not defined; configure the DI container."
+            )
+        organization = self._organization()
+        self.calendar_group_service.initialize(organization=organization)
+        try:
+            return self.calendar_group_service.create_group(self._to_input_data(validated_data))
+        except CalendarGroupError as e:
+            raise _translate_group_error(e) from e
+
+    def update(self, instance: CalendarGroup, validated_data: dict) -> CalendarGroup:
+        if not self.calendar_group_service:
+            raise CalendarServiceNotInjectedError(
+                "calendar_group_service is not defined; configure the DI container."
+            )
+        organization = self._organization()
+        self.calendar_group_service.initialize(organization=organization)
+        try:
+            return self.calendar_group_service.update_group(
+                group_id=instance.id, data=self._to_input_data(validated_data)
+            )
+        except CalendarGroupError as e:
+            raise _translate_group_error(e) from e
+
+
+class CalendarEventGroupSelectionSerializer(VirtualModelSerializer):
+    slot = CalendarGroupSlotSerializer(read_only=True)
+    calendar = CalendarSerializer(read_only=True)
+
+    class Meta:
+        model = CalendarEventGroupSelection
+        virtual_model = CalendarEventGroupSelectionVirtualModel
+        fields = ("id", "slot", "calendar")
+
+
+class _CalendarGroupSlotSelectionInputSerializer(serializers.Serializer):
+    slot_id = serializers.IntegerField()
+    calendar_ids = serializers.ListField(child=serializers.IntegerField())
+
+
+class CalendarGroupEventCreateSerializer(serializers.Serializer):
+    """Input for booking an event through a CalendarGroup.
+
+    On `save()` this delegates to `CalendarGroupService.create_grouped_event`
+    and returns the created `CalendarEvent`. The view is responsible for
+    serializing the result (typically with `CalendarEventSerializer`).
+    """
+
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True, required=False, default="")
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+    timezone = serializers.CharField()
+    slot_selections = _CalendarGroupSlotSelectionInputSerializer(many=True)
+    attendances = serializers.ListField(child=serializers.DictField(), required=False, default=list)
+    external_attendances = serializers.ListField(
+        child=serializers.DictField(), required=False, default=list
+    )
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_group_service: Annotated[
+            "CalendarGroupService | None", Provide["calendar_group_service"]
+        ] = None,
+        **kwargs,
+    ):
+        self.calendar_group_service = calendar_group_service
+        super().__init__(*args, **kwargs)
+
+    def validate_end_time(self, end_time: datetime.datetime) -> datetime.datetime:
+        start_time = self.initial_data.get("start_time") if self.initial_data else None
+        if start_time:
+            try:
+                start_time_parsed = (
+                    datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+                    if isinstance(start_time, str)
+                    else start_time
+                )
+            except ValueError:
+                start_time_parsed = None
+            if start_time_parsed and end_time <= start_time_parsed:
+                raise serializers.ValidationError("end_time must be after start_time.")
+        return end_time
+
+    def save(self, **kwargs):
+        if not self.calendar_group_service or not self.calendar_group_service.calendar_service:
+            raise CalendarServiceNotInjectedError(
+                "calendar_group_service / calendar_service not defined; configure the DI container."
+            )
+        group = kwargs.get("group")
+        if group is None:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["group is required via serializer.save(group=…)"]}
+            )
+        request = self.context.get("request") if self.context else None
+        if not request or not getattr(request, "user", None):
+            raise serializers.ValidationError(
+                {"non_field_errors": ["Authenticated user with organization is required."]}
+            )
+        membership = getattr(request.user, "organization_membership", None)
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
+        organization = membership.organization
+
+        # Initialize the nested CalendarService on the group service — the
+        # grouped-event flow delegates to `self.calendar_group_service.calendar_service.create_event`
+        # internally, so that exact instance needs to be initialized.
+        self.calendar_group_service.calendar_service.initialize_without_provider(
+            user_or_token=request.user, organization=organization
+        )
+        self.calendar_group_service.initialize(organization=organization)
+
+        data = CalendarGroupEventInputData(
+            title=self.validated_data["title"],
+            description=self.validated_data.get("description", ""),
+            start_time=self.validated_data["start_time"],
+            end_time=self.validated_data["end_time"],
+            timezone=self.validated_data["timezone"],
+            group_id=group.id,
+            slot_selections=[
+                CalendarGroupSlotSelectionInputData(
+                    slot_id=s["slot_id"], calendar_ids=list(s["calendar_ids"])
+                )
+                for s in self.validated_data["slot_selections"]
+            ],
+            attendances=[
+                EventAttendanceInputData(user_id=a["user_id"])
+                for a in self.validated_data.get("attendances", [])
+            ],
+            external_attendances=[
+                EventExternalAttendanceInputData(
+                    external_attendee=ExternalAttendeeInputData(
+                        email=e["external_attendee"]["email"],
+                        name=e["external_attendee"].get("name", ""),
+                        id=e["external_attendee"].get("id"),
+                    )
+                )
+                for e in self.validated_data.get("external_attendances", [])
+            ],
+        )
+        try:
+            return self.calendar_group_service.create_grouped_event(data)
+        except CalendarGroupError as e:
+            raise _translate_group_error(e) from e
+
+
+class CalendarGroupSlotAvailabilitySerializer(serializers.Serializer):
+    slot_id = serializers.IntegerField()
+    available_calendar_ids = serializers.ListField(child=serializers.IntegerField())
+
+
+class CalendarGroupRangeAvailabilitySerializer(serializers.Serializer):
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+    slots = CalendarGroupSlotAvailabilitySerializer(many=True)
+
+
+class _RangeInputSerializer(serializers.Serializer):
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+
+
+class CalendarGroupAvailabilityQuerySerializer(serializers.Serializer):
+    """Input for the availability action: list of [start, end] windows."""
+
+    ranges = _RangeInputSerializer(many=True)
+
+
+class BookableSlotProposalSerializer(serializers.Serializer):
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()

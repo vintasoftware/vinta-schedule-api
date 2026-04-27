@@ -11,21 +11,27 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from calendar_integration.exceptions import CalendarIntegrationError
+from calendar_integration.exceptions import (
+    CalendarGroupError,
+    CalendarIntegrationError,
+)
 from calendar_integration.filtersets import (
     AvailableTimeFilterSet,
     BlockedTimeFilterSet,
     CalendarEventFilterSet,
+    CalendarGroupFilterSet,
 )
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
+    CalendarGroup,
 )
 from calendar_integration.permissions import (
     CalendarAvailabilityPermission,
     CalendarEventPermission,
+    CalendarGroupPermission,
 )
 from calendar_integration.serializers import (
     AvailableTimeBulkModificationSerializer,
@@ -35,15 +41,21 @@ from calendar_integration.serializers import (
     BlockedTimeBulkModificationSerializer,
     BlockedTimeRecurringExceptionSerializer,
     BlockedTimeSerializer,
+    BookableSlotProposalSerializer,
     BulkAvailableTimeSerializer,
     BulkBlockedTimeSerializer,
     CalendarBundleCreateSerializer,
     CalendarEventSerializer,
+    CalendarGroupAvailabilityQuerySerializer,
+    CalendarGroupEventCreateSerializer,
+    CalendarGroupRangeAvailabilitySerializer,
+    CalendarGroupSerializer,
     CalendarSerializer,
     EventBulkModificationSerializer,
     EventRecurringExceptionSerializer,
     UnavailableTimeWindowSerializer,
 )
+from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_service import CalendarService
 from common.utils.view_utils import VintaScheduleModelViewSet
 from organizations.models import OrganizationMembership
@@ -852,3 +864,251 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
             )
         except ValueError as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+
+class CalendarGroupViewSet(VintaScheduleModelViewSet):
+    """
+    ViewSet for CalendarGroup CRUD and grouped event actions.
+    """
+
+    permission_classes = (CalendarGroupPermission,)
+    queryset = CalendarGroup.objects.all()
+    serializer_class = CalendarGroupSerializer
+    filterset_class = CalendarGroupFilterSet
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_authenticated:
+            return CalendarGroup.objects.none()
+        try:
+            organization_id = user.organization_membership.organization_id
+        except OrganizationMembership.DoesNotExist:
+            return CalendarGroup.objects.none()
+        return super().get_queryset().filter_by_organization(organization_id)
+
+    @extend_schema(
+        summary="Delete calendar group",
+        description="Delete a CalendarGroup. Fails with 400 if the group has any bookings.",
+        responses={204: None},
+    )
+    @inject
+    def destroy(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        instance = self.get_object()
+        calendar_group_service.initialize(organization=instance.organization)
+        try:
+            calendar_group_service.delete_group(group_id=instance.id)
+        except CalendarGroupError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @extend_schema(
+        summary="Create grouped event",
+        request=CalendarGroupEventCreateSerializer,
+        responses={201: CalendarEventSerializer},
+    )
+    @action(
+        methods=["POST"],
+        detail=True,
+        url_path="events",
+        url_name="create-event",
+    )
+    def create_event(self, request, pk):
+        group = self.get_object()
+        serializer = CalendarGroupEventCreateSerializer(
+            data=request.data, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        event = serializer.save(group=group)
+        return Response(
+            CalendarEventSerializer(event, context=self.get_serializer_context()).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        summary="List events booked under this group",
+        parameters=[
+            OpenApiParameter(
+                name="start_datetime",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Start datetime in ISO format",
+                required=True,
+            ),
+            OpenApiParameter(
+                name="end_datetime",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="End datetime in ISO format",
+                required=True,
+            ),
+        ],
+        responses={200: CalendarEventSerializer(many=True)},
+    )
+    @action(
+        methods=["GET"],
+        detail=True,
+        url_path="booked-events",
+        url_name="list-events",
+    )
+    @inject
+    def list_events(
+        self,
+        request,
+        pk,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+    ):
+        group = self.get_object()
+        start_raw = request.query_params.get("start_datetime")
+        end_raw = request.query_params.get("end_datetime")
+        if not start_raw or not end_raw:
+            raise ValidationError(
+                {"non_field_errors": ["start_datetime and end_datetime are required"]}
+            )
+        try:
+            start_dt = datetime.datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+            end_dt = datetime.datetime.fromisoformat(end_raw.replace("Z", "+00:00"))
+        except ValueError as e:
+            raise ValidationError(
+                {"non_field_errors": ["Invalid datetime format; use ISO 8601."]}
+            ) from e
+
+        calendar_group_service.initialize(organization=group.organization)
+        events = calendar_group_service.get_group_events(
+            group_id=group.id, start=start_dt, end=end_dt
+        )
+        return Response(
+            CalendarEventSerializer(
+                list(events), many=True, context=self.get_serializer_context()
+            ).data
+        )
+
+    @extend_schema(
+        summary="Per-slot availability for requested ranges",
+        request=CalendarGroupAvailabilityQuerySerializer,
+        responses={200: CalendarGroupRangeAvailabilitySerializer(many=True)},
+    )
+    @action(
+        methods=["POST"],
+        detail=True,
+        url_path="availability",
+        url_name="availability",
+    )
+    @inject
+    def availability(
+        self,
+        request,
+        pk,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+    ):
+        group = self.get_object()
+        input_serializer = CalendarGroupAvailabilityQuerySerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+
+        calendar_group_service.initialize(organization=group.organization)
+        ranges = [
+            (r["start_time"], r["end_time"]) for r in input_serializer.validated_data["ranges"]
+        ]
+        result = calendar_group_service.check_group_availability(group_id=group.id, ranges=ranges)
+        payload = [
+            {
+                "start_time": r.start_time,
+                "end_time": r.end_time,
+                "slots": [
+                    {
+                        "slot_id": s.slot_id,
+                        "available_calendar_ids": s.available_calendar_ids,
+                    }
+                    for s in r.slots
+                ],
+            }
+            for r in result
+        ]
+        return Response(CalendarGroupRangeAvailabilitySerializer(payload, many=True).data)
+
+    @extend_schema(
+        summary="Bookable slot proposals for the group within a search window",
+        parameters=[
+            OpenApiParameter(
+                name="search_window_start",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Start of the search window (ISO 8601)",
+                required=True,
+            ),
+            OpenApiParameter(
+                name="search_window_end",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="End of the search window (ISO 8601)",
+                required=True,
+            ),
+            OpenApiParameter(
+                name="duration_seconds",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="Desired event duration, in seconds",
+                required=True,
+            ),
+            OpenApiParameter(
+                name="slot_step_seconds",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="Search step, in seconds (default 900 = 15min)",
+                required=False,
+            ),
+        ],
+        responses={200: BookableSlotProposalSerializer(many=True)},
+    )
+    @action(
+        methods=["GET"],
+        detail=True,
+        url_path="bookable-slots",
+        url_name="bookable-slots",
+    )
+    @inject
+    def bookable_slots(
+        self,
+        request,
+        pk,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+    ):
+        group = self.get_object()
+        try:
+            start_dt = datetime.datetime.fromisoformat(
+                request.query_params["search_window_start"].replace("Z", "+00:00")
+            )
+            end_dt = datetime.datetime.fromisoformat(
+                request.query_params["search_window_end"].replace("Z", "+00:00")
+            )
+            duration_seconds = int(request.query_params["duration_seconds"])
+            slot_step_seconds = int(request.query_params.get("slot_step_seconds", 15 * 60))
+        except (KeyError, ValueError) as e:
+            raise ValidationError(
+                {
+                    "non_field_errors": [
+                        "search_window_start, search_window_end and duration_seconds are required "
+                        "ISO/integer values."
+                    ]
+                }
+            ) from e
+
+        calendar_group_service.initialize(organization=group.organization)
+        try:
+            proposals = calendar_group_service.find_bookable_slots(
+                group_id=group.id,
+                search_window_start=start_dt,
+                search_window_end=end_dt,
+                duration=datetime.timedelta(seconds=duration_seconds),
+                slot_step=datetime.timedelta(seconds=slot_step_seconds),
+            )
+        except CalendarGroupError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+        payload = [{"start_time": p.start_time, "end_time": p.end_time} for p in proposals]
+        return Response(BookableSlotProposalSerializer(payload, many=True).data)

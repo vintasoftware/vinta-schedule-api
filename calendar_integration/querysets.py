@@ -2,7 +2,7 @@ import datetime
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from django.db.models import OuterRef, Prefetch, Q, Subquery
+from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q, Subquery
 
 from calendar_integration.constants import CalendarSyncStatus, CalendarType
 from calendar_integration.database_functions import (
@@ -215,6 +215,27 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
         """
         Returns calendars that have available time windows in all specified ranges.
         """
+        return self._only_calendars_available_in_ranges(ranges, with_bulk_modifications=False)
+
+    def only_calendars_available_in_ranges_with_bulk_modifications(
+        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
+    ):
+        """
+        Same as `only_calendars_available_in_ranges`, but recurring events and
+        blocked times are expanded via their bulk-modification continuation
+        series (`annotate_recurring_occurrences_with_bulk_modifications_on_date_range`).
+        Use this when the caller has split a recurring series with a bulk
+        modification and needs the continuation occurrences to count against
+        availability.
+        """
+        return self._only_calendars_available_in_ranges(ranges, with_bulk_modifications=True)
+
+    def _only_calendars_available_in_ranges(
+        self,
+        ranges: Iterable[tuple[datetime.datetime, datetime.datetime]],
+        *,
+        with_bulk_modifications: bool,
+    ):
         from calendar_integration.models import AvailableTime, BlockedTime, CalendarEvent
 
         if not ranges:
@@ -236,20 +257,28 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
                 ),
             )
 
+            if with_bulk_modifications:
+                events_qs = CalendarEvent.objects.annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+                    start_datetime, end_datetime
+                )
+                recurring_occurrences_field = "recurring_occurrences"
+            else:
+                events_qs = CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(
+                    start_datetime, end_datetime
+                )
+                recurring_occurrences_field = "recurring_occurrences"
+
             # For unmanaged calendars: must NOT have conflicting events or blocked times
             unmanaged_query = Q(
                 manage_available_windows=False,
             ) & ~Q(
                 Q(
                     id__in=Subquery(
-                        CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(
-                            start_datetime, end_datetime
-                        )
-                        .filter(
+                        events_qs.filter(
                             Q(start_time__range=(start_datetime, end_datetime))
                             | Q(end_time__range=(start_datetime, end_datetime))
                             | Q(start_time__lte=start_datetime, end_time__gte=end_datetime)
-                            | Q(recurring_occurrences__len__gt=0),
+                            | Q(**{f"{recurring_occurrences_field}__len__gt": 0}),
                             calendar_fk_id=OuterRef("id"),
                         )
                         .values("calendar_fk_id")
@@ -366,6 +395,91 @@ class BlockedTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin)
                 "id", start, end, max_occurrences
             )
         )
+
+
+class CalendarGroupQuerySet(BaseOrganizationModelQuerySet):
+    """
+    Custom QuerySet for CalendarGroup model to handle specific queries.
+    """
+
+    def only_groups_bookable_in_ranges(
+        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
+    ):
+        """
+        Returns groups where, for every range, every slot has at least
+        `required_count` calendars from its pool available
+        (per CalendarQuerySet.only_calendars_available_in_ranges).
+        """
+        return self._only_groups_bookable_in_ranges(ranges, with_bulk_modifications=False)
+
+    def only_groups_bookable_in_ranges_with_bulk_modifications(
+        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
+    ):
+        """
+        Same as `only_groups_bookable_in_ranges` but expands recurring events
+        through their bulk-modification continuation series so split-off
+        occurrences count against availability.
+        """
+        return self._only_groups_bookable_in_ranges(ranges, with_bulk_modifications=True)
+
+    def _only_groups_bookable_in_ranges(
+        self,
+        ranges: Iterable[tuple[datetime.datetime, datetime.datetime]],
+        *,
+        with_bulk_modifications: bool,
+    ):
+        from calendar_integration.models import Calendar, CalendarGroupSlot
+
+        ranges = list(ranges)
+        if not ranges:
+            return self.none()
+
+        calendar_method = (
+            "only_calendars_available_in_ranges_with_bulk_modifications"
+            if with_bulk_modifications
+            else "only_calendars_available_in_ranges"
+        )
+
+        qs = self
+        for start_datetime, end_datetime in ranges:
+            available_calendar_ids = getattr(
+                Calendar.objects.get_queryset().filter(organization_id=OuterRef("organization_id")),
+                calendar_method,
+            )([(start_datetime, end_datetime)]).values("id")
+            unsatisfied_slot = (
+                CalendarGroupSlot.objects.get_queryset()
+                .filter(group_fk_id=OuterRef("id"))
+                .annotate(
+                    available_in_slot=Count(
+                        "memberships",
+                        filter=Q(memberships__calendar_fk_id__in=Subquery(available_calendar_ids)),
+                        distinct=True,
+                    ),
+                )
+                .filter(available_in_slot__lt=F("required_count"))
+            )
+
+            qs = qs.filter(~Exists(unsatisfied_slot))
+
+        return qs
+
+
+class CalendarGroupSlotQuerySet(BaseOrganizationModelQuerySet):
+    """
+    Custom QuerySet for CalendarGroupSlot model to handle specific queries.
+    """
+
+
+class CalendarGroupSlotMembershipQuerySet(BaseOrganizationModelQuerySet):
+    """
+    Custom QuerySet for CalendarGroupSlotMembership model to handle specific queries.
+    """
+
+
+class CalendarEventGroupSelectionQuerySet(BaseOrganizationModelQuerySet):
+    """
+    Custom QuerySet for CalendarEventGroupSelection model to handle specific queries.
+    """
 
 
 class AvailableTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin):

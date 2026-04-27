@@ -5,6 +5,10 @@ from calendar_integration.models import (
     BlockedTime,
     Calendar,
     CalendarEvent,
+    CalendarEventGroupSelection,
+    CalendarGroup,
+    CalendarGroupSlot,
+    CalendarGroupSlotMembership,
     CalendarOwnership,
     EventAttendance,
     EventExternalAttendance,
@@ -67,6 +71,36 @@ class NestedCalendarEventVirtualModel(v.VirtualModel):
         model = CalendarEvent
 
 
+class CalendarGroupSlotMembershipVirtualModel(v.VirtualModel):
+    calendar = CalendarVirtualModel()
+
+    class Meta:
+        model = CalendarGroupSlotMembership
+
+
+class CalendarGroupSlotVirtualModel(v.VirtualModel):
+    memberships = CalendarGroupSlotMembershipVirtualModel(many=True)
+    calendars = CalendarVirtualModel(many=True)
+
+    class Meta:
+        model = CalendarGroupSlot
+
+
+class CalendarGroupVirtualModel(v.VirtualModel):
+    slots = CalendarGroupSlotVirtualModel(many=True)
+
+    class Meta:
+        model = CalendarGroup
+
+
+class CalendarEventGroupSelectionVirtualModel(v.VirtualModel):
+    slot = CalendarGroupSlotVirtualModel()
+    calendar = CalendarVirtualModel()
+
+    class Meta:
+        model = CalendarEventGroupSelection
+
+
 class CalendarEventVirtualModel(v.VirtualModel):
     calendar = CalendarVirtualModel()
     external_attendances = EventExternalAttendanceVirtualModel(many=True)
@@ -74,6 +108,8 @@ class CalendarEventVirtualModel(v.VirtualModel):
     resource_allocations = ResourceAllocationVirtualModel(many=True)
     recurrence_rule = RecurrenceRuleVirtualModel()
     parent_recurring_object = NestedCalendarEventVirtualModel()
+    group_selections = CalendarEventGroupSelectionVirtualModel(many=True)
+    calendar_group = CalendarGroupVirtualModel()
 
     class Meta:
         model = CalendarEvent

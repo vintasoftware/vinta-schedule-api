@@ -10,6 +10,7 @@ from vintasend_django.services.notification_template_renderers.django_templated_
     DjangoTemplatedEmailRenderer,
 )
 
+from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
@@ -94,6 +95,12 @@ class AppContainer(containers.DeclarativeContainer):
     calendar_service = providers.Factory(
         CalendarService,
         calendar_side_effects_service=calendar_side_effects_service,
+        calendar_permission_service=calendar_permission_service,
+    )
+
+    calendar_group_service = providers.Factory(
+        CalendarGroupService,
+        calendar_service=calendar_service,
         calendar_permission_service=calendar_permission_service,
     )
 
