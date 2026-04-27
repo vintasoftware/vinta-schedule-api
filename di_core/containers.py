@@ -100,6 +100,7 @@ class AppContainer(containers.DeclarativeContainer):
 
     calendar_group_service = providers.Factory(
         CalendarGroupService,
+        calendar_service=calendar_service,
         calendar_permission_service=calendar_permission_service,
     )
 
