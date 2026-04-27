@@ -345,11 +345,16 @@ class CalendarPermissionService:
         """Return True if `user` may create/update/delete `group` and create
         events against it.
 
-        Current rule: the user must own at least one calendar inside the group's
-        slot pools, within the same organization. An org-admin override would
-        slot in here once an explicit admin role is introduced on
-        `OrganizationMembership`; until then, ownership is the only signal.
+        Rules, in order:
+          1. Org admins in the group's organization can always manage it —
+             matches "admin-of-org can administer org-scoped resources" so
+             schedulers/ops who don't personally own any pool calendar still
+             work.
+          2. Otherwise, the user must own at least one calendar inside the
+             group's slot pools (scoped to the group's organization).
         """
+        if user.is_organization_admin(group.organization_id):
+            return True
         return (
             CalendarOwnership.objects.filter_by_organization(group.organization_id)
             .filter(

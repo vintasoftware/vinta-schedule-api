@@ -24,7 +24,12 @@ from organizations.exceptions import (
     InvalidInvitationTokenError,
     InvitationNotFoundError,
 )
-from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
+from organizations.models import (
+    Organization,
+    OrganizationInvitation,
+    OrganizationMembership,
+    OrganizationRole,
+)
 from users.models import User
 
 
@@ -51,7 +56,13 @@ class OrganizationService:
             name=name,
             should_sync_rooms=should_sync_rooms,
         )
-        OrganizationMembership.objects.create(user=creator, organization=self.organization)
+        # The creator of the organization is its first admin — every org must
+        # have at least one admin, and no one else exists yet to promote them.
+        OrganizationMembership.objects.create(
+            user=creator,
+            organization=self.organization,
+            role=OrganizationRole.ADMIN,
+        )
 
         if should_sync_rooms:
             self.calendar_service.initialize_without_provider(
