@@ -53,14 +53,14 @@ repos:
         pass_filenames: false
       - id: missing-migrations
         name: missing-migrations-local
-        entry: poetry run python manage.py makemigrations --check
+        entry: uv run python manage.py makemigrations --check
         language: system
         # Only run missing migration check if migration-generating files have changed:
         files: (.*/?(settings|migrations|models)/.+|.+models\.py|.+constants\.py|.+choices\.py|.+pyproject\.toml)
         pass_filenames: false
       - id: backend-schema
         name: backend-schema-local
-        entry: poetry run python manage.py spectacular --color --file schema.yml
+        entry: uv run python manage.py spectacular --color --file schema.yml
         language: system
         files: ^
         pass_filenames: false

@@ -15,7 +15,7 @@ services:
     plan: free
     runtime: python
     buildCommand: "./render_build.sh"
-    startCommand: "poetry run gunicorn vinta_schedule_api.wsgi:application --chdir backend --limit-request-line 8188 --log-file -"
+    startCommand: "uv run gunicorn vinta_schedule_api.wsgi:application --chdir backend --limit-request-line 8188 --log-file -"
     envVars:
       - key: ENABLE_DJANGO_COLLECTSTATIC
         value: 1
@@ -40,8 +40,8 @@ services:
   #   name: worker-default
   #   runtime: python
   #   env: python
-  #   buildCommand: poetry install
-  #   startCommand: "poetry run celery --workdir backend --app=vinta_schedule_api worker --loglevel=info --max-memory-per-child=$WORKER_MAX_MEMORY  --concurrency=$WORKER_CONCURRENCY"
+  #   buildCommand: uv sync --frozen --no-dev --no-install-project
+  #   startCommand: "uv run celery --workdir backend --app=vinta_schedule_api worker --loglevel=info --max-memory-per-child=$WORKER_MAX_MEMORY  --concurrency=$WORKER_CONCURRENCY"
   #   envVars:
   #     - key: REMAP_SIGTERM
   #       value: SIGQUIT
@@ -86,8 +86,8 @@ services:
   #   name: beat
   #   runtime: python
   #   env: python
-  #   buildCommand: poetry install
-  #   startCommand: "poetry run celery --workdir backend --app=vinta_schedule_api beat --loglevel=info"
+  #   buildCommand: uv sync --frozen --no-dev --no-install-project
+  #   startCommand: "uv run celery --workdir backend --app=vinta_schedule_api beat --loglevel=info"
   #   envVars:
   #     - key: REMAP_SIGTERM
   #       value: SIGQUIT
@@ -108,8 +108,8 @@ envVarGroups:
     envVars:
       - key: PYTHON_VERSION
         value: 3.13.0
-      - key: POETRY_VERSION
-        value: 2.1.3
+      - key: UV_VERSION
+        value: 0.11.18
       - key: SECRET_KEY
         generateValue: true
       - key: DJANGO_SETTINGS_MODULE

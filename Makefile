@@ -15,7 +15,7 @@ setup:
 	./scripts/init_localstack.sh
 
 install:
-	docker compose run --rm api poetry install --no-root --no-interaction --no-ansi --with=dev
+	docker compose run --rm api uv sync --frozen --no-install-project
 
 test:
 	docker compose run --rm api python -m pytest $(ARG) -vs -n auto --no-header --reuse-db
@@ -39,7 +39,7 @@ up_with_workers:
 	docker compose up -d
 
 update_deps:
-	docker compose run --rm api poetry install --no-root --no-interaction --no-ansi --with=dev
+	docker compose run --rm api uv sync --no-install-project
 
 down:
 	docker compose down

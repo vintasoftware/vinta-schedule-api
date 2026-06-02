@@ -36,7 +36,7 @@
 
 -   Open a new command line window and go to the project's directory
 -   Update the dependencies management files by performing any number of the following steps:
-    -   run `make bash` to open an interactive shell and then run `poetry add {dependency}` to add the dependency. If the dependency should be only available for development user append `-G dev` to the command.
+    -   run `make bash` to open an interactive shell and then run `uv add {dependency}` to add the dependency. If the dependency should be only available for development user append `--dev` to the command.
     -   After updating the desired file(s), run `make update_deps` to update the containers with the new dependencies
         > The above command will stop and re-build the containers in order to make the new dependencies effective
         
@@ -111,7 +111,7 @@ The configuration automatically switches between LocalStack (development) and AW
 
 This project comes with an `render.yaml` file, which can be used to create an app on Render.com from a GitHub repository.
 
-Before deploying, please make sure you've generated an up-to-date `poetry.lock` file containing the Python dependencies. This is necessary even if you've used Docker for local runs. Do so by following [these instructions](#setup-the-backend-app).
+Before deploying, please make sure you've generated an up-to-date `uv.lock` file containing the Python dependencies. This is necessary even if you've used Docker for local runs. Do so by following [these instructions](#setup-the-backend-app).
 
 After setting up the project, you can init a repository and push it on GitHub. If your repository is public, you can use the following button:
 
@@ -171,18 +171,18 @@ You can test your Sentry configuration by deploying the boilerplate with the sam
 ## Linting
 
 -   At pre-commit time (see below)
--   Manually with `poetry run ruff` and `npm run lint` on project root.
+-   Manually with `uv run ruff` and `npm run lint` on project root.
 -   During development with an editor compatible with ruff and ESLint.
 
 ## Pre-commit hooks
 
 ### If you are using DevContainers:
 
--   On project root, run `make bash` to open an interactive shell and then run `poetry run pre-commit install` to enable the hook into your git repo. The hook will run automatically for each commit done through your devcontainer.
+-   On project root, run `make bash` to open an interactive shell and then run `uv run pre-commit install` to enable the hook into your git repo. The hook will run automatically for each commit done through your devcontainer.
 
 ### If you have the python dependencies installed locally
 
-Run `poetry run pre-commit install` to enable the hook into your git repo. The hook will run automatically for each commit done.
+Run `uv run pre-commit install` to enable the hook into your git repo. The hook will run automatically for each commit done.
 
 ## Opinionated Settings
 

@@ -40,7 +40,7 @@
 	// "shutdownAction": "none",
 
 	// Uncomment the next line to run commands after the container is created.
-	"postCreateCommand": "poetry install --no-root --no-interaction --no-ansi --with=dev",
+	"postCreateCommand": "uv sync --no-install-project",
 
 	// Configure tool-specific properties.
 	"customizations": {
