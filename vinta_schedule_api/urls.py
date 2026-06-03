@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib import admin
 from django.http import Http404
 from django.urls import include, path
@@ -57,7 +58,6 @@ urlpatterns = [
     ),
     path("s3direct/", include("s3direct.urls")),
     path("super/", admin.site.urls, name="admin"),
-    path("super/defender/", include("defender.urls")),
     # drf-spectacular
     path("schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
@@ -73,3 +73,7 @@ urlpatterns = [
     path("graphql/", csrf_exempt(GraphQLView.as_view(schema=schema))),
     # *referenced_frontend_urlpatterns,
 ]
+
+# django-defender admin URLs require Redis; only mount them when enabled.
+if getattr(settings, "DEFENDER_ENABLED", False):
+    urlpatterns.append(path("super/defender/", include("defender.urls")))

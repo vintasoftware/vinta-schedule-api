@@ -44,11 +44,14 @@ X_FRAME_OPTIONS = "DENY"
 # Celery
 # Recommended settings for reliability: https://gist.github.com/fjsj/da41321ac96cf28a96235cb20e7236f6
 CELERY_BROKER_URL = config("RABBITMQ_URL", default="")
-CELERY_RESULT_BACKEND = config("REDIS_URL")
+# Redis result backend is optional; when REDIS_URL is unset, task results are
+# simply not stored (the broker still drives task execution).
+CELERY_RESULT_BACKEND = config("REDIS_URL", default="") or None
 CELERY_SEND_TASK_ERROR_EMAILS = True
 
 # Redbeat https://redbeat.readthedocs.io/en/latest/config.html#redbeat-redis-url
-redbeat_redis_url = config("REDBEAT_REDIS_URL", default="")
+# Falls back to REDIS_URL; empty when Redis is not configured.
+redbeat_redis_url = config("REDBEAT_REDIS_URL", default="") or REDIS_URL
 
 
 AWS_REGION = config("AWS_REGION", default="us-east-1")

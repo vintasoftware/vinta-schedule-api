@@ -54,23 +54,20 @@ from dataclasses import dataclass
 from typing import Any
 
 import requests
-from pyrate_limiter import Duration, Limiter, Rate, RedisBucket
+from pyrate_limiter import Duration, Rate
 
-from common.redis import redis_connection
+from common.redis import build_resilient_limiter
 
 
 logger = logging.getLogger(__name__)
 
 
-quote_limiter = Limiter(
-    RedisBucket.init(
-        [
-            Rate(10000, Duration.MINUTE * 10),  # 10000 requests every 10 minutes
-            Rate(130000, Duration.SECOND * 10),  # 1000 requests every minute
-        ],
-        redis=redis_connection,
-        bucket_key="ms_outlook_calendar_limiter",
-    ),
+quote_limiter = build_resilient_limiter(
+    [
+        Rate(10000, Duration.MINUTE * 10),  # 10000 requests every 10 minutes
+        Rate(130000, Duration.SECOND * 10),  # 1000 requests every minute
+    ],
+    bucket_key="ms_outlook_calendar_limiter",
     raise_when_fail=False,
     max_delay=1000,  # Allow a maximum delay of 1 second for read operations
 )

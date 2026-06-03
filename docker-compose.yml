@@ -2,7 +2,7 @@ x-python-service: &python-service
   build:
     dockerfile: Dockerfile.development
     context: .
-  env_file: .env
+  env_file: .env.docker
   volumes:
     - ./:/home/user/app/
     - virtualenv:/opt/venv

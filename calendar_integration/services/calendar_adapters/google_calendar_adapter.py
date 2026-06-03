@@ -14,7 +14,7 @@ import google.auth.jwt
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from pyrate_limiter import Duration, Limiter, Rate, RedisBucket
+from pyrate_limiter import Duration, Rate
 
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.exceptions import WebhookIgnoredError, WebhookProcessingFailedError
@@ -27,32 +27,26 @@ from calendar_integration.services.dataclasses import (
     EventAttendeeData,
 )
 from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
-from common.redis import redis_connection
+from common.redis import build_resilient_limiter
 
 
 # Precompiled regex for extracting calendar ID from Google Calendar resource URIs
 _CALENDAR_ID_RE = re.compile(r"/calendars/([^/]+)/events")
 
-read_quote_limiter = Limiter(
-    RedisBucket.init(
-        [
-            Rate(240, Duration.MINUTE),  # 240 requests per minute
-        ],
-        redis=redis_connection,
-        bucket_key="google_calendar_read_limiter",
-    ),
+read_quote_limiter = build_resilient_limiter(
+    [
+        Rate(240, Duration.MINUTE),  # 240 requests per minute
+    ],
+    bucket_key="google_calendar_read_limiter",
     raise_when_fail=False,
     max_delay=1000,  # Allow a maximum delay of 1 second for read operations
 )
 
-write_quote_limiter = Limiter(
-    RedisBucket.init(
-        [
-            Rate(120, Duration.MINUTE),  # 120 requests per minute
-        ],
-        redis=redis_connection,
-        bucket_key="google_calendar_write_limiter",
-    ),
+write_quote_limiter = build_resilient_limiter(
+    [
+        Rate(120, Duration.MINUTE),  # 120 requests per minute
+    ],
+    bucket_key="google_calendar_write_limiter",
     raise_when_fail=False,
     max_delay=2000,  # Allow a maximum delay of 2 seconds for write operations
 )

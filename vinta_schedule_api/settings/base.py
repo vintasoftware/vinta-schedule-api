@@ -53,7 +53,6 @@ INSTALLED_APPS = [
     "import_export",
     "rest_framework",
     "drf_spectacular",
-    "defender",
     "django_guid",
     "allauth",
     "allauth.headless",
@@ -83,7 +82,6 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "csp.middleware.CSPMiddleware",
-    "defender.middleware.FailedLoginMiddleware",
     "django_guid.middleware.guid_middleware",
     "allauth.account.middleware.AccountMiddleware",
 ]
@@ -156,7 +154,19 @@ USE_I18N = True
 
 USE_TZ = True
 
-REDIS_URL = config("REDIS_URL")
+# Redis is an optional dependency. When REDIS_URL is empty, Redis-backed
+# features (rate limiting, django-defender, celery result backend/beat)
+# degrade gracefully instead of crashing the app.
+REDIS_URL = config("REDIS_URL", default="")
+
+# Redis circuit breaker (see common.redis). After this many consecutive Redis
+# errors the breaker opens and short-circuits Redis access for the reset window.
+REDIS_CIRCUIT_BREAKER_FAILURE_THRESHOLD = config(
+    "REDIS_CIRCUIT_BREAKER_FAILURE_THRESHOLD", cast=int, default=5
+)
+REDIS_CIRCUIT_BREAKER_RESET_TIMEOUT = config(
+    "REDIS_CIRCUIT_BREAKER_RESET_TIMEOUT", cast=float, default=30.0
+)
 
 # Celery
 # Recommended settings for reliability: https://gist.github.com/fjsj/da41321ac96cf28a96235cb20e7236f6
@@ -255,11 +265,19 @@ CSP_IMG_SRC = [
     "https://cdn.redoc.ly/redoc/",
 ]
 
-# Django-defender
-DEFENDER_LOGIN_FAILURE_LIMIT = 3
-DEFENDER_COOLOFF_TIME = 300  # 5 minutes
-DEFENDER_LOCKOUT_TEMPLATE = "defender/lockout.html"
-DEFENDER_REDIS_URL = config("REDIS_URL")
+# Django-defender (requires Redis). Only enabled when REDIS_URL is configured;
+# otherwise the app, its middleware, and its admin URLs are skipped entirely.
+DEFENDER_ENABLED = bool(REDIS_URL)
+if DEFENDER_ENABLED:
+    INSTALLED_APPS.append("defender")
+    MIDDLEWARE.insert(
+        MIDDLEWARE.index("csp.middleware.CSPMiddleware") + 1,
+        "defender.middleware.FailedLoginMiddleware",
+    )
+    DEFENDER_LOGIN_FAILURE_LIMIT = 3
+    DEFENDER_COOLOFF_TIME = 300  # 5 minutes
+    DEFENDER_LOCKOUT_TEMPLATE = "defender/lockout.html"
+    DEFENDER_REDIS_URL = REDIS_URL
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),

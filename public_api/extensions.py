@@ -7,14 +7,12 @@ from graphql.error import GraphQLError
 from pyrate_limiter import (
     BucketFullException,
     Duration,
-    Limiter,
     Rate,
-    RedisBucket,
 )
-from redis import Redis
-from redis.exceptions import RedisError
 from strawberry.extensions import SchemaExtension
 from strawberry.utils.await_maybe import AsyncIteratorOrIterator
+
+from common.redis import ResilientLimiter
 
 
 class OrganizationRateLimiter(SchemaExtension):
@@ -22,17 +20,28 @@ class OrganizationRateLimiter(SchemaExtension):
     Uses redis and the leaky bucket algorithm to limit the number of requests a organization can make
     within a specified period.
     This is useful for preventing abuse and ensuring fair usage of resources across organizations.
+
+    Redis is optional: a process-wide circuit breaker guards every Redis call and,
+    when Redis is unconfigured or down, the limiter falls back to an in-process
+    bucket so the public API keeps serving requests.
     """
 
-    redis_client: Redis | None
+    limiter: ResilientLimiter | None
     rates: Iterable[Rate] | None
 
     def __init__(self, rates: Iterable[Rate] | None = None):
         self.rates = rates
-        try:
-            self.redis_client = Redis.from_url(getattr(settings, "PUBLIC_API_REDIS_URL", ""))
-        except RedisError:
-            self.redis_client = None
+        resolved_rates = list(rates or self.get_default_rates())
+        if resolved_rates:
+            self.limiter = ResilientLimiter(
+                resolved_rates,
+                bucket_key=getattr(settings, "PUBLIC_API_RATE_LIMITER_KEY", "public_api"),
+                raise_when_fail=True,
+                name="public_api",
+                redis_url=getattr(settings, "PUBLIC_API_REDIS_URL", "") or None,
+            )
+        else:
+            self.limiter = None
 
     @staticmethod
     def get_default_rates() -> Iterable[Rate]:
@@ -86,22 +95,12 @@ class OrganizationRateLimiter(SchemaExtension):
         organization = getattr(request, "public_api_organization", None)
         organization_id = organization.id if organization else None
 
-        if organization_id is None:
+        if organization_id is None or self.limiter is None:
             yield
             return None
-        if not self.redis_client:
-            yield
-            return None
-
-        bucket = RedisBucket.init(
-            list(self.rates or self.get_default_rates()),
-            self.redis_client,
-            getattr(settings, "PUBLIC_API_RATE_LIMITER_KEY", ""),
-        )
-        limiter = Limiter(bucket)
 
         try:
-            limiter.try_acquire(organization_id)
+            self.limiter.try_acquire(str(organization_id))
             yield
         except BucketFullException as e:
             raise GraphQLError(
