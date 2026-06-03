@@ -15,8 +15,7 @@ class OnCreateEventHandler(Protocol):
         actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         organization: Organization,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 @runtime_checkable
@@ -26,8 +25,7 @@ class OnUpdateEventHandler(Protocol):
         actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         organization: Organization,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 @runtime_checkable
@@ -37,8 +35,7 @@ class OnDeleteEventHandler(Protocol):
         actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
         organization: Organization,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 @runtime_checkable
@@ -49,8 +46,7 @@ class OnAddAttendeeToEventHandler(Protocol):
         event: CalendarEventData,
         attendance: EventExternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 @runtime_checkable
@@ -61,8 +57,7 @@ class OnRemoveAttendeeFromEventHandler(Protocol):
         event: CalendarEventData,
         attendance: EventExternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 @runtime_checkable
@@ -73,8 +68,7 @@ class OnUpdateAttendeeOnEventHandler(Protocol):
         event: CalendarEventData,
         attendance: EventExternalAttendeeData | EventExternalAttendeeData,
         organization: Organization,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 class CalendarSideEffectsService:

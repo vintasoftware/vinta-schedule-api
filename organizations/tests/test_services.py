@@ -102,9 +102,9 @@ class TestOrganizationService:
         # Check that end_time is approximately 365 days from start_time
         expected_end_time = start_time + datetime.timedelta(days=365)
         time_diff = abs((end_time - expected_end_time).total_seconds())
-        assert (
-            time_diff < 60
-        ), f"End time should be 365 days from start time, but diff is {time_diff} seconds"
+        assert time_diff < 60, (
+            f"End time should be 365 days from start time, but diff is {time_diff} seconds"
+        )
 
     def test_create_organization_default_sync_rooms_false(
         self, organization_service, user, mock_calendar_service

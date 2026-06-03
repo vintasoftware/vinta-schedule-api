@@ -121,9 +121,9 @@ class TokenCalendarEventViewSet(TokenAuthenticationMixin, NoListVintaScheduleMod
 
                 # Pass token string and organization to serializer context
                 context["token"] = token
-                context[
-                    "token_str_base64"
-                ] = token_str_base64  # For calendar service authentication
+                context["token_str_base64"] = (
+                    token_str_base64  # For calendar service authentication
+                )
                 context["organization"] = organization
 
             except (

@@ -15,8 +15,8 @@ schema = strawberry.Schema(
     mutation=Mutation,
     extensions=[
         DjangoOptimizerExtension,
-        MaxTokensLimiter(max_token_count=1000),
-        QueryDepthLimiter(max_depth=10),
-        OrganizationRateLimiter(),
+        lambda: MaxTokensLimiter(max_token_count=1000),
+        lambda: QueryDepthLimiter(max_depth=10),
+        OrganizationRateLimiter,
     ],
 )

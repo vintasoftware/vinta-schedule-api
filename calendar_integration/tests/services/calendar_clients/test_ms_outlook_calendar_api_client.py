@@ -1260,7 +1260,7 @@ def test_list_calendar_view_with_options(client, sample_event_data):
     assert len(events) == 1
 
     # Verify parameters were passed correctly
-    args, kwargs = client.session.request.call_args
+    _args, kwargs = client.session.request.call_args
     assert kwargs["params"]["$top"] == 50
     assert kwargs["headers"]["Prefer"] == 'outlook.timezone="America/New_York"'
 
@@ -1413,7 +1413,7 @@ def test_get_room_events_delta_with_delta_token(client):
     assert result["delta_link"] is not None
 
     # Verify delta token was used
-    args, kwargs = client.session.request.call_args
+    _args, kwargs = client.session.request.call_args
     assert kwargs["params"]["$deltatoken"] == "old_token"
     assert (
         "startDateTime" not in kwargs["params"]
@@ -1446,7 +1446,7 @@ def test_get_room_events_delta_with_skip_token(client):
     assert len(result["events"]) == 0
 
     # Verify skip token was used
-    args, kwargs = client.session.request.call_args
+    _args, kwargs = client.session.request.call_args
     assert kwargs["params"]["$skiptoken"] == "skip123"
     assert "startDateTime" not in kwargs["params"]
 
@@ -1473,7 +1473,7 @@ def test_get_room_events_delta_with_max_page_size(client):
         client.get_room_events_delta("room@example.com", start_time, end_time, max_page_size=100)
 
     # Verify max page size header was set
-    args, kwargs = client.session.request.call_args
+    _args, kwargs = client.session.request.call_args
     assert kwargs["headers"]["Prefer"] == "odata.maxpagesize=100"
 
 

@@ -1,5 +1,4 @@
 from collections.abc import Callable
-from typing import TypeVar
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
@@ -12,10 +11,9 @@ def generate_unique_id():
     return cuid_generator()
 
 
-AnyModel = TypeVar("AnyModel", bound=models.Model)
-
-
-def clone_model_instance(instance: AnyModel, save=True, **kwargs) -> AnyModel:
+def clone_model_instance[AnyModel: models.Model](
+    instance: AnyModel, save=True, **kwargs
+) -> AnyModel:
     new_instance = instance.__class__()
     for field in instance._meta.get_fields(include_hidden=False):
         # import ipdb

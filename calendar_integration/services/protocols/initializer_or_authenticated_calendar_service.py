@@ -43,70 +43,58 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
     calendar_side_effects_service: CalendarSideEffectsService
     calendar_permission_service: CalendarPermissionService
 
-    def _get_calendar_by_id(self, calendar_id: int) -> Calendar:
-        ...
+    def _get_calendar_by_id(self, calendar_id: int) -> Calendar: ...
 
-    def _get_calendar_by_external_id(self, calendar_external_id: str) -> Calendar:
-        ...
+    def _get_calendar_by_external_id(self, calendar_external_id: str) -> Calendar: ...
 
     def _create_bundle_event(
         self, bundle_calendar: Calendar, event_data: "CalendarEventInputData"
-    ) -> CalendarEvent:
-        ...
+    ) -> CalendarEvent: ...
 
-    def _get_write_adapter_for_calendar(self, calendar: Calendar) -> CalendarAdapter | None:
-        ...
+    def _get_write_adapter_for_calendar(self, calendar: Calendar) -> CalendarAdapter | None: ...
 
     def convert_naive_utc_datetime_to_timezone(
         self, naive_utc_datetime: datetime.datetime, timezone_str: str
-    ) -> datetime.datetime:
-        ...
+    ) -> datetime.datetime: ...
 
-    def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
-        ...
+    def create_event(
+        self, calendar_id: int, event_data: CalendarEventInputData
+    ) -> CalendarEvent: ...
 
     def _update_bundle_event(
         self, bundle_event: CalendarEvent, event_data: "CalendarEventInputData"
-    ) -> CalendarEvent:
-        ...
+    ) -> CalendarEvent: ...
 
     def update_event(
         self, calendar_id: str, event_id: int, event_data: CalendarEventInputData
-    ) -> CalendarEvent:
-        ...
+    ) -> CalendarEvent: ...
 
-    def _delete_bundle_event(self, bundle_event: CalendarEvent) -> None:
-        ...
+    def _delete_bundle_event(self, bundle_event: CalendarEvent) -> None: ...
 
-    def delete_event(self, calendar_id: str, event_id: int) -> None:
-        ...
+    def delete_event(self, calendar_id: str, event_id: int) -> None: ...
 
     def get_unavailable_time_windows_in_range(
         self,
         calendar: Calendar,
         start_datetime: datetime.datetime,
         end_datetime: datetime.datetime,
-    ) -> list[UnavailableTimeWindow]:
-        ...
+    ) -> list[UnavailableTimeWindow]: ...
 
     def get_availability_windows_in_range(
         self, calendar: Calendar, start_datetime: datetime.datetime, end_datetime: datetime.datetime
-    ) -> Iterable[AvailableTimeWindow]:
-        ...
+    ) -> Iterable[AvailableTimeWindow]: ...
 
     def bulk_create_availability_windows(
         self,
         calendar: Calendar,
         availability_windows: Iterable[tuple[datetime.datetime, datetime.datetime]],
-    ) -> Iterable[AvailableTime]:
-        ...
+    ) -> Iterable[AvailableTime]: ...
 
     def bulk_create_manual_blocked_times(
         self,
         calendar: Calendar,
         blocked_times: Iterable[tuple[datetime.datetime, datetime.datetime, str]],
-    ) -> Iterable[BlockedTime]:
-        ...
+    ) -> Iterable[BlockedTime]: ...
 
     def create_recurring_event(
         self,
@@ -119,8 +107,7 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
         attendances: list[EventAttendanceInputData] | None = None,
         external_attendances: list[EventExternalAttendanceInputData] | None = None,
         resource_allocations: list[ResourceAllocationInputData] | None = None,
-    ) -> CalendarEvent:
-        ...
+    ) -> CalendarEvent: ...
 
     def create_recurring_exception(
         self,
@@ -131,43 +118,38 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
         modified_start_time: datetime.datetime | None = None,
         modified_end_time: datetime.datetime | None = None,
         is_cancelled: bool = False,
-    ) -> CalendarEvent | None:
-        ...
+    ) -> CalendarEvent | None: ...
 
     def get_calendar_events_expanded(
         self,
         calendar: Calendar,
         start_date: datetime.datetime,
         end_date: datetime.datetime,
-    ) -> list[CalendarEvent]:
-        ...
+    ) -> list[CalendarEvent]: ...
 
-    def _get_primary_calendar(self, bundle_calendar: Calendar) -> Calendar:
-        ...
+    def _get_primary_calendar(self, bundle_calendar: Calendar) -> Calendar: ...
 
     def _collect_bundle_attendees(
         self, child_calendars: list[Calendar], event_data: "CalendarEventInputData"
-    ) -> list["EventAttendanceInputData"]:
-        ...
+    ) -> list["EventAttendanceInputData"]: ...
 
-    def _create_recurrence_rule_if_needed(self, rrule_string: str | None) -> RecurrenceRule | None:
-        ...
+    def _create_recurrence_rule_if_needed(
+        self, rrule_string: str | None
+    ) -> RecurrenceRule | None: ...
 
     def get_blocked_times_expanded(
         self,
         calendar: Calendar,
         start_date: datetime.datetime,
         end_date: datetime.datetime,
-    ) -> list[BlockedTime]:
-        ...
+    ) -> list[BlockedTime]: ...
 
     def get_available_times_expanded(
         self,
         calendar: Calendar,
         start_date: datetime.datetime,
         end_date: datetime.datetime,
-    ) -> list[AvailableTime]:
-        ...
+    ) -> list[AvailableTime]: ...
 
     def create_recurring_blocked_time_exception(
         self,
@@ -177,8 +159,7 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
         modified_start_time: datetime.datetime | None = None,
         modified_end_time: datetime.datetime | None = None,
         is_cancelled: bool = False,
-    ) -> BlockedTime | None:
-        ...
+    ) -> BlockedTime | None: ...
 
     def create_recurring_available_time_exception(
         self,
@@ -187,8 +168,7 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
         modified_start_time: datetime.datetime | None = None,
         modified_end_time: datetime.datetime | None = None,
         is_cancelled: bool = False,
-    ) -> AvailableTime | None:
-        ...
+    ) -> AvailableTime | None: ...
 
     def create_blocked_time(
         self,
@@ -197,8 +177,7 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
         end_time: datetime.datetime,
         reason: str = "",
         rrule_string: str | None = None,
-    ) -> BlockedTime:
-        ...
+    ) -> BlockedTime: ...
 
     def create_available_time(
         self,
@@ -206,32 +185,25 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
         start_time: datetime.datetime,
         end_time: datetime.datetime,
         rrule_string: str | None = None,
-    ) -> AvailableTime:
-        ...
+    ) -> AvailableTime: ...
 
-    def _serialize_event(self, event: CalendarEvent) -> CalendarEventData:
-        ...
+    def _serialize_event(self, event: CalendarEvent) -> CalendarEventData: ...
 
     def _serialize_event_internal_attendee(
         self, attendance: EventAttendance
-    ) -> EventInternalAttendeeData:
-        ...
+    ) -> EventInternalAttendeeData: ...
 
     def _serialize_event_external_attendee(
         self, external_attendance: EventExternalAttendance
-    ) -> EventExternalAttendeeData:
-        ...
+    ) -> EventExternalAttendeeData: ...
 
     def _serialize_event_data_input(
         self, event: CalendarEvent, event_data: CalendarEventInputData
-    ) -> CalendarEventData:
-        ...
+    ) -> CalendarEventData: ...
 
-    def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None:
-        ...
+    def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None: ...
 
-    def _grant_event_attendee_permissions(self, event: CalendarEvent) -> None:
-        ...
+    def _grant_event_attendee_permissions(self, event: CalendarEvent) -> None: ...
 
     def request_calendar_sync(
         self,
@@ -239,10 +211,8 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
         start_datetime: datetime.datetime,
         end_datetime: datetime.datetime,
         should_update_events: bool,
-    ) -> CalendarSync:
-        ...
+    ) -> CalendarSync: ...
 
     def request_webhook_triggered_sync(
         self, external_calendar_id: str, webhook_event: CalendarWebhookEvent
-    ) -> CalendarSync:
-        ...
+    ) -> CalendarSync: ...

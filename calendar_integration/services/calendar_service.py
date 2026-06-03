@@ -1181,20 +1181,22 @@ class CalendarService(BaseCalendarService):
         self._grant_event_attendee_permissions(event)
 
         transaction.on_commit(
-            lambda: self.calendar_side_effects_service.on_create_event(
-                actor=(
-                    self.calendar_permission_service.token.user
-                    if (
-                        self.calendar_permission_service.token
-                        and self.calendar_permission_service.token.user
-                    )
-                    else self.calendar_permission_service.token
-                ),
-                event=self._serialize_event(event),
-                organization=event.organization,
+            lambda: (
+                self.calendar_side_effects_service.on_create_event(
+                    actor=(
+                        self.calendar_permission_service.token.user
+                        if (
+                            self.calendar_permission_service.token
+                            and self.calendar_permission_service.token.user
+                        )
+                        else self.calendar_permission_service.token
+                    ),
+                    event=self._serialize_event(event),
+                    organization=event.organization,
+                )
+                if self.calendar_side_effects_service
+                else None
             )
-            if self.calendar_side_effects_service
-            else None
         )
 
         return event
@@ -2092,20 +2094,22 @@ class CalendarService(BaseCalendarService):
         event.delete()
 
         transaction.on_commit(
-            lambda: self.calendar_side_effects_service.on_delete_event(
-                actor=(
-                    self.calendar_permission_service.token.user
-                    if (
-                        self.calendar_permission_service.token
-                        and self.calendar_permission_service.token.user
-                    )
-                    else self.calendar_permission_service.token
-                ),
-                event=serialized_event,
-                organization=event.organization,
+            lambda: (
+                self.calendar_side_effects_service.on_delete_event(
+                    actor=(
+                        self.calendar_permission_service.token.user
+                        if (
+                            self.calendar_permission_service.token
+                            and self.calendar_permission_service.token.user
+                        )
+                        else self.calendar_permission_service.token
+                    ),
+                    event=serialized_event,
+                    organization=event.organization,
+                )
+                if self.calendar_side_effects_service
+                else None
             )
-            if self.calendar_side_effects_service
-            else None
         )
 
     def transfer_event(self, event: CalendarEvent, new_calendar: Calendar) -> CalendarEvent:

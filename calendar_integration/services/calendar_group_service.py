@@ -508,8 +508,7 @@ class CalendarGroupService:
             outside_pool = set(sel.calendar_ids) - pool
             if outside_pool:
                 raise CalendarGroupValidationError(
-                    f"Calendars {sorted(outside_pool)} are not in the pool of "
-                    f"slot {slot.name!r}."
+                    f"Calendars {sorted(outside_pool)} are not in the pool of slot {slot.name!r}."
                 )
         return selections_by_slot_id
 

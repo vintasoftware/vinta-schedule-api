@@ -1,7 +1,7 @@
 from .base import *
 
 
-SECRET_KEY = "test"  # nosec
+SECRET_KEY = "test-secret-key-not-for-production-use-only-0123456789"  # nosec
 
 STATIC_ROOT = base_dir_join("staticfiles")
 STATIC_URL = "/static/"

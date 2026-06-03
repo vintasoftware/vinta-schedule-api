@@ -312,9 +312,9 @@ class TestBillingProfileViewSet:
         for endpoint_name, method in endpoints:
             url = reverse(endpoint_name)
             response = getattr(anonymous_client, method)(url, {}, format="json")
-            assert (
-                response.status_code == status.HTTP_401_UNAUTHORIZED
-            ), f"Failed for {endpoint_name}"
+            assert response.status_code == status.HTTP_401_UNAUTHORIZED, (
+                f"Failed for {endpoint_name}"
+            )
 
     def test_billing_profile_relationships(self, auth_client, user):
         """Test that billing profile correctly relates to user and billing address."""
