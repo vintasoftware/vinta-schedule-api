@@ -15,8 +15,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "-o",
             "--output",
-            default="allauth-openapi.json",
-            help="Output path (.json or .yaml). Defaults to ./allauth-openapi.json",
+            default="schema-auth.yml",
+            help="Output path (.json, .yaml or .yml). Defaults to ./schema-auth.yml",
         )
 
     def handle(self, *args, **options):
@@ -24,6 +24,7 @@ class Command(BaseCommand):
         from allauth.headless.spec.internal.schema import get_schema
 
         spec = get_schema()
+        self._patch_refresh_token_meta(spec)
         output = Path(options["output"])
 
         if output.suffix in {".yaml", ".yml"}:
@@ -40,4 +41,27 @@ class Command(BaseCommand):
                 f"Exported {len(spec['paths'])} paths to {output} "
                 f"({spec['info']['title']} {spec['info'].get('version', '')})".strip()
             )
+        )
+
+    @staticmethod
+    def _patch_refresh_token_meta(spec: dict) -> None:
+        """Document ``meta.refresh_token`` on successful auth responses.
+
+        allauth ships a static OpenAPI spec whose ``BaseAuthenticationMeta`` only
+        declares ``access_token``/``session_token`` — it cannot know that our
+        ``AccessAndRefreshTokenStrategy`` (like allauth's own JWT strategy) also adds a
+        ``refresh_token`` to the login/auth ``meta`` at runtime. Inject it so the
+        generated schema and any frontend codegen match reality.
+        """
+        meta = spec.get("components", {}).get("schemas", {}).get("BaseAuthenticationMeta")
+        if not meta:
+            return
+        properties = meta.setdefault("properties", {})
+        properties.setdefault(
+            "refresh_token",
+            {
+                "description": "The refresh token (`app` clients only).\n",
+                "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.QV30",
+                "type": "string",
+            },
         )

@@ -1365,6 +1365,12 @@ components:
             '
           example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdW
           type: string
+        refresh_token:
+          description: 'The refresh token (`app` clients only).
+
+            '
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.QV30
+          type: string
         session_token:
           description: 'The session token (`app` clients only).
 
