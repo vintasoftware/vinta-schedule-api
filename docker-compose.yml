@@ -23,6 +23,8 @@ services:
 
   broker:
     image: "rabbitmq:alpine"
+    ports:
+      - "5672:5672"
 
   result:
     image: "redis:alpine"
