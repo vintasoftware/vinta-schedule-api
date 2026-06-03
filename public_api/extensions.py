@@ -5,7 +5,6 @@ from django.http import HttpRequest
 
 from graphql.error import GraphQLError
 from pyrate_limiter import (
-    BucketFullException,
     Duration,
     Rate,
 )
@@ -36,7 +35,6 @@ class OrganizationRateLimiter(SchemaExtension):
             self.limiter = ResilientLimiter(
                 resolved_rates,
                 bucket_key=getattr(settings, "PUBLIC_API_RATE_LIMITER_KEY", "public_api"),
-                raise_when_fail=True,
                 name="public_api",
                 redis_url=getattr(settings, "PUBLIC_API_REDIS_URL", "") or None,
             )
@@ -100,15 +98,19 @@ class OrganizationRateLimiter(SchemaExtension):
             return None
 
         try:
-            self.limiter.try_acquire(str(organization_id))
-            yield
-        except BucketFullException as e:
-            raise GraphQLError(
-                "Rate-limit exhausted. Please wait for some time before trying again."
-            ) from e
+            # pyrate-limiter 4 is non-blocking and returns a bool instead of
+            # raising BucketFullException when the limit is exhausted.
+            acquired = self.limiter.try_acquire(str(organization_id))
         except Exception:  # noqa: BLE001
             # in case we're unable to connect to Redis or any other error occurs let the request go through
             # This is to ensure that the application remains functional even if the rate-limiting service is down.
             yield
+            return None
 
+        if not acquired:
+            raise GraphQLError(
+                "Rate-limit exhausted. Please wait for some time before trying again."
+            )
+
+        yield
         return None

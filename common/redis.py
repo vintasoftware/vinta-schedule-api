@@ -165,15 +165,16 @@ class ResilientLimiter:
         bucket_key: str,
         *,
         max_delay: int | None = None,
-        raise_when_fail: bool = False,
         name: str | None = None,
         breaker: CircuitBreaker | None = None,
         redis_url: str | None = None,
     ):
         self._rates = list(rates)
         self._bucket_key = bucket_key
+        # ``max_delay`` (milliseconds) selects the pyrate-limiter 4 blocking mode:
+        # ``None`` -> non-blocking (reject immediately when exhausted);
+        # a value -> block up to that many ms waiting for a permit, then give up.
         self._max_delay = max_delay
-        self._raise_when_fail = raise_when_fail
         self._name = name or bucket_key
         self._breaker = breaker or redis_breaker
         self._redis_url = redis_url
@@ -197,19 +198,11 @@ class ResilientLimiter:
         except (RedisError, CircuitBreakerOpenError) as exc:
             logger.warning("Redis unavailable for limiter '%s': %s", self._name, exc)
             return None
-        return Limiter(
-            bucket,
-            raise_when_fail=self._raise_when_fail,
-            max_delay=self._max_delay,
-        )
+        return Limiter(bucket)
 
     def _get_memory_limiter(self) -> Limiter:
         if self._memory_limiter is None:
-            self._memory_limiter = Limiter(
-                InMemoryBucket(self._rates),
-                raise_when_fail=self._raise_when_fail,
-                max_delay=self._max_delay,
-            )
+            self._memory_limiter = Limiter(InMemoryBucket(self._rates))
         return self._memory_limiter
 
     def _active_limiter(self) -> tuple[Limiter, bool]:
@@ -222,15 +215,31 @@ class ResilientLimiter:
                 return self._redis_limiter, True
         return self._get_memory_limiter(), False
 
-    def try_acquire(self, name: str, weight: int = 1) -> Any:
+    def try_acquire(self, name: str, weight: int = 1) -> bool:
+        """Acquire a permit. Returns ``True`` if granted, ``False`` if the rate
+        limit is exhausted (after waiting up to ``max_delay`` ms when set).
+
+        pyrate-limiter 4 dropped exception-based flow control, so callers must
+        check the boolean instead of catching ``BucketFullException``.
+        """
+        blocking = self._max_delay is not None
+        timeout = self._max_delay / 1000 if self._max_delay is not None else -1
         limiter, is_redis = self._active_limiter()
         if not is_redis:
-            return limiter.try_acquire(name, weight)
+            return bool(limiter.try_acquire(name, weight, blocking=blocking, timeout=timeout))
         try:
-            return self._breaker.call(limiter.try_acquire, name, weight)
+            return bool(
+                self._breaker.call(
+                    limiter.try_acquire, name, weight, blocking=blocking, timeout=timeout
+                )
+            )
         except (RedisError, CircuitBreakerOpenError):
             logger.warning("Redis error in limiter '%s'; falling back to in-memory", self._name)
-            return self._get_memory_limiter().try_acquire(name, weight)
+            return bool(
+                self._get_memory_limiter().try_acquire(
+                    name, weight, blocking=blocking, timeout=timeout
+                )
+            )
 
     def __getattr__(self, item: str) -> Any:
         # Proxy any other Limiter attribute/method to the active limiter.
@@ -243,7 +252,6 @@ def build_resilient_limiter(
     bucket_key: str,
     *,
     max_delay: int | None = None,
-    raise_when_fail: bool = False,
     name: str | None = None,
     redis_url: str | None = None,
 ) -> ResilientLimiter:
@@ -252,7 +260,6 @@ def build_resilient_limiter(
         rates,
         bucket_key,
         max_delay=max_delay,
-        raise_when_fail=raise_when_fail,
         name=name,
         redis_url=redis_url,
     )
