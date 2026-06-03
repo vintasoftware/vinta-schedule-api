@@ -16,16 +16,13 @@ from calendar_integration.services.dataclasses import (
 class CalendarAdapter(Protocol):
     provider: str
 
-    def __init__(self, credentials: dict | None = None):
-        ...
+    def __init__(self, credentials: dict | None = None): ...
 
     @staticmethod
-    def parse_webhook_headers(headers: HttpHeaders) -> dict[str, str]:
-        ...
+    def parse_webhook_headers(headers: HttpHeaders) -> dict[str, str]: ...
 
     @staticmethod
-    def extract_calendar_external_id_from_webhook_request(request: HttpRequest) -> str:
-        ...
+    def extract_calendar_external_id_from_webhook_request(request: HttpRequest) -> str: ...
 
     def create_application_calendar(self, name: str) -> ApplicationCalendarData:
         """
@@ -121,8 +118,7 @@ class CalendarAdapter(Protocol):
         """
         ...
 
-    def subscribe_to_calendar_events(self, resource_id: str, callback_url: str) -> None:
-        ...
+    def subscribe_to_calendar_events(self, resource_id: str, callback_url: str) -> None: ...
 
     def create_webhook_subscription_with_tracking(
         self,

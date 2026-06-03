@@ -1,6 +1,6 @@
 import datetime
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 from django.db.models import Value
 from django.db.models.functions import Concat
@@ -79,10 +79,7 @@ def _get_org(info: strawberry.Info):
     return org
 
 
-TQuerySet = TypeVar("TQuerySet", bound=QuerySet)
-
-
-def _slice_qs(qs: TQuerySet, offset: int, limit: int) -> TQuerySet:
+def _slice_qs[TQuerySet: QuerySet](qs: TQuerySet, offset: int, limit: int) -> TQuerySet:
     if offset < 0:
         raise GraphQLError("Offset must be non-negative")
     if limit <= 0 or limit > 100:

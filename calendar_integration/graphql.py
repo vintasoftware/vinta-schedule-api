@@ -208,9 +208,9 @@ class BlockedTimeGraphQLType:
     user: UserGraphQLType = strawberry_django.field()
     calendar: CalendarGraphQLType = strawberry_django.field()
     recurrence_rule: RecurrenceRuleGraphQLType = strawberry_django.field()
-    recurrence_exceptions: list[
-        BlockedTimeRecurringExceptionGraphQLType
-    ] = strawberry_django.field()
+    recurrence_exceptions: list[BlockedTimeRecurringExceptionGraphQLType] = (
+        strawberry_django.field()
+    )
 
 
 @strawberry_django.type(AvailableTimeRecurrenceException)
@@ -235,9 +235,9 @@ class AvailableTimeGraphQLType:
     user: UserGraphQLType = strawberry_django.field()
     calendar: CalendarGraphQLType = strawberry_django.field()
     recurrence_rule: RecurrenceRuleGraphQLType = strawberry_django.field()
-    recurrence_exceptions: list[
-        AvailableTimeRecurringExceptionGraphQLType
-    ] = strawberry_django.field()
+    recurrence_exceptions: list[AvailableTimeRecurringExceptionGraphQLType] = (
+        strawberry_django.field()
+    )
 
 
 @strawberry.type

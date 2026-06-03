@@ -38,7 +38,6 @@ read_quote_limiter = build_resilient_limiter(
         Rate(240, Duration.MINUTE),  # 240 requests per minute
     ],
     bucket_key="google_calendar_read_limiter",
-    raise_when_fail=False,
     max_delay=1000,  # Allow a maximum delay of 1 second for read operations
 )
 
@@ -47,7 +46,6 @@ write_quote_limiter = build_resilient_limiter(
         Rate(120, Duration.MINUTE),  # 120 requests per minute
     ],
     bucket_key="google_calendar_write_limiter",
-    raise_when_fail=False,
     max_delay=2000,  # Allow a maximum delay of 2 seconds for write operations
 )
 

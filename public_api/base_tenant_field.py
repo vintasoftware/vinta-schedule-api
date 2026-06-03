@@ -1,18 +1,11 @@
-from typing import (
-    Any,
-    Generic,
-    TypeVar,
-)
+from typing import Any
 
 from django.db import models
 
 from strawberry import Info
 
 
-Model = TypeVar("Model", bound=models.Model)
-
-
-class BaseOrganizationStrawberryField(Generic[Model]):
+class BaseOrganizationStrawberryField[Model: models.Model]:
     @classmethod
     def get_queryset(
         cls,

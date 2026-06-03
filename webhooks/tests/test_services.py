@@ -382,9 +382,9 @@ class TestWebhookService:
                 webhook_service.process_webhook_event(webhook_event)
                 webhook_event.refresh_from_db()
 
-                assert (
-                    webhook_event.status == expected_status
-                ), f"Status code {status_code} should result in {expected_status}"
+                assert webhook_event.status == expected_status, (
+                    f"Status code {status_code} should result in {expected_status}"
+                )
 
     @patch("webhooks.services.webhook_service.process_webhook_event.delay")
     def test_schedule_webhook_event_private_method(
@@ -419,6 +419,6 @@ class TestWebhookService:
                 )
 
                 call_kwargs = mock_apply_async.call_args[1]
-                assert (
-                    call_kwargs["countdown"] == expected_backoff
-                ), f"Retry {initial_retry_number} should have {expected_backoff}s backoff"
+                assert call_kwargs["countdown"] == expected_backoff, (
+                    f"Retry {initial_retry_number} should have {expected_backoff}s backoff"
+                )

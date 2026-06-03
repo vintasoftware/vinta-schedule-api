@@ -8144,9 +8144,9 @@ class TestCalendarServicePermissionScenarios:
         ]
 
         for permission in expected_permissions:
-            assert permission_service.has_permission(
-                permission
-            ), f"Missing permission: {permission}"
+            assert permission_service.has_permission(permission), (
+                f"Missing permission: {permission}"
+            )
 
     @pytest.mark.django_db
     def test_event_attendee_has_limited_permissions(
@@ -8181,9 +8181,9 @@ class TestCalendarServicePermissionScenarios:
         ]
 
         for permission in expected_permissions:
-            assert permission_service.has_permission(
-                permission
-            ), f"Missing permission: {permission}"
+            assert permission_service.has_permission(permission), (
+                f"Missing permission: {permission}"
+            )
 
         # Check that attendee does NOT have CREATE permission
         assert not permission_service.has_permission(EventManagementPermissions.CREATE)

@@ -68,7 +68,6 @@ quote_limiter = build_resilient_limiter(
         Rate(130000, Duration.SECOND * 10),  # 1000 requests every minute
     ],
     bucket_key="ms_outlook_calendar_limiter",
-    raise_when_fail=False,
     max_delay=1000,  # Allow a maximum delay of 1 second for read operations
 )
 

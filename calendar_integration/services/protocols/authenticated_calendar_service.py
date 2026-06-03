@@ -37,28 +37,22 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
         self,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def import_organization_calendar_resources(
         self,
         import_workflow_state: CalendarOrganizationResourcesImport,
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def import_account_calendars(self):
-        ...
+    def import_account_calendars(self): ...
 
     def create_application_calendar(
         self, name: str, organization: Organization
-    ) -> ApplicationCalendarData:
-        ...
+    ) -> ApplicationCalendarData: ...
 
-    def _get_calendar_by_external_id(self, calendar_external_id: str) -> Calendar:
-        ...
+    def _get_calendar_by_external_id(self, calendar_external_id: str) -> Calendar: ...
 
-    def transfer_event(self, event: CalendarEvent, new_calendar: Calendar) -> CalendarEvent:
-        ...
+    def transfer_event(self, event: CalendarEvent, new_calendar: Calendar) -> CalendarEvent: ...
 
     def request_calendar_sync(
         self,
@@ -66,33 +60,28 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
         start_datetime: datetime.datetime,
         end_datetime: datetime.datetime,
         should_update_events: bool = False,
-    ) -> CalendarSync:
-        ...
+    ) -> CalendarSync: ...
 
     def sync_events(
         self,
         calendar_sync: CalendarSync,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def _execute_calendar_sync(
         self,
         calendar_sync: CalendarSync,
         sync_token: str | None = None,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def _execute_organization_calendar_resources_import(
         self,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
-    ) -> Iterable[CalendarResourceData]:
-        ...
+    ) -> Iterable[CalendarResourceData]: ...
 
     def _get_existing_calendar_data(
         self, calendar_id: int, start_date: datetime.datetime, end_date: datetime.datetime
-    ):
-        ...
+    ): ...
 
     def _process_events_for_sync(
         self,
@@ -101,8 +90,7 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
         blocked_times_by_external_id: dict,
         calendar: Calendar,
         update_events: bool,
-    ) -> EventsSyncChanges:
-        ...
+    ) -> EventsSyncChanges: ...
 
     def _process_existing_event(
         self,
@@ -110,29 +98,25 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
         existing_event: CalendarEvent,
         changes: EventsSyncChanges,
         update_events: bool,
-    ):
-        ...
+    ): ...
 
     def _process_existing_blocked_time(
         self,
         event: CalendarEventAdapterOutputData,
         existing_blocked_time: BlockedTime,
         changes: EventsSyncChanges,
-    ):
-        ...
+    ): ...
 
     def _process_new_event(
         self, event: CalendarEventAdapterOutputData, calendar: Calendar, changes: EventsSyncChanges
-    ):
-        ...
+    ): ...
 
     def _process_event_attendees(
         self,
         event: CalendarEventAdapterOutputData,
         existing_event: CalendarEvent,
         changes: EventsSyncChanges,
-    ):
-        ...
+    ): ...
 
     def _handle_deletions_for_full_sync(
         self,
@@ -140,14 +124,11 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
         calendar_events_by_external_id: dict,
         matched_event_ids: set[str],
         start_date: datetime.datetime,
-    ):
-        ...
+    ): ...
 
-    def _apply_sync_changes(self, calendar_id: int, changes: EventsSyncChanges):
-        ...
+    def _apply_sync_changes(self, calendar_id: int, changes: EventsSyncChanges): ...
 
-    def _link_orphaned_recurring_instances(self, calendar_id: int):
-        ...
+    def _link_orphaned_recurring_instances(self, calendar_id: int): ...
 
     def _remove_available_time_windows_that_overlap_with_blocked_times_and_events(
         self,
@@ -156,5 +137,4 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
         events: Iterable[CalendarEvent],
         start_time: datetime.datetime,
         end_time: datetime.datetime,
-    ):
-        ...
+    ): ...

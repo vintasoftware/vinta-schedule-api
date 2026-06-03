@@ -16,19 +16,16 @@ class BaseCalendarService(Protocol):
     @staticmethod
     def get_calendar_adapter_for_account(
         account: User | GoogleCalendarServiceAccount,
-    ) -> tuple[CalendarAdapter, SocialAccount | GoogleCalendarServiceAccount]:
-        ...
+    ) -> tuple[CalendarAdapter, SocialAccount | GoogleCalendarServiceAccount]: ...
 
     def authenticate(
         self,
         account: SocialAccount | GoogleCalendarServiceAccount,
         organization: Organization,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def initialize_without_provider(
         self,
         user_or_token: User | str | SystemUser | None = None,
         organization: Organization | None = None,
-    ) -> None:
-        ...
+    ) -> None: ...

@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -23,11 +23,9 @@ if TYPE_CHECKING:
 User = get_user_model()
 
 
-B = TypeVar("B", bound=BaseNotificationBackend)
-T = TypeVar("T", bound=BaseTemplatedSMSRenderer)
-
-
-class TwilioSMSNotificationAdapter(Generic[B, T], BaseNotificationAdapter[B, T]):
+class TwilioSMSNotificationAdapter[B: BaseNotificationBackend, T: BaseTemplatedSMSRenderer](
+    BaseNotificationAdapter[B, T]
+):
     notification_type = NotificationTypes.SMS
 
     def _is_valid_phone(self, phone_number: str) -> bool:
@@ -70,9 +68,9 @@ class TwilioSMSNotificationAdapter(Generic[B, T], BaseNotificationAdapter[B, T])
             phone_number = self._clean_phone(notification.email_or_phone)
 
         context_with_base_url: NotificationContextDict = context.copy()
-        context_with_base_url[
-            "base_url"
-        ] = f"{notification_settings.NOTIFICATION_DEFAULT_BASE_URL_PROTOCOL}://{notification_settings.NOTIFICATION_DEFAULT_BASE_URL_DOMAIN}"
+        context_with_base_url["base_url"] = (
+            f"{notification_settings.NOTIFICATION_DEFAULT_BASE_URL_PROTOCOL}://{notification_settings.NOTIFICATION_DEFAULT_BASE_URL_DOMAIN}"
+        )
 
         template = self.template_renderer.render(notification, context_with_base_url)
 

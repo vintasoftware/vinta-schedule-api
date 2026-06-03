@@ -5,7 +5,7 @@ DEBUG = True
 
 HOST = "http://localhost:8000"
 
-SECRET_KEY = "secret"  # noqa: S105
+SECRET_KEY = "local-dev-secret-key-not-for-production-use-only-0123456789"  # noqa: S105
 
 STATIC_ROOT = base_dir_join("staticfiles")
 STATIC_URL = "/static/"
