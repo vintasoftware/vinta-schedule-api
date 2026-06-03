@@ -47,21 +47,21 @@ We use the [`DRF-Spectacular`](https://drf-spectacular.readthedocs.io/en/latest/
 
 The API documentation pages are accessible at `http://localhost:8000/api/schema/swagger-ui/` or `http://localhost:8000/api/schema/redoc/`.
 
-## LocalStack S3 Configuration
+## Floci S3 Configuration
 
-This project uses [LocalStack](https://localstack.cloud/) to provide a local AWS S3-compatible service for development instead of MinIO. LocalStack offers better AWS compatibility and is widely used for local AWS service emulation.
+This project uses [Floci](https://github.com/floci-io/floci) to provide a local AWS S3-compatible service for development instead of MinIO. Floci is a free, open-source AWS emulator that needs no account, auth token, or feature gates, and starts in milliseconds.
 
 ### Setup
 
-The docker-compose.yml is already configured to use LocalStack. After running `make up`, you need to initialize the S3 bucket:
+The docker-compose.yml is already configured to use Floci. After running `make up`, you need to initialize the S3 bucket:
 
-1. **Wait for LocalStack to be ready** (usually takes a few seconds after `make up`)
+1. **Wait for Floci to be ready** (usually takes a few seconds after `make up`)
 
 2. **Initialize the S3 bucket** using one of these methods:
 
-   **Option A: Using the provided script**
+   **Option A: Using the provided script** (run by `make setup`)
    ```bash
-   ./scripts/init_localstack.sh
+   docker compose run --rm api python scripts/init_floci.py
    ```
 
    **Option B: Using AWS CLI directly**
@@ -75,12 +75,6 @@ The docker-compose.yml is already configured to use LocalStack. After running `m
      --cors-configuration file://scripts/cors-config.json
    ```
 
-   **Option C: Using the Python script**
-   ```bash
-   make bash
-   python scripts/init_localstack.py
-   ```
-
 3. **Verify the setup**
    ```bash
    # List buckets
@@ -91,19 +85,19 @@ The docker-compose.yml is already configured to use LocalStack. After running `m
 
 ### Configuration Details
 
-- **Endpoint**: `http://localhost:4566` (LocalStack's default port)
-- **Access Key**: `test` (LocalStack's default)
-- **Secret Key**: `test` (LocalStack's default)
+- **Endpoint**: `http://localhost:4566` (Floci's default port)
+- **Access Key**: `test`
+- **Secret Key**: `test`
 - **Region**: `us-east-1`
 - **Bucket Name**: `vinta_schedule`
 
-The configuration automatically switches between LocalStack (development) and AWS S3 (production) based on the `USE_LOCALSTACK` setting in your local settings.
+The configuration automatically switches between Floci (development) and AWS S3 (production) based on the `USE_FLOCI` setting in your local settings.
 
 ### Troubleshooting
 
 - **"NoSuchBucket" errors**: Make sure you've run the initialization script after starting the containers
-- **Connection errors**: Ensure LocalStack container is running with `docker-compose ps`
-- **Access denied**: LocalStack uses `test`/`test` as default credentials in development
+- **Connection errors**: Ensure the Floci container is running with `docker-compose ps`
+- **Access denied**: Floci uses `test`/`test` as default credentials in development
 
 ## Production Deployment
 

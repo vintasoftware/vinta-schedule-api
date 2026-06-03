@@ -17,10 +17,10 @@ MEDIA_URL = "/media/"
 MINIO_ACCESS_KEY = config("MINIO_ROOT_USER", default="test")
 MINIO_SECRET_KEY = config("MINIO_ROOT_PASSWORD", default="test")
 MINIO_BUCKET_NAME = config("MINIO_BUCKET_NAME", default="vinta_schedule")
-MINIO_ENDPOINT = config("MINIO_ENDPOINT", default="http://localstack:4566")
+MINIO_ENDPOINT = config("MINIO_ENDPOINT", default="http://floci:4566")
 
-# LocalStack S3 configuration (preferred)
-LOCALSTACK_ENDPOINT = config("LOCALSTACK_ENDPOINT", default="http://localstack:4566")
+# Floci S3 configuration (preferred)
+FLOCI_ENDPOINT = config("FLOCI_ENDPOINT", default="http://floci:4566")
 AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID", default="test")
 AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY", default="test")
 S3_BUCKET_NAME = config("S3_BUCKET_NAME", default="vinta_schedule")
@@ -82,8 +82,8 @@ JS_REVERSE_JS_MINIFY = False
 # Django-CSP
 LOCAL_HOST_URL = "http://localhost:3000"
 LOCAL_HOST_WS_URL = "ws://localhost:3000/ws"
-LOCALSTACK_URL = "http://localhost:4566"
-CSP_SCRIPT_SRC += [LOCAL_HOST_URL, LOCAL_HOST_WS_URL, LOCALSTACK_URL]
-CSP_CONNECT_SRC += [LOCAL_HOST_URL, LOCAL_HOST_WS_URL, LOCALSTACK_URL]
-CSP_FONT_SRC += [LOCAL_HOST_URL, LOCALSTACK_URL]
-CSP_IMG_SRC += [LOCAL_HOST_URL, LOCALSTACK_URL]
+FLOCI_URL = "http://localhost:4566"
+CSP_SCRIPT_SRC += [LOCAL_HOST_URL, LOCAL_HOST_WS_URL, FLOCI_URL]
+CSP_CONNECT_SRC += [LOCAL_HOST_URL, LOCAL_HOST_WS_URL, FLOCI_URL]
+CSP_FONT_SRC += [LOCAL_HOST_URL, FLOCI_URL]
+CSP_IMG_SRC += [LOCAL_HOST_URL, FLOCI_URL]

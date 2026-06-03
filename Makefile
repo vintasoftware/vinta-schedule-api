@@ -8,11 +8,11 @@ clean:
 # Commands for Docker version
 setup:
 	docker volume create vinta_schedule_api_dbdata
-	docker volume create vinta_schedule_api_localstack_data
+	docker volume create vinta_schedule_api_floci_data
 	docker volume create vinta_schedule_api_virtualenv
 	docker compose build api
 	docker compose run --rm api python manage.py spectacular --color --file schema.yml
-	./scripts/init_localstack.sh
+	docker compose run --rm api python scripts/init_floci.py
 
 install:
 	docker compose run --rm api uv sync --frozen --no-install-project

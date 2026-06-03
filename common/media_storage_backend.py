@@ -7,8 +7,8 @@ class MediaStorage(S3Boto3Storage):
     bucket_name = getattr(settings, "AWS_MEDIA_BUCKET_NAME", "")
     location = getattr(settings, "AWS_MEDIA_LOCATION", "")
 
-    if getattr(settings, "USE_LOCALSTACK", False):
-        endpoint_url = getattr(settings, "LOCALSTACK_ENDPOINT", "")
+    if getattr(settings, "USE_FLOCI", False):
+        endpoint_url = getattr(settings, "FLOCI_ENDPOINT", "")
     elif getattr(settings, "USE_MINIO", False):
         endpoint_url = getattr(settings, "MINIO_ENDPOINT", "")
     else:

@@ -19,7 +19,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - dbdata:/var/lib/postgresql/data
+      - dbdata:/var/lib/postgresql/18/docker
 
   broker:
     image: "rabbitmq:alpine"
@@ -38,7 +38,7 @@ services:
       - broker
       - result
       - mailpit
-      - localstack
+      - floci
 
   worker:
     <<: *python-service
@@ -64,37 +64,26 @@ services:
     networks:
       - default
 
-  localstack:
-    image: localstack/localstack:latest
+  floci:
+    image: floci/floci:latest
     ports:
       - '4566:4566'
     volumes:
-      - localstack_data:/var/lib/localstack
-      - /var/run/docker.sock:/var/run/docker.sock
+      - floci_data:/data
     environment:
-      - DEBUG=1
-      - SERVICES=s3
-      - DEFAULT_REGION=us-east-1
-      - AWS_DEFAULT_REGION=us-east-1
-      - AWS_ACCESS_KEY_ID=test
-      - AWS_SECRET_ACCESS_KEY=test
-      - BUCKET_NAME=vinta_schedule
-      - S3_SKIP_SIGNATURE_VALIDATION=1
-      - S3_SKIP_KMS_KEY_VALIDATION=1
-      - DISABLE_CORS_CHECKS=1
-      - HOSTNAME_EXTERNAL=localhost
-      - CORS_ALLOWED_ORIGINS=*
-      - CORS_ALLOWED_HEADERS=*
-      - CORS_ALLOWED_METHODS=GET,POST,PUT,DELETE,HEAD,OPTIONS
-      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
+      - FLOCI_PORT=4566
+      - FLOCI_HOSTNAME=floci
+      - FLOCI_STORAGE_MODE=persistent
+      - FLOCI_STORAGE_PERSISTENT_PATH=/data
+      - FLOCI_DEFAULT_REGION=us-east-1
 
 
 volumes:
   dbdata:
     name: vinta_schedule_api_dbdata
     external: true
-  localstack_data:
-    name: vinta_schedule_api_localstack_data
+  floci_data:
+    name: vinta_schedule_api_floci_data
     external: true
   virtualenv:
     name: vinta_schedule_api_virtualenv

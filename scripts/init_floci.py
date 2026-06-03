@@ -1,20 +1,33 @@
 #!/usr/bin/env python
 """
-Script to initialize LocalStack S3 bucket for development.
-This script should be run after LocalStack is up and running.
+Script to initialize Floci S3 bucket for development.
+This script should be run after Floci is up and running.
 """
 
 import os
+import time
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
+
+
+def wait_for_floci(s3_client, retries=30, delay=1):
+    """Block until Floci is accepting connections."""
+    for attempt in range(1, retries + 1):
+        try:
+            s3_client.list_buckets()
+            return
+        except EndpointConnectionError:
+            print(f"Waiting for Floci to be ready... ({attempt}/{retries})")
+            time.sleep(delay)
+    raise RuntimeError("Floci did not become ready in time")
 
 
 def init_s3_bucket():
-    """Initialize S3 bucket in LocalStack"""
+    """Initialize S3 bucket in Floci"""
 
-    # LocalStack S3 configuration
-    endpoint_url = os.getenv("LOCALSTACK_ENDPOINT", "http://localhost:4566")
+    # Floci S3 configuration
+    endpoint_url = os.getenv("FLOCI_ENDPOINT", "http://localhost:4566")
     bucket_name = os.getenv("S3_BUCKET_NAME", "vinta_schedule")
     region = os.getenv("AWS_S3_REGION_NAME", "us-east-1")
     access_key = os.getenv("AWS_ACCESS_KEY_ID", "test")
@@ -28,6 +41,8 @@ def init_s3_bucket():
         aws_secret_access_key=secret_key,
         region_name=region,
     )
+
+    wait_for_floci(s3_client)
 
     try:
         # Check if bucket already exists
