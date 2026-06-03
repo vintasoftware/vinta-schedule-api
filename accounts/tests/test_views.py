@@ -1,18 +1,11 @@
-import datetime
-import hashlib
 import json
 from unittest.mock import MagicMock, patch
 
-from django.conf import settings
 from django.http import JsonResponse
 from django.urls import reverse
 
-import jwt
 import pytest
 from allauth.socialaccount.providers.base import ProviderException
-
-from accounts.models import RefreshToken
-from accounts.token_strategies import AccessAndRefreshTokenStrategy
 
 
 class TestProviderCallbackAPIView:
@@ -101,62 +94,6 @@ class TestProviderCallbackAPIView:
         assert response.status_code == 400
         assert "error" in response.json()
         assert "message" in response.json()
-
-
-class TestRefreshTokenView:
-    @staticmethod
-    def get_url():
-        return reverse("refresh_token")
-
-    @pytest.mark.django_db
-    def test_success(self, client, user):
-        # Generate a refresh token for the user
-        strategy = AccessAndRefreshTokenStrategy()
-
-        class DummyRequest:
-            def __init__(self, user):
-                self.user = user
-                self.headers = {}
-
-        request = DummyRequest(user)
-        tokens = strategy.create_access_token(request)
-        refresh_token = tokens["refresh_token"]
-
-        response = client.post(self.get_url(), {"refresh_token": refresh_token}, format="json")
-        assert response.status_code == 200
-        assert "access_token" in response.data
-
-    @pytest.mark.django_db
-    def test_invalid(self, client):
-        # Use an invalid refresh token
-        response = client.post(
-            self.get_url(), {"refresh_token": "invalid.token.value"}, format="json"
-        )
-        assert response.status_code == 400
-        assert "refresh_token" in response.data
-
-    @pytest.mark.django_db
-    def test_expired(self, client, user):
-        # Generate a refresh token with an expired date
-        refresh_token_str = "expiredtokenstring"
-        hashed_refresh_token = hashlib.sha256(refresh_token_str.encode()).hexdigest()
-        expired_at = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)
-        RefreshToken.objects.create(
-            user=user,
-            token_hash=hashed_refresh_token,
-            expires_at=expired_at,
-        )
-        payload = {
-            "user_id": user.id,
-            "refresh_token": refresh_token_str,
-            "exp": int(
-                (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).timestamp()
-            ),
-        }
-        refresh_token = jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
-        response = client.post(self.get_url(), {"refresh_token": refresh_token}, format="json")
-        assert response.status_code == 400
-        assert "refresh_token" in response.data
 
 
 class TestProviderRedirectAPIView:

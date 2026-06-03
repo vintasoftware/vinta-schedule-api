@@ -6,22 +6,14 @@ from django.views.decorators.csrf import csrf_exempt
 
 from allauth.headless.base.response import (
     AuthenticationResponse,
-    ConflictResponse,
-    ForbiddenResponse,
 )
 from allauth.headless.base.views import APIView as AllauthAPIView
 from allauth.headless.socialaccount.forms import RedirectToProviderForm
-from allauth.headless.socialaccount.inputs import (
-    SignupInput,
-)
-from allauth.headless.socialaccount.response import (
-    SocialLoginResponse,
-)
 from allauth.socialaccount.adapter import get_adapter as get_socialaccount_adapter
 from allauth.socialaccount.helpers import (
     complete_social_login,
 )
-from allauth.socialaccount.internal import flows, statekit
+from allauth.socialaccount.internal import statekit
 from allauth.socialaccount.models import SocialApp
 from allauth.socialaccount.providers.base import ProviderException
 from allauth.socialaccount.providers.base.constants import AuthError
@@ -29,35 +21,8 @@ from allauth.socialaccount.providers.oauth2.client import (
     OAuth2Error,
 )
 from allauth.socialaccount.providers.oauth2.provider import OAuth2Provider
-from drf_spectacular.utils import extend_schema
 from requests.exceptions import RequestException
 from rest_framework import status
-from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
-from rest_framework.views import APIView
-
-from accounts.serializers import RefreshTokenSerializer
-
-
-class RefreshTokenView(APIView):
-    """
-    View to handle refresh token logic.
-    """
-
-    permission_classes = (AllowAny,)
-
-    @extend_schema(exclude=True)
-    def post(self, request, *args, **kwargs):
-        """
-        Handle the refresh token request.
-        """
-        serializer = RefreshTokenSerializer(data=request.data, context={"request": request})
-        serializer.is_valid(raise_exception=True)
-
-        # Call the save method to handle the refresh token logic
-        access_and_refresh_tokens = serializer.save()
-
-        return Response(access_and_refresh_tokens, status=status.HTTP_200_OK)
 
 
 class ProviderRedirectAPIView(AllauthAPIView):
@@ -216,25 +181,3 @@ class ProviderCallbackAPIView(AllauthAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return state, None
-
-
-class ProviderSignupView(AllauthAPIView):
-    input_class = SignupInput
-
-    def handle(self, request, *args, **kwargs):
-        self.sociallogin = flows.signup.get_pending_signup(self.request)
-        if not self.sociallogin:
-            return ConflictResponse(request)
-        if not get_socialaccount_adapter().is_open_for_signup(request, self.sociallogin):
-            return ForbiddenResponse(request)
-        return super().handle(request, *args, **kwargs)
-
-    def get(self, request, *args, **kwargs):
-        return SocialLoginResponse(request, self.sociallogin)
-
-    def post(self, request, *args, **kwargs):
-        response = flows.signup.signup_by_form(self.request, self.sociallogin, self.input)
-        return AuthenticationResponse.from_response(request, response)
-
-    def get_input_kwargs(self):
-        return {"sociallogin": self.sociallogin}

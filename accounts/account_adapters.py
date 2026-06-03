@@ -234,6 +234,24 @@ class AccountAdapter(DefaultAccountAdapter):
             to=phone,
         )
 
+    def send_account_already_exists_sms(self, phone: str | None, **kwargs) -> None:
+        """
+        In case enumeration prevention is enabled, and, a signup is attempted using a phone
+        number that already has an account, this method is invoked to send a text explaining
+        that an account is already on file (instead of revealing this via the signup response).
+        """
+        if not phone:
+            logger.warning("No phone number provided for sending account-already-exists SMS.")
+            return
+
+        client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+
+        client.messages.create(
+            body="An account already exists for this phone number.",
+            from_=settings.TWILIO_NUMBER,
+            to=phone,
+        )
+
 
 class HeadlessAdapter(DefaultHeadlessAdapter):
     """
