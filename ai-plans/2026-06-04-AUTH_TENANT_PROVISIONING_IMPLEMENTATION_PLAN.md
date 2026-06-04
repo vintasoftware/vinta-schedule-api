@@ -20,10 +20,13 @@ Spec: [2026-06-04-AUTH_TENANT_PROVISIONING_SPEC.md](2026-06-04-AUTH_TENANT_PROVI
 
 ## 2. Guiding Decisions
 
+> **Amended 2026-06-04**: changed the **email-confirmation provisioning mechanism** from an `email_confirmed` signal handler to an imperative `AccountAdapter.confirm_email` override (see the "Email-confirmation provisioning mechanism" row). Affects Phase 3 (rewrite) and Phase 4 (test helper).
+
 | Decision | Resolution |
 |---|---|
 | **No feature flag** | Shipped unflagged. The spec frames this as a *known requirement* fixing a broken state (orphaned users), not a hypothesis to A/B. The repo has no flag system today; introducing one to gate a correctness fix is unjustified overhead. Rollout safety comes from per-phase tests (each phase is independently mergeable and the pre-feature path stays valid until its phase lands). |
-| **Org created after email verification (email/password path)** | `ACCOUNT_EMAIL_VERIFICATION = "mandatory"`. Provisioning is deferred to the `email_confirmed` moment so we never create organizations for never-verified signups. Requires stashing the intended organization name at signup-form time and consuming it on confirmation. |
+| **Org created after email verification (email/password path)** | `ACCOUNT_EMAIL_VERIFICATION = "mandatory"`. Provisioning is deferred to the email-confirmation moment so we never create organizations for never-verified signups. Requires stashing the intended organization name at signup-form time and consuming it on confirmation. |
+| **Email-confirmation provisioning mechanism** | **Imperative `AccountAdapter.confirm_email` override**, not an `email_confirmed` signal handler. The override sits directly in the confirmation call path (`mark_email_address_as_verified → adapter.confirm_email`), giving a discoverable stack trace and step-through debugging, and makes the email path **symmetric with the social path** (both adapters provision via an explicit method call delegating to `provision_tenant_for_user`). Per-adapter methods, not a shared helper: the email adapter passes the stashed `pending_organization_name`; the social adapter passes none. Note: `confirm_email` internally calls `verify_email` (which emits the now-unused signal), so tests must drive confirmation via `confirm_email`. |
 | **Pending org name storage** | New nullable `pending_organization_name` on `Profile` (already created/touched in `BaseVintaScheduleSignupForm.signup()`). Cleared once provisioning succeeds. Null/blank for invited signups (they auto-join, no name needed). |
 | **Social path provisions at signup/first-login** | `SOCIALACCOUNT_EMAIL_VERIFICATION = None` — social has no verification step. Invited social users auto-join inside the social adapter; non-invited social users land membership-less (gated) and create their org via the existing `OrganizationViewSet` create endpoint. |
 | **Single provisioning service** | One guarded entry point (`OrganizationService.provision_tenant_for_user(user, organization_name=None)`) used by the email-confirmation hook, the social adapter, and the explicit accept-invite endpoint. Invite-first: if a non-expired invitation matches `user.email`, auto-join; else if a name is supplied, create an org; the already-member case raises a typed error. |
@@ -115,35 +118,43 @@ Acceptance: a verified-or-not user record after email signup carries the intende
 
 ### Phase 3 — Create own org on email verification (no invite)
 
+> **Amended 2026-06-04**: reworked from an `email_confirmed` **signal handler** to an imperative **`AccountAdapter.confirm_email` override** (Option A). Rationale: the signal was event-driven and hard to step-debug; the override puts provisioning directly in the confirmation call path (discoverable stack trace, single call site) and makes the email path **symmetric with the social path** (`SocialAccountAdapter.save_user`, Phase 6 — both adapters provision via an explicit method call). See **Guiding Decisions**.
+
 **Goal**: an uninvited email/password user becomes ADMIN of a new org the moment their email is confirmed.
 
 **Feature flag**: none.
 
 Changes:
-1. @accounts/ (signal handler module, e.g. `accounts/signals.py` wired in the app config): handle allauth's `email_confirmed` (fallback: override the confirmation hook on `AccountAdapter`). On confirm, call `provision_tenant_for_user(user, organization_name=profile.pending_organization_name)`; on success clear `pending_organization_name`.
-2. Ensure the handler is idempotent (re-confirm → already-member → swallow as no-op).
+1. @accounts/account_adapters.py: override `AccountAdapter.confirm_email(self, request, email_address)`. Call `confirmed = super().confirm_email(request, email_address)`; when `confirmed`, resolve `OrganizationService` (same DI-container pattern the `SocialAccountAdapter` uses) and call `provision_tenant_for_user(user, organization_name=profile.pending_organization_name)` where `user = email_address.user`; on success clear `pending_organization_name`. Return `confirmed`. Guard a missing profile. **Per-adapter methods** (not a shared helper): `AccountAdapter` passes the stashed org name; `SocialAccountAdapter` passes none — keep the two small and symmetric.
+2. Idempotent: catch `UserAlreadyHasMembershipError` and swallow (re-confirmation → no-op).
+3. Remove the signal-based wiring introduced by the original Phase 3: delete `accounts/signals.py` (the `email_confirmed` handler) and its `AccountsConfig.ready()` connection. The production confirmation flow reaches the override via `mark_email_address_as_verified → adapter.confirm_email`.
+
+> **Note on the confirmation API (verified in allauth 65.18.0)**: `AccountAdapter.confirm_email` internally calls `email_verification.verify_email`, which is what sends the (now-unused) `email_confirmed` signal. Tests must therefore drive provisioning through `adapter.confirm_email(request, email_address)` — calling `verify_email` directly bypasses the override. This is why Phase 4's test helper also changes (see Phase 4).
 
 Spec use-case: Use-case 1 (self-service email/password signup, no invite).
 
 Tests:
-- **Integration**: @accounts/tests/ — uninvited user signs up with `organization_name`, confirms email → org + ADMIN membership exist, `pending_organization_name` cleared; re-firing confirmation is a no-op (no second org).
-- **Integration**: confirming with blank `pending_organization_name` and no invite → no org, user remains gated (onboarding handled elsewhere).
+- **Integration**: @accounts/tests/ — uninvited user signs up with `organization_name`, confirms email **through `AccountAdapter.confirm_email`** → org + ADMIN membership exist, `pending_organization_name` cleared; re-confirmation is a no-op (no second org).
+- **Integration**: confirming with blank `pending_organization_name` and no invite → no org, user remains gated.
 
-**Suggested AI model**: Tier 3 — `claude-sonnet-4-6` / `gpt-5` / `gemini-2.5-pro`. Allauth lifecycle hook + idempotent provisioning across two apps.
+**Suggested AI model**: Tier 3 — `claude-sonnet-4-6` / `gpt-5` / `gemini-2.5-pro`. Adapter-lifecycle override + idempotent provisioning, with care that the DI resolution + return-value contract match allauth's `confirm_email`.
 
 **Reusable skills**: none.
 
-Acceptance: confirming an uninvited email signup yields exactly one organization with the user as ADMIN; double-confirm creates nothing extra.
+Acceptance: confirming an uninvited email signup (via `AccountAdapter.confirm_email`) yields exactly one organization with the user as ADMIN; double-confirm creates nothing extra; no `email_confirmed` signal handler remains in the codebase.
 
 ### Phase 4 — Auto-join invited org on email verification
+
+> **Amended 2026-06-04**: test-only follow-on of the Phase 3 rework. The integration tests drive confirmation through `AccountAdapter.confirm_email` (not `verify_email` directly), so they exercise the new override. No production change in this phase.
 
 **Goal**: an invited email/password user joins the inviting org (MEMBER) on email confirmation, with no separate accept step and no stray org.
 
 **Feature flag**: none.
 
 Changes:
-1. No new branch needed in the service (Phase 1 is invite-first); this phase wires + proves the email path end-to-end: a signup whose email matches a pending invitation, on confirmation, auto-joins via `provision_tenant_for_user` and marks the invitation accepted.
+1. No new branch needed in the service (Phase 1 is invite-first); this phase wires + proves the email path end-to-end: a signup whose email matches a pending invitation, on confirmation **through `AccountAdapter.confirm_email`**, auto-joins via `provision_tenant_for_user` and marks the invitation accepted.
 2. Confirm the Phase 2 capture-skip holds (no `pending_organization_name` for invited signups), so no org is created even if a name were somehow present — invite still wins.
+3. Update the test helper that confirms the email so it calls `AccountAdapter.confirm_email(request, email_address)` (the amended Phase 3 hook), not `verify_email` directly.
 
 Spec use-case: Use-case 2 (email/password signup by an invited address).
 
@@ -270,12 +281,13 @@ Acceptance: every tenant-scoped endpoint refuses a membership-less user; only on
 - [accounts/base_forms.py](../accounts/base_forms.py) — add `organization_name` field + capture in `signup()`.
 - [accounts/tests/](../accounts/tests/) — form capture + invite-skip tests.
 
-**Phase 3 — create org on email verification**
-- @accounts/signals.py (new) + [accounts/apps.py](../accounts/apps.py) — wire `email_confirmed` handler.
-- [accounts/tests/](../accounts/tests/) — uninvited confirm → ADMIN org; idempotent re-confirm.
+**Phase 3 — create org on email verification** *(amended 2026-06-04)*
+- [accounts/account_adapters.py](../accounts/account_adapters.py) — override `AccountAdapter.confirm_email` to provision via `provision_tenant_for_user` (pass `pending_organization_name`); clear the name on success; swallow `UserAlreadyHasMembershipError`.
+- @accounts/signals.py (DELETE) + [accounts/apps.py](../accounts/apps.py) — remove the `email_confirmed` handler + its `ready()` connection.
+- [accounts/tests/](../accounts/tests/) — drive confirmation via `AccountAdapter.confirm_email`: uninvited confirm → ADMIN org; idempotent re-confirm; blank-name → gated.
 
-**Phase 4 — auto-join on email verification**
-- [accounts/tests/](../accounts/tests/) — invited confirm → MEMBER; invite-wins-over-name.
+**Phase 4 — auto-join on email verification** *(amended 2026-06-04, test-only)*
+- [accounts/tests/](../accounts/tests/) — invited confirm → MEMBER; invite-wins-over-name. Test helper drives `AccountAdapter.confirm_email`, not `verify_email`.
 
 **Phase 5 — gated uninvited social**
 - [accounts/account_adapters.py](../accounts/account_adapters.py) — confirm `save_user` leaves uninvited social users membership-less.
@@ -293,3 +305,7 @@ Acceptance: every tenant-scoped endpoint refuses a membership-less user; only on
 - Cross-app: [calendar_integration/](../calendar_integration/), [payments/](../payments/), [webhooks/](../webhooks/), [public_api/](../public_api/), [organizations/views.py](../organizations/views.py) — patch unguarded `organization_membership` access.
 - [organizations/models.py](../organizations/models.py) — document the invariant near `OrganizationMembership`.
 - Per-surface integration tests asserting membership-less refusal.
+
+## Amendments
+
+- **2026-06-04** — Reworked the email-confirmation provisioning mechanism from an `email_confirmed` **signal handler** to an imperative **`AccountAdapter.confirm_email` override** (Option A), for step-debuggability and symmetry with the social adapter's `save_user`. Per-adapter provisioning methods (no shared helper). Affected phases: 3 (production rewrite — delete `accounts/signals.py` + `ready()` wiring, add the adapter override), 4 (test-only — helper drives `confirm_email`). Branches force-pushed: `plan/auth-tenant-provisioning/phase-3`, `phase-4`, and rebase-only `phase-5`, `phase-6`, `phase-7`, `phase-8`.
