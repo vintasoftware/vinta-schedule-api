@@ -71,3 +71,5 @@ repos:
         # Allauth headless spec depends on auth settings + the signup form/adapters.
         files: (.*/?settings/.+|.+base_forms\.py|.+account_adapters\.py|.+pyproject\.toml|^schema-auth\.yml$)
         pass_filenames: false
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.local
