@@ -19,6 +19,7 @@ from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 
 from organizations.exceptions import UserAlreadyHasMembershipError
+from organizations.services import OrganizationService
 from users.models import Profile, User
 
 
@@ -157,9 +158,11 @@ class AccountAdapter(DefaultAccountAdapter):
         self,
         *args,
         notification_service: Annotated[NotificationService, Provide["notification_service"]],
+        organization_service: Annotated[OrganizationService, Provide["organization_service"]],
         **kwargs,
     ):
         self.notification_service = notification_service
+        self.organization_service = organization_service
         super().__init__(*args, **kwargs)
 
     def send_password_reset_mail(self, user, email, context):
@@ -223,17 +226,19 @@ class AccountAdapter(DefaultAccountAdapter):
         """Override to provision a tenant the moment the user's email is verified.
 
         Calls the default allauth confirm_email (which marks the address verified and
-        emits the email_confirmed signal) then, on success, resolves OrganizationService
-        from the DI container and delegates to provision_tenant_for_user. This provisions
+        emits the email_confirmed signal) then, on success, delegates to the
+        DI-injected OrganizationService's provision_tenant_for_user. This provisions
         the tenant imperatively in the adapter — at the moment the email is verified —
         rather than via a decoupled email_confirmed signal handler, so the email/password
         path's provisioning lives at an explicit, step-debuggable call site (mirroring the
         intent of provisioning inside the adapters rather than through signals).
 
+        OrganizationService arrives via constructor injection (see ``__init__``),
+        matching how ``notification_service`` is supplied, instead of reaching into the
+        DI container global at the call site.
+
         Idempotent: swallows UserAlreadyHasMembershipError so re-confirmation is a no-op.
         """
-        from di_core.containers import container as di_container
-
         confirmed = super().confirm_email(request, email_address)
         if not confirmed:
             return confirmed
@@ -251,17 +256,8 @@ class AccountAdapter(DefaultAccountAdapter):
 
         organization_name = profile.pending_organization_name or None
 
-        if di_container is None:
-            logger.error(
-                "DI container is not initialised; cannot provision tenant for user %s.",
-                user.pk,
-            )
-            return confirmed
-
-        organization_service = di_container.organization_service()
-
         try:
-            membership = organization_service.provision_tenant_for_user(
+            membership = self.organization_service.provision_tenant_for_user(
                 user=user,
                 organization_name=organization_name,
             )
