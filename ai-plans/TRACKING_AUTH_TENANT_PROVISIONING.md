@@ -69,11 +69,19 @@
 - **Summary**: `SocialAccountAdapter._provision_org_membership(user)` called at end of `save_user` → `provision_tenant_for_user(user)` (no name): invited→MEMBER join, uninvited→stays gated (Phase 5 preserved), already-member→swallowed. DI via container (signals.py pattern). Blank-email guard added.
 - **Review**: no blockers; SHOULD-FIX (blank-email guard) + savepoint-hygiene gap in `provision_tenant_for_user` (both `create()` sites now wrapped in inner `with transaction.atomic()`, matching Phase 1's `accept_invitation` fix — closes the same poisoning bug on the service both the email hook and social adapter call) + test NIT (added genuine already-member-guard load test + 2 transaction-not-poisoned regression tests). Gate: 1202 passed.
 
+### Phase 7 — Reject already-member invite acceptance at the API ✅
+- **Status**: PR open
+- **Model**: claude-sonnet-4-6 (plan tier: Tier 2)
+- **Branch**: `plan/auth-tenant-provisioning/phase-7` (base `plan/auth-tenant-provisioning/phase-6`)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/38
+- **E2E**: n/a
+- **Summary**: `AcceptInvitationView.create()` now explicitly catches `UserAlreadyHasMembershipError` → 400 `{"error": "User already belongs to an organization."}`. Tests: already-member + valid token to another org → 400, original membership unchanged, target invitation stays pending, no second membership.
+- **Review**: Layer 2 found body-shape inconsistency (`{code,detail}` vs siblings' `{error}`) → fixed to match sibling handlers. Gate: 1204 passed.
+
 ## Current Phase
-- Phase 7 — Reject already-member invite acceptance at the API (next) — UC5
+- Phase 8 — Audit + close the hard gate (next)
 
 ## Remaining Phases
-- Phase 7 — Reject already-member invite acceptance at the API (Tier 2) — UC5
 - Phase 8 — Audit + close the hard gate (Tier 3)
 
 ## Deferred Phases
