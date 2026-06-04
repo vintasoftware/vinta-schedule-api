@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 
 class Command(BaseCommand):
@@ -18,6 +18,14 @@ class Command(BaseCommand):
             default="schema-auth.yml",
             help="Output path (.json, .yaml or .yml). Defaults to ./schema-auth.yml",
         )
+        parser.add_argument(
+            "--check",
+            action="store_true",
+            help=(
+                "Exit with a non-zero status if the file on disk is out of date "
+                "instead of writing it. Use as a CI / pre-commit drift guard."
+            ),
+        )
 
     def handle(self, *args, **options):
         # Imported lazily so the command only pulls allauth in when actually run.
@@ -26,13 +34,17 @@ class Command(BaseCommand):
         spec = get_schema()
         self._patch_refresh_token_meta(spec)
         output = Path(options["output"])
+        content = self._render(spec, output.suffix)
 
-        if output.suffix in {".yaml", ".yml"}:
-            import yaml
-
-            content = yaml.dump(spec, Dumper=yaml.Dumper, sort_keys=True)
-        else:
-            content = json.dumps(spec, indent=2, sort_keys=True)
+        if options["check"]:
+            current = output.read_text() if output.exists() else None
+            if current != content:
+                raise CommandError(
+                    f"{output} is out of date. Regenerate it with:\n"
+                    f"    python manage.py export_allauth_schema -o {output}"
+                )
+            self.stdout.write(self.style.SUCCESS(f"{output} is up to date."))
+            return
 
         output.write_text(content)
 
@@ -42,6 +54,15 @@ class Command(BaseCommand):
                 f"({spec['info']['title']} {spec['info'].get('version', '')})".strip()
             )
         )
+
+    @staticmethod
+    def _render(spec: dict, suffix: str) -> str:
+        """Serialize the spec to YAML or JSON, deterministically (sorted keys)."""
+        if suffix in {".yaml", ".yml"}:
+            import yaml
+
+            return yaml.dump(spec, Dumper=yaml.Dumper, sort_keys=True)
+        return json.dumps(spec, indent=2, sort_keys=True)
 
     @staticmethod
     def _patch_refresh_token_meta(spec: dict) -> None:
