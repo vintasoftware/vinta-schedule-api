@@ -7,6 +7,7 @@ from django.conf import settings
 from django.urls import reverse
 
 from allauth.account.adapter import DefaultAccountAdapter
+from allauth.account.models import EmailAddress
 from allauth.headless.adapter import DefaultHeadlessAdapter
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.socialaccount.models import SocialLogin
@@ -17,6 +18,7 @@ from vintasend.constants import NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 
+from organizations.exceptions import UserAlreadyHasMembershipError
 from users.models import Profile, User
 
 
@@ -216,6 +218,83 @@ class AccountAdapter(DefaultAccountAdapter):
             context_name="email_confirmation_context",
             context_kwargs=NotificationContextDict(ctx),
         )
+
+    def confirm_email(self, request, email_address: EmailAddress) -> bool:
+        """Override to provision a tenant the moment the user's email is verified.
+
+        Calls the default allauth confirm_email (which marks the address verified and
+        emits the email_confirmed signal) then, on success, resolves OrganizationService
+        from the DI container and delegates to provision_tenant_for_user. This provisions
+        the tenant imperatively in the adapter — at the moment the email is verified —
+        rather than via a decoupled email_confirmed signal handler, so the email/password
+        path's provisioning lives at an explicit, step-debuggable call site (mirroring the
+        intent of provisioning inside the adapters rather than through signals).
+
+        Idempotent: swallows UserAlreadyHasMembershipError so re-confirmation is a no-op.
+        """
+        from di_core.containers import container as di_container
+
+        confirmed = super().confirm_email(request, email_address)
+        if not confirmed:
+            return confirmed
+
+        user = email_address.user
+        try:
+            profile = user.profile
+        except Profile.DoesNotExist:
+            logger.warning(
+                "User %s has no profile at email confirmation time; "
+                "skipping provisioning and leaving user membership-less.",
+                user.pk,
+            )
+            return confirmed
+
+        organization_name = profile.pending_organization_name or None
+
+        if di_container is None:
+            logger.error(
+                "DI container is not initialised; cannot provision tenant for user %s.",
+                user.pk,
+            )
+            return confirmed
+
+        organization_service = di_container.organization_service()
+
+        try:
+            membership = organization_service.provision_tenant_for_user(
+                user=user,
+                organization_name=organization_name,
+            )
+        except UserAlreadyHasMembershipError:
+            # Idempotent: re-confirmation or race — user already has a membership.
+            logger.debug(
+                "User %s already has a membership; skipping re-provisioning.",
+                user.pk,
+            )
+            return confirmed
+
+        if membership is not None:
+            # Clear the stashed org name now that provisioning succeeded.
+            # Only write if there is actually something to clear (avoids a
+            # redundant "" -> "" save on the invite path where Phase 2 already
+            # left the field blank).
+            if profile.pending_organization_name:
+                profile.pending_organization_name = ""
+                profile.save(update_fields=["pending_organization_name"])
+            logger.info(
+                "Provisioned tenant for user %s (membership=%s, org=%s).",
+                user.pk,
+                membership.pk,
+                membership.organization_id,
+            )
+        else:
+            # No pending invite, no org name → user stays gated (onboarding later).
+            logger.debug(
+                "No pending invite and no org name for user %s; user remains membership-less (gated).",
+                user.pk,
+            )
+
+        return confirmed
 
     def send_mail(self, template_prefix, email, context):
         msg = super().render_mail(template_prefix, email, context)

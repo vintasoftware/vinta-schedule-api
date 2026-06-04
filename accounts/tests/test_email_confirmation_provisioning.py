@@ -1,14 +1,14 @@
 """
 Phase 3 — Integration tests: Create own org on email verification (no invite).
 
-These tests exercise the real allauth confirmation code path
-(allauth.account.internal.flows.email_verification.verify_email) so the
-email_confirmed signal fires just as it would at runtime.
+These tests exercise the AccountAdapter.confirm_email override, which is the
+imperative provisioning hook for the email/password signup path — symmetric
+with the social path (SocialAccountAdapter.save_user).
 
 Three scenarios are covered:
 1. Uninvited user with pending_organization_name → org created, user is ADMIN,
    pending_organization_name cleared.
-2. Re-confirmation (signal re-fires) is a no-op: no second org, no error.
+2. Re-confirmation is a no-op: no second org, no error.
 3. Blank pending_organization_name + no invite → no org, user stays gated,
    no exception.
 """
@@ -16,7 +16,7 @@ Three scenarios are covered:
 import datetime
 
 import pytest
-from allauth.account.internal.flows.email_verification import verify_email
+from allauth.account.adapter import get_adapter
 from allauth.account.models import EmailAddress
 from model_bakery import baker
 
@@ -35,23 +35,24 @@ def _create_email_address(user, verified: bool = False) -> EmailAddress:
 
 
 def _confirm_email(rf, email_address: EmailAddress) -> bool:
-    """Run the real allauth verify_email flow for *email_address*.
+    """Drive email confirmation through AccountAdapter.confirm_email.
 
     Uses a minimal GET request so add_message() has a request object and the
     message storage backend doesn't raise. CookieStorage is used because the
-    RequestFactory doesn't set up session middleware.  The signal fires inside
-    this call, exercising the same code path as the headless verify-email endpoint.
+    RequestFactory doesn't set up session middleware. Provisioning fires inside
+    this call via the adapter override, exercising the same hook as the headless
+    verify-email endpoint.
     """
     from django.contrib.messages.storage.cookie import CookieStorage
 
     request = rf.get("/")
     request._messages = CookieStorage(request)
-    return verify_email(request, email_address)
+    return get_adapter(request).confirm_email(request, email_address)
 
 
 @pytest.mark.django_db
 class TestProvisionOnEmailConfirmation:
-    """Integration: provisioning logic wired via the email_confirmed signal."""
+    """Integration: provisioning logic wired via AccountAdapter.confirm_email."""
 
     def test_uninvited_user_creates_org_on_confirmation(self, rf):
         """Uninvited user with pending_organization_name → org + ADMIN membership."""
@@ -89,13 +90,10 @@ class TestProvisionOnEmailConfirmation:
         assert OrganizationMembership.objects.filter(user=user).count() == 1
         first_org_id = OrganizationMembership.objects.get(user=user).organization_id
 
-        # allauth re-emits email_confirmed even when already verified:
-        # set_verified() returns True for an already-verified address, and
-        # verify_email() only early-returns when set_verified(commit=False) is
-        # falsy.  A real second confirmation therefore re-fires the signal, so
-        # the handler's idempotency guard (swallowing UserAlreadyHasMembershipError)
-        # must absorb it.  Reset the verified flag so verify_email proceeds, then
-        # call the real path.
+        # Reset verified flag so allauth's verify_email proceeds on the second call
+        # (it short-circuits when already verified). The adapter's idempotency guard
+        # (swallowing UserAlreadyHasMembershipError) absorbs the second provisioning
+        # attempt, so no second org is created.
         email_address.verified = False
         email_address.save(update_fields=["verified"])
         _confirm_email(rf, email_address)
@@ -126,7 +124,7 @@ class TestProvisionOnEmailConfirmation:
         """User with a pending invite (and blank org name) joins as MEMBER on confirmation.
 
         This verifies that Phase 1's invite-first branch works end-to-end through the
-        signal handler even when Phase 4 tests haven't landed yet.
+        adapter override even when Phase 4 tests haven't landed yet.
         """
         inviter = UserFactory().create_user(email="boss@example.com")
         org = baker.make(Organization, name="Invite Corp")
@@ -162,11 +160,16 @@ class TestProvisionOnEmailConfirmation:
         assert Organization.objects.count() == 1
 
     def test_no_profile_guard_does_not_raise(self, rf):
-        """Signal handler is robust when the user somehow has no profile."""
+        """Adapter confirm_email is robust when the user somehow has no profile."""
         from unittest.mock import patch
+
+        from django.contrib.messages.storage.cookie import CookieStorage
 
         user = UserFactory().create_user(email="noProfile@example.com")
         email_address = _create_email_address(user)
+
+        request = rf.get("/")
+        request._messages = CookieStorage(request)
 
         # Simulate missing profile by patching the profile descriptor to raise.
         from users.models import Profile as ProfileModel
@@ -179,14 +182,9 @@ class TestProvisionOnEmailConfirmation:
             "profile",
             new_callable=lambda: property(_raise_does_not_exist),
         ):
-            from allauth.account.signals import email_confirmed
-
             # Should not raise even with no profile.
-            email_confirmed.send(
-                sender=EmailAddress,
-                request=None,
-                email_address=email_address,
-            )
+            confirmed = get_adapter(request).confirm_email(request, email_address)
 
-        # Nothing was created.
+        # The call completes without error; email is confirmed but no membership created.
+        assert confirmed is True
         assert not OrganizationMembership.objects.filter(user=user).exists()
