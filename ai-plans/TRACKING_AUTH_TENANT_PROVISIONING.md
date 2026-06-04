@@ -42,11 +42,19 @@
 - **Review**: no blockers; 1 should-fix (re-confirmation test now drives the real `verify_email` path) + 2 nits fixed. Gate: 1185 passed.
 - **Note for Phase 4**: the handler already covers the invited (MEMBER) branch via invite-first service; Phase 4 adds targeted UC2 tests.
 
+### Phase 4 — Auto-join invited org on email verification ✅
+- **Status**: PR open
+- **Model**: claude-sonnet-4-6 (plan tier: Tier 2)
+- **Branch**: `plan/auth-tenant-provisioning/phase-4` (base `plan/auth-tenant-provisioning/phase-3`)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/35
+- **E2E**: n/a
+- **Summary**: Tests-only (no production code). New `accounts/tests/test_email_invite_autojoin.py` — 4 integration tests driving the real signup form + real `verify_email`: full end-to-end invited auto-join (MEMBER, invitation accepted+linked, no stray org); invite-wins-over-name; case-insensitive invite; accepted-marker. Confirms Phases 1–3 compose into Use-case 2.
+- **Review**: Layer 3 done as direct diff audit (tests-only, production paths already reviewed in P1–P3). Gate: 1189 passed.
+
 ## Current Phase
-- Phase 4 — Auto-join invited org on email verification (next) — UC2
+- Phase 5 — Gated onboarding for uninvited social signup (next) — UC3
 
 ## Remaining Phases
-- Phase 4 — Auto-join invited org on email verification (Tier 2) — UC2
 - Phase 5 — Gated onboarding for uninvited social signup (Tier 2) — UC3
 - Phase 6 — Auto-join invited org on social signup (Tier 3) — UC4
 - Phase 7 — Reject already-member invite acceptance at the API (Tier 2) — UC5
