@@ -60,11 +60,19 @@
 - **Summary**: Tests-only. `SocialAccountAdapter.save_user` confirmed to leave uninvited social users membership-less (no org/membership). New `accounts/tests/test_social_gated_onboarding.py` (6 tests): save_user membership-less; gated→create→ADMIN; second-create 403; membership-less blocked from invitation list/create. Existing `OrganizationManagementPermission`/`OrganizationInvitationPermission` provide the gate.
 - **Review**: Layer 3 as direct diff audit (tests-only; gate is existing reviewed permission code). Gate: 1195 passed.
 
+### Phase 6 — Auto-join invited org on social signup ✅
+- **Status**: PR open
+- **Model**: claude-sonnet-4-6 (plan tier: Tier 3)
+- **Branch**: `plan/auth-tenant-provisioning/phase-6` (base `plan/auth-tenant-provisioning/phase-5`)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/37
+- **E2E**: n/a
+- **Summary**: `SocialAccountAdapter._provision_org_membership(user)` called at end of `save_user` → `provision_tenant_for_user(user)` (no name): invited→MEMBER join, uninvited→stays gated (Phase 5 preserved), already-member→swallowed. DI via container (signals.py pattern). Blank-email guard added.
+- **Review**: no blockers; SHOULD-FIX (blank-email guard) + savepoint-hygiene gap in `provision_tenant_for_user` (both `create()` sites now wrapped in inner `with transaction.atomic()`, matching Phase 1's `accept_invitation` fix — closes the same poisoning bug on the service both the email hook and social adapter call) + test NIT (added genuine already-member-guard load test + 2 transaction-not-poisoned regression tests). Gate: 1202 passed.
+
 ## Current Phase
-- Phase 6 — Auto-join invited org on social signup (next) — UC4
+- Phase 7 — Reject already-member invite acceptance at the API (next) — UC5
 
 ## Remaining Phases
-- Phase 6 — Auto-join invited org on social signup (Tier 3) — UC4
 - Phase 7 — Reject already-member invite acceptance at the API (Tier 2) — UC5
 - Phase 8 — Audit + close the hard gate (Tier 3)
 
