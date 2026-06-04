@@ -27,6 +27,68 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
     def get_connect_redirect_url(self, request, socialaccount):
         return reverse("index")
 
+    @staticmethod
+    def _get_profile(user: User) -> Profile | None:
+        """Return the user's Profile (persisted or in-memory), or None.
+
+        Accessing ``user.profile`` raises ``RelatedObjectDoesNotExist`` for a
+        user with no profile (e.g. the unsaved User built during a pending
+        social signup), so callers that must tolerate its absence go through
+        here.
+        """
+        try:
+            return user.profile
+        except Profile.DoesNotExist:
+            return None
+
+    def populate_user(self, request, sociallogin, data):
+        user = super().populate_user(request, sociallogin, data)
+        # The User model carries no name fields — they live on Profile — so the
+        # default populate_user drops the provider's first/last name. Attach an
+        # in-memory Profile populated from the provider so the names survive the
+        # signup round-trip (serialize/deserialize prefilling the form) and the
+        # formless auto-signup path. Don't clobber an existing profile (connect
+        # flow reuses an already-registered user).
+        if self._get_profile(user) is None:
+            user.profile = Profile(
+                user=user,
+                first_name=data.get("first_name") or "",
+                last_name=data.get("last_name") or "",
+            )
+        return user
+
+    def save_user(self, request, sociallogin, form=None):
+        user = super().save_user(request, sociallogin, form=form)
+        # Auto-signup has no signup form, and the default save_user never
+        # creates a Profile, so a socially-created user would otherwise have
+        # none. Guarantee the User.profile invariant here. get_or_create only
+        # applies the provider names on creation, so a user-edited signup form
+        # (which creates the Profile itself) is never overwritten.
+        pending = self._get_profile(user)
+        profile, _ = Profile.objects.get_or_create(
+            user=user,
+            defaults={
+                "first_name": pending.first_name if pending else "",
+                "last_name": pending.last_name if pending else "",
+            },
+        )
+        user.profile = profile
+        self._enqueue_profile_picture_download(profile, sociallogin)
+        return user
+
+    @staticmethod
+    def _enqueue_profile_picture_download(profile: Profile, sociallogin) -> None:
+        """Pull the provider avatar into S3 asynchronously, if any and not set."""
+        from users.tasks import download_social_profile_picture
+
+        if profile.profile_picture:
+            return
+        account = getattr(sociallogin, "account", None)
+        extra_data = getattr(account, "extra_data", None) or {}
+        picture_url = extra_data.get("picture")
+        if picture_url:
+            download_social_profile_picture.delay(profile.pk, picture_url)
+
     def serialize_instance(self, instance):
         if isinstance(instance, SocialLogin):
             serialized_social_login = super().serialize_instance(instance)
@@ -34,6 +96,10 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
             return serialized_social_login
 
         if isinstance(instance, User):
+            # Tolerate a missing profile (the unsaved User built during a pending
+            # social signup has none yet); mirrors deserialize_instance, which
+            # rebuilds an in-memory Profile on the way back.
+            profile = self._get_profile(instance)
             # If the instance is a User, use the UserSerializer to serialize it
             return {
                 "id": instance.id,
@@ -52,10 +118,10 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
                 if isinstance(instance.last_login, datetime.datetime)
                 else instance.last_login,
                 "profile": {
-                    "first_name": instance.profile.first_name,
-                    "last_name": instance.profile.last_name,
-                    "profile_picture": instance.profile.profile_picture.url
-                    if instance.profile.profile_picture
+                    "first_name": profile.first_name if profile else "",
+                    "last_name": profile.last_name if profile else "",
+                    "profile_picture": profile.profile_picture.url
+                    if profile and profile.profile_picture
                     else None,
                 },
             }
@@ -204,6 +270,7 @@ class AccountAdapter(DefaultAccountAdapter):
             "Sending verification code %s to %s for user %s.",
             code,
             phone,
+            user.id,
         )
         self.notification_service.create_notification(
             user_id=user.id,

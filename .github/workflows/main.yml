@@ -86,10 +86,10 @@ jobs:
           AWS_CLOUDFRONT_KEY_ID: 'test'
           AWS_CLOUDFRONT_KEY: 'test'
           SALT_KEY: 'test_salt_key_123'
-          TWILLIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
+          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
           TWILIO_AUTH_TOKEN: 'FAKE_ACCOUNT_SID'
           TWILIO_NUMBER: '+12345678901'
-          TWILLIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
+          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
 
 
       - run: uv run pre-commit run --all-files
@@ -121,10 +121,10 @@ jobs:
           AWS_CLOUDFRONT_KEY_ID: 'test'
           AWS_CLOUDFRONT_KEY: 'test'
           SALT_KEY: 'test_salt_key_123'
-          TWILLIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
+          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
           TWILIO_AUTH_TOKEN: 'FAKE_ACCOUNT_SID'
           TWILIO_NUMBER: '+12345678901'
-          TWILLIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
+          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
       - run: uv run python manage.py check --deploy
         env:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.production"
@@ -151,10 +151,10 @@ jobs:
           AWS_CLOUDFRONT_KEY_ID: 'test'
           AWS_CLOUDFRONT_KEY: 'test'
           SALT_KEY: 'test_salt_key_123'
-          TWILLIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
+          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
           TWILIO_AUTH_TOKEN: 'FAKE_ACCOUNT_SID'
           TWILIO_NUMBER: '+12345678901'
-          TWILLIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
+          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
       - run: |
           uv run pytest $(ARG) -vs  -n auto --no-header --cov=. --cov-report=xml:junit/test-results.xml --junitxml=junit.xml -o junit_family=legacy
         env:
@@ -182,10 +182,10 @@ jobs:
           AWS_CLOUDFRONT_KEY_ID: 'test'
           AWS_CLOUDFRONT_KEY: 'test'
           SALT_KEY: 'test_salt_key_123'
-          TWILLIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
+          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
           TWILIO_AUTH_TOKEN: 'FAKE_ACCOUNT_SID'
           TWILIO_NUMBER: '+12345678901'
-          TWILLIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
+          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
 
       - name: Archive code coverage results
         uses: actions/upload-artifact@v4

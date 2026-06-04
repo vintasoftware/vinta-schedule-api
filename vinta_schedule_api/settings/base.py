@@ -299,7 +299,9 @@ CORS_ALLOW_HEADERS = (
 )
 CORS_ALLOW_CREDENTIALS = True
 HEADLESS_ONLY = True
-ACCOUNT_USER_MODEL_USERNAME_FIELD = "email"
+# The User model has no separate username column (email is the USERNAME_FIELD /
+# login identifier). None disables allauth's username generation entirely.
+ACCOUNT_USER_MODEL_USERNAME_FIELD = None
 ACCOUNT_LOGIN_METHODS = {"email", "phone"}
 ACCOUNT_SIGNUP_FIELDS = [
     "email*",
@@ -467,11 +469,11 @@ MERCADOPAGO_ACCESS_TOKEN = config("MERCADOPAGO_ACCESS_TOKEN", default="")
 
 SALT_KEY = config("SALT_KEY")
 
-TWILIO_ACCOUNT_SID = config("TWILLIO_ACCOUNT_SID")
+TWILIO_ACCOUNT_SID = config("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = config("TWILIO_AUTH_TOKEN")
 TWILIO_NUMBER = config("TWILIO_NUMBER")
-TWILLIO_DEFAULT_BROADCAST_NUMBERS: list[str] = config(
-    "TWILLIO_DEFAULT_BROADCAST_NUMBERS", default=[], cast=Csv()
+TWILIO_DEFAULT_BROADCAST_NUMBERS: list[str] = config(
+    "TWILIO_DEFAULT_BROADCAST_NUMBERS", default=[], cast=Csv()
 )
 
 BASE_URL_DOMAIN = config("BASE_URL_DOMAIN", "localhost:8000")

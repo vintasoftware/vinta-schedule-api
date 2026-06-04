@@ -30,6 +30,127 @@ class TestSocialAccountAdapter:
         assert data["id"] == user.id
         assert data["profile"]["first_name"] == user.profile.first_name
 
+    def test_serialize_instance_user_without_profile(self):
+        # Mirrors the pending-social-signup flow: allauth serializes a freshly
+        # built, unsaved User that has no related Profile yet.
+        adapter = SocialAccountAdapter()
+        unsaved_user = User(email="nobody@example.com")
+
+        data = adapter.serialize_instance(unsaved_user)
+
+        assert data["email"] == "nobody@example.com"
+        assert data["profile"] == {
+            "first_name": "",
+            "last_name": "",
+            "profile_picture": None,
+        }
+
+    def test_serialize_instance_user_with_in_memory_profile(self):
+        # deserialize_instance attaches an in-memory Profile; serialize must
+        # round-trip its values rather than hit the database.
+        adapter = SocialAccountAdapter()
+        unsaved_user = User(email="nobody@example.com")
+        unsaved_user.profile = Profile(user=unsaved_user, first_name="Ada", last_name="Lovelace")
+
+        data = adapter.serialize_instance(unsaved_user)
+
+        assert data["profile"]["first_name"] == "Ada"
+        assert data["profile"]["last_name"] == "Lovelace"
+
+    def test_populate_user_attaches_profile_from_provider_data(self):
+        adapter = SocialAccountAdapter()
+        sociallogin = MagicMock(spec=SocialLogin)
+        sociallogin.user = User(email="grace@example.com")
+        data = {"email": "grace@example.com", "first_name": "Grace", "last_name": "Hopper"}
+
+        with patch.object(
+            SocialAccountAdapter.__bases__[0],
+            "populate_user",
+            return_value=sociallogin.user,
+        ):
+            user = adapter.populate_user(None, sociallogin, data)
+
+        assert isinstance(user.profile, Profile)
+        assert user.profile.first_name == "Grace"
+        assert user.profile.last_name == "Hopper"
+
+    def test_save_user_creates_profile_for_auto_signup(self, db):
+        # Auto-signup has no form; save_user must still leave a persisted Profile.
+        adapter = SocialAccountAdapter()
+        new_user = User(email="katherine@example.com")
+        new_user.profile = Profile(user=new_user, first_name="Katherine", last_name="Johnson")
+        sociallogin = MagicMock(spec=SocialLogin)
+        sociallogin.user = new_user
+
+        def _super_save(request, sociallogin, form=None):
+            sociallogin.user.save()
+            return sociallogin.user
+
+        with patch.object(SocialAccountAdapter.__bases__[0], "save_user", side_effect=_super_save):
+            user = adapter.save_user(None, sociallogin, form=None)
+
+        persisted = Profile.objects.get(user=user)
+        assert persisted.first_name == "Katherine"
+        assert persisted.last_name == "Johnson"
+
+    def test_save_user_enqueues_profile_picture_download(self, db):
+        adapter = SocialAccountAdapter()
+        new_user = User(email="margaret@example.com")
+        sociallogin = MagicMock(spec=SocialLogin)
+        sociallogin.user = new_user
+        sociallogin.account = MagicMock(extra_data={"picture": "https://example.com/avatar.png"})
+
+        def _super_save(request, sociallogin, form=None):
+            sociallogin.user.save()
+            return sociallogin.user
+
+        with (
+            patch.object(SocialAccountAdapter.__bases__[0], "save_user", side_effect=_super_save),
+            patch("users.tasks.download_social_profile_picture.delay") as mock_delay,
+        ):
+            user = adapter.save_user(None, sociallogin, form=None)
+
+        mock_delay.assert_called_once_with(user.pk, "https://example.com/avatar.png")
+
+    def test_save_user_skips_picture_download_without_url(self, db):
+        adapter = SocialAccountAdapter()
+        new_user = User(email="annie@example.com")
+        sociallogin = MagicMock(spec=SocialLogin)
+        sociallogin.user = new_user
+        sociallogin.account = MagicMock(extra_data={})
+
+        def _super_save(request, sociallogin, form=None):
+            sociallogin.user.save()
+            return sociallogin.user
+
+        with (
+            patch.object(SocialAccountAdapter.__bases__[0], "save_user", side_effect=_super_save),
+            patch("users.tasks.download_social_profile_picture.delay") as mock_delay,
+        ):
+            adapter.save_user(None, sociallogin, form=None)
+
+        mock_delay.assert_not_called()
+
+    def test_save_user_does_not_clobber_existing_profile(self, db):
+        # Form-created profile (user-edited names) must win over provider names.
+        adapter = SocialAccountAdapter()
+        new_user = User(email="dorothy@example.com")
+        sociallogin = MagicMock(spec=SocialLogin)
+        sociallogin.user = new_user
+
+        def _super_save(request, sociallogin, form=None):
+            sociallogin.user.save()
+            # Simulate the signup form having created the profile already.
+            Profile.objects.create(user=sociallogin.user, first_name="Edited", last_name="ByForm")
+            return sociallogin.user
+
+        with patch.object(SocialAccountAdapter.__bases__[0], "save_user", side_effect=_super_save):
+            user = adapter.save_user(None, sociallogin, form=MagicMock())
+
+        persisted = Profile.objects.get(user=user)
+        assert persisted.first_name == "Edited"
+        assert persisted.last_name == "ByForm"
+
     def test_serialize_instance_sociallogin(self, user):
         adapter = SocialAccountAdapter()
         sociallogin = MagicMock(spec=SocialLogin)
@@ -98,6 +219,16 @@ class TestAccountAdapter:
     @pytest.fixture
     def adapter(self, notification_service):
         return AccountAdapter(notification_service=notification_service)
+
+    def test_username_generation_disabled(self, adapter):
+        # The User model has no username column; allauth must not try to
+        # generate one (regression: "Unable to find a unique username" during
+        # social signup). USER_MODEL_USERNAME_FIELD = None makes it a no-op.
+        from allauth.account import app_settings as account_app_settings
+
+        assert account_app_settings.USER_MODEL_USERNAME_FIELD is None
+        # Must not raise NotImplementedError.
+        adapter.populate_username(None, User(email="fresh@example.com"))
 
     def test_send_password_reset_mail(self, adapter, user):
         with (

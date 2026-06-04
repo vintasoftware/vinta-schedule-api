@@ -66,8 +66,21 @@ services:
     networks:
       - default
 
+  # The floci image's app process runs as uid 1001, but a fresh floci_data
+  # volume mounts at /data owned by root:root -> floci can't create /data/s3 or
+  # persist state, and every S3 op 500s. This one-shot sidecar chowns the volume
+  # to 1001 before floci starts.
+  floci-init:
+    image: busybox
+    command: chown -R 1001:1001 /data
+    volumes:
+      - floci_data:/data
+
   floci:
     image: floci/floci:latest
+    depends_on:
+      floci-init:
+        condition: service_completed_successfully
     ports:
       - '4566:4566'
     volumes:
