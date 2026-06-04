@@ -27,6 +27,16 @@ logger = logging.getLogger(__name__)
 
 
 class SocialAccountAdapter(DefaultSocialAccountAdapter):
+    @inject
+    def __init__(
+        self,
+        *args,
+        organization_service: Annotated[OrganizationService, Provide["organization_service"]],
+        **kwargs,
+    ):
+        self.organization_service = organization_service
+        super().__init__(*args, **kwargs)
+
     def get_connect_redirect_url(self, request, socialaccount):
         return reverse("index")
 
@@ -90,12 +100,11 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         self._provision_org_membership(user)
         return user
 
-    @staticmethod
-    def _provision_org_membership(user: User) -> None:
+    def _provision_org_membership(self, user: User) -> None:
         """Attempt to auto-join the user to an inviting organisation.
 
-        Resolves OrganizationService from the DI container (same pattern as
-        accounts/signals.py) and calls provision_tenant_for_user with no
+        Uses the DI-injected OrganizationService (supplied via ``__init__``,
+        mirroring AccountAdapter) and calls provision_tenant_for_user with no
         organisation_name — social signups never carry one.  No-ops silently on
         UserAlreadyHasMembershipError (re-login or race).
         """
@@ -106,18 +115,8 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
             )
             return
 
-        from di_core.containers import container as di_container
-
-        if di_container is None:
-            logger.error(
-                "DI container is not initialised; cannot provision tenant for social user %s.",
-                user.pk,
-            )
-            return
-
-        organization_service = di_container.organization_service()
         try:
-            membership = organization_service.provision_tenant_for_user(user=user)
+            membership = self.organization_service.provision_tenant_for_user(user=user)
         except UserAlreadyHasMembershipError:
             # Re-login or race: user already has a membership — no-op.
             logger.debug(
