@@ -41,7 +41,7 @@ foundation_skills:
   open-pr-from-context: enabled
   add-e2e-test: disabled
   add-env-var: enabled
-  systematic-debugging: disabled
+  systematic-debugging: enabled
   add-one-off-script: enabled
 
 foundation_agents:
@@ -71,3 +71,5 @@ skills:
     csv_max_cells: 1000000
     s3_bucket: ""
     s3_prefix: one-off-runs/
+  systematic-debugging:
+    observability_mcp_servers: []
