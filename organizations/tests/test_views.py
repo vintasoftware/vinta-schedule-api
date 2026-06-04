@@ -8,6 +8,7 @@ from django.utils import timezone
 import pytest
 from model_bakery import baker
 from rest_framework import status
+from rest_framework.test import APIClient
 
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.exceptions import InvalidInvitationTokenError
@@ -179,6 +180,30 @@ class TestOrganizationViewSet:
             name="New Organization",
             should_sync_rooms=False,
         )
+
+    def test_create_organization_via_jwt_bearer_creates_membership(self, user):
+        """Regression: real JWT auth must resolve request.user to a model User.
+
+        DRF was configured with JWTStatelessUserAuthentication, which yields a
+        TokenUser (claims only, no DB row). Assigning it to
+        OrganizationMembership.user blew up with:
+        'Cannot assign "<TokenUser>": "OrganizationMembership.user" must be a "User" instance.'
+        Existing tests used session login / force_authenticate, so the JWT path
+        was never exercised. This drives the actual reported flow end-to-end (no
+        mocks) over a Bearer access token.
+        """
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(user)}")
+
+        url = reverse("api:Organizations-list")
+        response = client.post(url, {"name": "JWT Org"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        membership = OrganizationMembership.objects.get(user=user)
+        assert membership.organization.name == "JWT Org"
+        assert membership.role == OrganizationRole.ADMIN
 
     @patch("organizations.views.OrganizationViewSet.get_queryset")
     @patch("organizations.services.OrganizationService.create_organization")
