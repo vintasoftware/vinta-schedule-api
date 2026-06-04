@@ -13,6 +13,7 @@ from organizations.exceptions import (
     DuplicateInvitationError,
     InvalidInvitationTokenError,
     InvitationNotFoundError,
+    UserAlreadyHasMembershipError,
 )
 from organizations.filtersets import OrganizationInvitationFilterSet
 from organizations.models import Organization, OrganizationInvitation
@@ -102,6 +103,11 @@ class AcceptInvitationView(generics.CreateAPIView):
 
         try:
             membership = serializer.create(serializer.validated_data)
+        except UserAlreadyHasMembershipError:
+            return Response(
+                {"error": UserAlreadyHasMembershipError.default_detail},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except InvalidInvitationTokenError as e:
             return Response(
                 {"error": str(e)},

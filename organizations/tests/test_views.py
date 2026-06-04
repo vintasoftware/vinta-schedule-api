@@ -798,6 +798,77 @@ class TestAcceptInvitationView:
         # The hardened service returns a typed 400 error instead of an unhandled IntegrityError.
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
+    def test_accept_invitation_already_member_different_org_rejected(
+        self, auth_client, user, organization
+    ):
+        """Use-case 5: an already-member user POSTs a valid token for a DIFFERENT org.
+
+        Acceptance criteria (Phase 7):
+        - HTTP 400 with the user_already_has_membership code and message.
+        - The user's existing membership (org + role) is unchanged.
+        - The target invitation remains pending (accepted_at is None, membership is None).
+        - No second OrganizationMembership is created.
+        """
+        # User's existing membership in their own org.
+        user_org = OrganizationTestFactory.create_organization(name="User Org")
+        OrganizationTestFactory.create_organization_membership(user, user_org)
+        original_membership = OrganizationMembership.objects.get(user=user)
+
+        # A different org with a valid pending invitation for the same user's email.
+        other_org = OrganizationTestFactory.create_organization(name="Other Org")
+        invitation = OrganizationTestFactory.create_organization_invitation(
+            other_org, email=user.email
+        )
+        token = generate_long_lived_token()
+        invitation.token_hash = hash_long_lived_token(token)
+        invitation.save()
+
+        url = reverse("accept-invitation")
+        response = auth_client.post(url, {"token": token}, format="json")
+
+        # --- HTTP response ---
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # --- Error body shape (stable contract for clients) ---
+        response_data = response.json()
+        assert response_data["error"] == "User already belongs to an organization."
+
+        # --- Existing membership is unchanged ---
+        original_membership.refresh_from_db()
+        assert original_membership.organization_id == user_org.id
+        assert OrganizationMembership.objects.filter(user=user).count() == 1
+
+        # --- Target invitation remains pending ---
+        invitation.refresh_from_db()
+        assert invitation.accepted_at is None
+        assert invitation.membership is None
+
+    def test_accept_invitation_already_member_error_body_shape(self, auth_client, user):
+        """Assert the error body contract is stable for clients (Phase 7).
+
+        When the user already has a membership and POSTs the accept endpoint,
+        the response MUST contain the 'code' and 'detail' keys with the documented
+        user_already_has_membership values.
+        """
+        own_org = OrganizationTestFactory.create_organization(name="Own Org")
+        OrganizationTestFactory.create_organization_membership(user, own_org)
+
+        other_org = OrganizationTestFactory.create_organization(name="Other Org")
+        invitation = OrganizationTestFactory.create_organization_invitation(
+            other_org, email=user.email
+        )
+        token = generate_long_lived_token()
+        invitation.token_hash = hash_long_lived_token(token)
+        invitation.save()
+
+        url = reverse("accept-invitation")
+        response = auth_client.post(url, {"token": token}, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        body = response.json()
+        assert "error" in body, f"Response body missing 'error' key: {body}"
+        assert body["error"] == "User already belongs to an organization."
+
 
 @pytest.mark.django_db
 class TestOrganizationInvitationPermissions:
