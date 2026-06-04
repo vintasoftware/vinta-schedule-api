@@ -94,7 +94,37 @@ jobs:
 
       - run: uv run pre-commit run --all-files
         env:
-          SKIP: ruff,eslint,missing-migrations,backend-schema
+          SKIP: ruff,eslint,missing-migrations,backend-schema,backend-auth-schema
+      - run: uv run python manage.py export_allauth_schema --check
+        env:
+          DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.production"
+          SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
+          ALLOWED_HOSTS: ".example.org"
+          SMTP_HOST: 'example.org'
+          SMTP_USERNAME: "test"
+          SMTP_PASSWORD: "test"
+          REDIS_URL: "redis://localhost:6379"
+          SITE_DOMAIN: 'example.com'
+          API_DOMAIN: 'api.example.com'
+          DEFAULT_BCC_EMAILS: 'hugo@example.com'
+          AWS_STATIC_BUCKET_NAME: 'example-static'
+          AWS_ACCESS_KEY_ID: 'test'
+          AWS_SECRET_ACCESS_KEY: 'test'
+          AWS_S3_ACCESS_KEY_ID: 'test'
+          AWS_S3_SECRET_ACCESS_KEY: 'test'
+          AWS_MEDIA_BUCKET_NAME: 'example-media'
+          AWS_MEDIA_LOCATION: 'media'
+          AWS_MEDIA_S3_CUSTOM_DOMAIN: 'example.com'
+          AWS_MEDIA_S3_ENDPOINT_URL: 'https://example.com'
+          AWS_S3_REGION_NAME: 'us-east-1'
+          AWS_CLOUDFRONT_KEY_ID: 'test'
+          AWS_CLOUDFRONT_KEY: 'test'
+          SALT_KEY: 'test_salt_key_123'
+          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
+          TWILIO_AUTH_TOKEN: 'FAKE_ACCOUNT_SID'
+          TWILIO_NUMBER: '+12345678901'
+          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
       - run: uv run python manage.py makemigrations --check --dry-run
         env:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.production"
