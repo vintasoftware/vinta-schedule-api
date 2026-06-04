@@ -67,7 +67,8 @@ class CalendarGroupPermission(BasePermission):
         return getattr(user, "organization_membership", None) is not None
 
     def has_object_permission(self, request, view, obj):
-        if obj.organization_id != request.user.organization_membership.organization_id:
+        membership = getattr(request.user, "organization_membership", None)
+        if membership is None or obj.organization_id != membership.organization_id:
             return False
         if self.calendar_permission_service is None:
             # Fallback if DI isn't wired (should not happen in normal flows).

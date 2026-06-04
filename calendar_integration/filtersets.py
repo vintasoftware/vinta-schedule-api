@@ -55,15 +55,19 @@ class CalendarEventFilterSet(filters.FilterSet):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        user = self.request.user if self.request else None
+        membership = (
+            getattr(user, "organization_membership", None)
+            if user and user.is_authenticated
+            else None
+        )
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="calendar_fk_id",
             label="Filter by calendar ID",
             queryset=(
-                Calendar.objects.filter_by_organization(
-                    self.request.user.organization_membership.organization_id
-                )
-                if self.request.user and self.request.user.is_authenticated
-                else Calendar.objects.none()
+                Calendar.objects.filter_by_organization(membership.organization_id)
+                if membership
+                else Calendar.original_manager.none()
             ),
         )
 
@@ -96,15 +100,19 @@ class BlockedTimeFilterSet(filters.FilterSet):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        user = self.request.user if self.request else None
+        membership = (
+            getattr(user, "organization_membership", None)
+            if user and user.is_authenticated
+            else None
+        )
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="calendar_fk_id",
             label="Filter by calendar ID",
             queryset=(
-                Calendar.objects.filter_by_organization(
-                    self.request.user.organization_membership.organization_id
-                )
-                if self.request.user and self.request.user.is_authenticated
-                else Calendar.objects.none()
+                Calendar.objects.filter_by_organization(membership.organization_id)
+                if membership
+                else Calendar.original_manager.none()
             ),
         )
 
@@ -125,15 +133,19 @@ class CalendarGroupFilterSet(filters.FilterSet):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        user = self.request.user if self.request else None
+        membership = (
+            getattr(user, "organization_membership", None)
+            if user and user.is_authenticated
+            else None
+        )
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="slots__memberships__calendar_fk_id",
             label="Filter to groups whose slot pools include this calendar",
             queryset=(
-                Calendar.objects.filter_by_organization(
-                    self.request.user.organization_membership.organization_id
-                )
-                if self.request.user and self.request.user.is_authenticated
-                else Calendar.objects.none()
+                Calendar.objects.filter_by_organization(membership.organization_id)
+                if membership
+                else Calendar.original_manager.none()
             ),
         )
 
@@ -160,14 +172,18 @@ class AvailableTimeFilterSet(filters.FilterSet):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        user = self.request.user if self.request else None
+        membership = (
+            getattr(user, "organization_membership", None)
+            if user and user.is_authenticated
+            else None
+        )
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="calendar_fk_id",
             label="Filter by calendar ID",
             queryset=(
-                Calendar.objects.filter_by_organization(
-                    self.request.user.organization_membership.organization_id
-                )
-                if self.request.user and self.request.user.is_authenticated
-                else Calendar.objects.none()
+                Calendar.objects.filter_by_organization(membership.organization_id)
+                if membership
+                else Calendar.original_manager.none()
             ),
         )
