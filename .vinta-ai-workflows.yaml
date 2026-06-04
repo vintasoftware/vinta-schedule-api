@@ -1,0 +1,73 @@
+# yaml-language-server: $schema=./node_modules/vinta-ai-workflows/schemas/vinta-ai-workflows-config.v1.schema.json
+
+schema_version: 1
+vinta_ai_workflows_version: "0.1.7"
+last_synced_at: "2026-06-03T00:00:00Z"
+
+project:
+  name: vinta_schedule_api
+  default_branch: main
+  code_host: github
+  stack_summary: "Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (OrganizationModel), Postgres, deployed to Render"
+  ai_plans_dir: ai-plans
+  pr_template_paths: []
+
+commands:
+  lint: "uv run ruff check ./"
+  format: "uv run ruff format ./"
+  build: "uv run python manage.py check --deploy"
+  test_unit: "uv run pytest -n auto"
+  test_unit_scoped: "uv run pytest <app>/tests/ -n auto"
+  test_unit_new_pattern: "uv run pytest <new-test-path> -vs"
+
+policies:
+  pr_creation: agents-create
+  ai_coauthor: forbidden
+  commit_style: conventional
+  stage_pattern: "git add <explicit paths>"
+  anti_git_add_all_reason: "repo root holds untracked .env / .env.docker, generated schema.yml / schema-auth.yml, .coverage, mailpit-data — `git add -A` will sweep them in"
+
+vendors:
+  - claude
+  - cursor
+  - copilot
+
+foundation_skills:
+  plan-feature: enabled
+  create-spec: enabled
+  create-qa-use-cases: enabled
+  implement-plan: enabled
+  amend-plan: enabled
+  open-pr-from-context: enabled
+  add-e2e-test: disabled
+  add-env-var: enabled
+  systematic-debugging: disabled
+  add-one-off-script: enabled
+
+foundation_agents:
+  implementer: enabled
+  reviewer: enabled
+  fixer: enabled
+
+stacks:
+  - django
+
+stack_specialist_agents:
+  - migration-author
+
+run_options:
+  implement-plan:
+    pause_between_phases: false
+    generate_inline_comments: false
+  amend-plan:
+    blast_radius_signal_threshold: 2
+
+skills:
+  add-one-off-script:
+    scripts_dir: scripts/one_off
+    language: python
+    log_dir: .vinta-ai-workflows/one-off-runs
+    default_batch_size: 500
+    csv_max_cells: 1000000
+    s3_bucket: ""
+    s3_prefix: one-off-runs/

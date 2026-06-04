@@ -287,19 +287,6 @@ SIMPLE_JWT = {
     "UPDATE_LAST_LOGIN": True,
 }
 
-SOCIALACCOUNT_PROVIDERS = {
-    "google": {
-        "SCOPE": [
-            "openid",
-            "profile",
-            "email",
-        ],
-        "AUTH_PARAMS": {
-            "access_type": "online",
-        },
-    }
-}
-
 CORS_ORIGIN_ALLOW_ALL = True
 from corsheaders.defaults import default_headers
 
@@ -458,7 +445,7 @@ if config("GOOGLE_CLIENT_ID", default=""):
             "openid",
             "profile",
             "email",
-            "calendar",
+            "https://www.googleapis.com/auth/calendar",
         ],
         "AUTH_PARAMS": {
             "access_type": "online",

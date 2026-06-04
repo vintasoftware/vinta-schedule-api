@@ -2,7 +2,7 @@
 
 > Source: [calendar_integration/models.py](../../calendar_integration/models.py) — `CalendarGroup`, `CalendarGroupSlot`, `CalendarGroupSlotMembership`, `CalendarEventGroupSelection`, `CalendarEvent.calendar_group`.
 > Service: [calendar_integration/services/calendar_group_service.py](../../calendar_integration/services/calendar_group_service.py).
-> Plan: [dev-plans/2026-04-20-CALENDAR_GROUP_PLAN.md](../../dev-plans/2026-04-20-CALENDAR_GROUP_PLAN.md).
+> Plan: [ai-plans/2026-04-20-CALENDAR_GROUP_PLAN.md](../../ai-plans/2026-04-20-CALENDAR_GROUP_PLAN.md).
 
 A **`CalendarGroup`** is a **booking template**. It says: "to book this
 kind of appointment, the caller must provide one (or more) calendar

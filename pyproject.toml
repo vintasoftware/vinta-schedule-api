@@ -183,6 +183,8 @@ lines-after-imports = 2
 "**/*test*.py" = ["E402", "F403", "F405", "S", "N802"]
 "**/{settings}/*" = ["E402", "F403", "F405"]
 "**/migrations/*" = ["RUF", "I"]
+# Skill template resources are standalone files copied into projects, not importable packages.
+"ai-tools/skills/**/resources/*.py" = ["INP001"]
 
 [tool.coverage.run]
 branch = true

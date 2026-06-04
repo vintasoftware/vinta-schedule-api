@@ -48,3 +48,6 @@ tmp_email/
 .tool-versions
 
 .mailpit-data/**/*
+
+# vinta-ai-workflows local state (PR context staging, MCP preflight cache)
+.vinta-ai-workflows/

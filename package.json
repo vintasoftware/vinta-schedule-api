@@ -1,0 +1,30 @@
+{
+  "name": "vinta-schedule",
+  "version": "1.0.0",
+  "description": "-   Setup [editorconfig](http://editorconfig.org/) and [ruff](https://github.com/astral-sh/ruff) in the text editor you will use to develop.",
+  "homepage": "https://github.com/vintasoftware/vinta-schedule-api#readme",
+  "bugs": {
+    "url": "https://github.com/vintasoftware/vinta-schedule-api/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vintasoftware/vinta-schedule-api.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "setup:ai-tools": "node ai-tools/scripts/setup-ai-tools.mjs --only claude,cursor,copilot"
+  },
+  "dependencies": {
+    "vinta-ai-workflows": "^0.1.7"
+  },
+  "devDependencies": {
+    "yaml": "^2.9.0"
+  }
+}
