@@ -15,7 +15,6 @@ components:
             email: email@domain.org
             has_usable_password: true
             id: 123
-            username: wizard
         meta:
           access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdW
           is_authenticated: true
@@ -2120,14 +2119,9 @@ components:
           description: The user ID.
           example: 123
           type: integer
-        username:
-          description: The username.
-          example: wizard
-          type: string
       required:
       - display
       - has_usable_password
-      - username
       type: object
     UserSessionsConfiguration:
       description: 'Configuration of the Django `allauth.usersessions` app.
