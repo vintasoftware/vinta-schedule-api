@@ -21,11 +21,20 @@
 - **Review**: 3 BLOCKERs found + fixed (wrong `IntegrityError` class; concurrency test never exercised the backstop; missing savepoint in `accept_invitation`) + 1 should-fix (unguarded `create_organization` delegation) + 1 nit. Final gate: `check --deploy` clean, `pytest -n auto` = 1170 passed.
 - **Key API for later phases**: `OrganizationService.provision_tenant_for_user(user, organization_name=None)` — invite-first; returns the membership or `None`. Phases 3/4/6 call this; Phase 7 surfaces `UserAlreadyHasMembershipError` at the accept endpoint.
 
+### Phase 2 — Capture intended org name at signup ✅
+- **Status**: PR open
+- **Model**: claude-sonnet-4-6 (plan tier: Tier 2)
+- **Branch**: `plan/auth-tenant-provisioning/phase-2` (base `plan/auth-tenant-provisioning/phase-1`)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/33
+- **E2E**: n/a
+- **Summary**: Added `Profile.pending_organization_name` (additive `users/0002` migration) + optional `organization_name` on `BaseVintaScheduleSignupForm`; `signup()` stashes the name unless a pending invite matches the email. Org is NOT created here — deferred to Phase 3's email-confirmation hook.
+- **Review**: 1 should-fix → fixed. Case-sensitivity: invitation emails are un-normalized vs normalized `User.email`. Switched ALL THREE invite-match sites (`_has_pending_invitation`, `provision_tenant_for_user`, `accept_invitation`) to `email__iexact` so capture-time and provision-time matching stay consistent (asymmetric matching would orphan a user). Added case-insensitivity regression tests. Gate: 1180 passed.
+- **Cross-phase note**: this phase modified Phase 1 code (`organizations/services.py` match filters) — intentional, for invite-match consistency.
+
 ## Current Phase
-- Phase 2 — Capture intended org name at signup (next)
+- Phase 3 — Create own org on email verification, no invite (next) — UC1
 
 ## Remaining Phases
-- Phase 2 — Capture intended org name at signup (Tier 2)
 - Phase 3 — Create own org on email verification, no invite (Tier 3) — UC1
 - Phase 4 — Auto-join invited org on email verification (Tier 2) — UC2
 - Phase 5 — Gated onboarding for uninvited social signup (Tier 2) — UC3
