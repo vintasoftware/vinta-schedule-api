@@ -1,7 +1,10 @@
 from typing import Annotated
 
 from dependency_injector.wiring import Provide, inject
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import generics, status
+from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -23,6 +26,7 @@ from organizations.permissions import (
 )
 from organizations.serializers import (
     AcceptInvitationSerializer,
+    CurrentMembershipSerializer,
     OrganizationInvitationSerializer,
     OrganizationSerializer,
 )
@@ -43,6 +47,26 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         if hasattr(user, "organization_membership") and user.organization_membership:
             return Organization.objects.filter(id=user.organization_membership.organization_id)
         return Organization.objects.none()
+
+    @extend_schema(
+        summary="Current organization + role for the authenticated user",
+        responses={
+            200: CurrentMembershipSerializer,
+            404: OpenApiResponse(description="No organization membership (gated user)"),
+        },
+    )
+    @action(detail=False, methods=["get"], url_path="current", permission_classes=[IsAuthenticated])
+    def current(self, request):
+        """Return the caller's organization and role.
+
+        HTTP 200 — the user is onboarded (has a membership).
+        HTTP 404 — the user is gated (no membership yet).
+        """
+        membership = getattr(request.user, "organization_membership", None)
+        if membership is None:
+            raise NotFound(detail="No organization membership.")
+        serializer = CurrentMembershipSerializer(membership, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):

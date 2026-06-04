@@ -4506,6 +4506,60 @@ paths:
       responses:
         '204':
           description: No response body
+  /organizations/current/:
+    get:
+      operationId: organizations_current_retrieve
+      description: |-
+        Return the caller's organization and role.
+
+        HTTP 200 — the user is onboarded (has a membership).
+        HTTP 404 — the user is gated (no membership yet).
+      summary: Current organization + role for the authenticated user
+      tags:
+      - organizations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentMembership'
+          description: ''
+        '404':
+          description: No organization membership (gated user)
+  /organizations/current{format}:
+    get:
+      operationId: organizations_current_formatted_retrieve
+      description: |-
+        Return the caller's organization and role.
+
+        HTTP 200 — the user is onboarded (has a membership).
+        HTTP 404 — the user is gated (no membership yet).
+      summary: Current organization + role for the authenticated user
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - organizations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentMembership'
+          description: ''
+        '404':
+          description: No organization membership (gated user)
   /payments/{id}/payment-update/{provider}/:
     post:
       operationId: payments_payment_update_create
@@ -6323,6 +6377,31 @@ components:
         * `resource` - Resource Calendar
         * `virtual` - Virtual Calendar
         * `bundle` - Bundle Calendar
+    CurrentMembership:
+      type: object
+      description: |-
+        Read-only serializer for the caller's current organization membership.
+
+        Returns the membership role and the nested organization so the frontend
+        can distinguish between an onboarded user and a gated (membership-less) user.
+      properties:
+        role:
+          allOf:
+          - $ref: '#/components/schemas/RoleEnum'
+          readOnly: true
+          description: |-
+            Role the user holds in this organization. Admins can manage organization-scoped resources (e.g. CalendarGroups) regardless of direct ownership.
+
+            * `member` - Member
+            * `admin` - Admin
+        organization:
+          type: object
+          additionalProperties: {}
+          description: Serialize the related organization using OrganizationSerializer.
+          readOnly: true
+      required:
+      - organization
+      - role
     EventAttendance:
       type: object
       properties:
@@ -7400,6 +7479,14 @@ components:
       - created
       - modified
       - status
+    RoleEnum:
+      enum:
+      - member
+      - admin
+      type: string
+      description: |-
+        * `member` - Member
+        * `admin` - Admin
     UnavailableTimeWindow:
       type: object
       properties:

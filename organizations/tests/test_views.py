@@ -15,6 +15,7 @@ from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
+    OrganizationRole,
     OrganizationTier,
 )
 
@@ -416,6 +417,88 @@ class TestOrganizationQuerySet:
         url = reverse("api:Organizations-detail", kwargs={"pk": org1.pk})
         response = auth_client.get(url)
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+
+@pytest.mark.django_db
+class TestCurrentMembershipAction:
+    """Test suite for GET /organizations/current/ (Phase 9).
+
+    This action must be reachable by onboarded users (the whole reason for its
+    dedicated ``permission_classes=[IsAuthenticated]`` override — bypassing the
+    parent viewset's ``OrganizationManagementPermission`` which would block members).
+    """
+
+    def test_current_admin_returns_200_with_role_and_org(self, auth_client, user):
+        """Onboarded ADMIN gets 200 with role='admin' and correct org data."""
+        organization = OrganizationTestFactory.create_organization(name="Admin Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        url = reverse("api:Organizations-current")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        body = response.json()
+        assert body["role"] == OrganizationRole.ADMIN
+        assert body["organization"]["id"] == organization.id
+        assert body["organization"]["name"] == "Admin Org"
+
+    def test_current_member_returns_200_with_role_member(self, auth_client, user):
+        """Onboarded MEMBER gets 200 with role='member'."""
+        organization = OrganizationTestFactory.create_organization(name="Member Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        url = reverse("api:Organizations-current")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        body = response.json()
+        assert body["role"] == OrganizationRole.MEMBER
+        assert body["organization"]["id"] == organization.id
+
+    def test_current_gated_user_returns_404(self, auth_client):
+        """Membership-less (gated) authenticated user gets 404 — not 500."""
+        url = reverse("api:Organizations-current")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_current_unauthenticated_returns_401(self, anonymous_client):
+        """Unauthenticated request is rejected with 401."""
+        url = reverse("api:Organizations-current")
+        response = anonymous_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_current_not_blocked_by_organization_management_permission(self, auth_client, user):
+        """Regression: OrganizationManagementPermission returns False for members.
+
+        The ``current`` action overrides ``permission_classes=[IsAuthenticated]`` so
+        an onboarded MEMBER (who would be blocked by ``OrganizationManagementPermission``)
+        can still read their own membership. This test makes that invariant explicit.
+        """
+        organization = OrganizationTestFactory.create_organization(name="Regression Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        url = reverse("api:Organizations-current")
+        response = auth_client.get(url)
+
+        # If OrganizationManagementPermission were active, a member would receive 403.
+        assert_response_status_code(response, status.HTTP_200_OK)
 
 
 @pytest.mark.django_db
