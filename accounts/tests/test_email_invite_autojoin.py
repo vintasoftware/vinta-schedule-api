@@ -7,8 +7,9 @@ is confirmed, with no separate accept step and no stray organisations created.
 
 Four scenarios are covered:
 
-1. Full end-to-end flow — pending invitation + real signup form + real verify_email →
-   MEMBER membership, invitation accepted and linked, zero new organisations created.
+1. Full end-to-end flow — pending invitation + real signup form + real
+   AccountAdapter.confirm_email → MEMBER membership, invitation accepted and linked,
+   zero new organisations created.
 2. Invite wins over org name — even if pending_organization_name is non-blank at
    confirmation time, the invite-first branch wins and no stray org is created.
 3. Case-insensitive invite — invitation stored with a case-differing local part still
@@ -16,14 +17,15 @@ Four scenarios are covered:
 4. Invitation marked accepted — accepted_at and membership FK are both set after
    auto-join.
 
-All tests drive the REAL allauth verify_email path so the email_confirmed signal fires
-exactly as it does at runtime (same pattern as test_email_confirmation_provisioning.py).
+All tests drive confirmation through AccountAdapter.confirm_email (the imperative
+override introduced in Phase 3), which is the same hook invoked by the headless
+verify-email endpoint at runtime (same pattern as test_email_confirmation_provisioning.py).
 """
 
 import datetime
 
 import pytest
-from allauth.account.internal.flows.email_verification import verify_email
+from allauth.account.adapter import get_adapter
 from allauth.account.models import EmailAddress
 from model_bakery import baker
 
@@ -47,18 +49,19 @@ def _create_email_address(user, verified: bool = False) -> EmailAddress:
 
 
 def _confirm_email(rf, email_address: EmailAddress) -> bool:
-    """Run the real allauth verify_email flow for *email_address*.
+    """Drive email confirmation through AccountAdapter.confirm_email.
 
     Uses a minimal GET request so add_message() has a request object and the
     message storage backend doesn't raise.  CookieStorage is used because the
-    RequestFactory doesn't set up session middleware.  The signal fires inside
-    this call, exercising the same code path as the headless verify-email endpoint.
+    RequestFactory doesn't set up session middleware.  Provisioning fires inside
+    this call via the adapter override, exercising the same hook as the headless
+    verify-email endpoint.
     """
     from django.contrib.messages.storage.cookie import CookieStorage
 
     request = rf.get("/")
     request._messages = CookieStorage(request)
-    return verify_email(request, email_address)
+    return get_adapter(request).confirm_email(request, email_address)
 
 
 def _pending_invitation(
@@ -89,14 +92,14 @@ class TestInvitedEmailAutoJoin:
 
     def test_full_end_to_end_invited_signup_autojoin(self, rf):
         """
-        Full end-to-end: pending invitation + real signup form + real verify_email
+        Full end-to-end: pending invitation + real signup form + AccountAdapter.confirm_email
         → MEMBER membership in the inviting org, invitation accepted + linked,
         zero new organisations created.
 
         The signup form is invoked with signup_email matching the invitation so the
-        Phase 2 capture-skip fires (pending_organization_name ends blank).  Then the
-        real verify_email path is driven so the Phase 3 signal handler fires and
-        hands off to provision_tenant_for_user, whose invite-first branch auto-joins.
+        Phase 2 capture-skip fires (pending_organization_name ends blank).  Then
+        AccountAdapter.confirm_email is driven so the Phase 3 adapter override fires
+        and hands off to provision_tenant_for_user, whose invite-first branch auto-joins.
         """
         from accounts.base_forms import BaseVintaScheduleSignupForm
 
@@ -128,7 +131,7 @@ class TestInvitedEmailAutoJoin:
             "Signup form should leave pending_organization_name blank for invited users"
         )
 
-        # Now confirm the email via the REAL allauth verify_email path.
+        # Now confirm the email via AccountAdapter.confirm_email (Phase 3 adapter override).
         email_address = _create_email_address(user)
         confirmed = _confirm_email(rf, email_address)
 
