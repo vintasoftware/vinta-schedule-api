@@ -8,6 +8,7 @@ from django.utils import timezone
 import pytest
 from model_bakery import baker
 from rest_framework import status
+from rest_framework.test import APIClient
 
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.exceptions import InvalidInvitationTokenError
@@ -15,6 +16,7 @@ from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
+    OrganizationRole,
     OrganizationTier,
 )
 
@@ -178,6 +180,30 @@ class TestOrganizationViewSet:
             name="New Organization",
             should_sync_rooms=False,
         )
+
+    def test_create_organization_via_jwt_bearer_creates_membership(self, user):
+        """Regression: real JWT auth must resolve request.user to a model User.
+
+        DRF was configured with JWTStatelessUserAuthentication, which yields a
+        TokenUser (claims only, no DB row). Assigning it to
+        OrganizationMembership.user blew up with:
+        'Cannot assign "<TokenUser>": "OrganizationMembership.user" must be a "User" instance.'
+        Existing tests used session login / force_authenticate, so the JWT path
+        was never exercised. This drives the actual reported flow end-to-end (no
+        mocks) over a Bearer access token.
+        """
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(user)}")
+
+        url = reverse("api:Organizations-list")
+        response = client.post(url, {"name": "JWT Org"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        membership = OrganizationMembership.objects.get(user=user)
+        assert membership.organization.name == "JWT Org"
+        assert membership.role == OrganizationRole.ADMIN
 
     @patch("organizations.views.OrganizationViewSet.get_queryset")
     @patch("organizations.services.OrganizationService.create_organization")
@@ -416,6 +442,88 @@ class TestOrganizationQuerySet:
         url = reverse("api:Organizations-detail", kwargs={"pk": org1.pk})
         response = auth_client.get(url)
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+
+@pytest.mark.django_db
+class TestCurrentMembershipAction:
+    """Test suite for GET /organizations/current/ (Phase 9).
+
+    This action must be reachable by onboarded users (the whole reason for its
+    dedicated ``permission_classes=[IsAuthenticated]`` override — bypassing the
+    parent viewset's ``OrganizationManagementPermission`` which would block members).
+    """
+
+    def test_current_admin_returns_200_with_role_and_org(self, auth_client, user):
+        """Onboarded ADMIN gets 200 with role='admin' and correct org data."""
+        organization = OrganizationTestFactory.create_organization(name="Admin Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        url = reverse("api:Organizations-current")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        body = response.json()
+        assert body["role"] == OrganizationRole.ADMIN
+        assert body["organization"]["id"] == organization.id
+        assert body["organization"]["name"] == "Admin Org"
+
+    def test_current_member_returns_200_with_role_member(self, auth_client, user):
+        """Onboarded MEMBER gets 200 with role='member'."""
+        organization = OrganizationTestFactory.create_organization(name="Member Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        url = reverse("api:Organizations-current")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        body = response.json()
+        assert body["role"] == OrganizationRole.MEMBER
+        assert body["organization"]["id"] == organization.id
+
+    def test_current_gated_user_returns_404(self, auth_client):
+        """Membership-less (gated) authenticated user gets 404 — not 500."""
+        url = reverse("api:Organizations-current")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_current_unauthenticated_returns_401(self, anonymous_client):
+        """Unauthenticated request is rejected with 401."""
+        url = reverse("api:Organizations-current")
+        response = anonymous_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_current_not_blocked_by_organization_management_permission(self, auth_client, user):
+        """Regression: OrganizationManagementPermission returns False for members.
+
+        The ``current`` action overrides ``permission_classes=[IsAuthenticated]`` so
+        an onboarded MEMBER (who would be blocked by ``OrganizationManagementPermission``)
+        can still read their own membership. This test makes that invariant explicit.
+        """
+        organization = OrganizationTestFactory.create_organization(name="Regression Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        url = reverse("api:Organizations-current")
+        response = auth_client.get(url)
+
+        # If OrganizationManagementPermission were active, a member would receive 403.
+        assert_response_status_code(response, status.HTTP_200_OK)
 
 
 @pytest.mark.django_db
@@ -769,9 +877,12 @@ class TestAcceptInvitationView:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
     def test_accept_invitation_already_accepted(self, auth_client, user, organization):
-        """Test accepting an invitation for a user who is already a member."""
-        from django.db.utils import IntegrityError
+        """Test accepting an invitation for a user who is already a member.
 
+        Since accept_invitation now raises UserAlreadyHasMembershipError (a DRF
+        ValidationError) before touching the DB, the view returns a 400 response
+        with a typed error rather than an unhandled IntegrityError.
+        """
         # Create a membership for the user in the organization
         OrganizationTestFactory.create_organization_membership(user, organization)
 
@@ -790,10 +901,81 @@ class TestAcceptInvitationView:
             "token": token,
         }
 
-        # This should fail with an IntegrityError because the user already has a membership
-        # In Django tests, unhandled exceptions are re-raised instead of becoming HTTP 500s
-        with pytest.raises(IntegrityError, match="duplicate key value violates unique constraint"):
-            auth_client.post(url, data, format="json")
+        response = auth_client.post(url, data, format="json")
+
+        # The hardened service returns a typed 400 error instead of an unhandled IntegrityError.
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_accept_invitation_already_member_different_org_rejected(
+        self, auth_client, user, organization
+    ):
+        """Use-case 5: an already-member user POSTs a valid token for a DIFFERENT org.
+
+        Acceptance criteria (Phase 7):
+        - HTTP 400 with the user_already_has_membership code and message.
+        - The user's existing membership (org + role) is unchanged.
+        - The target invitation remains pending (accepted_at is None, membership is None).
+        - No second OrganizationMembership is created.
+        """
+        # User's existing membership in their own org.
+        user_org = OrganizationTestFactory.create_organization(name="User Org")
+        OrganizationTestFactory.create_organization_membership(user, user_org)
+        original_membership = OrganizationMembership.objects.get(user=user)
+
+        # A different org with a valid pending invitation for the same user's email.
+        other_org = OrganizationTestFactory.create_organization(name="Other Org")
+        invitation = OrganizationTestFactory.create_organization_invitation(
+            other_org, email=user.email
+        )
+        token = generate_long_lived_token()
+        invitation.token_hash = hash_long_lived_token(token)
+        invitation.save()
+
+        url = reverse("accept-invitation")
+        response = auth_client.post(url, {"token": token}, format="json")
+
+        # --- HTTP response ---
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # --- Error body shape (stable contract for clients) ---
+        response_data = response.json()
+        assert response_data["error"] == "User already belongs to an organization."
+
+        # --- Existing membership is unchanged ---
+        original_membership.refresh_from_db()
+        assert original_membership.organization_id == user_org.id
+        assert OrganizationMembership.objects.filter(user=user).count() == 1
+
+        # --- Target invitation remains pending ---
+        invitation.refresh_from_db()
+        assert invitation.accepted_at is None
+        assert invitation.membership is None
+
+    def test_accept_invitation_already_member_error_body_shape(self, auth_client, user):
+        """Assert the error body contract is stable for clients (Phase 7).
+
+        When the user already has a membership and POSTs the accept endpoint,
+        the response MUST contain the 'code' and 'detail' keys with the documented
+        user_already_has_membership values.
+        """
+        own_org = OrganizationTestFactory.create_organization(name="Own Org")
+        OrganizationTestFactory.create_organization_membership(user, own_org)
+
+        other_org = OrganizationTestFactory.create_organization(name="Other Org")
+        invitation = OrganizationTestFactory.create_organization_invitation(
+            other_org, email=user.email
+        )
+        token = generate_long_lived_token()
+        invitation.token_hash = hash_long_lived_token(token)
+        invitation.save()
+
+        url = reverse("accept-invitation")
+        response = auth_client.post(url, {"token": token}, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        body = response.json()
+        assert "error" in body, f"Response body missing 'error' key: {body}"
+        assert body["error"] == "User already belongs to an organization."
 
 
 @pytest.mark.django_db

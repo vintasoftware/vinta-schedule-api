@@ -121,8 +121,12 @@ class CalendarSerializer(VirtualModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        organization = user.organization_membership.organization
-        self.calendar_service.initialize_without_provider(organization)
+        membership = getattr(user, "organization_membership", None)
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
+        self.calendar_service.initialize_without_provider(membership.organization)
         return self.calendar_service.create_virtual_calendar(
             name=validated_data.get("name"),
             description=validated_data.get("description"),
@@ -202,8 +206,12 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        organization = user.organization_membership.organization
-        self.calendar_service.initialize_without_provider(organization)
+        membership = getattr(user, "organization_membership", None)
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
+        self.calendar_service.initialize_without_provider(membership.organization)
 
         return self.calendar_service.create_bundle_calendar(
             name=validated_data.get("name"),
@@ -408,15 +416,18 @@ class ResourceAllocationSerializer(VirtualModelSerializer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         user = getattr(self.context.get("request"), "user", None)
+        membership = (
+            getattr(user, "organization_membership", None)
+            if user and user.is_authenticated
+            else None
+        )
         # add calendar field dynamically to filter by organization_id
         self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                Calendar.objects.filter_by_organization(
-                    user.organization_membership.organization_id
-                ).filter(
+                Calendar.objects.filter_by_organization(membership.organization_id).filter(
                     calendar_type=CalendarType.RESOURCE,
                 )
-                if user and user.is_authenticated
+                if membership
                 else Calendar.original_manager.none()
             ),
         )
@@ -537,14 +548,17 @@ class RecurrenceExceptionSerializer(VirtualModelSerializer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        user = self.context.get("request").user
+        user = getattr(self.context.get("request"), "user", None)
+        membership = (
+            getattr(user, "organization_membership", None)
+            if user and user.is_authenticated
+            else None
+        )
         # add parent_event field dynamically to filter by organization_id
         self.fields["parent_event"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                CalendarEvent.objects.filter_by_organization(
-                    user.organization_membership.organization_id
-                ).all()
-                if user.is_authenticated
+                CalendarEvent.objects.filter_by_organization(membership.organization_id).all()
+                if membership
                 else CalendarEvent.original_manager.none()
             ),
             required=False,
@@ -552,10 +566,8 @@ class RecurrenceExceptionSerializer(VirtualModelSerializer):
         )
         self.fields["modified_event"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                CalendarEvent.objects.filter_by_organization(
-                    user.organization_membership.organization_id
-                ).all()
-                if user.is_authenticated
+                CalendarEvent.objects.filter_by_organization(membership.organization_id).all()
+                if membership
                 else CalendarEvent.original_manager.none()
             ),
             required=False,
@@ -1182,6 +1194,11 @@ class BlockedTimeSerializer(VirtualModelSerializer):
         user = (
             self.context["request"].user if self.context and self.context.get("request") else None
         )
+        membership = (
+            getattr(user, "organization_membership", None)
+            if user and user.is_authenticated
+            else None
+        )
 
         if self.instance:
             self.fields["recurrence_rule_id"] = serializers.PrimaryKeyRelatedField(
@@ -1189,10 +1206,8 @@ class BlockedTimeSerializer(VirtualModelSerializer):
                 many=False,
                 required=False,
                 queryset=(
-                    RecurrenceRule.objects.filter_by_organization(
-                        user.organization_membership.organization_id
-                    ).all()
-                    if user and user.is_authenticated and user.organization_membership
+                    RecurrenceRule.objects.filter_by_organization(membership.organization_id).all()
+                    if membership
                     else RecurrenceRule.original_manager.none()
                 ),
                 write_only=True,
@@ -1200,13 +1215,8 @@ class BlockedTimeSerializer(VirtualModelSerializer):
 
         self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                Calendar.objects.filter_by_organization(
-                    organization_id=user.organization_membership.organization_id
-                )
-                if user
-                and user.is_authenticated
-                and hasattr(user, "organization_membership")
-                and user.organization_membership
+                Calendar.objects.filter_by_organization(organization_id=membership.organization_id)
+                if membership
                 else Calendar.original_manager.none()
             ),
             allow_null=True,
@@ -1230,8 +1240,14 @@ class BlockedTimeSerializer(VirtualModelSerializer):
                 }
             )
 
+        membership = getattr(user, "organization_membership", None)
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
+
         calendar = validated_data.pop("calendar")
-        organization: Organization = user.organization_membership.organization
+        organization: Organization = membership.organization
         self.calendar_service.initialize_without_provider(user, organization)
 
         # Handle recurrence fields
@@ -1409,6 +1425,11 @@ class AvailableTimeSerializer(VirtualModelSerializer):
         user = (
             self.context["request"].user if self.context and self.context.get("request") else None
         )
+        membership = (
+            getattr(user, "organization_membership", None)
+            if user and user.is_authenticated
+            else None
+        )
 
         if self.instance:
             self.fields["recurrence_rule_id"] = serializers.PrimaryKeyRelatedField(
@@ -1416,10 +1437,8 @@ class AvailableTimeSerializer(VirtualModelSerializer):
                 many=False,
                 required=False,
                 queryset=(
-                    RecurrenceRule.objects.filter_by_organization(
-                        user.organization_membership.organization_id
-                    ).all()
-                    if user and user.is_authenticated and user.organization_membership
+                    RecurrenceRule.objects.filter_by_organization(membership.organization_id).all()
+                    if membership
                     else RecurrenceRule.original_manager.none()
                 ),
                 write_only=True,
@@ -1427,13 +1446,8 @@ class AvailableTimeSerializer(VirtualModelSerializer):
 
         self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                Calendar.objects.filter_by_organization(
-                    organization_id=user.organization_membership.organization_id
-                )
-                if user
-                and user.is_authenticated
-                and hasattr(user, "organization_membership")
-                and user.organization_membership
+                Calendar.objects.filter_by_organization(organization_id=membership.organization_id)
+                if membership
                 else Calendar.original_manager.none()
             ),
             allow_null=True,
@@ -1457,8 +1471,14 @@ class AvailableTimeSerializer(VirtualModelSerializer):
                 }
             )
 
+        membership = getattr(user, "organization_membership", None)
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
+
         calendar = validated_data.pop("calendar")
-        organization: Organization = user.organization_membership.organization
+        organization: Organization = membership.organization
         self.calendar_service.initialize_without_provider(user, organization)
 
         # Handle recurrence fields
@@ -1595,9 +1615,13 @@ class BulkBlockedTimeSerializer(serializers.Serializer):
             )
 
         user = self.context["request"].user
-        organization = user.organization_membership.organization
+        membership = getattr(user, "organization_membership", None)
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
 
-        self.calendar_service.initialize_without_provider(organization)
+        self.calendar_service.initialize_without_provider(membership.organization)
 
         # Convert to the format expected by bulk_create_manual_blocked_times
         blocked_times_tuples = [
@@ -1650,10 +1674,14 @@ class BulkAvailableTimeSerializer(serializers.Serializer):
             )
 
         user = self.context["request"].user
-        organization = user.organization_membership.organization
+        membership = getattr(user, "organization_membership", None)
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
         calendar = self.validated_data["available_times"][0]["calendar"]
 
-        self.calendar_service.initialize_without_provider(organization)
+        self.calendar_service.initialize_without_provider(membership.organization)
 
         # Convert to the format expected by bulk_create_availability_windows
         availability_tuples = [

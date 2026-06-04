@@ -74,14 +74,14 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         """Filter calendars by user's accessible calendar organizations."""
         user = self.request.user
         if not user.is_authenticated:
-            return Calendar.objects.none()
+            return Calendar.original_manager.none()
 
         try:
             organization_id = user.organization_membership.organization_id
             return super().get_queryset().filter_by_organization(organization_id)
         except OrganizationMembership.DoesNotExist:
             # If user has no calendar organization membership, return empty queryset
-            return Calendar.objects.none()
+            return Calendar.original_manager.none()
 
     @extend_schema(request=CalendarBundleCreateSerializer())
     @action(
@@ -282,13 +282,15 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
     def get_queryset(self):
         """
         Filter events by calendar organization of the authenticated user.
+
+        Returns an empty queryset for membership-less (gated) users rather than
+        raising Http404, so the response is a clean empty list / 404-on-object
+        rather than a 500.
         """
-        try:
-            organization_id = self.request.user.organization_membership.organization_id
-        except OrganizationMembership.DoesNotExist as e:
-            raise Http404("Calendar organization not found for the user.") from e
-        queryset = super().get_queryset().filter_by_organization(organization_id)
-        return queryset
+        membership = getattr(self.request.user, "organization_membership", None)
+        if not membership:
+            return CalendarEvent.original_manager.none()
+        return super().get_queryset().filter_by_organization(membership.organization_id)
 
     @extend_schema(
         summary="Delete calendar event",
@@ -436,11 +438,11 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
         """Filter blocked times by user's accessible calendar organizations."""
         user = self.request.user
         if not user.is_authenticated:
-            return BlockedTime.objects.none()
+            return BlockedTime.original_manager.none()
 
         membership = getattr(user, "organization_membership", None)
         if not membership:
-            return BlockedTime.objects.none()
+            return BlockedTime.original_manager.none()
 
         return BlockedTime.objects.filter_by_organization(membership.organization.id)
 
@@ -519,10 +521,14 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
                 {"non_field_errors": ["calendar_id, start_time, and end_time are required"]}
             )
 
+        membership = getattr(request.user, "organization_membership", None)
+        if not membership:
+            return Response([], status=status.HTTP_200_OK)
+
         try:
-            calendar = Calendar.objects.filter_by_organization(
-                request.user.organization_membership.organization.id
-            ).get(id=calendar_id)
+            calendar = Calendar.objects.filter_by_organization(membership.organization.id).get(
+                id=calendar_id
+            )
         except Calendar.DoesNotExist as e:
             raise Http404("Calendar not found") from e
 
@@ -532,9 +538,7 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
         except ValueError as e:
             raise ValidationError({"non_field_errors": ["Invalid datetime format"]}) from e
 
-        calendar_service.initialize_without_provider(
-            organization=request.user.organization_membership.organization
-        )
+        calendar_service.initialize_without_provider(organization=membership.organization)
 
         expanded_blocked_times = calendar_service.get_blocked_times_expanded(
             calendar=calendar,
@@ -658,11 +662,11 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
         """Filter available times by user's accessible calendar organizations."""
         user = self.request.user
         if not user.is_authenticated:
-            return AvailableTime.objects.none()
+            return AvailableTime.original_manager.none()
 
         membership = getattr(user, "organization_membership", None)
         if not membership:
-            return AvailableTime.objects.none()
+            return AvailableTime.original_manager.none()
 
         return AvailableTime.objects.filter_by_organization(membership.organization.id)
 
@@ -741,10 +745,14 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
                 {"non_field_errors": ["calendar_id, start_time, and end_time are required"]}
             )
 
+        membership = getattr(request.user, "organization_membership", None)
+        if not membership:
+            return Response([], status=status.HTTP_200_OK)
+
         try:
-            calendar = Calendar.objects.filter_by_organization(
-                request.user.organization_membership.organization.id
-            ).get(id=calendar_id)
+            calendar = Calendar.objects.filter_by_organization(membership.organization.id).get(
+                id=calendar_id
+            )
         except Calendar.DoesNotExist as e:
             raise Http404("Calendar not found") from e
 
@@ -754,9 +762,7 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
         except ValueError as e:
             raise ValidationError({"non_field_errors": ["Invalid datetime format"]}) from e
 
-        calendar_service.initialize_without_provider(
-            organization=request.user.organization_membership.organization
-        )
+        calendar_service.initialize_without_provider(organization=membership.organization)
 
         expanded_available_times = calendar_service.get_available_times_expanded(
             calendar=calendar,
@@ -879,11 +885,11 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if not user.is_authenticated:
-            return CalendarGroup.objects.none()
+            return CalendarGroup.original_manager.none()
         try:
             organization_id = user.organization_membership.organization_id
         except OrganizationMembership.DoesNotExist:
-            return CalendarGroup.objects.none()
+            return CalendarGroup.original_manager.none()
         return super().get_queryset().filter_by_organization(organization_id)
 
     @extend_schema(

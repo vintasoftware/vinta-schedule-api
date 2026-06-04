@@ -14,3 +14,8 @@ class InvalidInvitationTokenError(ValidationError):
 class InvitationNotFoundError(ValidationError):
     default_detail = "Invitation does not exist"
     default_code = "invitation_not_found"
+
+
+class UserAlreadyHasMembershipError(ValidationError):
+    default_detail = "User already belongs to an organization."
+    default_code = "user_already_has_membership"

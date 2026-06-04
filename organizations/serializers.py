@@ -4,7 +4,7 @@ from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
 from common.utils.serializer_utils import VirtualModelSerializer
-from organizations.models import Organization, OrganizationInvitation
+from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from organizations.services import OrganizationService
 from organizations.virtual_models import (
     OrganizationInvitationVirtualModel,
@@ -111,6 +111,25 @@ class OrganizationInvitationSerializer(VirtualModelSerializer):
         )
 
         return invitation
+
+
+class CurrentMembershipSerializer(serializers.ModelSerializer):
+    """Read-only serializer for the caller's current organization membership.
+
+    Returns the membership role and the nested organization so the frontend
+    can distinguish between an onboarded user and a gated (membership-less) user.
+    """
+
+    organization = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OrganizationMembership
+        fields = ("role", "organization")
+        read_only_fields = ("role", "organization")
+
+    def get_organization(self, obj: OrganizationMembership) -> dict:
+        """Serialize the related organization using OrganizationSerializer."""
+        return OrganizationSerializer(obj.organization, context=self.context).data  # type: ignore[call-arg]
 
 
 class AcceptInvitationSerializer(serializers.Serializer):

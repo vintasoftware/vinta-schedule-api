@@ -96,6 +96,21 @@ class OrganizationMembership(BaseModel):
     """
     Represents a membership of a user in a calendar organization.
     This is used to link users to their respective calendar organizations.
+
+    Hard-gate invariant:
+        Every authenticated user is in exactly one of two states:
+        1. **Has membership** — ``user.organization_membership`` resolves to an
+           ``OrganizationMembership`` instance and all tenant-scoped endpoints are
+           open to them.
+        2. **Gated (membership-less)** — ``user.organization_membership`` raises
+           ``RelatedObjectDoesNotExist``. Only the onboarding surfaces respond:
+           ``POST /organizations/`` (create own org) and ``POST /invitations/accept``
+           (join an invited org). All other tenant-scoped endpoints must return an
+           empty queryset or permission denial — never a 500.
+
+        Code that reads ``user.organization_membership`` must guard with
+        ``getattr(user, "organization_membership", None)`` (or equivalent) so that
+        membership-less users get a clean refusal rather than an unhandled exception.
     """
 
     user = models.OneToOneField(

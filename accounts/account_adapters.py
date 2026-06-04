@@ -7,6 +7,7 @@ from django.conf import settings
 from django.urls import reverse
 
 from allauth.account.adapter import DefaultAccountAdapter
+from allauth.account.models import EmailAddress
 from allauth.headless.adapter import DefaultHeadlessAdapter
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.socialaccount.models import SocialLogin
@@ -17,6 +18,8 @@ from vintasend.constants import NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 
+from organizations.exceptions import UserAlreadyHasMembershipError
+from organizations.services import OrganizationService
 from users.models import Profile, User
 
 
@@ -24,6 +27,16 @@ logger = logging.getLogger(__name__)
 
 
 class SocialAccountAdapter(DefaultSocialAccountAdapter):
+    @inject
+    def __init__(
+        self,
+        *args,
+        organization_service: Annotated[OrganizationService, Provide["organization_service"]],
+        **kwargs,
+    ):
+        self.organization_service = organization_service
+        super().__init__(*args, **kwargs)
+
     def get_connect_redirect_url(self, request, socialaccount):
         return reverse("index")
 
@@ -74,7 +87,56 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         )
         user.profile = profile
         self._enqueue_profile_picture_download(profile, sociallogin)
+        # Phase 6 — Auto-join invited org on social signup.
+        # At this point the user is persisted (has a pk) and the Profile
+        # invariant is satisfied.  Attempt to provision a tenant: if a
+        # pending invitation matches the social email the user becomes a MEMBER
+        # of the inviting org immediately, skipping the create-org prompt.
+        # When there is no matching invitation, provision_tenant_for_user
+        # returns None and the user stays membership-less (gated), preserving
+        # the Phase 5 uninvited-stays-gated behavior.
+        # UserAlreadyHasMembershipError is treated as a no-op so that a social
+        # re-login for a user who is already a member does not raise.
+        self._provision_org_membership(user)
         return user
+
+    def _provision_org_membership(self, user: User) -> None:
+        """Attempt to auto-join the user to an inviting organisation.
+
+        Uses the DI-injected OrganizationService (supplied via ``__init__``,
+        mirroring AccountAdapter) and calls provision_tenant_for_user with no
+        organisation_name — social signups never carry one.  No-ops silently on
+        UserAlreadyHasMembershipError (re-login or race).
+        """
+        if not user.email:
+            logger.warning(
+                "Social user %s has no email; skipping org provisioning.",
+                user.pk,
+            )
+            return
+
+        try:
+            membership = self.organization_service.provision_tenant_for_user(user=user)
+        except UserAlreadyHasMembershipError:
+            # Re-login or race: user already has a membership — no-op.
+            logger.debug(
+                "Social user %s already has a membership; skipping re-provisioning.",
+                user.pk,
+            )
+            return
+
+        if membership is not None:
+            logger.info(
+                "Social user %s auto-joined org %s as MEMBER (membership=%s).",
+                user.pk,
+                membership.organization_id,
+                membership.pk,
+            )
+        else:
+            logger.debug(
+                "No pending invite for social user %s; user remains membership-less (gated).",
+                user.pk,
+            )
 
     @staticmethod
     def _enqueue_profile_picture_download(profile: Profile, sociallogin) -> None:
@@ -155,9 +217,11 @@ class AccountAdapter(DefaultAccountAdapter):
         self,
         *args,
         notification_service: Annotated[NotificationService, Provide["notification_service"]],
+        organization_service: Annotated[OrganizationService, Provide["organization_service"]],
         **kwargs,
     ):
         self.notification_service = notification_service
+        self.organization_service = organization_service
         super().__init__(*args, **kwargs)
 
     def send_password_reset_mail(self, user, email, context):
@@ -216,6 +280,76 @@ class AccountAdapter(DefaultAccountAdapter):
             context_name="email_confirmation_context",
             context_kwargs=NotificationContextDict(ctx),
         )
+
+    def confirm_email(self, request, email_address: EmailAddress) -> bool:
+        """Override to provision a tenant the moment the user's email is verified.
+
+        Calls the default allauth confirm_email (which marks the address verified and
+        emits the email_confirmed signal) then, on success, delegates to the
+        DI-injected OrganizationService's provision_tenant_for_user. This provisions
+        the tenant imperatively in the adapter — at the moment the email is verified —
+        rather than via a decoupled email_confirmed signal handler, so the email/password
+        path's provisioning lives at an explicit, step-debuggable call site (mirroring the
+        intent of provisioning inside the adapters rather than through signals).
+
+        OrganizationService arrives via constructor injection (see ``__init__``),
+        matching how ``notification_service`` is supplied, instead of reaching into the
+        DI container global at the call site.
+
+        Idempotent: swallows UserAlreadyHasMembershipError so re-confirmation is a no-op.
+        """
+        confirmed = super().confirm_email(request, email_address)
+        if not confirmed:
+            return confirmed
+
+        user = email_address.user
+        try:
+            profile = user.profile
+        except Profile.DoesNotExist:
+            logger.warning(
+                "User %s has no profile at email confirmation time; "
+                "skipping provisioning and leaving user membership-less.",
+                user.pk,
+            )
+            return confirmed
+
+        organization_name = profile.pending_organization_name or None
+
+        try:
+            membership = self.organization_service.provision_tenant_for_user(
+                user=user,
+                organization_name=organization_name,
+            )
+        except UserAlreadyHasMembershipError:
+            # Idempotent: re-confirmation or race — user already has a membership.
+            logger.debug(
+                "User %s already has a membership; skipping re-provisioning.",
+                user.pk,
+            )
+            return confirmed
+
+        if membership is not None:
+            # Clear the stashed org name now that provisioning succeeded.
+            # Only write if there is actually something to clear (avoids a
+            # redundant "" -> "" save on the invite path where Phase 2 already
+            # left the field blank).
+            if profile.pending_organization_name:
+                profile.pending_organization_name = ""
+                profile.save(update_fields=["pending_organization_name"])
+            logger.info(
+                "Provisioned tenant for user %s (membership=%s, org=%s).",
+                user.pk,
+                membership.pk,
+                membership.organization_id,
+            )
+        else:
+            # No pending invite, no org name → user stays gated (onboarding later).
+            logger.debug(
+                "No pending invite and no org name for user %s; user remains membership-less (gated).",
+                user.pk,
+            )
+
+        return confirmed
 
     def send_mail(self, template_prefix, email, context):
         msg = super().render_mail(template_prefix, email, context)

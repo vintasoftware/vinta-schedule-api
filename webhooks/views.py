@@ -29,7 +29,7 @@ class WebhookConfigurationViewSet(VintaScheduleModelViewSet):
             return self.queryset.filter(
                 organization=user.organization_membership.organization, deleted_at__isnull=True
             )
-        return self.queryset.none()
+        return WebhookConfiguration.original_manager.none()
 
     @inject
     def perform_destroy(
@@ -72,7 +72,7 @@ class WebhookEventViewSet(ReadOnlyVintaScheduleModelViewSet):
                 .select_related("configuration", "main_event")
                 .order_by("-created")
             )
-        return self.queryset.none()
+        return WebhookEvent.original_manager.none()
 
     @extend_schema(
         description="Retry a failed webhook event",
