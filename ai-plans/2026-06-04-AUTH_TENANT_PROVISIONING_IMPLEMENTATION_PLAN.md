@@ -252,6 +252,30 @@ Tests:
 
 Acceptance: every tenant-scoped endpoint refuses a membership-less user; only onboarding endpoints respond; `grep` audit shows no unguarded membership access remains.
 
+### Phase 9 — Current-membership read endpoint (gated-state signal)
+
+> **Added 2026-06-04**: Phases 1–8 *enforce* the gate but ship no way for the frontend to *read* it. There is no endpoint returning the caller's organization/role (`OrganizationViewSet` is NoList; `/profile/me/` has no membership; the allauth session `User` has none). Without it the frontend can't distinguish "authenticated + no membership" (gated) from "onboarded", which the onboarding routing depends on. This phase adds the read signal.
+
+**Goal**: an authenticated user (gated or onboarded) can read their current organization + role in one call, and a gated user gets an unambiguous "no tenant" signal.
+
+**Feature flag**: none — additive new surface.
+
+Changes:
+1. @organizations/views.py: add a `current` action to `OrganizationViewSet` (`@action(detail=False, methods=["get"], url_path="current")`) with **`permission_classes=[IsAuthenticated]` only** — it must be reachable by a membership-less user AND by a member (so NOT behind `OrganizationManagementPermission`, which blocks members from the default actions). Returns the caller's organization + their role when `user.organization_membership` exists; returns **HTTP 404** when the user has no membership (the gated signal). Guard membership access with `getattr(user, "organization_membership", None)`.
+2. @organizations/serializers.py: a small read serializer (e.g. `CurrentMembershipSerializer`) exposing `{ role, organization: { id, name, ... } }` (reuse `OrganizationSerializer` for the nested org). Read-only.
+3. @organizations/routes.py / drf-spectacular: regenerate `schema.yml` so the new path is documented; add an `extend_schema` with a clear summary and the 200/404 responses.
+
+Spec use-case: enables the frontend side of Use-cases 1–4 + the hard gate (read counterpart to Phase 8's enforcement).
+
+Tests:
+- **Integration**: @organizations/tests/test_views.py — onboarded ADMIN → 200 with `{role: "admin", organization: {...}}`; onboarded MEMBER → 200 with `role: "member"`; **gated (membership-less) user → 404** (the signal), not 500; unauthenticated → 401. Assert a member is NOT blocked (regression against `OrganizationManagementPermission`).
+
+**Suggested AI model**: Tier 2 — `claude-haiku-4-5` / `gpt-5-mini` / `gemini-2.5-flash`. Single read action + serializer + schema regen against existing precedent.
+
+**Reusable skills**: `create-rest-endpoint` (viewset action + serializer + route + `schema.yml` regen).
+
+Acceptance: `GET /organizations/current/` returns the caller's org + role for members (200) and 404 for membership-less users; reachable by both; `schema.yml` documents it.
+
 ## 6. Risk & Rollout Notes
 
 - **No feature flag.** Each phase is independently mergeable and leaves the system working: Phases 1–2 are inert scaffolding; Phases 3–7 each light up one use-case; Phase 8 tightens the gate. If a phase regresses, revert that phase alone.
@@ -306,6 +330,13 @@ Acceptance: every tenant-scoped endpoint refuses a membership-less user; only on
 - [organizations/models.py](../organizations/models.py) — document the invariant near `OrganizationMembership`.
 - Per-surface integration tests asserting membership-less refusal.
 
+**Phase 9 — current-membership read endpoint** *(added 2026-06-04)*
+- [organizations/views.py](../organizations/views.py) — `current` action on `OrganizationViewSet` (`IsAuthenticated` only; 200 org+role / 404 gated).
+- [organizations/serializers.py](../organizations/serializers.py) — `CurrentMembershipSerializer` (role + nested org).
+- @schema.yml — regenerate to document `GET /organizations/current/`.
+- [organizations/tests/test_views.py](../organizations/tests/test_views.py) — admin/member 200, gated 404, member-not-blocked.
+
 ## Amendments
 
 - **2026-06-04** — Reworked the email-confirmation provisioning mechanism from an `email_confirmed` **signal handler** to an imperative **`AccountAdapter.confirm_email` override** (Option A), for step-debuggability and symmetry with the social adapter's `save_user`. Per-adapter provisioning methods (no shared helper). Affected phases: 3 (production rewrite — delete `accounts/signals.py` + `ready()` wiring, add the adapter override), 4 (test-only — helper drives `confirm_email`). Branches force-pushed: `plan/auth-tenant-provisioning/phase-3`, `phase-4`, and rebase-only `phase-5`, `phase-6`, `phase-7`, `phase-8`.
+- **2026-06-04** — Appended **Phase 9 — current-membership read endpoint** (`GET /organizations/current/`). Phases 1–8 enforced the hard gate but shipped no way for the frontend to *read* the gated state (no endpoint exposes the caller's org/role). Append-only — no rewrite of existing phases; stacked on `phase-8`.
