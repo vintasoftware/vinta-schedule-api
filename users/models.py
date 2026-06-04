@@ -68,6 +68,16 @@ class Profile(BaseModel):
     first_name = models.CharField(max_length=255, blank=True)
     last_name = models.CharField(max_length=255, blank=True)
     profile_picture = S3DirectImageField(dest="profile_pictures", blank=True, null=True)
+    pending_organization_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=(
+            "Intended organization name captured at email/password signup. "
+            "Consumed and cleared when the org is created on email confirmation. "
+            "Blank for invited signups (they auto-join, no org name needed)."
+        ),
+    )
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"

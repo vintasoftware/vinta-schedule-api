@@ -160,7 +160,9 @@ class OrganizationService:
             raise UserAlreadyHasMembershipError()
 
         now = datetime.datetime.now(tz=datetime.UTC)
-        invitations = OrganizationInvitation.objects.filter(email=user.email, expires_at__gt=now)
+        invitations = OrganizationInvitation.objects.filter(
+            email__iexact=user.email, expires_at__gt=now
+        )
         for invitation in invitations:
             if verify_long_lived_token(token, invitation.token_hash):
                 try:
@@ -211,7 +213,7 @@ class OrganizationService:
 
         now = datetime.datetime.now(tz=datetime.UTC)
         pending_invitation = OrganizationInvitation.objects.filter(
-            email=user.email,
+            email__iexact=user.email,
             expires_at__gt=now,
             accepted_at__isnull=True,
             membership__isnull=True,

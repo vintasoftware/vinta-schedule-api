@@ -719,6 +719,35 @@ class TestOrganizationService:
             with pytest.raises(UserAlreadyHasMembershipError):
                 organization_service.provision_tenant_for_user(user, organization_name="Race Org")
 
+    def test_provision_tenant_for_user_case_insensitive_email_match(
+        self, organization_service, organization
+    ):
+        """Regression: invitation email with different-case local part matches user.email via iexact.
+
+        User.email domain is normalized (lowercased) on save, but the local part is not.
+        An invitation stored as 'Recruit@example.com' must match a user whose email is
+        'recruit@example.com' — the filter must use email__iexact, not email=.
+        """
+        inviter = baker.make(User, email="inviter_case@example.com")
+        # Invitation stored with mixed-case local part.
+        invitee = baker.make(User, email="recruit@example.com")
+        invitation = self._make_invitation(
+            email="Recruit@example.com",
+            organization=organization,
+            invited_by=inviter,
+        )
+
+        membership = organization_service.provision_tenant_for_user(invitee)
+
+        assert membership is not None
+        assert membership.user == invitee
+        assert membership.organization == organization
+        assert membership.role == OrganizationRole.MEMBER
+
+        invitation.refresh_from_db()
+        assert invitation.accepted_at is not None
+        assert invitation.membership == membership
+
     def test_accept_invitation_integrity_error_backstop(self, organization_service, organization):
         """Backstop: IntegrityError from create() in accept_invitation → UserAlreadyHasMembershipError.
 
