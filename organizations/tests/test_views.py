@@ -769,9 +769,12 @@ class TestAcceptInvitationView:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
     def test_accept_invitation_already_accepted(self, auth_client, user, organization):
-        """Test accepting an invitation for a user who is already a member."""
-        from django.db.utils import IntegrityError
+        """Test accepting an invitation for a user who is already a member.
 
+        Since accept_invitation now raises UserAlreadyHasMembershipError (a DRF
+        ValidationError) before touching the DB, the view returns a 400 response
+        with a typed error rather than an unhandled IntegrityError.
+        """
         # Create a membership for the user in the organization
         OrganizationTestFactory.create_organization_membership(user, organization)
 
@@ -790,10 +793,10 @@ class TestAcceptInvitationView:
             "token": token,
         }
 
-        # This should fail with an IntegrityError because the user already has a membership
-        # In Django tests, unhandled exceptions are re-raised instead of becoming HTTP 500s
-        with pytest.raises(IntegrityError, match="duplicate key value violates unique constraint"):
-            auth_client.post(url, data, format="json")
+        response = auth_client.post(url, data, format="json")
+
+        # The hardened service returns a typed 400 error instead of an unhandled IntegrityError.
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
 
 
 @pytest.mark.django_db

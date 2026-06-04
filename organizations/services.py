@@ -1,12 +1,11 @@
 import datetime
 from typing import Annotated
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.urls import reverse
 
 from allauth.utils import build_absolute_uri
 from dependency_injector.wiring import Provide, inject
-from psycopg import IntegrityError
 from vintasend.services.notification_service import (
     NotificationContextDict,
     NotificationService,
@@ -23,6 +22,7 @@ from organizations.exceptions import (
     DuplicateInvitationError,
     InvalidInvitationTokenError,
     InvitationNotFoundError,
+    UserAlreadyHasMembershipError,
 )
 from organizations.models import (
     Organization,
@@ -147,23 +147,98 @@ class OrganizationService:
     def accept_invitation(self, token: str, user: User) -> OrganizationMembership:
         """
         Accept an invitation to join an organization.
+
+        Raises UserAlreadyHasMembershipError if the user is already a member of any
+        organization before the membership create is attempted, preventing an IntegrityError
+        from the OneToOne constraint on OrganizationMembership.user.
+
         :param token: Invitation token.
         :param user: User who is accepting the invitation.
         :return: Created OrganizationMembership instance.
         """
+        if hasattr(user, "organization_membership"):
+            raise UserAlreadyHasMembershipError()
+
         now = datetime.datetime.now(tz=datetime.UTC)
         invitations = OrganizationInvitation.objects.filter(email=user.email, expires_at__gt=now)
         for invitation in invitations:
             if verify_long_lived_token(token, invitation.token_hash):
-                membership = OrganizationMembership.objects.create(
-                    user=user, organization=invitation.organization
-                )
+                try:
+                    with transaction.atomic():
+                        membership = OrganizationMembership.objects.create(
+                            user=user, organization=invitation.organization
+                        )
+                except IntegrityError as e:
+                    raise UserAlreadyHasMembershipError() from e
                 invitation.accepted_at = now
                 invitation.membership = membership
                 invitation.save()
                 return membership
 
         raise InvalidInvitationTokenError()
+
+    @transaction.atomic()
+    def provision_tenant_for_user(
+        self, user: User, organization_name: str | None = None
+    ) -> OrganizationMembership | None:
+        """
+        Provision a tenant for a user who does not yet have a membership.
+
+        This is the single guarded entry point for turning a membership-less user into a
+        member. It is called by every signup path (email confirmation, social adapter,
+        explicit invite accept) so the provisioning decision is centralised and can never
+        silently create a second membership.
+
+        Logic (in order):
+        1. If the user already has a membership → raise UserAlreadyHasMembershipError.
+        2. Else if a non-expired, unaccepted OrganizationInvitation exists for user.email
+           → create a MEMBER membership in the inviting org and mark the invitation
+           accepted.
+        3. Else if organization_name is truthy → delegate to create_organization (user
+           becomes ADMIN of a new org).
+        4. Else → return None (caller decides — gated onboarding).
+
+        :param user: The user to provision a tenant for.
+        :param organization_name: Optional name of the new organization to create when no
+            pending invitation is found.
+        :return: The created OrganizationMembership on the join/create branches; None on
+            the no-op branch.
+        :raises UserAlreadyHasMembershipError: When the user already belongs to an
+            organization.
+        """
+        if hasattr(user, "organization_membership"):
+            raise UserAlreadyHasMembershipError()
+
+        now = datetime.datetime.now(tz=datetime.UTC)
+        pending_invitation = OrganizationInvitation.objects.filter(
+            email=user.email,
+            expires_at__gt=now,
+            accepted_at__isnull=True,
+            membership__isnull=True,
+        ).first()
+
+        if pending_invitation is not None:
+            try:
+                membership = OrganizationMembership.objects.create(
+                    user=user,
+                    organization=pending_invitation.organization,
+                    role=OrganizationRole.MEMBER,
+                )
+            except IntegrityError as e:
+                raise UserAlreadyHasMembershipError() from e
+            pending_invitation.accepted_at = now
+            pending_invitation.membership = membership
+            pending_invitation.save()
+            return membership
+
+        if organization_name:
+            try:
+                organization = self.create_organization(creator=user, name=organization_name)
+            except IntegrityError as e:
+                raise UserAlreadyHasMembershipError() from e
+            return organization.memberships.get(user=user)
+
+        return None
 
     def revoke_invitation(self, invitation_id: str) -> None:
         """

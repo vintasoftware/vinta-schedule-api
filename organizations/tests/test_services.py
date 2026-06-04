@@ -6,8 +6,17 @@ from django.db.utils import IntegrityError
 import pytest
 from model_bakery import baker
 
-from organizations.exceptions import InvalidInvitationTokenError, InvitationNotFoundError
-from organizations.models import Organization
+from organizations.exceptions import (
+    InvalidInvitationTokenError,
+    InvitationNotFoundError,
+    UserAlreadyHasMembershipError,
+)
+from organizations.models import (
+    Organization,
+    OrganizationInvitation,
+    OrganizationMembership,
+    OrganizationRole,
+)
 from organizations.services import OrganizationService
 from users.models import User
 
@@ -468,12 +477,15 @@ class TestOrganizationService:
             organization_service.revoke_invitation(invitation_id=fake_id)
 
     def test_accept_invitation_already_accepted(self, organization_service, organization):
-        """Test accepting an invitation that was already accepted."""
+        """Test accepting an invitation for a user who already has a membership.
+
+        The hardened accept_invitation raises UserAlreadyHasMembershipError before
+        attempting the DB create, so we get a typed error instead of a raw IntegrityError.
+        """
         from common.utils.authentication_utils import (
             generate_long_lived_token,
             hash_long_lived_token,
         )
-        from organizations.models import OrganizationInvitation, OrganizationMembership
 
         # Create a unique user for this test to avoid membership conflicts
         test_user = baker.make(User, email="unique_accepted@example.com")
@@ -492,7 +504,251 @@ class TestOrganizationService:
             membership=membership,
         )
 
-        # Try to accept again - should fail with IntegrityError due to unique constraint
-        # The service should handle this case better, but currently it doesn't
-        with pytest.raises(IntegrityError):
+        # The hardened path now raises UserAlreadyHasMembershipError, not IntegrityError.
+        with pytest.raises(UserAlreadyHasMembershipError):
             organization_service.accept_invitation(token=token, user=test_user)
+
+    # -----------------------------------------------------------------------
+    # Tests for provision_tenant_for_user
+    # -----------------------------------------------------------------------
+
+    def _make_invitation(
+        self,
+        *,
+        email: str,
+        organization: Organization,
+        invited_by: User,
+        expired: bool = False,
+        accepted: bool = False,
+    ) -> OrganizationInvitation:
+        """Helper: create an OrganizationInvitation for the given parameters."""
+        now = datetime.datetime.now(tz=datetime.UTC)
+        expires_at = (
+            now - datetime.timedelta(hours=1) if expired else now + datetime.timedelta(days=7)
+        )
+        membership = (
+            baker.make(OrganizationMembership, organization=organization) if accepted else None
+        )
+        return baker.make(
+            OrganizationInvitation,
+            email=email,
+            organization=organization,
+            invited_by=invited_by,
+            expires_at=expires_at,
+            accepted_at=now if accepted else None,
+            membership=membership,
+        )
+
+    def test_provision_tenant_for_user_with_pending_invite(
+        self, organization_service, organization
+    ):
+        """Branch (a): pending invite → MEMBER membership in inviting org, invitation marked accepted."""
+        inviter = baker.make(User, email="inviter@example.com")
+        invitee = baker.make(User, email="invitee@example.com")
+        invitation = self._make_invitation(
+            email=invitee.email, organization=organization, invited_by=inviter
+        )
+
+        membership = organization_service.provision_tenant_for_user(invitee)
+
+        assert membership is not None
+        assert membership.user == invitee
+        assert membership.organization == organization
+        assert membership.role == OrganizationRole.MEMBER
+
+        # Invitation must be marked accepted and linked.
+        invitation.refresh_from_db()
+        assert invitation.accepted_at is not None
+        assert invitation.membership == membership
+
+        # No new org should have been created.
+        assert Organization.objects.count() == 1
+
+    def test_provision_tenant_for_user_name_only_no_invite(self, organization_service):
+        """Branch (b): no invite, name supplied → new org created with user as ADMIN."""
+        user = baker.make(User, email="creator@example.com")
+
+        membership = organization_service.provision_tenant_for_user(
+            user, organization_name="My Org"
+        )
+
+        assert membership is not None
+        assert membership.user == user
+        assert membership.role == OrganizationRole.ADMIN
+        assert membership.organization.name == "My Org"
+
+    def test_provision_tenant_for_user_already_has_membership(
+        self, organization_service, organization
+    ):
+        """Branch (c): user already has a membership → raises UserAlreadyHasMembershipError."""
+        user = baker.make(User, email="member@example.com")
+        baker.make(OrganizationMembership, user=user, organization=organization)
+
+        # Reload user from DB so the related manager cache is warm.
+        user.refresh_from_db()
+
+        with pytest.raises(UserAlreadyHasMembershipError):
+            organization_service.provision_tenant_for_user(user)
+
+    def test_provision_tenant_for_user_no_invite_no_name_returns_none(self, organization_service):
+        """Branch (d): no invite, no name → returns None, no membership created."""
+        user = baker.make(User, email="nobody@example.com")
+
+        result = organization_service.provision_tenant_for_user(user)
+
+        assert result is None
+        assert not OrganizationMembership.objects.filter(user=user).exists()
+
+    def test_provision_tenant_for_user_expired_invite_ignored(
+        self, organization_service, organization
+    ):
+        """Branch (e): expired invitation is ignored; falls through to name/None branch."""
+        inviter = baker.make(User, email="inviter2@example.com")
+        invitee = baker.make(User, email="invitee2@example.com")
+        self._make_invitation(
+            email=invitee.email, organization=organization, invited_by=inviter, expired=True
+        )
+
+        # No name → should return None (not join via the expired invite).
+        result = organization_service.provision_tenant_for_user(invitee)
+        assert result is None
+        assert not OrganizationMembership.objects.filter(user=invitee).exists()
+
+    def test_accept_invitation_raises_for_user_with_existing_membership(
+        self, organization_service, organization
+    ):
+        """accept_invitation raises UserAlreadyHasMembershipError when user already has a membership."""
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+
+        user = baker.make(User, email="already_member@example.com")
+        baker.make(OrganizationMembership, user=user, organization=organization)
+        user.refresh_from_db()
+
+        # Create a valid (non-expired) invitation for the same user.
+        token = generate_long_lived_token()
+        token_hash = hash_long_lived_token(token)
+        other_org = baker.make(Organization, name="Other Org")
+        baker.make(
+            OrganizationInvitation,
+            email=user.email,
+            organization=other_org,
+            token_hash=token_hash,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+        )
+
+        with pytest.raises(UserAlreadyHasMembershipError):
+            organization_service.accept_invitation(token=token, user=user)
+
+    def test_provision_tenant_for_user_already_member_guard(
+        self, organization_service, organization
+    ):
+        """Integration: the hasattr guard fires on the second sequential call.
+
+        Two sequential calls on the same user verify that the upfront hasattr check
+        raises UserAlreadyHasMembershipError before any DB write on the second attempt.
+        This exercises the guard path but NOT the except-IntegrityError backstop — see
+        the dedicated backstop tests below.
+        """
+        user = baker.make(User, email="concurrent@example.com")
+
+        first_membership = organization_service.provision_tenant_for_user(
+            user, organization_name="Concurrent Org"
+        )
+        assert first_membership is not None
+
+        # Reload user so the related-manager attribute is fresh.
+        user.refresh_from_db()
+
+        with pytest.raises(UserAlreadyHasMembershipError):
+            organization_service.provision_tenant_for_user(user, organization_name="Second Org")
+
+        # Exactly one membership in the DB.
+        assert OrganizationMembership.objects.filter(user=user).count() == 1
+
+    # -----------------------------------------------------------------------
+    # Backstop tests: IntegrityError → UserAlreadyHasMembershipError
+    # These tests genuinely exercise the except IntegrityError path by mocking
+    # OrganizationMembership.objects.create to raise django.db.IntegrityError.
+    # They would FAIL if the import were psycopg.IntegrityError instead of the
+    # Django one, proving that the correct class is caught.
+    # -----------------------------------------------------------------------
+
+    def test_provision_tenant_for_user_invite_branch_integrity_error_backstop(
+        self, organization_service, organization
+    ):
+        """Backstop: IntegrityError from create() on the invite branch → UserAlreadyHasMembershipError.
+
+        Simulates a race-condition duplicate-key error that bypasses the upfront hasattr guard
+        (e.g. concurrent requests both passed the guard before either committed).
+        """
+        from django.db import IntegrityError as DjangoIntegrityError
+
+        inviter = baker.make(User, email="inviter_backstop@example.com")
+        invitee = baker.make(User, email="invitee_backstop@example.com")
+        self._make_invitation(email=invitee.email, organization=organization, invited_by=inviter)
+
+        with patch.object(
+            OrganizationMembership.objects,
+            "create",
+            side_effect=DjangoIntegrityError("duplicate key"),
+        ):
+            with pytest.raises(UserAlreadyHasMembershipError):
+                organization_service.provision_tenant_for_user(invitee)
+
+    def test_provision_tenant_for_user_name_branch_integrity_error_backstop(
+        self, organization_service
+    ):
+        """Backstop: IntegrityError from create() on the name-only branch → UserAlreadyHasMembershipError.
+
+        Simulates a race where create_organization raises IntegrityError (duplicate membership).
+        """
+        from django.db import IntegrityError as DjangoIntegrityError
+
+        user = baker.make(User, email="race_org_creator@example.com")
+
+        with patch.object(
+            OrganizationMembership.objects,
+            "create",
+            side_effect=DjangoIntegrityError("duplicate key"),
+        ):
+            with pytest.raises(UserAlreadyHasMembershipError):
+                organization_service.provision_tenant_for_user(user, organization_name="Race Org")
+
+    def test_accept_invitation_integrity_error_backstop(self, organization_service, organization):
+        """Backstop: IntegrityError from create() in accept_invitation → UserAlreadyHasMembershipError.
+
+        Simulates a race where the user gets a membership between the hasattr check and the
+        DB create call. Under ATOMIC_REQUESTS the savepoint protects the outer transaction.
+        """
+        from django.db import IntegrityError as DjangoIntegrityError
+
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+
+        user = baker.make(User, email="accept_race@example.com")
+        token = generate_long_lived_token()
+        token_hash = hash_long_lived_token(token)
+        baker.make(
+            OrganizationInvitation,
+            email=user.email,
+            organization=organization,
+            token_hash=token_hash,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+        )
+
+        with patch.object(
+            OrganizationMembership.objects,
+            "create",
+            side_effect=DjangoIntegrityError("duplicate key"),
+        ):
+            with pytest.raises(UserAlreadyHasMembershipError):
+                organization_service.accept_invitation(token=token, user=user)
