@@ -31,11 +31,21 @@
 - **Review**: 1 should-fix → fixed. Case-sensitivity: invitation emails are un-normalized vs normalized `User.email`. Switched ALL THREE invite-match sites (`_has_pending_invitation`, `provision_tenant_for_user`, `accept_invitation`) to `email__iexact` so capture-time and provision-time matching stay consistent (asymmetric matching would orphan a user). Added case-insensitivity regression tests. Gate: 1180 passed.
 - **Cross-phase note**: this phase modified Phase 1 code (`organizations/services.py` match filters) — intentional, for invite-match consistency.
 
+### Phase 3 — Create own org on email verification (no invite) ✅
+- **Status**: PR open
+- **Model**: claude-sonnet-4-6 (plan tier: Tier 3)
+- **Branch**: `plan/auth-tenant-provisioning/phase-3` (base `plan/auth-tenant-provisioning/phase-2`)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/34
+- **E2E**: n/a
+- **Summary**: `accounts/signals.py` `email_confirmed` handler → DI-resolve `OrganizationService` → `provision_tenant_for_user(user, organization_name=profile.pending_organization_name)`; clears the name on success, swallows `UserAlreadyHasMembershipError` (idempotent). Wired via `AccountsConfig.ready()` with `dispatch_uid`.
+- **Open Question 1 RESOLVED**: `email_confirmed` DOES fire for code-based headless verification (verified in allauth 65.18.0 source — flow funnels through `verify_email()`). Signal handler chosen over adapter override.
+- **Review**: no blockers; 1 should-fix (re-confirmation test now drives the real `verify_email` path) + 2 nits fixed. Gate: 1185 passed.
+- **Note for Phase 4**: the handler already covers the invited (MEMBER) branch via invite-first service; Phase 4 adds targeted UC2 tests.
+
 ## Current Phase
-- Phase 3 — Create own org on email verification, no invite (next) — UC1
+- Phase 4 — Auto-join invited org on email verification (next) — UC2
 
 ## Remaining Phases
-- Phase 3 — Create own org on email verification, no invite (Tier 3) — UC1
 - Phase 4 — Auto-join invited org on email verification (Tier 2) — UC2
 - Phase 5 — Gated onboarding for uninvited social signup (Tier 2) — UC3
 - Phase 6 — Auto-join invited org on social signup (Tier 3) — UC4
