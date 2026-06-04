@@ -77,7 +77,67 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         )
         user.profile = profile
         self._enqueue_profile_picture_download(profile, sociallogin)
+        # Phase 6 — Auto-join invited org on social signup.
+        # At this point the user is persisted (has a pk) and the Profile
+        # invariant is satisfied.  Attempt to provision a tenant: if a
+        # pending invitation matches the social email the user becomes a MEMBER
+        # of the inviting org immediately, skipping the create-org prompt.
+        # When there is no matching invitation, provision_tenant_for_user
+        # returns None and the user stays membership-less (gated), preserving
+        # the Phase 5 uninvited-stays-gated behavior.
+        # UserAlreadyHasMembershipError is treated as a no-op so that a social
+        # re-login for a user who is already a member does not raise.
+        self._provision_org_membership(user)
         return user
+
+    @staticmethod
+    def _provision_org_membership(user: User) -> None:
+        """Attempt to auto-join the user to an inviting organisation.
+
+        Resolves OrganizationService from the DI container (same pattern as
+        accounts/signals.py) and calls provision_tenant_for_user with no
+        organisation_name — social signups never carry one.  No-ops silently on
+        UserAlreadyHasMembershipError (re-login or race).
+        """
+        if not user.email:
+            logger.warning(
+                "Social user %s has no email; skipping org provisioning.",
+                user.pk,
+            )
+            return
+
+        from di_core.containers import container as di_container
+
+        if di_container is None:
+            logger.error(
+                "DI container is not initialised; cannot provision tenant for social user %s.",
+                user.pk,
+            )
+            return
+
+        organization_service = di_container.organization_service()
+        try:
+            membership = organization_service.provision_tenant_for_user(user=user)
+        except UserAlreadyHasMembershipError:
+            # Re-login or race: user already has a membership — no-op.
+            logger.debug(
+                "Social user %s already has a membership; skipping re-provisioning.",
+                user.pk,
+            )
+            return
+
+        if membership is not None:
+            logger.info(
+                "Social user %s auto-joined org %s as MEMBER (membership=%s).",
+                user.pk,
+                membership.organization_id,
+                membership.pk,
+            )
+        else:
+            logger.debug(
+                "No pending invite for social user %s; user remains membership-less (gated).",
+                user.pk,
+            )
 
     @staticmethod
     def _enqueue_profile_picture_download(profile: Profile, sociallogin) -> None:

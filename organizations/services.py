@@ -221,11 +221,12 @@ class OrganizationService:
 
         if pending_invitation is not None:
             try:
-                membership = OrganizationMembership.objects.create(
-                    user=user,
-                    organization=pending_invitation.organization,
-                    role=OrganizationRole.MEMBER,
-                )
+                with transaction.atomic():
+                    membership = OrganizationMembership.objects.create(
+                        user=user,
+                        organization=pending_invitation.organization,
+                        role=OrganizationRole.MEMBER,
+                    )
             except IntegrityError as e:
                 raise UserAlreadyHasMembershipError() from e
             pending_invitation.accepted_at = now
@@ -235,7 +236,8 @@ class OrganizationService:
 
         if organization_name:
             try:
-                organization = self.create_organization(creator=user, name=organization_name)
+                with transaction.atomic():
+                    organization = self.create_organization(creator=user, name=organization_name)
             except IntegrityError as e:
                 raise UserAlreadyHasMembershipError() from e
             return organization.memberships.get(user=user)

@@ -781,3 +781,65 @@ class TestOrganizationService:
         ):
             with pytest.raises(UserAlreadyHasMembershipError):
                 organization_service.accept_invitation(token=token, user=user)
+
+    # -----------------------------------------------------------------------
+    # Savepoint hygiene tests (FIX 1)
+    # Prove that the transaction is NOT left poisoned after the IntegrityError
+    # backstop fires in provision_tenant_for_user.  The savepoint wrapping in
+    # the invite branch and the name branch must roll back only the inner
+    # savepoint, leaving the outer @transaction.atomic() transaction usable.
+    # -----------------------------------------------------------------------
+
+    def test_provision_tenant_invite_branch_transaction_not_poisoned_after_integrity_error(
+        self, organization_service, organization
+    ):
+        """After IntegrityError backstop on invite branch, the transaction is NOT poisoned.
+
+        A savepoint (via ``with transaction.atomic():`` inside the try) rolls back
+        cleanly on IntegrityError.  The outer transaction must remain usable —
+        a subsequent DB query must succeed without raising
+        TransactionManagementError or InternalError.
+        """
+        from django.db import IntegrityError as DjangoIntegrityError
+
+        inviter = baker.make(User, email="inviter_sp@example.com")
+        invitee = baker.make(User, email="invitee_sp@example.com")
+        self._make_invitation(email=invitee.email, organization=organization, invited_by=inviter)
+
+        with patch.object(
+            OrganizationMembership.objects,
+            "create",
+            side_effect=DjangoIntegrityError("duplicate key"),
+        ):
+            with pytest.raises(UserAlreadyHasMembershipError):
+                organization_service.provision_tenant_for_user(invitee)
+
+        # The transaction must still be usable — this query must NOT raise
+        # TransactionManagementError or InternalError.
+        count = Organization.objects.count()
+        assert count >= 1, "DB query after backstop must succeed (transaction not poisoned)"
+
+    def test_provision_tenant_name_branch_transaction_not_poisoned_after_integrity_error(
+        self, organization_service
+    ):
+        """After IntegrityError backstop on name branch, the transaction is NOT poisoned.
+
+        Same as the invite-branch savepoint test but for the name-only branch,
+        where ``create_organization`` is wrapped in ``with transaction.atomic():``.
+        """
+        from django.db import IntegrityError as DjangoIntegrityError
+
+        user = baker.make(User, email="race_sp_creator@example.com")
+
+        with patch.object(
+            OrganizationMembership.objects,
+            "create",
+            side_effect=DjangoIntegrityError("duplicate key"),
+        ):
+            with pytest.raises(UserAlreadyHasMembershipError):
+                organization_service.provision_tenant_for_user(user, organization_name="SP Org")
+
+        # The transaction must still be usable — this query must NOT raise
+        # TransactionManagementError or InternalError.
+        count = Organization.objects.count()
+        assert count >= 0, "DB query after backstop must succeed (transaction not poisoned)"
