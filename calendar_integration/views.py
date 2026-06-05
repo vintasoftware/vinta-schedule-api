@@ -78,7 +78,11 @@ class CalendarViewSet(VintaScheduleModelViewSet):
     serializer_class = CalendarSerializer
 
     def get_queryset(self):
-        """Filter calendars by user's accessible calendar organizations."""
+        """Filter calendars by user's accessible calendar organizations.
+
+        By default only active calendars (is_active=True) are returned.  Pass
+        ?include_inactive=true to also see disabled calendars.
+        """
         user = self.request.user
         if not user.is_authenticated:
             return Calendar.original_manager.none()
@@ -87,7 +91,31 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         if not membership:
             # Membership-less or inactive members get an empty queryset, not a 500.
             return Calendar.original_manager.none()
-        return super().get_queryset().filter_by_organization(membership.organization_id)
+
+        qs = super().get_queryset().filter_by_organization(membership.organization_id)
+
+        include_inactive = self.request.query_params.get("include_inactive", "").lower() == "true"
+        if not include_inactive:
+            qs = qs.filter(is_active=True)
+
+        return qs
+
+    @extend_schema(
+        summary="Soft-disable a calendar",
+        description=(
+            "Disables a calendar by setting is_active=False instead of deleting the row. "
+            "Idempotent: disabling an already-inactive calendar is a no-op. "
+            "The row persists and is hidden from default list/detail queries. "
+            "Phase 11 will extend this with bundle-cascade logic."
+        ),
+        responses={204: None},
+    )
+    def destroy(self, request, *args, **kwargs):
+        """Soft-disable the calendar (set is_active=False) instead of hard-deleting."""
+        calendar = self.get_object()
+        calendar.is_active = False
+        calendar.save(update_fields=["is_active"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(request=CalendarBundleCreateSerializer())
     @action(

@@ -129,6 +129,7 @@ class CalendarSerializer(VirtualModelSerializer):
             "calendar_type",
             "capacity",
             "manage_available_windows",
+            "is_active",
         )
         read_only_fields = (
             "email",
@@ -136,6 +137,7 @@ class CalendarSerializer(VirtualModelSerializer):
             "provider",
             "calendar_type",
             "capacity",
+            "is_active",
         )
 
     @inject

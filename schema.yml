@@ -3585,7 +3585,11 @@ paths:
           description: ''
     delete:
       operationId: calendar_destroy
-      description: ViewSet for managing calendars.
+      description: 'Disables a calendar by setting is_active=False instead of deleting
+        the row. Idempotent: disabling an already-inactive calendar is a no-op. The
+        row persists and is hidden from default list/detail queries. Phase 11 will
+        extend this with bundle-cascade logic.'
+      summary: Soft-disable a calendar
       parameters:
       - in: path
         name: id
@@ -3710,7 +3714,11 @@ paths:
           description: ''
     delete:
       operationId: calendar_formatted_destroy
-      description: ViewSet for managing calendars.
+      description: 'Disables a calendar by setting is_active=False instead of deleting
+        the row. Idempotent: disabling an already-inactive calendar is a no-op. The
+        row persists and is hidden from default list/detail queries. Phase 11 will
+        extend this with bundle-cascade logic.'
+      summary: Soft-disable a calendar
       parameters:
       - in: path
         name: format
@@ -6853,12 +6861,21 @@ components:
           description: If true, this calendar can manage its own available time windows.
             If not, it will use the available time windows of the external calendar
             it's attached to.
+        is_active:
+          type: boolean
+          readOnly: true
+          description: Whether this calendar is active. Inactive calendars are hidden
+            from default list/detail queries. Use DELETE /calendar/{id}/ to soft-disable
+            (sets this to False) instead of deleting the row. Opt-in to see disabled
+            calendars via ?include_inactive=true. Default True keeps every existing
+            read unchanged.
       required:
       - calendar_type
       - capacity
       - email
       - external_id
       - id
+      - is_active
       - name
       - provider
     CalendarBundleCreate:
@@ -8055,6 +8072,14 @@ components:
           description: If true, this calendar can manage its own available time windows.
             If not, it will use the available time windows of the external calendar
             it's attached to.
+        is_active:
+          type: boolean
+          readOnly: true
+          description: Whether this calendar is active. Inactive calendars are hidden
+            from default list/detail queries. Use DELETE /calendar/{id}/ to soft-disable
+            (sets this to False) instead of deleting the row. Opt-in to see disabled
+            calendars via ?include_inactive=true. Default True keeps every existing
+            read unchanged.
     PatchedCalendarEvent:
       type: object
       properties:

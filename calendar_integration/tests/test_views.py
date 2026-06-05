@@ -1790,8 +1790,8 @@ class TestCalendarViewSet:
         assert response.data["name"] == "Updated Calendar Name"
         assert response.data["description"] == "Updated description"
 
-    def test_delete_calendar(self, auth_client, calendar, user):
-        """Test deleting a calendar"""
+    def test_delete_calendar_soft_disables(self, auth_client, calendar, user):
+        """DELETE /calendar/{id}/ sets is_active=False — row persists, not hard-deleted."""
         # Create calendar ownership so user can access the calendar
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
 
@@ -1799,6 +1799,142 @@ class TestCalendarViewSet:
         response = auth_client.delete(url)
 
         assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+
+        # Row must still exist with is_active=False
+        calendar.refresh_from_db()
+        assert calendar.is_active is False
+
+    def test_delete_calendar_hidden_from_default_list(self, auth_client, calendar, user):
+        """After soft-disable, default GET /calendar/ list excludes the disabled calendar."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Soft-disable
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        auth_client.delete(url)
+
+        # Default list should be empty
+        list_url = reverse("api:Calendars-list")
+        response = auth_client.get(list_url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert calendar.id not in ids
+
+    def test_include_inactive_shows_disabled_calendar(self, auth_client, calendar, user):
+        """GET /calendar/?include_inactive=true includes disabled calendars."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Soft-disable
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        auth_client.delete(url)
+
+        # include_inactive=true should surface the calendar
+        list_url = reverse("api:Calendars-list")
+        response = auth_client.get(list_url, {"include_inactive": "true"})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert calendar.id in ids
+
+    def test_retrieve_disabled_calendar_returns_404_by_default(self, auth_client, calendar, user):
+        """Retrieve of a disabled calendar via the default queryset → 404."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Soft-disable
+        calendar.is_active = False
+        calendar.save(update_fields=["is_active"])
+
+        detail_url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        response = auth_client.get(detail_url)
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_retrieve_disabled_calendar_visible_with_include_inactive(
+        self, auth_client, calendar, user
+    ):
+        """Retrieve of a disabled calendar with ?include_inactive=true → 200."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Soft-disable
+        calendar.is_active = False
+        calendar.save(update_fields=["is_active"])
+
+        detail_url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        response = auth_client.get(detail_url, {"include_inactive": "true"})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["id"] == calendar.id
+        assert response.data["is_active"] is False
+
+    def test_delete_calendar_idempotent(self, auth_client, calendar, user):
+        """Soft-disabling an already-inactive calendar returns 404 (calendar already hidden)."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+
+        # First soft-disable
+        response = auth_client.delete(url)
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+
+        # Second delete attempt — calendar is now hidden from default queryset → 404
+        response = auth_client.delete(url)
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_create_calendar_is_active_defaults_true(self, auth_client, organization, user):
+        """Creating a calendar defaults is_active=True; it appears in the default list."""
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+
+        created_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Active Calendar",
+            description="Should be active by default",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        mock_calendar_service.create_virtual_calendar.return_value = created_calendar
+
+        url = reverse("api:Calendars-list")
+        data = {"name": "Active Calendar", "description": "Should be active by default"}
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.data["is_active"] is True
+
+        # Calendar should appear in default list
+        list_url = reverse("api:Calendars-list")
+        list_response = auth_client.get(list_url)
+        assert_response_status_code(list_response, status.HTTP_200_OK)
+        ids = [c["id"] for c in list_response.data["results"]]
+        assert created_calendar.id in ids
+
+    def test_org_scoping_still_holds(self, auth_client, organization, user):
+        """Cross-org calendar is still excluded even when include_inactive=true."""
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+
+        list_url = reverse("api:Calendars-list")
+        response = auth_client.get(list_url, {"include_inactive": "true"})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert other_calendar.id not in ids
+
+    def test_membership_less_user_gets_empty_list(self):
+        """User without org membership gets an empty list (not 500)."""
+        from django.contrib.auth import get_user_model as _get_user_model
+
+        from rest_framework.test import APIClient
+
+        user_model = _get_user_model()
+        memberless_user = baker.make(user_model)
+
+        client = APIClient()
+        client.force_authenticate(user=memberless_user)
+
+        list_url = reverse("api:Calendars-list")
+        response = client.get(list_url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["results"] == []
 
     def test_create_bundle_calendar(self, auth_client, organization, user):
         """Test creating a bundle calendar"""
