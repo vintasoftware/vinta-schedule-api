@@ -3587,8 +3587,8 @@ paths:
       operationId: calendar_destroy
       description: 'Disables a calendar by setting is_active=False instead of deleting
         the row. Idempotent: disabling an already-inactive calendar is a no-op. The
-        row persists and is hidden from default list/detail queries. Phase 11 will
-        extend this with bundle-cascade logic.'
+        row persists and is hidden from default list/detail queries. Bundle calendars
+        may additionally cascade to their child representations.'
       summary: Soft-disable a calendar
       parameters:
       - in: path
@@ -3716,8 +3716,8 @@ paths:
       operationId: calendar_formatted_destroy
       description: 'Disables a calendar by setting is_active=False instead of deleting
         the row. Idempotent: disabling an already-inactive calendar is a no-op. The
-        row persists and is hidden from default list/detail queries. Phase 11 will
-        extend this with bundle-cascade logic.'
+        row persists and is hidden from default list/detail queries. Bundle calendars
+        may additionally cascade to their child representations.'
       summary: Soft-disable a calendar
       parameters:
       - in: path

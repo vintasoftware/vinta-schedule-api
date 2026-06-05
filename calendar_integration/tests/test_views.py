@@ -2622,6 +2622,107 @@ class TestCalendarViewSet:
 
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
+    def test_admin_sync_disabled_calendar_reachable_with_include_inactive(self, organization):
+        """Admin can reach disabled calendar on action route via ?include_inactive=true."""
+        from di_core.containers import container
+
+        # Create admin user
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Create calendar owner
+        calendar_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=calendar_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Create calendar and ownership
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
+
+        # Create social account for the owner
+        owner_social_account = baker.make(
+            SocialAccount,
+            user=calendar_owner,
+            provider=calendar.provider,
+        )
+        baker.make(
+            SocialToken,
+            account=owner_social_account,
+            token="fake_access_token",
+            token_secret="fake_refresh_token",
+            expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+        )
+
+        # Disable the calendar
+        calendar.is_active = False
+        calendar.save(update_fields=["is_active"])
+
+        # Create mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_sync = Mock()
+        mock_calendar_sync.id = 456
+        mock_calendar_sync.status = "NOT_STARTED"
+        mock_calendar_sync.start_datetime = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
+        mock_calendar_sync.end_datetime = datetime.datetime(2024, 1, 31, tzinfo=datetime.UTC)
+        mock_calendar_sync.should_update_events = False
+        mock_calendar_sync.error_message = ""
+        mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
+
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        with container.calendar_service.override(mock_calendar_service):
+            # Test WITHOUT include_inactive — should be 404
+            response = client.post(
+                url,
+                data={
+                    "start_datetime": "2024-01-01T00:00:00Z",
+                    "end_datetime": "2024-01-31T23:59:59Z",
+                    "should_update_events": False,
+                },
+                format="json",
+            )
+            assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+            # Test WITH include_inactive=true — should be 202
+            response = client.post(
+                url,
+                data={
+                    "start_datetime": "2024-01-01T00:00:00Z",
+                    "end_datetime": "2024-01-31T23:59:59Z",
+                    "should_update_events": False,
+                },
+                format="json",
+                **{"HTTP_X_INCLUDE_INACTIVE": "true"} if False else {},
+            )
+            # Need to use query params instead of headers for action routes
+            response = client.post(
+                f"{url}?include_inactive=true",
+                data={
+                    "start_datetime": "2024-01-01T00:00:00Z",
+                    "end_datetime": "2024-01-31T23:59:59Z",
+                    "should_update_events": False,
+                },
+                format="json",
+            )
+            assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+            assert response.data["id"] == 456
+            assert response.data["status"] == "NOT_STARTED"
+
 
 @pytest.mark.django_db
 class TestCalendarIntegrationPermissions:

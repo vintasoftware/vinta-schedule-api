@@ -106,7 +106,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
             "Disables a calendar by setting is_active=False instead of deleting the row. "
             "Idempotent: disabling an already-inactive calendar is a no-op. "
             "The row persists and is hidden from default list/detail queries. "
-            "Phase 11 will extend this with bundle-cascade logic."
+            "Bundle calendars may additionally cascade to their child representations."
         ),
         responses={204: None},
     )
