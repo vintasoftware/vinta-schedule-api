@@ -1738,6 +1738,140 @@ class TestCalendarViewSet:
                     callback()
                 assert mock_service.request_calendars_import.call_count == 2
 
+    def test_request_sync_owner_syncs_own_calendar(
+        self, auth_client, user, calendar, social_account
+    ):
+        """Test owner syncs their own calendar with valid range"""
+        from di_core.containers import container
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+
+        # Create a mock CalendarSync instance
+        mock_calendar_sync = Mock()
+        mock_calendar_sync.id = 123
+        mock_calendar_sync.status = "NOT_STARTED"
+        mock_calendar_sync.start_datetime = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
+        mock_calendar_sync.end_datetime = datetime.datetime(2024, 1, 31, tzinfo=datetime.UTC)
+        mock_calendar_sync.should_update_events = False
+        mock_calendar_sync.error_message = ""
+        mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
+
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(
+                url,
+                data={
+                    "start_datetime": "2024-01-01T00:00:00Z",
+                    "end_datetime": "2024-01-31T23:59:59Z",
+                    "should_update_events": False,
+                },
+                format="json",
+            )
+
+            # Verify response
+            assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+            assert response.data["id"] == 123
+            assert response.data["status"] == "NOT_STARTED"
+
+            # Verify the mock was called with the correct arguments
+            mock_calendar_service.authenticate.assert_called_once()
+            mock_calendar_service.request_calendar_sync.assert_called_once()
+
+    def test_request_sync_non_owner_forbidden(self, auth_client, user, calendar):
+        """Test non-owner cannot sync a calendar"""
+        # Don't create calendar ownership - user is not an owner
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
+
+        response = auth_client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        assert "do not own this calendar" in response.data["detail"].lower()
+
+    def test_request_sync_cross_org_calendar_not_found(
+        self, auth_client, user, calendar, organization
+    ):
+        """Test cross-org calendar returns 404"""
+        # Create a different organization and calendar
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+
+        # User is only a member of the first org (from fixture)
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": other_calendar.id})
+
+        response = auth_client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_request_sync_missing_datetimes(self, auth_client, user, calendar):
+        """Test missing datetime parameters returns 400"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
+
+        # Missing both datetimes
+        response = auth_client.post(url, data={}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Missing end_datetime
+        response = auth_client.post(
+            url,
+            data={"start_datetime": "2024-01-01T00:00:00Z"},
+            format="json",
+        )
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_request_sync_invalid_datetimes(self, auth_client, user, calendar):
+        """Test invalid datetime format returns 400"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
+
+        response = auth_client.post(
+            url,
+            data={
+                "start_datetime": "invalid-date",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_request_sync_unauthenticated(self, anonymous_client, calendar):
+        """Test unauthenticated user cannot sync"""
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
+
+        response = anonymous_client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
 
 @pytest.mark.django_db
 class TestCalendarIntegrationPermissions:

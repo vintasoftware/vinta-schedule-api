@@ -3752,6 +3752,83 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedAvailableTimeWindowList'
           description: ''
+  /calendar/{id}/request-sync/:
+    post:
+      operationId: calendar_request_sync_create
+      description: Request synchronization of an owned calendar over a date range.
+      summary: Request calendar sync
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarSync'
+          description: ''
+  /calendar/{id}/request-sync{format}:
+    post:
+      operationId: calendar_request_sync_formatted_create
+      description: Request synchronization of an owned calendar over a date range.
+      summary: Request calendar sync
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarSync'
+          description: ''
   /calendar/{id}/unavailable-windows/:
     get:
       operationId: calendar_unavailable_windows_list
@@ -6783,6 +6860,61 @@ components:
       required:
       - available_calendar_ids
       - slot_id
+    CalendarSync:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/CalendarSyncStatusEnum'
+          readOnly: true
+        start_datetime:
+          type: string
+          format: date-time
+        end_datetime:
+          type: string
+          format: date-time
+        should_update_events:
+          type: boolean
+        error_message:
+          type: string
+          readOnly: true
+      required:
+      - end_datetime
+      - error_message
+      - id
+      - should_update_events
+      - start_datetime
+      - status
+    CalendarSyncRequest:
+      type: object
+      properties:
+        start_datetime:
+          type: string
+          format: date-time
+        end_datetime:
+          type: string
+          format: date-time
+        should_update_events:
+          type: boolean
+          default: false
+      required:
+      - end_datetime
+      - start_datetime
+    CalendarSyncStatusEnum:
+      enum:
+      - success
+      - failed
+      - in_progress
+      - not_started
+      type: string
+      description: |-
+        * `success` - Success
+        * `failed` - Failed
+        * `in_progress` - In Progress
+        * `not_started` - Not Started
     CalendarTypeEnum:
       enum:
       - personal

@@ -22,6 +22,7 @@ from calendar_integration.models import (
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
     CalendarOwnership,
+    CalendarSync,
     EventAttendance,
     EventExternalAttendance,
     EventRecurrenceException,
@@ -84,6 +85,30 @@ class CalendarOwnershipSerializer(VirtualModelSerializer):
             "created",
             "modified",
         )
+
+
+class CalendarSyncSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CalendarSync
+        fields = (
+            "id",
+            "status",
+            "start_datetime",
+            "end_datetime",
+            "should_update_events",
+            "error_message",
+        )
+        read_only_fields = (
+            "id",
+            "status",
+            "error_message",
+        )
+
+
+class CalendarSyncRequestSerializer(serializers.Serializer):
+    start_datetime = serializers.DateTimeField(required=True)
+    end_datetime = serializers.DateTimeField(required=True)
+    should_update_events = serializers.BooleanField(required=False, default=False)
 
 
 class CalendarSerializer(VirtualModelSerializer):

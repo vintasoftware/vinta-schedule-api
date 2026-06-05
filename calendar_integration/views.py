@@ -29,6 +29,7 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    CalendarOwnership,
 )
 from calendar_integration.permissions import (
     CalendarAvailabilityPermission,
@@ -53,6 +54,8 @@ from calendar_integration.serializers import (
     CalendarGroupRangeAvailabilitySerializer,
     CalendarGroupSerializer,
     CalendarSerializer,
+    CalendarSyncRequestSerializer,
+    CalendarSyncSerializer,
     EventBulkModificationSerializer,
     EventRecurringExceptionSerializer,
     UnavailableTimeWindowSerializer,
@@ -169,6 +172,87 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                 status=status.HTTP_202_ACCEPTED,
             )
         except (ValueError, CalendarIntegrationError) as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+    @extend_schema(
+        summary="Request calendar sync",
+        description="Request synchronization of an owned calendar over a date range.",
+        request=CalendarSyncRequestSerializer,
+        responses={202: CalendarSyncSerializer()},
+    )
+    @action(
+        methods=["post"],
+        detail=True,
+        url_path="request-sync",
+        url_name="request-sync",
+    )
+    @inject
+    def request_sync(
+        self,
+        request,
+        pk=None,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]] = None,  # type: ignore
+    ):
+        """Request synchronization of an owned calendar over a date range."""
+        calendar = self.get_object()
+        user = request.user
+
+        # Check ownership - user must own this calendar
+        if not CalendarOwnership.objects.filter(
+            calendar=calendar,
+            user=user,
+            organization_id=calendar.organization_id,
+        ).exists():
+            return Response(
+                {"detail": "You do not own this calendar."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Parse and validate datetime fields
+        start_datetime_str = request.data.get("start_datetime")
+        end_datetime_str = request.data.get("end_datetime")
+
+        if not start_datetime_str or not end_datetime_str:
+            raise ValidationError(
+                {"non_field_errors": ["start_datetime and end_datetime are required"]}
+            )
+
+        try:
+            start_datetime = datetime.datetime.fromisoformat(
+                start_datetime_str.replace("Z", "+00:00")
+            )
+            end_datetime = datetime.datetime.fromisoformat(end_datetime_str.replace("Z", "+00:00"))
+        except (ValueError, CalendarIntegrationError) as e:
+            raise ValidationError({"non_field_errors": [f"Invalid datetime format: {e!s}"]}) from e
+
+        should_update_events = request.data.get("should_update_events", False)
+
+        # Get social account for authentication
+        social_account = SocialAccount.objects.filter(user=user, provider=calendar.provider).first()
+
+        membership = get_active_organization_membership(user)
+        if not membership:
+            return Response(
+                {"detail": "User is not an active member of any organization."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            calendar_service.authenticate(
+                account=social_account,
+                organization=membership.organization,
+            )
+
+            calendar_sync = calendar_service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                should_update_events=should_update_events,
+            )
+
+            serializer = CalendarSyncSerializer(calendar_sync)
+            return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
+        except (ValueError, CalendarIntegrationError, NotImplementedError) as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
     @extend_schema(
