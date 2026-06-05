@@ -66,12 +66,17 @@
 - **Model**: haiku. **Branch**: phase-6 (base phase-5). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/48
 - **Key**: `POST /calendar/{id}/admin-sync/` with `permission_classes=[IsOrganizationAdmin]` (admin-only, cross-org 404). Authenticates with the calendar OWNER's SocialAccount (resolved via CalendarOwnership default-first), NOT the admin's — test proves it. Guards: no owner / no linked account / bad datetimes → 400. Outer gate green (1304), mypy 108.
 
+### Phase 7 — Trigger org rooms/resources sync (admin) ✅
+- **Status**: done, reviewed (3 layers; Layer 3 #1 → transition was on an unreachable update endpoint + tests patched perms → opened admin update via get_permissions; #2 → hardened: dropped dead on_commit try/except, fixed schema, select_for_update against double-fire), pushed, PR opened.
+- **Model**: sonnet (resumed after a socket error mid-run); fixers: sonnet + haiku. **Branch**: phase-7 (base phase-6). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/49
+- **Key**: `OrganizationService.request_rooms_sync` (DRY, used by create_organization too); `POST /organizations/{id}/sync-rooms/` admin action; should_sync_rooms False→True transition fires once (locked). **IMPORTANT reusable infra**: `OrganizationViewSet.get_permissions()` now gates update/partial_update with IsOrganizationAdmin — admins can configure their own org (previously update was unreachable for all). Outer gate green (1320), mypy 108.
+- **Reusable note**: org update is admin-only now; org-config edits go through PATCH /organizations/{id}/.
+
 ## Current Phase
-Phase 7 — Trigger organization rooms/resources sync (admin) (next).
-- NOTE: existing `OrganizationService.create_organization` triggers rooms import via `self.calendar_service.initialize_without_provider(user_or_token=creator, organization=org)` then `request_organization_calendar_resources_import(start, end)` (window now..+365d). Phase 7 should DRY this into a shared service method and reuse for both create_organization and the new action + the should_sync_rooms False→True transition.
+Phase 8 — Transfer event between calendars (admin) (next). Service: `CalendarService.transfer_event(event, new_calendar) -> CalendarEvent` (~2115). Admin `@action transfer` on CalendarEventViewSet, body target_calendar_id (in-org). Provider-sync side effects → Tier 3.
 
 ## Remaining Phases
-8 (transfer event), 9 (calendar soft-disable), 10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
+9 (calendar soft-disable), 10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
 
 ## Reusable infra notes (for later phases)
 - `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
