@@ -1,4 +1,7 @@
+import datetime
 from typing import Annotated
+
+from django.db import transaction
 
 from dependency_injector.wiring import Provide, inject
 from drf_spectacular.utils import OpenApiResponse, extend_schema
@@ -50,12 +53,51 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     serializer_class = OrganizationSerializer
     permission_classes = (IsAuthenticated, OrganizationManagementPermission)
 
+    @inject
+    def __init__(
+        self,
+        *args,
+        organization_service: Annotated[OrganizationService, Provide["organization_service"]],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.organization_service = organization_service
+
     def get_queryset(self):
         user = self.request.user
         membership = get_active_organization_membership(user)
         if membership:
             return Organization.objects.filter(id=membership.organization_id)
         return Organization.objects.none()
+
+    def update(self, request, *args, **kwargs):
+        """Override update to trigger rooms sync when should_sync_rooms flips False→True."""
+        partial = kwargs.get("partial", False)
+        instance = self.get_object()
+
+        # Snapshot the old value BEFORE the serializer writes to the DB.
+        old_should_sync_rooms = instance.should_sync_rooms
+
+        serializer = self.get_update_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        # Detect False→True transition (exactly once — only when the flag just became True).
+        new_should_sync_rooms = serializer.instance.should_sync_rooms
+        if not old_should_sync_rooms and new_should_sync_rooms:
+            org = serializer.instance
+            user = request.user
+            org_service = self.organization_service
+
+            def _trigger():
+                org_service.request_rooms_sync(organization=org, requested_by=user)
+
+            transaction.on_commit(_trigger)
+
+        return_serializer = self.get_retrieve_serializer(
+            self.get_return_object(serializer.instance)
+        )
+        return Response(return_serializer.data)
 
     @extend_schema(
         summary="Current organization + role for the authenticated user",
@@ -76,6 +118,69 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
             raise NotFound(detail="No organization membership.")
         serializer = CurrentMembershipSerializer(membership, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Trigger a rooms/resources import for the organization",
+        responses={
+            202: OpenApiResponse(description="Sync enqueued"),
+            400: OpenApiResponse(
+                description="Bad request (invalid datetime format or service error)"
+            ),
+            403: OpenApiResponse(description="Not an admin"),
+            404: OpenApiResponse(description="Organization not found"),
+        },
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="sync-rooms",
+        permission_classes=[IsOrganizationAdmin],
+    )
+    def sync_rooms(self, request, pk=None):
+        """POST /organizations/{id}/sync-rooms/ — enqueue a calendar resources import.
+
+        Optional body fields:
+        - ``start_time``: ISO 8601 datetime for the import window start.
+        - ``end_time``: ISO 8601 datetime for the import window end.
+
+        Defaults (when omitted): ``start_time=now``, ``end_time=now+365d``.
+        Returns HTTP 202 on success.
+        """
+        org = self.get_object()
+
+        # Parse optional ISO datetime fields from the request body.
+        start_time: datetime.datetime | None = None
+        end_time: datetime.datetime | None = None
+
+        raw_start = request.data.get("start_time")
+        raw_end = request.data.get("end_time")
+
+        try:
+            if raw_start:
+                start_time = datetime.datetime.fromisoformat(raw_start)
+            if raw_end:
+                end_time = datetime.datetime.fromisoformat(raw_end)
+        except (ValueError, TypeError) as exc:
+            raise ValidationError({"detail": f"Invalid datetime format: {exc}"}) from exc
+
+        org_service = self.organization_service
+        user = request.user
+
+        def _trigger():
+            org_service.request_rooms_sync(
+                organization=org,
+                requested_by=user,
+                start_time=start_time,
+                end_time=end_time,
+            )
+
+        try:
+            transaction.on_commit(_trigger)
+        except Exception as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+
+        serializer = self.get_serializer(org)
+        return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
 
 
 class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):

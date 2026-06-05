@@ -65,15 +65,36 @@ class OrganizationService:
         )
 
         if should_sync_rooms:
-            self.calendar_service.initialize_without_provider(
-                user_or_token=creator, organization=self.organization
-            )
-            now = datetime.datetime.now(tz=datetime.UTC)
-            self.calendar_service.request_organization_calendar_resources_import(
-                start_time=now,
-                end_time=now + datetime.timedelta(days=365),
+            self.request_rooms_sync(
+                organization=self.organization,
+                requested_by=creator,
             )
         return self.organization
+
+    def request_rooms_sync(
+        self,
+        organization: Organization,
+        requested_by: User,
+        start_time: datetime.datetime | None = None,
+        end_time: datetime.datetime | None = None,
+    ) -> None:
+        """
+        Initialize the calendar service without a provider and enqueue a
+        calendar resources import for the given organization.
+
+        :param organization: The organization to sync rooms for.
+        :param requested_by: The user (or token) authorizing the sync.
+        :param start_time: Import window start; defaults to now.
+        :param end_time: Import window end; defaults to now + 365 days.
+        """
+        self.calendar_service.initialize_without_provider(
+            user_or_token=requested_by, organization=organization
+        )
+        now = datetime.datetime.now(tz=datetime.UTC)
+        self.calendar_service.request_organization_calendar_resources_import(
+            start_time=start_time or now,
+            end_time=end_time or (now + datetime.timedelta(days=365)),
+        )
 
     @transaction.atomic()
     def invite_user_to_organization(

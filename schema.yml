@@ -4866,7 +4866,8 @@ paths:
           description: ''
     put:
       operationId: organizations_update
-      description: A viewset for managing organizations.
+      description: Override update to trigger rooms sync when should_sync_rooms flips
+        False→True.
       parameters:
       - in: path
         name: id
@@ -4977,7 +4978,8 @@ paths:
           description: ''
     put:
       operationId: organizations_formatted_update
-      description: A viewset for managing organizations.
+      description: Override update to trigger rooms sync when should_sync_rooms flips
+        False→True.
       parameters:
       - in: path
         name: format
@@ -5078,6 +5080,103 @@ paths:
       responses:
         '204':
           description: No response body
+  /organizations/{id}/sync-rooms/:
+    post:
+      operationId: organizations_sync_rooms_create
+      description: |-
+        POST /organizations/{id}/sync-rooms/ — enqueue a calendar resources import.
+
+        Optional body fields:
+        - ``start_time``: ISO 8601 datetime for the import window start.
+        - ``end_time``: ISO 8601 datetime for the import window end.
+
+        Defaults (when omitted): ``start_time=now``, ``end_time=now+365d``.
+        Returns HTTP 202 on success.
+      summary: Trigger a rooms/resources import for the organization
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Organization'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          description: Sync enqueued
+        '400':
+          description: Bad request (invalid datetime format or service error)
+        '403':
+          description: Not an admin
+        '404':
+          description: Organization not found
+  /organizations/{id}/sync-rooms{format}:
+    post:
+      operationId: organizations_sync_rooms_formatted_create
+      description: |-
+        POST /organizations/{id}/sync-rooms/ — enqueue a calendar resources import.
+
+        Optional body fields:
+        - ``start_time``: ISO 8601 datetime for the import window start.
+        - ``end_time``: ISO 8601 datetime for the import window end.
+
+        Defaults (when omitted): ``start_time=now``, ``end_time=now+365d``.
+        Returns HTTP 202 on success.
+      summary: Trigger a rooms/resources import for the organization
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Organization'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          description: Sync enqueued
+        '400':
+          description: Bad request (invalid datetime format or service error)
+        '403':
+          description: Not an admin
+        '404':
+          description: Organization not found
   /organizations/current/:
     get:
       operationId: organizations_current_retrieve
