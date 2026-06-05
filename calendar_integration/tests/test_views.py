@@ -4692,3 +4692,80 @@ class TestCalendarBundleUpdateAction:
         response = anonymous_client.patch(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_bundle_update_keeps_existing_disabled_child(self, organization):
+        """
+        Bundle has child A (active) + child B; disable B (is_active=False) directly;
+        admin PATCHes the bundle resending [A, B] (+ valid primary among them) → 200,
+        B remains a child, reconciliation succeeds.
+        Proves the trap is gone.
+        """
+        bundle, child_active, child_disabled = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        # Disable child_disabled
+        child_disabled.is_active = False
+        child_disabled.save(update_fields=["is_active"])
+
+        # Admin PATCHes with both children
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {
+            "bundle_calendars": [child_active.id, child_disabled.id],
+            "primary_calendar": child_active.id,
+        }
+
+        response = admin_client.patch(url, data, format="json")
+
+        # Should succeed (200)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["id"] == bundle.id
+
+        # child_disabled should still be a child
+        assert ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle,
+            child_calendar_fk_id=child_disabled.id,
+            organization=organization,
+        ).exists()
+
+        # child_active should still be a child and marked primary
+        assert ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle,
+            child_calendar_fk_id=child_active.id,
+            organization=organization,
+            is_primary=True,
+        ).exists()
+
+    def test_bundle_update_rejects_new_disabled_child(self, organization):
+        """
+        A disabled calendar that is NOT currently a child cannot be ADDED → 400.
+        Proves new-disabled still barred.
+        """
+        bundle, child_active, _child_other = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        # Create a disabled calendar that is NOT a child
+        disabled_new = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Disabled New",
+            calendar_type=CalendarType.PERSONAL,
+        )
+        disabled_new.is_active = False
+        disabled_new.save(update_fields=["is_active"])
+
+        # Try to add it as a child
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {
+            "bundle_calendars": [child_active.id, disabled_new.id],
+        }
+
+        response = admin_client.patch(url, data, format="json")
+
+        # Should fail (400)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # disabled_new should NOT be a child
+        assert not ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle,
+            child_calendar_fk_id=disabled_new.id,
+            organization=organization,
+        ).exists()

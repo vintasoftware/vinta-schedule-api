@@ -178,9 +178,11 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Pass the bundle into serializer context so it can fetch existing children
+        context = {**self.get_serializer_context(), "bundle": calendar}
         serializer = CalendarBundleUpdateSerializer(
             data=request.data,
-            context=self.get_serializer_context(),
+            context=context,
         )
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

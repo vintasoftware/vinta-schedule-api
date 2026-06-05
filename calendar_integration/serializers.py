@@ -23,6 +23,7 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarOwnership,
     CalendarSync,
+    ChildrenCalendarRelationship,
     EventAttendance,
     EventExternalAttendance,
     EventRecurrenceException,
@@ -261,19 +262,39 @@ class CalendarBundleUpdateSerializer(serializers.Serializer):
         active_membership = (
             get_active_organization_membership(user) if user and user.is_authenticated else None
         )
-        active_org_qs = (
-            Calendar.objects.filter_by_organization(
-                organization_id=active_membership.organization_id
-            ).filter(is_active=True)
-            if active_membership
-            else Calendar.original_manager.none()
-        )
+
+        # Build queryset: active calendars + existing children (even if disabled)
+        org_id = active_membership.organization_id if active_membership else None
+
+        if org_id:
+            from django.db.models import Q
+
+            # Get the target bundle from context (passed from the view)
+            bundle = self.context.get("bundle") if self.context else None
+
+            # Fetch existing child IDs
+            existing_child_ids = []
+            if bundle:
+                existing_child_ids = list(
+                    ChildrenCalendarRelationship.objects.filter(
+                        bundle_calendar=bundle,
+                        organization_id=org_id,
+                    ).values_list("child_calendar_fk_id", flat=True)
+                )
+
+            # Build the queryset: (active OR in existing_child_ids) AND org-scoped
+            qs = Calendar.objects.filter_by_organization(organization_id=org_id).filter(
+                Q(is_active=True) | Q(id__in=existing_child_ids)
+            )
+        else:
+            qs = Calendar.original_manager.none()
+
         self.fields["bundle_calendars"] = serializers.PrimaryKeyRelatedField(
             many=True,
-            queryset=active_org_qs,
+            queryset=qs,
         )
         self.fields["primary_calendar"] = serializers.PrimaryKeyRelatedField(
-            queryset=active_org_qs,
+            queryset=qs,
             allow_null=True,
             required=False,
         )
