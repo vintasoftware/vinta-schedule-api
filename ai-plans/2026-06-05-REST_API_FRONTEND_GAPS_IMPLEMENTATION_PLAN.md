@@ -493,6 +493,80 @@ Tests:
 
 Acceptance: `GET /calendar-events/expanded/` returns materialized occurrences across the range for the owner.
 
+---
+
+## Amendment (2026-06-05) — follow-up gaps after first pass
+
+Two gaps surfaced after the initial 17 phases shipped: (1) no way to **resend** a pending invitation, and (2) rooms-syncing is not actually usable — Phase 7's `request_rooms_sync` (and the pre-existing `create_organization` path) call `initialize_without_provider` (account=None) before `request_organization_calendar_resources_import`, which requires a provider-authenticated service and therefore **raises at runtime**; and there is no API to configure the org's `GoogleCalendarServiceAccount` that the resource import needs. Phases 17–19 close these.
+
+### Phase 17 — Resend organization invitation (admin)
+
+**Goal**: an admin can resend a pending invitation (regenerate token, extend expiry, re-send email).
+
+**Feature flag**: none — new action.
+
+Changes:
+1. `resend` `@action` (POST, detail=True) on `OrganizationInvitationViewSet`. Resolve the invitation via `get_object()` (org-scoped); refuse if already accepted. Call `OrganizationService.invite_user_to_organization(...)` with the invitation's email/first/last/org and the requesting user as `invited_by` — the service already resets token+expiry and re-sends the email (get_or_create reset path).
+2. Gate to admins (`OrganizationInvitationPermission` currently allows any active member to manage invitations; resend is a management action — keep consistent with how invitations are created today, i.e. members with an active membership; if invitation creation is admin-only in practice, match that). Do not change create/destroy gating.
+3. `make update_schema`.
+
+Spec use-case: "Admin resends a pending invitation."
+
+Tests:
+- **Integration**: resend a pending invite → 200, token_hash changed, expires_at extended, email re-sent (assert notification service called); resend an accepted invite → 400; cross-org invite → 404; non-member → 403.
+
+**Suggested AI model**: Tier 2 — `claude-haiku-4-5` / `gpt-5-mini` / `gemini-2.5-flash`.
+
+**Reusable skills**: `create-rest-endpoint`.
+
+Acceptance: `POST /invitations/{id}/resend/` regenerates + re-sends a pending invitation.
+
+### Phase 18 — Configure organization Google service account (admin)
+
+**Goal**: an admin can configure the org's `GoogleCalendarServiceAccount` (the credentials the rooms/resource import authenticates with).
+
+**Feature flag**: none — new endpoint.
+
+**Security note**: this endpoint accepts a Google service-account **private key**, stored via the model's `EncryptedCharField`. Write-only for secret fields (never returned in any response); admin-only; org-scoped. Treat as a credentials surface.
+
+Changes:
+1. `GoogleServiceAccountViewSet` (create + retrieve/update; no list needed, one per org/resource) or a dedicated serializer-driven endpoint, `IsOrganizationAdmin`, org-scoped. Accepts `email`, `audience`, `public_key`, `private_key_id`, `private_key` (last two write-only). Response exposes only non-secret fields (e.g. `id`, `email`, `audience`, configured-at) — NEVER `private_key`/`private_key_id`.
+2. Route registration in `calendar_integration/routes.py`; `make update_schema`.
+
+Spec use-case: "Admin configures their organization to sync rooms (service account credentials)."
+
+Tests:
+- **Integration**: admin creates/sets the service account → 201/200, secret fields stored (encrypted) but NEVER echoed in the response; update rotates credentials; non-admin → 403; cross-org → 404; response contains no private key.
+
+**Suggested AI model**: Tier 3 — `claude-sonnet-4-6` / `gpt-5` / `gemini-2.5-pro`. Credentials surface + write-only secret handling.
+
+**Reusable skills**: `create-rest-endpoint`.
+
+Acceptance: `POST /…/google-service-account/` stores the org's service-account credentials; secrets never returned.
+
+### Phase 19 — Authenticate rooms-sync with the service account (fix the trigger)
+
+**Goal**: make `request_rooms_sync` (and the `create_organization` rooms path) actually run — authenticate the service with the org's `GoogleCalendarServiceAccount` before `request_organization_calendar_resources_import`.
+
+**Feature flag**: none — bug fix on existing (currently-raising) paths.
+
+Changes:
+1. `OrganizationService.request_rooms_sync`: resolve the org's `GoogleCalendarServiceAccount`; if present, `calendar_service.authenticate(account=<service_account>, organization=org)` (NOT `initialize_without_provider`) then `request_organization_calendar_resources_import(...)`. If no service account is configured → raise a clear, catchable error so the `sync_rooms` action returns **400** ("configure a Google service account first") rather than 500.
+2. `create_organization(should_sync_rooms=True)`: route through the same fixed path; if no service account exists at creation time, do NOT crash — skip/queue gracefully (document the chosen behavior; org creation must succeed).
+3. `sync_rooms` action + transition: surface the "no service account" case as 400.
+4. `make update_schema` (if responses change).
+
+Spec use-case: "Admin triggers a rooms sync (now actually executes)."
+
+Tests:
+- **Integration**: with a configured service account, `POST /organizations/{id}/sync-rooms/` authenticates with it (assert authenticate called with the GoogleCalendarServiceAccount) and enqueues the import; without one → 400 (not 500); create_organization(should_sync_rooms=True) with no service account does not crash; transition False→True with a service account triggers.
+
+**Suggested AI model**: Tier 3 — `claude-sonnet-4-6` / `gpt-5` / `gemini-2.5-pro`. Cross-service auth wiring + fixing a live break.
+
+**Reusable skills**: `create-rest-endpoint`.
+
+Acceptance: rooms sync runs when a service account is configured; returns 400 (never 500) when it isn't; org creation never crashes.
+
 ## 6. Risk & Rollout Notes
 
 - **No feature flags** (none exist in project). Safety comes from additive design: new routes/actions/fields with `default=True`, plus same-phase read filters so pre-existing data reads unchanged. The only behavior change to an existing endpoint is `Calendar.destroy` (Phase 9) and bundle destroy cascade (Phase 11) — each ships a test asserting prior data stays intact (rows persist as inactive).
