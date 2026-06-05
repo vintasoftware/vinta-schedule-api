@@ -3585,10 +3585,15 @@ paths:
           description: ''
     delete:
       operationId: calendar_destroy
-      description: 'Disables a calendar by setting is_active=False instead of deleting
-        the row. Idempotent: disabling an already-inactive calendar is a no-op. The
-        row persists and is hidden from default list/detail queries. Bundle calendars
-        may additionally cascade to their child representations.'
+      description: "Disables a calendar by setting is_active=False instead of deleting
+        the row. The row persists and is hidden from default list/detail queries.
+        \n\n**Authorization rules (enforced after org-scoping):**\n- BUNDLE calendar:
+        caller must be an org admin. Non-admin members receive 403.\n- Non-bundle
+        calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership)
+        or be an org admin. Non-owner non-admins receive 403.\n\n\n**Bundle semantics:**
+        disabling a bundle sets only the bundle calendar inactive. Child calendars,
+        bundle events, and their representation BlockedTimes/events are deliberately
+        left untouched (event cancellation is out of scope; see plan Phase 11)."
       summary: Soft-disable a calendar
       parameters:
       - in: path
@@ -3714,10 +3719,15 @@ paths:
           description: ''
     delete:
       operationId: calendar_formatted_destroy
-      description: 'Disables a calendar by setting is_active=False instead of deleting
-        the row. Idempotent: disabling an already-inactive calendar is a no-op. The
-        row persists and is hidden from default list/detail queries. Bundle calendars
-        may additionally cascade to their child representations.'
+      description: "Disables a calendar by setting is_active=False instead of deleting
+        the row. The row persists and is hidden from default list/detail queries.
+        \n\n**Authorization rules (enforced after org-scoping):**\n- BUNDLE calendar:
+        caller must be an org admin. Non-admin members receive 403.\n- Non-bundle
+        calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership)
+        or be an org admin. Non-owner non-admins receive 403.\n\n\n**Bundle semantics:**
+        disabling a bundle sets only the bundle calendar inactive. Child calendars,
+        bundle events, and their representation BlockedTimes/events are deliberately
+        left untouched (event cancellation is out of scope; see plan Phase 11)."
       summary: Soft-disable a calendar
       parameters:
       - in: path

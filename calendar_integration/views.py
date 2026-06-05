@@ -10,9 +10,10 @@ from dependency_injector.wiring import Provide, inject
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
+from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarIntegrationError,
@@ -105,15 +106,49 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         summary="Soft-disable a calendar",
         description=(
             "Disables a calendar by setting is_active=False instead of deleting the row. "
-            "Idempotent: disabling an already-inactive calendar is a no-op. "
             "The row persists and is hidden from default list/detail queries. "
-            "Bundle calendars may additionally cascade to their child representations."
+            "\n\n"
+            "**Authorization rules (enforced after org-scoping):**\n"
+            "- BUNDLE calendar: caller must be an org admin. Non-admin members receive 403.\n"
+            "- Non-bundle calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar "
+            "(CalendarOwnership) or be an org admin. Non-owner non-admins receive 403.\n"
+            "\n\n"
+            "**Bundle semantics:** disabling a bundle sets only the bundle calendar inactive. "
+            "Child calendars, bundle events, and their representation BlockedTimes/events are "
+            "deliberately left untouched (event cancellation is out of scope; see plan Phase 11)."
         ),
         responses={204: None},
     )
     def destroy(self, request, *args, **kwargs):
-        """Soft-disable the calendar (set is_active=False) instead of hard-deleting."""
+        """Soft-disable the calendar (set is_active=False) instead of hard-deleting.
+
+        Applies object-type-aware permission gating:
+        - BUNDLE: admin-only (bundles are management resources).
+        - Non-bundle: owner or admin.
+        """
         calendar = self.get_object()
+
+        if calendar.calendar_type == CalendarType.BUNDLE:
+            # Bundle calendars are management resources — admin-only disable.
+            # Intentionally: only the bundle wrapper is hidden; child calendars, bundle
+            # events, and their representation BlockedTimes/events are left intact.
+            # Event cancellation is explicitly out of scope (see plan Phase 11, Open Q #3:
+            # "Leave events, hide bundle; surface a follow-up if cancellation is desired.").
+            if not request.user.is_organization_admin(calendar.organization_id):
+                raise PermissionDenied("Only org admins can disable a bundle calendar.")
+        else:
+            # Non-bundle calendars (PERSONAL/RESOURCE/VIRTUAL): owner or admin.
+            is_owner = CalendarOwnership.objects.filter(
+                calendar=calendar,
+                user=request.user,
+                organization_id=calendar.organization_id,
+            ).exists()
+            is_admin = request.user.is_organization_admin(calendar.organization_id)
+            if not (is_owner or is_admin):
+                raise PermissionDenied(
+                    "You must own this calendar or be an org admin to disable it."
+                )
+
         calendar.is_active = False
         calendar.save(update_fields=["is_active"])
         return Response(status=status.HTTP_204_NO_CONTENT)

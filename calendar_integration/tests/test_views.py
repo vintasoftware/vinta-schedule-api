@@ -4769,3 +4769,274 @@ class TestCalendarBundleUpdateAction:
             child_calendar_fk_id=disabled_new.id,
             organization=organization,
         ).exists()
+
+
+@pytest.mark.django_db
+class TestCalendarDisableGating:
+    """Tests for Phase 11: object-type-aware gating on DELETE /calendar/{id}/.
+
+    BUNDLE   → admin-only; 403 for non-admins.
+    Non-bundle → owner or admin; 403 for non-owner non-admins.
+    Events/children preserved when a bundle is disabled.
+    """
+
+    # --- Shared helpers (mirrors TestCalendarBundleUpdateAction) ---
+
+    @staticmethod
+    def _make_bundle(organization):
+        """Create a bundle with two child calendars; return (bundle, child1, child2)."""
+        child1 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Bundle Child A",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        child2 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Bundle Child B",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        bundle = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Test Bundle",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.BUNDLE,
+        )
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child1,
+            organization=organization,
+            is_primary=True,
+        )
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child2,
+            organization=organization,
+            is_primary=False,
+        )
+        return bundle, child1, child2
+
+    @staticmethod
+    def _make_admin(organization):
+        """Create an admin user+membership; return (user, APIClient)."""
+        from rest_framework.test import APIClient
+
+        admin = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+        client = APIClient()
+        client.force_authenticate(user=admin)
+        return admin, client
+
+    @staticmethod
+    def _make_member(organization):
+        """Create a regular member; return (user, APIClient)."""
+        from rest_framework.test import APIClient
+
+        member = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=member,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        client = APIClient()
+        client.force_authenticate(user=member)
+        return member, client
+
+    # --- BUNDLE disable tests ---
+
+    def test_bundle_disable_by_admin_204(self, organization):
+        """Org admin DELETEs a bundle → 204, bundle.is_active=False."""
+        bundle, _child1, _child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": bundle.id})
+        response = admin_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+        bundle.refresh_from_db()
+        assert bundle.is_active is False
+
+    def test_bundle_disable_hidden_from_default_list(self, organization):
+        """After admin disables a bundle, it no longer appears in the default list."""
+        bundle, _child1, _child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": bundle.id})
+        admin_client.delete(url)
+
+        list_url = reverse("api:Calendars-list")
+        response = admin_client.get(list_url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert bundle.id not in ids
+
+    def test_bundle_disable_child_calendars_remain_active(self, organization):
+        """Disabling a bundle must NOT affect child calendars — they stay is_active=True."""
+        bundle, child1, child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": bundle.id})
+        admin_client.delete(url)
+
+        child1.refresh_from_db()
+        child2.refresh_from_db()
+        assert child1.is_active is True
+        assert child2.is_active is True
+
+    def test_bundle_disable_events_and_representations_preserved(self, organization):
+        """Disabling a bundle must NOT delete bundle events or representation BlockedTimes."""
+        bundle, child1, _child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        # Create a bundle primary event on child1
+        primary_event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=child1,
+            title="Bundle Primary Event",
+        )
+
+        # Create a representation CalendarEvent linked via bundle_primary_event
+        now = datetime.datetime.now(datetime.UTC)
+        representation_event = baker.make(
+            CalendarEvent,
+            calendar=child1,
+            organization=organization,
+            title="Representation Event",
+            bundle_primary_event=primary_event,
+            bundle_calendar=bundle,
+            external_id=f"repr_{uuid.uuid4().hex[:8]}",
+            timezone="UTC",
+            start_time_tz_unaware=now + datetime.timedelta(hours=1),
+            end_time_tz_unaware=now + datetime.timedelta(hours=2),
+        )
+
+        # Create a representation BlockedTime linked via bundle_primary_event
+        representation_blocked = baker.make(
+            BlockedTime,
+            calendar=child1,
+            organization=organization,
+            reason="Bundle representation blocked time",
+            bundle_primary_event=primary_event,
+            timezone="UTC",
+            start_time_tz_unaware=now + datetime.timedelta(hours=1),
+            end_time_tz_unaware=now + datetime.timedelta(hours=2),
+        )
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": bundle.id})
+        admin_client.delete(url)
+
+        # Events must still exist
+        assert CalendarEvent.objects.filter(id=primary_event.id).exists()
+        assert CalendarEvent.objects.filter(id=representation_event.id).exists()
+        # BlockedTime must still exist
+        assert BlockedTime.objects.filter(id=representation_blocked.id).exists()
+
+    def test_bundle_disable_by_non_admin_member_403(self, organization):
+        """Non-admin org member cannot disable a bundle → 403, bundle unchanged."""
+        bundle, _child1, _child2 = self._make_bundle(organization)
+        _, member_client = self._make_member(organization)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": bundle.id})
+        response = member_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        bundle.refresh_from_db()
+        assert bundle.is_active is True
+
+    # --- Non-bundle (personal) calendar disable tests ---
+
+    def test_personal_calendar_disable_by_owner_204(self, organization):
+        """Calendar owner can disable their own personal calendar → 204."""
+        from rest_framework.test import APIClient
+
+        owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        personal = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(owner, personal)
+
+        client = APIClient()
+        client.force_authenticate(user=owner)
+        url = reverse("api:Calendars-detail", kwargs={"pk": personal.id})
+        response = client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+        personal.refresh_from_db()
+        assert personal.is_active is False
+
+    def test_personal_calendar_disable_by_non_owner_non_admin_403(self, organization):
+        """Non-owner, non-admin member cannot disable another user's calendar → 403."""
+        other_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=other_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        personal = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        # personal belongs to another user; other_user has no ownership
+
+        _, member_client = self._make_member(organization)
+        url = reverse("api:Calendars-detail", kwargs={"pk": personal.id})
+        response = member_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        personal.refresh_from_db()
+        assert personal.is_active is True
+
+    def test_personal_calendar_disable_by_admin_not_owner_204(self, organization):
+        """Org admin who does NOT own the calendar can still disable it → 204."""
+        personal = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        # Don't create ownership for the admin
+
+        _, admin_client = self._make_admin(organization)
+        url = reverse("api:Calendars-detail", kwargs={"pk": personal.id})
+        response = admin_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+        personal.refresh_from_db()
+        assert personal.is_active is False
+
+    # --- Cross-org and anon edge cases ---
+
+    def test_disable_cross_org_calendar_404(self, organization):
+        """Calendar from another org is not in queryset → 404."""
+        _, admin_client = self._make_admin(organization)
+
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": other_calendar.id})
+        response = admin_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+        other_calendar.refresh_from_db()
+        assert other_calendar.is_active is True
+
+    def test_disable_calendar_anonymous_401(self, anonymous_client, organization):
+        """Unauthenticated request → 401."""
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        response = anonymous_client.delete(url)
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
