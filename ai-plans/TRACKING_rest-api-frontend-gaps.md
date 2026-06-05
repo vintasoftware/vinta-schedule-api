@@ -77,11 +77,17 @@
 - **Model**: sonnet; fixer: haiku. **Branch**: phase-8 (base phase-7). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/50
 - **Key**: `POST /calendar-events/{id}/transfer/` admin-only; authenticates with SOURCE calendar owner's account (transfer reads source event from provider); target resolved via filter_by_organization; same-calendar no-op → 400. Outer gate green (1329), mypy 108.
 
+### Phase 9 — Calendar soft-disable ✅
+- **Status**: done, reviewed (3 layers; Layer 3 → documented/tested include_inactive opt-in on action routes + dropped internal phrasing), pushed, PR opened.
+- **Model**: sonnet; fixer: haiku. **Branch**: phase-9 (base phase-8). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/51
+- **Key**: `Calendar.is_active` (migration 0011, db_default True). get_queryset hides inactive unless `?include_inactive=true` (uniform across actions). DELETE → soft-disable (204, idempotent). is_active read-only in serializer. Outer gate green (1338), mypy 108.
+- **FOLLOW-UP for Phase 10/11**: serializer querysets (bundle-create, resource-allocation) + public GraphQL calendars query don't filter is_active → disabled calendars still selectable/listed there. Consider when touching bundles.
+
 ## Current Phase
-Phase 9 — Calendar soft-disable (next). Add `Calendar.is_active` (BooleanField default True, db_default True, db_index) + migration (add-migration skill; non-partitioned table). CalendarViewSet.get_queryset filters is_active=True unless `?include_inactive=true`; override destroy/perform_destroy → set is_active=False (no row delete). Tier 3. CAUTION: CalendarViewSet has many existing tests; default-active keeps reads unchanged, but DELETE behavior changes (existing hard-delete tests must be updated to expect soft-disable).
+Phase 10 — Update calendar bundle (next). `PATCH /calendar/{id}/bundle/` reconcile ChildrenCalendarRelationship (add/remove children, set is_primary) for a BUNDLE calendar. New CalendarBundleUpdateSerializer (child_calendars, primary_calendar). Existing create is POST /calendar/bundle/ (CalendarService.create_bundle_calendar). Tier 3.
 
 ## Remaining Phases
-10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
+11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
 
 ## Reusable infra notes (for later phases)
 - `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
