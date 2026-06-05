@@ -51,3 +51,6 @@ tmp_email/
 
 # vinta-ai-workflows local state (PR context staging, MCP preflight cache)
 .vinta-ai-workflows/
+
+# Vinta AI workflows PR context (durable, not committed)
+.vinta-ai-workflows/prs-context/
