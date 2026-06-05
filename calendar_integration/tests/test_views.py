@@ -1715,17 +1715,13 @@ class TestCalendarViewSet:
 
         url = reverse("api:Calendars-request-import")
 
-        # Setup fresh mocks for each container.calendar_service() call
-        service_instances = [Mock(), Mock()]
-        service_instances[0].authenticate.return_value = None
-        service_instances[0].request_calendars_import.return_value = None
-        service_instances[1].authenticate.return_value = None
-        service_instances[1].request_calendars_import.return_value = None
+        mock_service = Mock()
+        mock_service.authenticate.return_value = None
+        mock_service.request_calendars_import.return_value = None
 
-        with patch(
-            "di_core.containers.container.calendar_service"
-        ) as mock_container_calendar_service:
-            mock_container_calendar_service.side_effect = service_instances
+        from di_core.containers import container
+
+        with container.calendar_service.override(mock_service):
             with patch("calendar_integration.views.transaction.on_commit") as mock_on_commit:
                 response = auth_client.post(url)
 
@@ -1736,11 +1732,11 @@ class TestCalendarViewSet:
                 # Verify on_commit was called twice (once per account)
                 assert mock_on_commit.call_count == 2
 
-                # Verify both callbacks work and call their respective services
+                # Verify both callbacks invoke request_calendars_import
                 callbacks = [call[0][0] for call in mock_on_commit.call_args_list]
-                for callback, service in zip(callbacks, service_instances, strict=True):
+                for callback in callbacks:
                     callback()
-                    service.request_calendars_import.assert_called_once()
+                assert mock_service.request_calendars_import.call_count == 2
 
 
 @pytest.mark.django_db

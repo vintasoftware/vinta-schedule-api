@@ -1,4 +1,5 @@
 import datetime
+from collections.abc import Callable
 from typing import Annotated
 
 from django.db import transaction
@@ -123,11 +124,11 @@ class CalendarViewSet(VintaScheduleModelViewSet):
     def request_import(
         self,
         request,
-        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
+        calendar_service_factory: Annotated[
+            Callable[[], CalendarService], Provide["calendar_service.provider"]
+        ],
     ):
         """Request import of external calendars for the authenticated user."""
-        from di_core.containers import container
-
         user = request.user
 
         membership = get_active_organization_membership(user)
@@ -145,20 +146,14 @@ class CalendarViewSet(VintaScheduleModelViewSet):
             )
 
         try:
-            # Resolve a fresh CalendarService for each account to avoid closure bug
-            # where the mutated service state gets captured by the on_commit callback
             for social_account in social_accounts:
-                # Get a fresh service instance for this account
-                if not container:
-                    raise CalendarIntegrationError("DI container not initialized")
-                fresh_service = container.calendar_service()
+                fresh_service = calendar_service_factory()
 
                 fresh_service.authenticate(
                     account=social_account,
                     organization=membership.organization,
                 )
 
-                # Capture the fresh service by default argument to avoid closure
                 def enqueue_import(service=fresh_service):
                     service.request_calendars_import()
 

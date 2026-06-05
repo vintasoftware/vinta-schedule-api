@@ -47,11 +47,19 @@
 - **Key**: `deactivate`/`reactivate` detail @actions on OrganizationMembershipViewSet; self-lockout guard (403) enforces the org-keeps-an-admin invariant; last-admin guard kept as documented defense-in-depth (unreachable via HTTP). Idempotent. Outer gate green (1285). mypy baseline = 108 full-project errors (pre-existing, test files); confirmed zero new across phases.
 - **Deviations**: none.
 
+### Phase 4 — Request own calendar import ✅
+- **Status**: done, reviewed (3 layers; Layer 3 → import ALL connected accounts, fixed with closure-safe fresh-service-per-account), pushed, PR opened.
+- **Model**: haiku (tier 2); fixers: haiku x1.
+- **Branch**: phase-4 (base: phase-3) — **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/46
+- **Key**: `POST /calendar/request-import/` (@action detail=False). Imports all caller SocialAccounts; per-account fresh `container.calendar_service()` + default-arg closure binding to avoid on_commit shared-state bug; `transaction.on_commit` defers `task.delay`. 202+detail. 400 no-account, 403 membership-less. Outer gate green (1290), mypy 108.
+- **Known nit**: unused injected `calendar_service` param remains (noted in PR; cleanup later).
+- **Pattern for Phases 5/6/7**: resolve fresh service per target if deferring authenticate()+enqueue; otherwise authenticate inline + call synchronously is fine when returning a result.
+
 ## Current Phase
-Phase 4 — Request own calendar import (next).
+Phase 5 — Request own calendar sync (next).
 
 ## Remaining Phases
-5 (request own sync), 6 (admin sync other), 7 (rooms sync trigger), 8 (transfer event), 9 (calendar soft-disable), 10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
+6 (admin sync other), 7 (rooms sync trigger), 8 (transfer event), 9 (calendar soft-disable), 10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
 
 ## Reusable infra notes (for later phases)
 - `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
