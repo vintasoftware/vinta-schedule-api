@@ -104,11 +104,16 @@
 - **Model**: haiku. **Branch**: phase-13 (base phase-12). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/55
 - **Key**: list+retrieve on SystemUserTokenViewSet; `SystemUserTokenSerializer` (no token/hash); per-action get_serializer_class; prefetch_related("available_resources") no-N+1; IsOrganizationAdmin.has_object_permission got a safe hasattr(organization_id) fallback for SystemUser. Outer gate green (1393), mypy 108.
 
+### Phase 14 — Revoke public-API token (admin) ✅
+- **Status**: done, reviewed (3 layers, clean), pushed, PR opened.
+- **Model**: haiku. **Branch**: phase-14 (base phase-13). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/56
+- **Key**: `POST /public-api-tokens/{id}/revoke/` admin-only → is_active=False; end-to-end test proves check_system_user_token then returns False; idempotent; no-secret response. Outer gate green (1403), mypy 108.
+
 ## Current Phase
-Phase 14 — Revoke public-API token (admin) (next). `POST /public-api-tokens/{id}/revoke/` → set SystemUser.is_active=False; IsOrganizationAdmin; org-scoped (cross-org 404). Verify check_system_user_token then rejects the revoked token. Tier 2.
+Phase 15 — Edit public-API token permissions (admin) (next). PATCH /public-api-tokens/{id}/ — `SystemUserTokenUpdateSerializer` accepts available_resources ONLY; reconcile ResourceAccess rows (add missing, remove dropped); never re-issue secret or change integration_name. Add update/partial_update to viewset (get_serializer_class → update serializer for those actions). IsOrganizationAdmin. Tier 2.
 
 ## Remaining Phases
-15 (token edit perms), 16 (events expanded).
+16 (events expanded).
 
 ## Reusable infra notes (for later phases)
 - `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
