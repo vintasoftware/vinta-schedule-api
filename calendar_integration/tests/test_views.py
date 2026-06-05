@@ -24,7 +24,7 @@ from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     UnavailableTimeWindow,
 )
-from organizations.models import Organization, OrganizationMembership
+from organizations.models import Organization, OrganizationMembership, OrganizationRole
 
 
 User = get_user_model()
@@ -1893,6 +1893,307 @@ class TestCalendarViewSet:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "No linked account found" in str(response.data)
         assert calendar.provider in str(response.data)
+
+    def test_admin_sync_another_users_calendar(self, auth_client, organization, calendar):
+        """Test admin syncs another user's calendar"""
+        from di_core.containers import container
+
+        # Create admin user in the organization
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Create calendar owner (different user)
+        calendar_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=calendar_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Create calendar ownership linking owner to calendar
+        CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
+
+        # Create social account for the calendar owner (not the admin)
+        owner_social_account = baker.make(
+            SocialAccount,
+            user=calendar_owner,
+            provider=calendar.provider,
+        )
+        baker.make(
+            SocialToken,
+            account=owner_social_account,
+            token="fake_access_token",
+            token_secret="fake_refresh_token",
+            expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+        )
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+
+        # Create a mock CalendarSync instance
+        mock_calendar_sync = Mock()
+        mock_calendar_sync.id = 123
+        mock_calendar_sync.status = "NOT_STARTED"
+        mock_calendar_sync.start_datetime = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
+        mock_calendar_sync.end_datetime = datetime.datetime(2024, 1, 31, tzinfo=datetime.UTC)
+        mock_calendar_sync.should_update_events = False
+        mock_calendar_sync.error_message = ""
+        mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
+
+        # Authenticate as admin and make request
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                url,
+                data={
+                    "start_datetime": "2024-01-01T00:00:00Z",
+                    "end_datetime": "2024-01-31T23:59:59Z",
+                    "should_update_events": False,
+                },
+                format="json",
+            )
+
+            # Verify response
+            assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+            assert response.data["id"] == 123
+            assert response.data["status"] == "NOT_STARTED"
+
+            # Verify authenticate was called with OWNER's account, not admin's
+            authenticate_call_args = mock_calendar_service.authenticate.call_args
+            assert authenticate_call_args is not None
+            account_arg = authenticate_call_args[1]["account"]
+            assert account_arg == owner_social_account
+            assert account_arg.user == calendar_owner
+            assert account_arg.user != admin_user
+
+            # Verify request_calendar_sync was called
+            mock_calendar_service.request_calendar_sync.assert_called_once()
+
+    def test_admin_sync_non_admin_member_forbidden(self, auth_client, organization, calendar):
+        """Test non-admin member cannot sync any calendar"""
+        # Create regular member user
+        member_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=member_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Create calendar owner (another user)
+        calendar_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=calendar_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
+
+        # Authenticate as regular member
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=member_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        response = client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_sync_cross_org_calendar_not_found(self, auth_client, organization):
+        """Test admin cannot sync calendar from different organization"""
+        # Create admin in first organization
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Create calendar in different organization
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+
+        # Authenticate as admin and try to sync cross-org calendar
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": other_calendar.id})
+
+        response = client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_sync_owner_has_no_linked_account(self, auth_client, organization, calendar):
+        """Test admin cannot sync if calendar owner has no linked account for provider"""
+        # Create admin user
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Create calendar owner
+        calendar_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=calendar_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
+
+        # Do NOT create social account for the owner - this is the test case
+
+        # Authenticate as admin and make request
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        response = client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "has no linked" in response.data["detail"].lower()
+        assert calendar.provider in response.data["detail"]
+
+    def test_admin_sync_calendar_has_no_owner(self, auth_client, organization):
+        """Test admin cannot sync calendar with no owner"""
+        # Create admin user
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Create calendar with no ownership
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+
+        # Authenticate as admin and make request
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        response = client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "has no owner" in response.data["detail"].lower()
+
+    def test_admin_sync_invalid_datetimes(self, auth_client, organization, calendar):
+        """Test admin-sync with invalid datetimes returns 400"""
+        # Create admin user
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Create calendar owner
+        calendar_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=calendar_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
+
+        # Authenticate as admin
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        response = client.post(
+            url,
+            data={
+                "start_datetime": "invalid-date",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_admin_sync_unauthenticated(self, anonymous_client, calendar):
+        """Test unauthenticated user cannot admin-sync"""
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        response = anonymous_client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
 
 @pytest.mark.django_db

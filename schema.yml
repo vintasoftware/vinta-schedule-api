@@ -3649,6 +3649,83 @@ paths:
       responses:
         '204':
           description: No response body
+  /calendar/{id}/admin-sync/:
+    post:
+      operationId: calendar_admin_sync_create
+      description: Admin syncs any calendar in the organization over a date range.
+      summary: Admin syncs another user's calendar
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarSync'
+          description: ''
+  /calendar/{id}/admin-sync{format}:
+    post:
+      operationId: calendar_admin_sync_formatted_create
+      description: Admin syncs any calendar in the organization over a date range.
+      summary: Admin syncs another user's calendar
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarSync'
+          description: ''
   /calendar/{id}/available-windows/:
     get:
       operationId: calendar_available_windows_list

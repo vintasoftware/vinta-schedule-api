@@ -64,6 +64,7 @@ from calendar_integration.services.calendar_group_service import CalendarGroupSe
 from calendar_integration.services.calendar_service import CalendarService
 from common.utils.view_utils import VintaScheduleModelViewSet
 from organizations.models import get_active_organization_membership
+from organizations.permissions import IsOrganizationAdmin
 
 
 class CalendarViewSet(VintaScheduleModelViewSet):
@@ -239,6 +240,97 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         try:
             calendar_service.authenticate(
                 account=social_account,
+                organization=membership.organization,
+            )
+
+            calendar_sync = calendar_service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                should_update_events=should_update_events,
+            )
+
+            serializer = CalendarSyncSerializer(calendar_sync)
+            return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
+        except (ValueError, CalendarIntegrationError, NotImplementedError) as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+    @extend_schema(
+        summary="Admin syncs another user's calendar",
+        description="Admin syncs any calendar in the organization over a date range.",
+        request=CalendarSyncRequestSerializer,
+        responses={202: CalendarSyncSerializer()},
+    )
+    @action(
+        methods=["post"],
+        detail=True,
+        url_path="admin-sync",
+        url_name="admin-sync",
+        permission_classes=[IsOrganizationAdmin],
+    )
+    @inject
+    def admin_sync(
+        self,
+        request,
+        pk=None,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]] = None,  # type: ignore
+    ):
+        """Admin syncs any calendar in the organization over a date range."""
+        calendar = self.get_object()  # org-scoped via get_queryset
+        user = request.user
+
+        # Validate request input using serializer
+        input_serializer = CalendarSyncRequestSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+        start_datetime = data["start_datetime"]
+        end_datetime = data["end_datetime"]
+        should_update_events = data["should_update_events"]
+
+        # Resolve the calendar's owner via CalendarOwnership
+        # Use the default owner if multiple owners exist; else the first
+        ownership = (
+            CalendarOwnership.objects.filter(
+                calendar=calendar,
+                organization_id=calendar.organization_id,
+            )
+            .order_by("-is_default", "id")
+            .first()
+        )
+
+        if not ownership:
+            return Response(
+                {"detail": "Calendar has no owner; cannot sync."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        calendar_owner = ownership.user
+
+        # Resolve the owner's SocialAccount for the calendar's provider
+        owner_social_account = SocialAccount.objects.filter(
+            user=calendar_owner, provider=calendar.provider
+        ).first()
+
+        if not owner_social_account:
+            return Response(
+                {
+                    "detail": f"Calendar owner has no linked {calendar.provider} account; cannot sync."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Get the admin's organization membership (already checked by IsOrganizationAdmin)
+        membership = get_active_organization_membership(user)
+        if not membership:
+            return Response(
+                {"detail": "User is not an active member of any organization."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            # Authenticate with the OWNER's account, not the admin's
+            calendar_service.authenticate(
+                account=owner_social_account,
                 organization=membership.organization,
             )
 
