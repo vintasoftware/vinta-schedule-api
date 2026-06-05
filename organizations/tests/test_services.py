@@ -74,7 +74,14 @@ class TestOrganizationService:
     def test_create_organization_with_sync_rooms(
         self, organization_service, user, mock_calendar_service
     ):
-        """Test creating an organization with room syncing enabled."""
+        """Test creating an organization with room syncing enabled.
+
+        Phase 18: a newly-created org has no GoogleCalendarServiceAccount yet.
+        ``request_rooms_sync`` raises ``NoServiceAccountConfiguredError`` which
+        ``create_organization`` catches and logs; the org is still created and
+        the calendar service is NOT called (no import enqueued until the admin
+        configures a service account via PATCH).
+        """
         organization_name = "Test Organization with Rooms"
 
         organization = organization_service.create_organization(
@@ -92,28 +99,9 @@ class TestOrganizationService:
         assert db_organization.name == organization_name
         assert db_organization.should_sync_rooms is True
 
-        # Verify calendar service methods were called when should_sync_rooms=True
-        mock_calendar_service.initialize_without_provider.assert_called_once_with(
-            user_or_token=user, organization=organization
-        )
-        mock_calendar_service.request_organization_calendar_resources_import.assert_called_once()
-
-        # Verify the import call was made with correct time range (365 days from now)
-        call_args = mock_calendar_service.request_organization_calendar_resources_import.call_args
-        start_time = call_args[1]["start_time"]
-        end_time = call_args[1]["end_time"]
-
-        # Check that start_time is approximately now (within 1 minute tolerance)
-        now = datetime.datetime.now(tz=datetime.UTC)
-        time_diff = abs((start_time - now).total_seconds())
-        assert time_diff < 60, f"Start time should be close to now, but diff is {time_diff} seconds"
-
-        # Check that end_time is approximately 365 days from start_time
-        expected_end_time = start_time + datetime.timedelta(days=365)
-        time_diff = abs((end_time - expected_end_time).total_seconds())
-        assert time_diff < 60, (
-            f"End time should be 365 days from start time, but diff is {time_diff} seconds"
-        )
+        # Phase 18: no service account → neither authenticate nor the import is called.
+        mock_calendar_service.authenticate.assert_not_called()
+        mock_calendar_service.request_organization_calendar_resources_import.assert_not_called()
 
     def test_create_organization_default_sync_rooms_false(
         self, organization_service, user, mock_calendar_service
@@ -177,28 +165,45 @@ class TestOrganizationService:
     def test_create_organization_with_sync_rooms_calendar_service_exception(
         self, user, mock_calendar_service
     ):
-        """Test behavior when calendar service raises an exception during room sync."""
-        from di_core.containers import container
+        """Test behavior when calendar service raises an exception during room sync.
 
-        # Configure mock to raise an exception
-        mock_calendar_service.initialize_without_provider.side_effect = Exception(
-            "Calendar service error"
-        )
+        Phase 18: ``request_rooms_sync`` raises ``NoServiceAccountConfiguredError``
+        (a DRF ValidationError) before touching the calendar service because no
+        ``GoogleCalendarServiceAccount`` exists for a brand-new org.
+        ``create_organization`` catches ONLY that error and swallows it; the org
+        is still created successfully.
+
+        A generic, unexpected exception from the calendar service would still
+        propagate (not tested here — that path requires a service account to be
+        present, so it belongs in a unit test for ``request_rooms_sync`` itself).
+        """
+        from di_core.containers import container
 
         with container.calendar_service.override(mock_calendar_service):
             service = OrganizationService()
 
-            # The method should still raise the exception
-            with pytest.raises(Exception, match="Calendar service error"):
-                service.create_organization(
-                    creator=user, name="Test Organization Exception", should_sync_rooms=True
-                )
+            # Phase 18: org creation must succeed even though no SA is configured
+            # (the NoServiceAccountConfiguredError is caught and logged internally).
+            org = service.create_organization(
+                creator=user, name="Test Organization Exception", should_sync_rooms=True
+            )
+
+        assert org is not None
+        assert org.should_sync_rooms is True
+        # Calendar service must NOT have been touched (no SA → guard fires early).
+        mock_calendar_service.authenticate.assert_not_called()
+        mock_calendar_service.request_organization_calendar_resources_import.assert_not_called()
 
     @pytest.mark.parametrize("should_sync_rooms", [True, False])
     def test_create_organization_parametrized(
         self, organization_service, user, mock_calendar_service, should_sync_rooms
     ):
-        """Parametrized test for both sync_rooms scenarios."""
+        """Parametrized test for both sync_rooms scenarios.
+
+        Phase 18: when ``should_sync_rooms=True`` and no service account is
+        configured (as is always the case for a brand-new org), the import is
+        skipped gracefully — the calendar service is never called.
+        """
         organization_name = f"Test Organization Sync={should_sync_rooms}"
 
         organization = organization_service.create_organization(
@@ -208,12 +213,10 @@ class TestOrganizationService:
         # Verify organization was created correctly
         assert organization.should_sync_rooms == should_sync_rooms
 
-        if should_sync_rooms:
-            mock_calendar_service.initialize_without_provider.assert_called_once()
-            mock_calendar_service.request_organization_calendar_resources_import.assert_called_once()
-        else:
-            mock_calendar_service.initialize_without_provider.assert_not_called()
-            mock_calendar_service.request_organization_calendar_resources_import.assert_not_called()
+        # Phase 18: whether should_sync_rooms is True or False, the calendar service
+        # is never called during org creation because there is no service account yet.
+        mock_calendar_service.authenticate.assert_not_called()
+        mock_calendar_service.request_organization_calendar_resources_import.assert_not_called()
 
     @pytest.fixture
     def organization(self):

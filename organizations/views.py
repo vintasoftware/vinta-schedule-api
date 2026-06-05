@@ -1,4 +1,5 @@
 import datetime
+import logging
 from typing import Annotated
 
 from django.db import transaction
@@ -11,6 +12,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from calendar_integration.models import GoogleCalendarServiceAccount
 from common.utils.view_utils import (
     NoListVintaScheduleModelViewSet,
     NoUpdateVintaScheduleModelViewSet,
@@ -20,6 +22,7 @@ from organizations.exceptions import (
     DuplicateInvitationError,
     InvalidInvitationTokenError,
     InvitationNotFoundError,
+    NoServiceAccountConfiguredError,
     UserAlreadyHasMembershipError,
 )
 from organizations.filtersets import OrganizationInvitationFilterSet
@@ -37,11 +40,15 @@ from organizations.permissions import (
 from organizations.serializers import (
     AcceptInvitationSerializer,
     CurrentMembershipSerializer,
+    GoogleServiceAccountWriteSerializer,
     OrganizationInvitationSerializer,
     OrganizationMembershipSerializer,
     OrganizationSerializer,
 )
 from organizations.services import OrganizationService
+
+
+logger = logging.getLogger(__name__)
 
 
 class OrganizationViewSet(NoListVintaScheduleModelViewSet):
@@ -85,12 +92,27 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         return Organization.objects.none()
 
     def update(self, request, *args, **kwargs):
-        """Override update to trigger rooms sync when should_sync_rooms flips False→True.
+        """Override update to:
+
+        1. Upsert the org's ``GoogleCalendarServiceAccount`` when ``google_service_account``
+           is present in the request body (create-or-update, one per org, calendar FK=None).
+        2. Trigger rooms sync when ``should_sync_rooms`` flips False→True — but only when a
+           service account is configured (either already stored or just provided in this PATCH).
+           If the flag is being enabled and no service account is configured (neither stored
+           nor in the request), return **400** so the admin knows to configure first.
 
         Uses select_for_update to lock the row during snapshot + write, serializing
         concurrent PATCHes and preventing double-fire of the sync on False→True transition.
         """
         partial = kwargs.get("partial", False)
+
+        # Validate the nested google_service_account block if present, before entering the lock.
+        sa_data: dict | None = None
+        raw_sa = request.data.get("google_service_account")
+        if raw_sa is not None:
+            sa_serializer = GoogleServiceAccountWriteSerializer(data=raw_sa)
+            sa_serializer.is_valid(raise_exception=True)
+            sa_data = sa_serializer.validated_data
 
         # Lock the row during snapshot + write.
         with transaction.atomic():
@@ -101,9 +123,37 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
             serializer.is_valid(raise_exception=True)
             self.perform_update(serializer)
 
+            # Upsert the service account if provided.
+            if sa_data is not None:
+                GoogleCalendarServiceAccount.objects.filter_by_organization(instance.id).filter(
+                    calendar_fk__isnull=True
+                ).delete()
+                GoogleCalendarServiceAccount.objects.create(
+                    organization=instance,
+                    calendar_fk=None,
+                    email=sa_data["email"],
+                    audience=sa_data["audience"],
+                    public_key=sa_data["public_key"],
+                    private_key_id=sa_data["private_key_id"],
+                    private_key=sa_data["private_key"],
+                )
+
             # Detect False→True transition (exactly once — only when the flag just became True).
             new_should_sync_rooms = serializer.instance.should_sync_rooms
             fire = (not old_should_sync_rooms) and new_should_sync_rooms
+
+            if fire:
+                # Check that a service account is configured (either just provided or pre-existing).
+                has_sa = sa_data is not None or (
+                    GoogleCalendarServiceAccount.objects.filter_by_organization(instance.id)
+                    .filter(calendar_fk__isnull=True)
+                    .exists()
+                )
+                if not has_sa:
+                    raise ValidationError(
+                        detail=NoServiceAccountConfiguredError.default_detail,
+                        code=NoServiceAccountConfiguredError.default_code,
+                    )
 
         # Register the on_commit callback AFTER the atomic block (so it fires post-commit).
         if fire:
@@ -185,6 +235,16 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
 
         org_service = self.organization_service
         user = request.user
+
+        # Pre-flight: refuse early (400) if no service account is configured so the
+        # admin gets a clear error instead of a 500 when the on_commit fires.
+        has_sa = (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(org.id)
+            .filter(calendar_fk__isnull=True)
+            .exists()
+        )
+        if not has_sa:
+            raise NoServiceAccountConfiguredError()
 
         def _trigger():
             org_service.request_rooms_sync(

@@ -1,4 +1,5 @@
 import datetime
+import logging
 from typing import Annotated
 
 from django.db import IntegrityError, transaction
@@ -12,6 +13,7 @@ from vintasend.services.notification_service import (
     NotificationTypes,
 )
 
+from calendar_integration.models import GoogleCalendarServiceAccount
 from calendar_integration.services.calendar_service import CalendarService
 from common.utils.authentication_utils import (
     generate_long_lived_token,
@@ -22,6 +24,7 @@ from organizations.exceptions import (
     DuplicateInvitationError,
     InvalidInvitationTokenError,
     InvitationNotFoundError,
+    NoServiceAccountConfiguredError,
     UserAlreadyHasMembershipError,
 )
 from organizations.models import (
@@ -31,6 +34,9 @@ from organizations.models import (
     OrganizationRole,
 )
 from users.models import User
+
+
+logger = logging.getLogger(__name__)
 
 
 class OrganizationService:
@@ -65,10 +71,21 @@ class OrganizationService:
         )
 
         if should_sync_rooms:
-            self.request_rooms_sync(
-                organization=self.organization,
-                requested_by=creator,
-            )
+            # A newly created organization cannot have a service account yet, so
+            # request_rooms_sync will raise NoServiceAccountConfiguredError.  We
+            # catch it here and log a warning instead of crashing — org creation
+            # must always succeed; the admin can trigger the sync later once they
+            # have configured a Google service account via PATCH.
+            try:
+                self.request_rooms_sync(
+                    organization=self.organization,
+                    requested_by=creator,
+                )
+            except NoServiceAccountConfiguredError:
+                logger.warning(
+                    "Skipping rooms sync for new organization %s: no service account configured.",
+                    self.organization.id,
+                )
         return self.organization
 
     def request_rooms_sync(
@@ -78,18 +95,30 @@ class OrganizationService:
         start_time: datetime.datetime | None = None,
         end_time: datetime.datetime | None = None,
     ) -> None:
-        """
-        Initialize the calendar service without a provider and enqueue a
+        """Authenticate with the org's Google service account and enqueue a
         calendar resources import for the given organization.
+
+        Resolves the org-level ``GoogleCalendarServiceAccount`` (the one without
+        a ``calendar`` FK).  If none is configured, raises
+        ``NoServiceAccountConfiguredError`` (a DRF ValidationError / 400) so
+        callers can surface a clean error rather than a 500.
 
         :param organization: The organization to sync rooms for.
         :param requested_by: The user (or token) authorizing the sync.
         :param start_time: Import window start; defaults to now.
         :param end_time: Import window end; defaults to now + 365 days.
+        :raises NoServiceAccountConfiguredError: When no service account is
+            configured for the organization.
         """
-        self.calendar_service.initialize_without_provider(
-            user_or_token=requested_by, organization=organization
+        service_account = (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(organization.id)
+            .filter(calendar_fk__isnull=True)
+            .first()
         )
+        if service_account is None:
+            raise NoServiceAccountConfiguredError()
+
+        self.calendar_service.authenticate(account=service_account, organization=organization)
         now = datetime.datetime.now(tz=datetime.UTC)
         self.calendar_service.request_organization_calendar_resources_import(
             start_time=start_time or now,

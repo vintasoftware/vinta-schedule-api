@@ -3,6 +3,7 @@ from typing import Annotated
 from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
+from calendar_integration.models import GoogleCalendarServiceAccount
 from common.utils.serializer_utils import VirtualModelSerializer
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from organizations.services import OrganizationService
@@ -12,7 +13,51 @@ from organizations.virtual_models import (
 )
 
 
+class GoogleServiceAccountWriteSerializer(serializers.Serializer):
+    """Write-only nested serializer for configuring a Google Calendar service account.
+
+    Used within OrganizationSerializer's ``google_service_account`` field.
+    Accepts all five credential fields; ``private_key`` and ``private_key_id``
+    are write-only and are never echoed back in any response.
+    """
+
+    email = serializers.EmailField()
+    audience = serializers.CharField(max_length=255)
+    public_key = serializers.CharField()
+    private_key_id = serializers.CharField(max_length=255, write_only=True)
+    private_key = serializers.CharField(write_only=True)
+
+
+class GoogleServiceAccountReadSerializer(serializers.Serializer):
+    """Read-only nested serializer for the Google Calendar service account status.
+
+    Exposes only non-secret fields plus a ``configured`` boolean flag so the
+    frontend can display whether credentials are set without ever returning
+    ``private_key`` or ``private_key_id``.
+    """
+
+    email = serializers.CharField(read_only=True)
+    audience = serializers.CharField(read_only=True)
+    configured = serializers.SerializerMethodField()
+
+    def get_configured(self, obj: GoogleCalendarServiceAccount) -> bool:
+        """Return True always — presence of the object means it is configured."""
+        return True
+
+
 class OrganizationSerializer(VirtualModelSerializer):
+    """Serializer for Organization instances.
+
+    The ``google_service_account`` field supports both reading and writing:
+    - **Write**: accepts ``email``, ``audience``, ``public_key``,
+      ``private_key_id`` (write-only), and ``private_key`` (write-only).
+      Omitting the field on PATCH leaves existing credentials unchanged.
+    - **Read**: returns ``email``, ``audience``, and ``configured: true/false``.
+      Secret fields are never returned.
+    """
+
+    google_service_account = serializers.SerializerMethodField()
+
     class Meta:
         model = Organization
         virtual_model = OrganizationVirtualModel
@@ -20,9 +65,21 @@ class OrganizationSerializer(VirtualModelSerializer):
             "id",
             "name",
             "should_sync_rooms",
+            "google_service_account",
             "created",
             "modified",
         )
+
+    def get_google_service_account(self, obj: Organization) -> dict | None:
+        """Return read-only service account info (no secrets), or None if unconfigured."""
+        account = (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(obj.id)
+            .filter(calendar_fk__isnull=True)
+            .first()
+        )
+        if account is None:
+            return None
+        return GoogleServiceAccountReadSerializer(account).data
 
     @inject
     def __init__(

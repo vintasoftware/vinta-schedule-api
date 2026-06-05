@@ -1,5 +1,5 @@
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
@@ -10,6 +10,7 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from calendar_integration.models import GoogleCalendarServiceAccount
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.exceptions import InvalidInvitationTokenError
 from organizations.models import (
@@ -1975,9 +1976,24 @@ class TestSyncRoomsAction:
     @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
     @patch("organizations.services.OrganizationService.request_rooms_sync")
     def test_admin_sync_rooms_default_times_returns_202(self, mock_sync, _mock_on_commit, user):
-        """Admin POST without body → 202; request_rooms_sync called with no explicit times."""
+        """Admin POST without body → 202; request_rooms_sync called with no explicit times.
+
+        Phase 18: a GoogleCalendarServiceAccount must exist for the org or the
+        view returns 400.  Provide one so the pre-flight check passes.
+        """
         organization = OrganizationTestFactory.create_organization(name="Sync Org")
         admin_client = self._make_admin_client(user, organization)
+        # Pre-flight requires a service account; provide one.
+        baker.make(
+            GoogleCalendarServiceAccount,
+            organization=organization,
+            calendar_fk=None,
+            email="sa@example.com",
+            audience="https://www.googleapis.com/auth/admin.directory.resource.calendar",
+            public_key="pk",
+            private_key_id="kid",
+            private_key="key",
+        )
 
         url = reverse("api:Organizations-sync-rooms", kwargs={"pk": organization.pk})
         response = admin_client.post(url, {}, format="json")
@@ -1993,11 +2009,26 @@ class TestSyncRoomsAction:
     @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
     @patch("organizations.services.OrganizationService.request_rooms_sync")
     def test_admin_sync_rooms_explicit_times_returns_202(self, mock_sync, _mock_on_commit, user):
-        """Admin POST with ISO start_time/end_time → 202; service called with parsed datetimes."""
+        """Admin POST with ISO start_time/end_time → 202; service called with parsed datetimes.
+
+        Phase 18: a GoogleCalendarServiceAccount must exist for the org or the
+        view returns 400.  Provide one so the pre-flight check passes.
+        """
         import datetime
 
         organization = OrganizationTestFactory.create_organization(name="Explicit Sync Org")
         admin_client = self._make_admin_client(user, organization)
+        # Pre-flight requires a service account; provide one.
+        baker.make(
+            GoogleCalendarServiceAccount,
+            organization=organization,
+            calendar_fk=None,
+            email="sa@example.com",
+            audience="https://www.googleapis.com/auth/admin.directory.resource.calendar",
+            public_key="pk",
+            private_key_id="kid",
+            private_key="key",
+        )
 
         start = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
         end = datetime.datetime(2027, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
@@ -2101,8 +2132,23 @@ class TestShouldSyncRoomsTransition:
     @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
     @patch("organizations.services.OrganizationService.request_rooms_sync")
     def test_patch_false_to_true_fires_sync_once(self, mock_sync, _mock_on_commit, user):
-        """Admin PATCH should_sync_rooms False→True → 200; request_rooms_sync called once."""
+        """Admin PATCH should_sync_rooms False→True → 200; request_rooms_sync called once.
+
+        Phase 18: the view checks for a service account before firing the sync.
+        Provide one so the check passes.
+        """
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
+        # Provide a service account so the pre-flight check passes.
+        baker.make(
+            GoogleCalendarServiceAccount,
+            organization=org,
+            calendar_fk=None,
+            email="sa@example.com",
+            audience="https://www.googleapis.com/auth/admin.directory.resource.calendar",
+            public_key="pk",
+            private_key_id="kid",
+            private_key="key",
+        )
 
         url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
         response = client.patch(url, {"should_sync_rooms": True}, format="json")
@@ -2215,8 +2261,23 @@ class TestShouldSyncRoomsTransition:
     @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
     @patch("organizations.services.OrganizationService.request_rooms_sync")
     def test_admin_can_set_should_sync_rooms_value_persists(self, mock_sync, _mock_on_commit, user):
-        """Admin PATCH should_sync_rooms → value persists in DB (configure-org use-case)."""
+        """Admin PATCH should_sync_rooms → value persists in DB (configure-org use-case).
+
+        Phase 18: the view checks for a service account before firing the sync.
+        Provide one so the check passes and the PATCH returns 200.
+        """
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
+        # Provide a service account so the False→True transition check passes.
+        baker.make(
+            GoogleCalendarServiceAccount,
+            organization=org,
+            calendar_fk=None,
+            email="sa@example.com",
+            audience="https://www.googleapis.com/auth/admin.directory.resource.calendar",
+            public_key="pk",
+            private_key_id="kid",
+            private_key="key",
+        )
 
         url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
         response = client.patch(url, {"should_sync_rooms": True}, format="json")
@@ -2227,3 +2288,411 @@ class TestShouldSyncRoomsTransition:
         # Verify the value was persisted to the DB.
         org.refresh_from_db()
         assert org.should_sync_rooms is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 18 — Rooms-sync configuration via org PATCH + working trigger
+# ---------------------------------------------------------------------------
+
+# Reusable service-account payload used across Phase 18 tests.
+_SA_PAYLOAD = {
+    "email": "rooms-sa@example.iam.gserviceaccount.com",
+    "audience": "https://www.googleapis.com/auth/admin.directory.resource.calendar",
+    "public_key": "test-public-key-value-not-a-real-key",
+    "private_key_id": "key-id-abc123",
+    "private_key": "test-private-key-value-not-a-real-key",
+}
+
+
+@pytest.mark.django_db
+class TestPhase18ServiceAccountConfig:
+    """Admin configures the org's Google service-account credentials via PATCH.
+
+    Security invariant: private_key and private_key_id are never returned in
+    any response.  Rotation: a second PATCH replaces the stored credentials.
+    """
+
+    def _make_admin(self, user, organization):
+        """Return an admin APIClient force-authenticated as an ADMIN of ``organization``."""
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_patch_with_service_account_creates_row_and_no_secrets_in_response(self, user):
+        """Admin PATCH with nested google_service_account → 200; row created; no secrets."""
+        org = baker.make(Organization, name="SA Org", should_sync_rooms=False)
+        client = self._make_admin(user, org)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
+        response = client.patch(
+            url,
+            {"google_service_account": _SA_PAYLOAD},
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        body = response.json()
+
+        # Service account info is present in the response.
+        sa_response = body.get("google_service_account")
+        assert sa_response is not None, f"Expected google_service_account in response: {body}"
+        assert sa_response["configured"] is True
+        assert sa_response["email"] == _SA_PAYLOAD["email"]
+        assert sa_response["audience"] == _SA_PAYLOAD["audience"]
+
+        # Secrets MUST NOT be in the response.
+        assert "private_key" not in sa_response, "private_key must not be returned"
+        assert "private_key_id" not in sa_response, "private_key_id must not be returned"
+
+        # DB row created.
+        stored = (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(org.id)
+            .filter(calendar_fk__isnull=True)
+            .first()
+        )
+        assert stored is not None, "GoogleCalendarServiceAccount row should have been created"
+        assert stored.email == _SA_PAYLOAD["email"]
+        assert stored.audience == _SA_PAYLOAD["audience"]
+
+    def test_second_patch_rotates_credentials(self, user):
+        """Second PATCH with different creds replaces the stored service account."""
+        org = baker.make(Organization, name="Rotate Org", should_sync_rooms=False)
+        client = self._make_admin(user, org)
+        url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
+
+        # First PATCH.
+        client.patch(url, {"google_service_account": _SA_PAYLOAD}, format="json")
+        first_sa = (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(org.id)
+            .filter(calendar_fk__isnull=True)
+            .first()
+        )
+        assert first_sa is not None
+
+        # Second PATCH with a different email.
+        new_payload = dict(_SA_PAYLOAD)
+        new_payload["email"] = "rotated-sa@example.iam.gserviceaccount.com"
+        new_payload["private_key_id"] = "new-key-id-xyz"
+        response = client.patch(url, {"google_service_account": new_payload}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Exactly one row remains (the rotated one).
+        all_sa = list(
+            GoogleCalendarServiceAccount.objects.filter_by_organization(org.id).filter(
+                calendar_fk__isnull=True
+            )
+        )
+        assert len(all_sa) == 1, f"Expected exactly one SA row, got {len(all_sa)}"
+        assert all_sa[0].email == "rotated-sa@example.iam.gserviceaccount.com"
+
+        # Response reflects the rotated email.
+        body = response.json()
+        assert (
+            body["google_service_account"]["email"] == "rotated-sa@example.iam.gserviceaccount.com"
+        )
+        # Secrets still absent.
+        assert "private_key" not in body["google_service_account"]
+        assert "private_key_id" not in body["google_service_account"]
+
+    def test_patch_omitting_service_account_leaves_existing_unchanged(self, user):
+        """Omitting google_service_account on PATCH is a no-op for the SA row."""
+        org = baker.make(Organization, name="No-Op Org", should_sync_rooms=False)
+        client = self._make_admin(user, org)
+        url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
+
+        # Create the SA first.
+        client.patch(url, {"google_service_account": _SA_PAYLOAD}, format="json")
+        original_id = (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(org.id)
+            .filter(calendar_fk__isnull=True)
+            .values_list("id", flat=True)
+            .first()
+        )
+
+        # PATCH only the name — google_service_account omitted.
+        response = client.patch(url, {"name": "No-Op Renamed"}, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # The same row still exists.
+        after_id = (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(org.id)
+            .filter(calendar_fk__isnull=True)
+            .values_list("id", flat=True)
+            .first()
+        )
+        assert after_id == original_id
+
+        # Response still shows configured.
+        body = response.json()
+        assert body["google_service_account"]["configured"] is True
+
+    def test_get_response_shows_configured_true_after_patch(self, user):
+        """After PATCH with SA creds, the read response shows configured=true."""
+        org = baker.make(Organization, name="Read Org", should_sync_rooms=False)
+        client = self._make_admin(user, org)
+        url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
+
+        # Ensure a SA exists.
+        baker.make(
+            GoogleCalendarServiceAccount,
+            organization=org,
+            calendar_fk=None,
+            email=_SA_PAYLOAD["email"],
+            audience=_SA_PAYLOAD["audience"],
+            public_key=_SA_PAYLOAD["public_key"],
+            private_key_id=_SA_PAYLOAD["private_key_id"],
+            private_key=_SA_PAYLOAD["private_key"],
+        )
+
+        # The read path is exercised via PATCH (which returns the object).
+        response = client.patch(url, {"name": "Read Org Renamed"}, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+        body = response.json()
+
+        assert body["google_service_account"] is not None
+        assert body["google_service_account"]["configured"] is True
+        assert body["google_service_account"]["email"] == _SA_PAYLOAD["email"]
+        assert "private_key" not in body["google_service_account"]
+        assert "private_key_id" not in body["google_service_account"]
+
+    def test_patch_service_account_non_admin_returns_403(self, auth_client, user):
+        """Non-admin member cannot configure the service account → 403."""
+        org = baker.make(Organization, name="Member SA Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
+        response = auth_client.patch(url, {"google_service_account": _SA_PAYLOAD}, format="json")
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_patch_service_account_cross_org_returns_404(self, user):
+        """Admin cannot configure a service account on a different org → 404."""
+        own_org = baker.make(Organization, name="Own Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=own_org,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        other_org = baker.make(Organization, name="Other Org")
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        url = reverse("api:Organizations-detail", kwargs={"pk": other_org.pk})
+        response = client.patch(url, {"google_service_account": _SA_PAYLOAD}, format="json")
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_patch_service_account_unauthenticated_returns_401(self):
+        """Unauthenticated request cannot configure a service account → 401."""
+        org = baker.make(Organization, name="Anon SA Org")
+        client = APIClient()
+        url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
+        response = client.patch(url, {"google_service_account": _SA_PAYLOAD}, format="json")
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+
+@pytest.mark.django_db
+class TestPhase18SyncRoomsTrigger:
+    """POST sync-rooms works when creds configured; 400 (never 500) when not.
+
+    Mocks ``calendar_service.authenticate`` and
+    ``request_organization_calendar_resources_import`` so the tests do not hit
+    the Google API.  The test asserts that ``authenticate`` is called with the
+    stored ``GoogleCalendarServiceAccount``.
+    """
+
+    def _make_admin(self, user, organization):
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
+    def test_sync_rooms_with_service_account_calls_authenticate(self, _mock_on_commit, user):
+        """With a service account configured, sync-rooms authenticates with it."""
+        org = baker.make(Organization, name="SA Sync Org", should_sync_rooms=True)
+        sa = baker.make(
+            GoogleCalendarServiceAccount,
+            organization=org,
+            calendar_fk=None,
+            email=_SA_PAYLOAD["email"],
+            audience=_SA_PAYLOAD["audience"],
+            public_key=_SA_PAYLOAD["public_key"],
+            private_key_id=_SA_PAYLOAD["private_key_id"],
+            private_key=_SA_PAYLOAD["private_key"],
+        )
+        client = self._make_admin(user, org)
+
+        mock_calendar_service = MagicMock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.request_organization_calendar_resources_import.return_value = None
+
+        from di_core.containers import container
+
+        with container.calendar_service.override(mock_calendar_service):
+            url = reverse("api:Organizations-sync-rooms", kwargs={"pk": org.pk})
+            response = client.post(url, {}, format="json")
+
+        assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+
+        # authenticate must have been called with our service account.
+        mock_calendar_service.authenticate.assert_called_once()
+        call_kwargs = mock_calendar_service.authenticate.call_args.kwargs
+        assert call_kwargs["account"].id == sa.id
+        assert call_kwargs["organization"] == org
+
+        # import must have been called.
+        mock_calendar_service.request_organization_calendar_resources_import.assert_called_once()
+
+    def test_sync_rooms_without_service_account_returns_400(self, user):
+        """Without a service account configured, sync-rooms returns 400."""
+        org = baker.make(Organization, name="No SA Org", should_sync_rooms=True)
+        client = self._make_admin(user, org)
+
+        url = reverse("api:Organizations-sync-rooms", kwargs={"pk": org.pk})
+        response = client.post(url, {}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        body = str(response.json()).lower()
+        assert "service account" in body or "configure" in body, (
+            f"Expected a 'service account' message in the 400 response: {body}"
+        )
+
+
+@pytest.mark.django_db
+class TestPhase18TransitionWithNoCredentials:
+    """Enabling should_sync_rooms False→True without creds → 400 (not 500)."""
+
+    def _make_admin_client_and_org(self, user, should_sync_rooms=False):
+        organization = baker.make(
+            Organization, name="Creds Transition Org", should_sync_rooms=should_sync_rooms
+        )
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client, organization
+
+    def test_enable_sync_rooms_without_creds_returns_400(self, user):
+        """PATCH enabling should_sync_rooms with no SA configured → 400."""
+        client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
+        response = client.patch(url, {"should_sync_rooms": True}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        body = str(response.json()).lower()
+        assert "service account" in body or "configure" in body, (
+            f"Expected a 'service account' message in 400 response: {body}"
+        )
+
+    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
+    def test_enable_sync_rooms_with_creds_in_same_patch_succeeds(self, _mock_on_commit, user):
+        """PATCH enabling should_sync_rooms + providing SA creds in same request → 200."""
+        client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
+
+        mock_calendar_service = MagicMock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.request_organization_calendar_resources_import.return_value = None
+
+        from di_core.containers import container
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.patch(
+                url,
+                {"should_sync_rooms": True, "google_service_account": _SA_PAYLOAD},
+                format="json",
+            )
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        body = response.json()
+        assert body["should_sync_rooms"] is True
+        assert body["google_service_account"]["configured"] is True
+
+    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
+    def test_enable_sync_rooms_with_pre_existing_creds_succeeds(self, _mock_on_commit, user):
+        """PATCH enabling should_sync_rooms when SA already exists → 200; sync fires."""
+        client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
+
+        # Pre-configure a service account.
+        baker.make(
+            GoogleCalendarServiceAccount,
+            organization=org,
+            calendar_fk=None,
+            email=_SA_PAYLOAD["email"],
+            audience=_SA_PAYLOAD["audience"],
+            public_key=_SA_PAYLOAD["public_key"],
+            private_key_id=_SA_PAYLOAD["private_key_id"],
+            private_key=_SA_PAYLOAD["private_key"],
+        )
+
+        mock_calendar_service = MagicMock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.request_organization_calendar_resources_import.return_value = None
+
+        from di_core.containers import container
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.patch(url, {"should_sync_rooms": True}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        body = response.json()
+        assert body["should_sync_rooms"] is True
+
+
+@pytest.mark.django_db
+class TestPhase18CreateOrganizationNoCredentials:
+    """create_organization(should_sync_rooms=True) with no creds must not crash."""
+
+    def test_create_organization_with_sync_rooms_no_creds_does_not_crash(self, user):
+        """Org is created successfully even when no service account is available.
+
+        The rooms sync is silently skipped (warning logged); org creation returns
+        the new Organization without crashing.
+        """
+        from di_core.containers import container
+
+        # We don't override the calendar service here — the real code path should
+        # hit the NoServiceAccountConfiguredError guard in request_rooms_sync and
+        # swallow it gracefully inside create_organization.
+        service = container.organization_service()
+        org = service.create_organization(
+            creator=user,
+            name="NoCredOrg",
+            should_sync_rooms=True,
+        )
+
+        assert org is not None
+        assert org.name == "NoCredOrg"
+        assert org.should_sync_rooms is True
+
+        # Org and membership exist.
+        assert Organization.objects.filter(id=org.id).exists()
+        membership = OrganizationMembership.objects.get(user=user, organization=org)
+        assert membership is not None
