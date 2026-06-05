@@ -208,27 +208,26 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Parse and validate datetime fields
-        start_datetime_str = request.data.get("start_datetime")
-        end_datetime_str = request.data.get("end_datetime")
-
-        if not start_datetime_str or not end_datetime_str:
-            raise ValidationError(
-                {"non_field_errors": ["start_datetime and end_datetime are required"]}
-            )
-
-        try:
-            start_datetime = datetime.datetime.fromisoformat(
-                start_datetime_str.replace("Z", "+00:00")
-            )
-            end_datetime = datetime.datetime.fromisoformat(end_datetime_str.replace("Z", "+00:00"))
-        except (ValueError, CalendarIntegrationError) as e:
-            raise ValidationError({"non_field_errors": [f"Invalid datetime format: {e!s}"]}) from e
-
-        should_update_events = request.data.get("should_update_events", False)
+        # Validate request input using serializer
+        input_serializer = CalendarSyncRequestSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+        start_datetime = data["start_datetime"]
+        end_datetime = data["end_datetime"]
+        should_update_events = data["should_update_events"]
 
         # Get social account for authentication
         social_account = SocialAccount.objects.filter(user=user, provider=calendar.provider).first()
+
+        # Guard against missing social account
+        if social_account is None:
+            raise ValidationError(
+                {
+                    "non_field_errors": [
+                        f"No linked account found for provider '{calendar.provider}'."
+                    ]
+                }
+            )
 
         membership = get_active_organization_membership(user)
         if not membership:

@@ -1872,6 +1872,28 @@ class TestCalendarViewSet:
         )
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
+    def test_request_sync_no_social_account_for_provider(self, auth_client, user, calendar):
+        """Test sync fails with 400 when user has no linked account for calendar provider"""
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Do NOT create a social account for this provider - this is the test case
+
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
+
+        response = auth_client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "No linked account found" in str(response.data)
+        assert calendar.provider in str(response.data)
+
 
 @pytest.mark.django_db
 class TestCalendarIntegrationPermissions:
