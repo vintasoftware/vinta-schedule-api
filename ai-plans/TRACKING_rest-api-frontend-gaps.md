@@ -99,11 +99,16 @@
 - **Key**: NEW public_api REST surface — `SystemUserTokenViewSet` (create-only), `public_api/routes.py` wired into urls. `POST /public-api-tokens/` admin-only → create_system_user, persist ResourceAccess, return plaintext token ONCE (hash never serialized). Duplicate name → 400 via nested savepoint (ATOMIC_REQUESTS-safe). Serializers: `SystemUserTokenCreateSerializer`, `SystemUserTokenResponseSerializer`. Outer gate green (1376), mypy 108.
 - **Infra for 13/14/15**: extend SystemUserTokenViewSet; org-scoped get_queryset already returns SystemUser for caller's org (anon-guarded).
 
+### Phase 13 — List public-API tokens (admin) ✅
+- **Status**: done, reviewed (3 layers, clean), pushed, PR opened.
+- **Model**: haiku. **Branch**: phase-13 (base phase-12). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/55
+- **Key**: list+retrieve on SystemUserTokenViewSet; `SystemUserTokenSerializer` (no token/hash); per-action get_serializer_class; prefetch_related("available_resources") no-N+1; IsOrganizationAdmin.has_object_permission got a safe hasattr(organization_id) fallback for SystemUser. Outer gate green (1393), mypy 108.
+
 ## Current Phase
-Phase 13 — List public-API tokens (admin) (next). Add list+retrieve to SystemUserTokenViewSet; new list serializer exposing id/integration_name/is_active/available_resources — NEVER token or long_lived_token_hash. Tier 2.
+Phase 14 — Revoke public-API token (admin) (next). `POST /public-api-tokens/{id}/revoke/` → set SystemUser.is_active=False; IsOrganizationAdmin; org-scoped (cross-org 404). Verify check_system_user_token then rejects the revoked token. Tier 2.
 
 ## Remaining Phases
-14 (token revoke), 15 (token edit perms), 16 (events expanded).
+15 (token edit perms), 16 (events expanded).
 
 ## Reusable infra notes (for later phases)
 - `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
