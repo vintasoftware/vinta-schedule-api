@@ -121,3 +121,19 @@ class SystemUserTokenSerializer(serializers.ModelSerializer):
     def get_available_resources(self, obj: SystemUser) -> list[str]:
         """Return a list of resource_name values from the prefetched ResourceAccess rows."""
         return [ra.resource_name for ra in obj.available_resources.all()]
+
+
+class SystemUserTokenUpdateSerializer(serializers.Serializer):
+    """Input serializer for updating a public-API token's resource grants (Phase 15).
+
+    Accepts ``available_resources`` (a non-empty list of valid ``PublicAPIResources`` values)
+    only.  ``integration_name`` and ``token`` are never accepted or changed.
+    The view reconciles ResourceAccess rows: adds rows for newly-granted resources,
+    removes rows for dropped resources.
+    """
+
+    available_resources = serializers.ListField(
+        child=serializers.ChoiceField(choices=PublicAPIResources.choices),
+        required=True,
+        allow_empty=False,
+    )

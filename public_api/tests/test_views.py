@@ -769,3 +769,396 @@ class TestSystemUserTokenViewSetRevoke:
 
         response = anonymous_client.post(self._url(system_user.id))
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+
+@pytest.mark.django_db
+class TestSystemUserTokenViewSetUpdate:
+    """PATCH /public-api-tokens/{id}/ — Phase 15 update action."""
+
+    def _url(self, token_id):
+        return reverse("api:PublicAPITokens-detail", kwargs={"pk": token_id})
+
+    # ------------------------------------------------------------------
+    # Happy path
+    # ------------------------------------------------------------------
+
+    def test_admin_patches_token_returns_200(self, admin_client, organization):
+        """Admin can PATCH a token to update resource grants; 200 returned."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+    def test_patch_replaces_resource_grants_exactly(self, admin_client, organization):
+        """PATCH replaces the token's ResourceAccess rows; old grants removed, new ones added."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        initial_resources = [
+            PublicAPIResources.CALENDAR,
+            PublicAPIResources.CALENDAR_EVENT,
+        ]
+        for res in initial_resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=res)
+
+        # Patch to replace with different resources
+        new_resources = [PublicAPIResources.USER, PublicAPIResources.ORGANIZATION]
+        payload = {"available_resources": new_resources}
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify DB has EXACTLY the new set (old removed, new added)
+        persisted = set(
+            ResourceAccess.objects.filter(system_user=system_user).values_list(
+                "resource_name", flat=True
+            )
+        )
+        assert persisted == set(new_resources)
+
+    def test_patch_adds_resources_when_empty_initially(self, admin_client, organization):
+        """PATCH adds resources to a token that initially has none."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        # Create with no ResourceAccess rows initially
+        assert ResourceAccess.objects.filter(system_user=system_user).count() == 0
+
+        # Patch to grant resources
+        new_resources = [PublicAPIResources.CALENDAR, PublicAPIResources.USER]
+        payload = {"available_resources": new_resources}
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify resources were added
+        persisted = set(
+            ResourceAccess.objects.filter(system_user=system_user).values_list(
+                "resource_name", flat=True
+            )
+        )
+        assert persisted == set(new_resources)
+
+    def test_patch_removes_all_resources_when_none_desired(self, admin_client, organization):
+        """PATCH fails when trying to set empty available_resources (validation error)."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        # Attempt to PATCH with empty list
+        payload = {"available_resources": []}
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_patch_response_includes_updated_resources(self, admin_client, organization):
+        """PATCH response includes the new available_resources list."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        new_resources = [PublicAPIResources.USER, PublicAPIResources.ORGANIZATION]
+        payload = {"available_resources": new_resources}
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        returned_resources = set(response.json()["available_resources"])
+        assert returned_resources == set(new_resources)
+
+    def test_patch_does_not_change_token_hash(self, admin_client, organization):
+        """PATCH does NOT change the SystemUser.long_lived_token_hash."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        original_hash = system_user.long_lived_token_hash
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify the hash unchanged in DB
+        system_user.refresh_from_db()
+        assert system_user.long_lived_token_hash == original_hash
+
+    def test_patch_does_not_return_token_in_response(self, admin_client, organization):
+        """PATCH response must never include the token plaintext or hash."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        data = response.json()
+        assert "token" not in data
+        assert "long_lived_token_hash" not in data
+
+    def test_patch_ignores_integration_name_in_body(self, admin_client, organization):
+        """PATCH ignores integration_name if sent in the request body."""
+        system_user = baker.make(
+            SystemUser,
+            organization=organization,
+            integration_name="original_name",
+            is_active=True,
+        )
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        # Attempt to change integration_name via PATCH
+        payload = {
+            "available_resources": [PublicAPIResources.USER],
+            "integration_name": "different_name",
+        }
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify integration_name unchanged in DB
+        system_user.refresh_from_db()
+        assert system_user.integration_name == "original_name"
+
+    def test_patch_deduplicates_duplicate_desired_resources(self, admin_client, organization):
+        """If the request lists the same resource twice, de-duplication works."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        # Send duplicates in the list
+        payload = {
+            "available_resources": [
+                PublicAPIResources.USER,
+                PublicAPIResources.USER,
+                PublicAPIResources.ORGANIZATION,
+            ]
+        }
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify only one row per resource exists (no duplicates)
+        persisted = list(
+            ResourceAccess.objects.filter(system_user=system_user).values_list(
+                "resource_name", flat=True
+            )
+        )
+        assert persisted.count(PublicAPIResources.USER) == 1
+        assert len(persisted) == 2  # Only USER and ORGANIZATION
+
+    def test_patch_response_includes_required_fields(self, admin_client, organization):
+        """PATCH response includes id, integration_name, is_active, available_resources."""
+        system_user = baker.make(
+            SystemUser,
+            organization=organization,
+            integration_name="patch_test",
+            is_active=True,
+        )
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+
+        assert "id" in data
+        assert data["id"] == system_user.id
+        assert "integration_name" in data
+        assert data["integration_name"] == "patch_test"
+        assert "is_active" in data
+        assert data["is_active"] is True
+        assert "available_resources" in data
+
+    def test_patch_does_not_change_is_active_status(self, admin_client, organization):
+        """PATCH does NOT change the SystemUser.is_active field."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=False)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify is_active unchanged (still False)
+        system_user.refresh_from_db()
+        assert system_user.is_active is False
+
+    # ------------------------------------------------------------------
+    # Validation errors
+    # ------------------------------------------------------------------
+
+    def test_patch_invalid_resource_value_returns_400(self, admin_client, organization):
+        """An unrecognised resource value in PATCH yields HTTP 400."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": ["not_a_real_resource"]}
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_patch_missing_available_resources_returns_400(self, admin_client, organization):
+        """Missing available_resources field in PATCH yields HTTP 400."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {}
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    # ------------------------------------------------------------------
+    # Permission / auth failures
+    # ------------------------------------------------------------------
+
+    def test_patch_member_user_gets_403(self, member_client, organization):
+        """A non-admin member is rejected with HTTP 403 on PATCH."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = member_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_patch_membership_less_user_gets_403(self, membership_less_client, organization):
+        """A user with no membership is rejected with HTTP 403 on PATCH."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = membership_less_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_patch_anonymous_user_gets_401(self, anonymous_client, organization):
+        """An unauthenticated request is rejected with HTTP 401 on PATCH."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = anonymous_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    # ------------------------------------------------------------------
+    # Org scoping
+    # ------------------------------------------------------------------
+
+    def test_patch_cross_org_token_returns_404(
+        self, admin_client, organization, other_organization
+    ):
+        """Attempt to PATCH a token from another org returns 404."""
+        system_user = baker.make(SystemUser, organization=other_organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = admin_client.patch(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+
+@pytest.mark.django_db
+class TestSystemUserTokenViewSetPartialUpdate:
+    """PUT /public-api-tokens/{id}/ — Phase 15 full update action."""
+
+    def _url(self, token_id):
+        return reverse("api:PublicAPITokens-detail", kwargs={"pk": token_id})
+
+    # ------------------------------------------------------------------
+    # Happy path
+    # ------------------------------------------------------------------
+
+    def test_admin_puts_token_returns_200(self, admin_client, organization):
+        """Admin can PUT a token to update resource grants; 200 returned."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = admin_client.put(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+    def test_put_replaces_resource_grants_exactly(self, admin_client, organization):
+        """PUT replaces the token's ResourceAccess rows; old grants removed, new ones added."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        initial_resources = [
+            PublicAPIResources.CALENDAR,
+            PublicAPIResources.CALENDAR_EVENT,
+        ]
+        for res in initial_resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=res)
+
+        # PUT to replace with different resources
+        new_resources = [PublicAPIResources.USER, PublicAPIResources.ORGANIZATION]
+        payload = {"available_resources": new_resources}
+        response = admin_client.put(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify DB has EXACTLY the new set
+        persisted = set(
+            ResourceAccess.objects.filter(system_user=system_user).values_list(
+                "resource_name", flat=True
+            )
+        )
+        assert persisted == set(new_resources)
+
+    def test_put_response_includes_required_fields(self, admin_client, organization):
+        """PUT response includes id, integration_name, is_active, available_resources."""
+        system_user = baker.make(
+            SystemUser,
+            organization=organization,
+            integration_name="put_test",
+            is_active=True,
+        )
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = admin_client.put(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+
+        assert "id" in data
+        assert data["id"] == system_user.id
+        assert "integration_name" in data
+        assert data["integration_name"] == "put_test"
+        assert "is_active" in data
+        assert "available_resources" in data
+
+    # ------------------------------------------------------------------
+    # Permission / auth failures
+    # ------------------------------------------------------------------
+
+    def test_put_member_user_gets_403(self, member_client, organization):
+        """A non-admin member is rejected with HTTP 403 on PUT."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = member_client.put(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_put_cross_org_token_returns_404(self, admin_client, organization, other_organization):
+        """Attempt to PUT a token from another org returns 404."""
+        system_user = baker.make(SystemUser, organization=other_organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        payload = {"available_resources": [PublicAPIResources.USER]}
+        response = admin_client.put(self._url(system_user.id), payload, format="json")
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)

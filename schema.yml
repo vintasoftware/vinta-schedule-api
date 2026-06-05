@@ -5966,6 +5966,96 @@ paths:
               schema:
                 $ref: '#/components/schemas/SystemUserToken'
           description: ''
+    put:
+      operationId: public_api_tokens_update
+      description: |-
+        Update a token's resource grants via PUT (full replacement).
+
+        Accepts ``available_resources`` (a non-empty list of valid resource values).
+        Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        ``integration_name`` and ``token`` are never mutated; if sent in the body,
+        they are silently ignored.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 400 is returned for invalid resource values or empty list.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+    patch:
+      operationId: public_api_tokens_partial_update
+      description: |-
+        Update a token's resource grants via PATCH (full replacement).
+
+        PATCH and PUT behave identically for this endpoint: both require the full
+        ``available_resources`` list and replace grants completely.
+
+        Accepts ``available_resources`` (a non-empty list of valid resource values).
+        Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        ``integration_name`` and ``token`` are never mutated; if sent in the body,
+        they are silently ignored.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 400 is returned for invalid resource values or empty list.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
   /public-api-tokens/{id}{format}:
     get:
       operationId: public_api_tokens_formatted_retrieve
@@ -5996,6 +6086,110 @@ paths:
         required: true
       tags:
       - public-api-tokens
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+    put:
+      operationId: public_api_tokens_formatted_update
+      description: |-
+        Update a token's resource grants via PUT (full replacement).
+
+        Accepts ``available_resources`` (a non-empty list of valid resource values).
+        Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        ``integration_name`` and ``token`` are never mutated; if sent in the body,
+        they are silently ignored.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 400 is returned for invalid resource values or empty list.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+    patch:
+      operationId: public_api_tokens_formatted_partial_update
+      description: |-
+        Update a token's resource grants via PATCH (full replacement).
+
+        PATCH and PUT behave identically for this endpoint: both require the full
+        ``available_resources`` list and replace grants completely.
+
+        Accepts ``available_resources`` (a non-empty list of valid resource values).
+        Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        ``integration_name`` and ``token`` are never mutated; if sent in the body,
+        they are silently ignored.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 400 is returned for invalid resource values or empty list.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
       security:
       - jwtAuth: []
       - cookieAuth: []
@@ -8726,6 +8920,20 @@ components:
           type: string
           format: uri
           nullable: true
+    PatchedSystemUserTokenUpdate:
+      type: object
+      description: |-
+        Input serializer for updating a public-API token's resource grants (Phase 15).
+
+        Accepts ``available_resources`` (a non-empty list of valid ``PublicAPIResources`` values)
+        only.  ``integration_name`` and ``token`` are never accepted or changed.
+        The view reconciles ResourceAccess rows: adds rows for newly-granted resources,
+        removes rows for dropped resources.
+      properties:
+        available_resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableResourcesEnum'
     PatchedWebhookConfiguration:
       type: object
       properties:
@@ -9001,6 +9209,22 @@ components:
       - integration_name
       - is_active
       - token
+    SystemUserTokenUpdate:
+      type: object
+      description: |-
+        Input serializer for updating a public-API token's resource grants (Phase 15).
+
+        Accepts ``available_resources`` (a non-empty list of valid ``PublicAPIResources`` values)
+        only.  ``integration_name`` and ``token`` are never accepted or changed.
+        The view reconciles ResourceAccess rows: adds rows for newly-granted resources,
+        removes rows for dropped resources.
+      properties:
+        available_resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableResourcesEnum'
+      required:
+      - available_resources
     UnavailableTimeWindow:
       type: object
       properties:

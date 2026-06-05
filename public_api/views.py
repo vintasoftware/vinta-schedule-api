@@ -15,6 +15,7 @@ from public_api.serializers import (
     SystemUserTokenCreateSerializer,
     SystemUserTokenResponseSerializer,
     SystemUserTokenSerializer,
+    SystemUserTokenUpdateSerializer,
 )
 
 
@@ -55,9 +56,16 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
         return SystemUser.objects.none()
 
     def get_serializer_class(self):  # type: ignore[override]
-        """Use SystemUserTokenSerializer for list/retrieve; create-response uses SystemUserTokenResponseSerializer."""
+        """Route serializer per action.
+
+        - create: SystemUserTokenCreateSerializer
+        - update/partial_update: SystemUserTokenUpdateSerializer
+        - list/retrieve: SystemUserTokenSerializer
+        """
         if self.action == "create":
             return SystemUserTokenCreateSerializer
+        if self.action in ("update", "partial_update"):
+            return SystemUserTokenUpdateSerializer
         return SystemUserTokenSerializer
 
     @extend_schema(
@@ -105,3 +113,79 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
 
         serializer = SystemUserTokenSerializer(system_user, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        request=SystemUserTokenUpdateSerializer,
+        responses={200: SystemUserTokenSerializer},
+    )
+    def update(self, request: Request, *args, **kwargs) -> Response:
+        """Update a token's resource grants via PUT (full replacement).
+
+        Accepts ``available_resources`` (a non-empty list of valid resource values).
+        Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        ``integration_name`` and ``token`` are never mutated; if sent in the body,
+        they are silently ignored.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 400 is returned for invalid resource values or empty list.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+        """
+        system_user = self.get_object()
+
+        # Validate input
+        input_serializer = SystemUserTokenUpdateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+
+        desired_resources: list[str] = input_serializer.validated_data["available_resources"]
+
+        # Reconcile ResourceAccess rows transactionally
+        with transaction.atomic():
+            # Get currently-granted resources
+            current_resources = set(
+                ResourceAccess.objects.filter(system_user=system_user).values_list(
+                    "resource_name", flat=True
+                )
+            )
+            desired_set = set(desired_resources)
+
+            # Remove dropped resources
+            removed_resources = current_resources - desired_set
+            if removed_resources:
+                ResourceAccess.objects.filter(
+                    system_user=system_user, resource_name__in=removed_resources
+                ).delete()
+
+            # Add newly-granted resources (de-duplicate)
+            added_resources = desired_set - current_resources
+            for resource_name in added_resources:
+                ResourceAccess.objects.create(system_user=system_user, resource_name=resource_name)
+
+        # Refresh and return the updated token
+        system_user.refresh_from_db()
+        system_user = self.get_queryset().get(pk=system_user.id)  # Re-fetch with prefetch
+        serializer = SystemUserTokenSerializer(system_user, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        request=SystemUserTokenUpdateSerializer,
+        responses={200: SystemUserTokenSerializer},
+    )
+    def partial_update(self, request: Request, *args, **kwargs) -> Response:
+        """Update a token's resource grants via PATCH (full replacement).
+
+        PATCH and PUT behave identically for this endpoint: both require the full
+        ``available_resources`` list and replace grants completely.
+
+        Accepts ``available_resources`` (a non-empty list of valid resource values).
+        Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        ``integration_name`` and ``token`` are never mutated; if sent in the body,
+        they are silently ignored.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 400 is returned for invalid resource values or empty list.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+        """
+        # For this endpoint, PATCH = PUT (full replacement, not merge)
+        return self.update(request, *args, **kwargs)
