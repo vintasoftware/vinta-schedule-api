@@ -83,10 +83,10 @@ class TestIsOrganizationAdminPermission:
         assert permission.has_permission(request, view_mock) is True
 
     def test_has_permission_member_user(self, factory, member_user, permission, view_mock):
-        """Member user with membership should have permission."""
+        """Member user without admin role should not have permission."""
         request = factory.get("/")
         request.user = member_user
-        assert permission.has_permission(request, view_mock) is True
+        assert permission.has_permission(request, view_mock) is False
 
     def test_has_permission_membership_less_user(
         self, factory, membership_less_user, permission, view_mock
@@ -212,6 +212,21 @@ class TestIsOrganizationAdminPermission:
             organization=org,
             role=OrganizationRole.MEMBER,
             is_active=False,
+        )
+        request = factory.get("/")
+        request.user = user
+        assert permission.has_permission(request, view_mock) is False
+
+    def test_has_permission_active_member_denied(self, factory, permission, view_mock):
+        """Active member without admin role is denied at has_permission level."""
+        user = baker.make(User)
+        org = baker.make(Organization)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
         )
         request = factory.get("/")
         request.user = user

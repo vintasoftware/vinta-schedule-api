@@ -84,9 +84,10 @@ class IsOrganizationAdmin(BasePermission):
     """
     Permission for admin-only endpoints within an organization.
 
-    - `has_permission`: requires an authenticated user with an active
-      organization membership (using safe `getattr` to handle membership-less users).
-    - `has_object_permission`: delegates the "is this user an admin of this object's org"
+    - `has_permission`: requires an authenticated user with an active ADMIN organization
+      membership. This gate enforces the admin role at the collection level (list, create).
+    - `has_object_permission`: additionally enforces that the object's organization matches
+      the membership organization and delegates the "is this user an admin of this object's org"
       decision to `User.is_organization_admin(organization_id)` so the rule has a single
       implementation. Handles both Organization instances and OrganizationModel subclasses.
     """
@@ -95,7 +96,8 @@ class IsOrganizationAdmin(BasePermission):
         user: User = request.user
         if not user or not user.is_authenticated:
             return False
-        return get_active_organization_membership(user) is not None
+        membership = get_active_organization_membership(user)
+        return membership is not None and membership.is_admin
 
     def has_object_permission(self, request, view, obj) -> bool:
         user: User = request.user

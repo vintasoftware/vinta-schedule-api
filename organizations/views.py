@@ -133,18 +133,6 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     serializer_class = OrganizationMembershipSerializer
     permission_classes = (IsOrganizationAdmin,)
 
-    def check_permissions(self, request):
-        """Override to enforce admin check at the view level (both has_permission and admin role)."""
-        super().check_permissions(request)
-        # has_permission checks authenticated + active membership
-        # Now verify the user is actually an admin
-        membership = get_active_organization_membership(request.user)
-        if membership and not membership.is_admin:
-            self.permission_denied(
-                request,
-                message="You must be an admin to access this resource.",
-            )
-
     def get_queryset(self):
         """Org-scoped queryset: return members of the caller's organization only."""
         user = self.request.user
