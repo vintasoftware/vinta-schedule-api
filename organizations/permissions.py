@@ -1,8 +1,14 @@
+from typing import TYPE_CHECKING
+
 from django.core.exceptions import ObjectDoesNotExist
 
 from rest_framework.permissions import BasePermission
 
 from organizations.models import Organization, OrganizationInvitation, OrganizationModel
+
+
+if TYPE_CHECKING:
+    from users.models import User
 
 
 class OrganizationManagementPermission(BasePermission):
@@ -61,3 +67,41 @@ class OrganizationInvitationPermission(BasePermission):
         if isinstance(obj, OrganizationInvitation):
             return request.user.organization_membership.organization_id == obj.organization_id
         return False
+
+
+class IsOrganizationAdmin(BasePermission):
+    """
+    Permission for admin-only endpoints within an organization.
+
+    - `has_permission`: requires an authenticated user with an active
+      organization membership (using safe `getattr` to handle membership-less users).
+    - `has_object_permission`: delegates the "is this user an admin of this object's org"
+      decision to `User.is_organization_admin(organization_id)` so the rule has a single
+      implementation. Handles both Organization instances and OrganizationModel subclasses.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        user: User = request.user
+        if not user or not user.is_authenticated:
+            return False
+        return getattr(user, "organization_membership", None) is not None
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        user: User = request.user
+        membership = getattr(user, "organization_membership", None)
+        if membership is None:
+            return False
+
+        # Determine the object's organization_id
+        if isinstance(obj, Organization):
+            obj_organization_id = obj.id
+        elif isinstance(obj, OrganizationModel):
+            obj_organization_id = obj.organization_id
+        else:
+            return False
+
+        # Membership org must match object org; user must be an admin
+        if membership.organization_id != obj_organization_id:
+            return False
+
+        return user.is_organization_admin(membership.organization_id)
