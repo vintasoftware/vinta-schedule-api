@@ -4759,6 +4759,109 @@ paths:
       responses:
         '204':
           description: No response body
+  /invitations/{id}/resend/:
+    post:
+      operationId: invitations_resend_create
+      description: |-
+        POST /invitations/{id}/resend/ — regenerate token and re-send a pending invitation.
+
+        Guards:
+        - Invitation must not be accepted (accepted_at is None).
+        - User must be an active member of the invitation's organization.
+
+        Returns the re-serialized invitation with the new token_hash and extended expires_at.
+      summary: Resend a pending organization invitation
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - invitations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+        '400':
+          description: Invitation already accepted or service error
+        '403':
+          description: Not an active member
+        '404':
+          description: Invitation not found or cross-org
+  /invitations/{id}/resend{format}:
+    post:
+      operationId: invitations_resend_formatted_create
+      description: |-
+        POST /invitations/{id}/resend/ — regenerate token and re-send a pending invitation.
+
+        Guards:
+        - Invitation must not be accepted (accepted_at is None).
+        - User must be an active member of the invitation's organization.
+
+        Returns the re-serialized invitation with the new token_hash and extended expires_at.
+      summary: Resend a pending organization invitation
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - invitations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+        '400':
+          description: Invitation already accepted or service error
+        '403':
+          description: Not an active member
+        '404':
+          description: Invitation not found or cross-org
   /invitations/accept:
     post:
       operationId: invitations_accept_create

@@ -941,6 +941,112 @@ class TestOrganizationInvitationViewSet:
         assert len(response_data["results"]) == 1
         assert response_data["results"][0]["email"] == "valid@example.com"
 
+    @patch("organizations.services.OrganizationService.invite_user_to_organization")
+    def test_resend_pending_invitation(
+        self, mock_invite, auth_client, user, organization_with_membership
+    ):
+        """Test resending a pending invitation regenerates token and extends expiry."""
+        # Create a pending invitation
+        original_invite = OrganizationTestFactory.create_organization_invitation(
+            organization_with_membership, email="pending@example.com", invited_by=user
+        )
+
+        # Mock the service to return the updated invitation with new token+expiry
+        new_expires_at = timezone.now() + timezone.timedelta(days=7)
+        new_token_hash = hash_long_lived_token(generate_long_lived_token())
+
+        # Update the original invitation in place for the mock return
+        updated_invite = original_invite
+        updated_invite.token_hash = new_token_hash
+        updated_invite.expires_at = new_expires_at
+        mock_invite.return_value = updated_invite
+
+        url = reverse("api:OrganizationInvitations-resend", kwargs={"pk": original_invite.pk})
+        response = auth_client.post(url, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        response_data = response.json()
+
+        # Verify the response contains the invitation data
+        assert response_data["email"] == "pending@example.com"
+        assert response_data["organization"] == organization_with_membership.id
+
+        # Verify the service was called with correct arguments
+        mock_invite.assert_called_once_with(
+            email="pending@example.com",
+            first_name=original_invite.first_name,
+            last_name=original_invite.last_name,
+            invited_by=user,
+            organization=organization_with_membership,
+        )
+
+    @patch("organizations.services.OrganizationService.invite_user_to_organization")
+    def test_resend_accepted_invitation_fails(
+        self, mock_invite, auth_client, user, organization_with_membership
+    ):
+        """Test that resending an accepted invitation returns 400."""
+        # Create an accepted invitation
+        now = timezone.now()
+        accepted_invite = OrganizationTestFactory.create_organization_invitation(
+            organization_with_membership,
+            email="accepted@example.com",
+            invited_by=user,
+            accepted_at=now,
+        )
+
+        url = reverse("api:OrganizationInvitations-resend", kwargs={"pk": accepted_invite.pk})
+        response = auth_client.post(url, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        response_data = response.json()
+        # The response might be a list (ValidationError) or a dict with detail field
+        error_text = str(response_data).lower()
+        assert "already accepted" in error_text
+
+        # Verify the service was NOT called
+        mock_invite.assert_not_called()
+
+    def test_resend_invitation_cross_org_fails(self, auth_client, user):
+        """Test that resending an invitation from a different org returns 404."""
+        # Create user's organization
+        user_org = OrganizationTestFactory.create_organization()
+        OrganizationTestFactory.create_organization_membership(user, user_org)
+
+        # Create invitation for different organization
+        other_org = OrganizationTestFactory.create_organization(name="Other Org")
+        other_invitation = OrganizationTestFactory.create_organization_invitation(
+            other_org, email="other@example.com"
+        )
+
+        url = reverse("api:OrganizationInvitations-resend", kwargs={"pk": other_invitation.pk})
+        response = auth_client.post(url, format="json")
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_resend_invitation_without_membership_fails(self, auth_client):
+        """Test that resending an invitation without organization membership returns 403."""
+        organization = OrganizationTestFactory.create_organization()
+        invitation = OrganizationTestFactory.create_organization_invitation(
+            organization, email="test@example.com"
+        )
+
+        url = reverse("api:OrganizationInvitations-resend", kwargs={"pk": invitation.pk})
+        response = auth_client.post(url, format="json")
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_resend_invitation_unauthenticated_fails(self, anonymous_client):
+        """Test that resending an invitation without authentication returns 401."""
+        organization = OrganizationTestFactory.create_organization()
+        invitation = OrganizationTestFactory.create_organization_invitation(
+            organization, email="test@example.com"
+        )
+
+        url = reverse("api:OrganizationInvitations-resend", kwargs={"pk": invitation.pk})
+        response = anonymous_client.post(url, format="json")
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
 
 @pytest.mark.django_db
 class TestAcceptInvitationView:

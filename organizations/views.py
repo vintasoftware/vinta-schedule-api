@@ -242,6 +242,54 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
         """Revoke invitation by calling the service method."""
         self.organization_service.revoke_invitation(str(instance.id))
 
+    @extend_schema(
+        summary="Resend a pending organization invitation",
+        responses={
+            200: OrganizationInvitationSerializer,
+            400: OpenApiResponse(description="Invitation already accepted or service error"),
+            403: OpenApiResponse(description="Not an active member"),
+            404: OpenApiResponse(description="Invitation not found or cross-org"),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="resend")
+    def resend(self, request, pk=None):
+        """POST /invitations/{id}/resend/ — regenerate token and re-send a pending invitation.
+
+        Guards:
+        - Invitation must not be accepted (accepted_at is None).
+        - User must be an active member of the invitation's organization.
+
+        Returns the re-serialized invitation with the new token_hash and extended expires_at.
+        """
+        invitation = self.get_object()  # org-scoped; raises 404 if cross-org
+
+        # Guard: refuse if invitation is already accepted
+        if invitation.accepted_at is not None:
+            raise ValidationError(detail="Invitation already accepted.")
+
+        # Resolve the requesting user's organization (mirror how the viewset resolves context)
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            # This shouldn't happen because OrganizationInvitationPermission.has_permission
+            # already checked for active membership, but guard for clarity
+            raise PermissionDenied(detail="No active organization membership.")
+
+        # Call the service to reset token+expiry and re-send the email
+        try:
+            invitation = self.organization_service.invite_user_to_organization(
+                email=invitation.email,
+                first_name=invitation.first_name,
+                last_name=invitation.last_name,
+                invited_by=request.user,
+                organization=membership.organization,
+            )
+        except Exception as exc:
+            raise ValidationError(detail=str(exc)) from exc
+
+        # Return the re-serialized invitation
+        serializer = self.get_serializer(invitation)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     """
