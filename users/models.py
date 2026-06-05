@@ -55,7 +55,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
         membership = getattr(self, "organization_membership", None)
         if membership is None:
             return False
-        if not getattr(membership, "is_active", True):
+        if not getattr(membership, "is_active", False):
             return False
         organization_id = getattr(organization, "id", organization)
         return membership.organization_id == organization_id and getattr(

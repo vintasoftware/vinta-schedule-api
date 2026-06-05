@@ -1,7 +1,5 @@
 from typing import TYPE_CHECKING
 
-from django.core.exceptions import ObjectDoesNotExist
-
 from rest_framework.permissions import BasePermission
 
 from organizations.models import (
@@ -18,28 +16,41 @@ if TYPE_CHECKING:
 
 class OrganizationManagementPermission(BasePermission):
     def has_permission(self, request, view):
+        # Anonymous / unauthenticated users have no user attribute at all.
         try:
-            membership = request.user.organization_membership
-            return membership is None
-        except ObjectDoesNotExist:
-            return True
+            user = request.user
         except AttributeError:
             return True
 
+        # get_active_organization_membership handles both missing membership
+        # (RelatedObjectDoesNotExist) and inactive membership, returning None
+        # for both cases.  Only membership-LESS (or inactive) users may reach
+        # onboarding endpoints such as POST /organizations/.
+        membership = get_active_organization_membership(user)
+        return membership is None
+
     def has_object_permission(self, request, view, obj):
+        # Anonymous / unauthenticated users propagate to here only in edge
+        # cases; treat them the same as membership-less (allow the framework
+        # to deny them via IsAuthenticated first).
         try:
-            membership = request.user.organization_membership
-            return view.action != "create" and (
-                (isinstance(obj, Organization) and membership.organization_id == obj.id)
-                or (
-                    isinstance(obj, OrganizationModel)
-                    and membership.organization_id == obj.organization_id
-                )
-            )
-        except ObjectDoesNotExist:
-            return True
+            user = request.user
         except AttributeError:
             return True
+
+        membership = get_active_organization_membership(user)
+        if membership is None:
+            # Membership-less OR inactive members never have object-level
+            # access (they can only CREATE an org — handled in has_permission).
+            return False
+
+        return view.action != "create" and (
+            (isinstance(obj, Organization) and membership.organization_id == obj.id)
+            or (
+                isinstance(obj, OrganizationModel)
+                and membership.organization_id == obj.organization_id
+            )
+        )
 
 
 class OrganizationInvitationPermission(BasePermission):

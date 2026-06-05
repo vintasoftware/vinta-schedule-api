@@ -527,6 +527,90 @@ class TestCurrentMembershipAction:
 
 
 @pytest.mark.django_db
+class TestInactiveMemberOrganizationAccess:
+    """Inactive members must be denied on all organization object paths.
+
+    An inactive membership (is_active=False) must behave identically to a
+    membership-less user: no tenant-scoped access, no 500s.
+    """
+
+    def _make_inactive_member(self, user, organization):
+        return baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            is_active=False,
+        )
+
+    def test_current_inactive_member_returns_404(self, auth_client, user):
+        """Inactive member hitting /organizations/current/ must get 404, not 200."""
+        organization = OrganizationTestFactory.create_organization(name="Inactive Org")
+        self._make_inactive_member(user, organization)
+
+        url = reverse("api:Organizations-current")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_retrieve_organization_inactive_member_denied(self, auth_client, user):
+        """Inactive member cannot retrieve their (formerly) owned org — denied."""
+        organization = OrganizationTestFactory.create_organization(name="Inactive Org")
+        self._make_inactive_member(user, organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = auth_client.get(url)
+
+        # OrganizationManagementPermission.has_object_permission denies inactive members.
+        # get_queryset also returns none(), so 404 is expected.
+        assert response.status_code in (
+            status.HTTP_403_FORBIDDEN,
+            status.HTTP_404_NOT_FOUND,
+        ), f"Expected 403 or 404, got {response.status_code}"
+
+    def test_patch_organization_inactive_member_denied(self, auth_client, user):
+        """Inactive member cannot PATCH their (formerly) owned org."""
+        organization = OrganizationTestFactory.create_organization(name="Inactive Org")
+        self._make_inactive_member(user, organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = auth_client.patch(url, {"name": "Hacked"}, format="json")
+
+        assert response.status_code in (
+            status.HTTP_403_FORBIDDEN,
+            status.HTTP_404_NOT_FOUND,
+        ), f"Expected 403 or 404, got {response.status_code}"
+
+    def test_delete_organization_inactive_member_denied(self, auth_client, user):
+        """Inactive member cannot DELETE their (formerly) owned org."""
+        organization = OrganizationTestFactory.create_organization(name="Inactive Org")
+        self._make_inactive_member(user, organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = auth_client.delete(url)
+
+        assert response.status_code in (
+            status.HTTP_403_FORBIDDEN,
+            status.HTTP_404_NOT_FOUND,
+        ), f"Expected 403 or 404, got {response.status_code}"
+
+    def test_active_member_still_allowed_current(self, auth_client, user):
+        """Sanity: an ACTIVE member must still get 200 from /organizations/current/."""
+        organization = OrganizationTestFactory.create_organization(name="Active Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            is_active=True,
+        )
+
+        url = reverse("api:Organizations-current")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json()["organization"]["id"] == organization.id
+
+
+@pytest.mark.django_db
 class TestOrganizationInvitationViewSet:
     """Test suite for OrganizationInvitationViewSet"""
 

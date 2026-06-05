@@ -62,7 +62,7 @@ from calendar_integration.virtual_models import (
     ResourceAllocationVirtualModel,
 )
 from common.utils.serializer_utils import VirtualModelSerializer
-from organizations.models import Organization
+from organizations.models import Organization, get_active_organization_membership
 from users.models import User
 from users.serializers import UserSerializer
 
@@ -121,7 +121,7 @@ class CalendarSerializer(VirtualModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
@@ -152,28 +152,25 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
             self.context["request"].user if self.context and self.context.get("request") else None
         )
 
+        active_membership = (
+            get_active_organization_membership(user) if user and user.is_authenticated else None
+        )
         self.fields["bundle_calendars"] = serializers.PrimaryKeyRelatedField(
             many=True,
             queryset=(
                 Calendar.objects.filter_by_organization(
-                    organization_id=user.organization_membership.organization_id
+                    organization_id=active_membership.organization_id
                 )
-                if user
-                and user.is_authenticated
-                and hasattr(user, "organization_membership")
-                and user.organization_membership
+                if active_membership
                 else Calendar.original_manager.none()
             ),
         )
         self.fields["primary_calendar"] = serializers.PrimaryKeyRelatedField(
             queryset=(
                 Calendar.objects.filter_by_organization(
-                    organization_id=user.organization_membership.organization_id
+                    organization_id=active_membership.organization_id
                 )
-                if user
-                and user.is_authenticated
-                and hasattr(user, "organization_membership")
-                and user.organization_membership
+                if active_membership
                 else Calendar.original_manager.none()
             ),
             allow_null=True,
@@ -206,7 +203,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
@@ -684,14 +681,13 @@ class CalendarEventSerializer(VirtualModelSerializer):
         if organization:
             # Token-based request - use organization from context
             organization_id = organization.id
-        elif (
-            user
-            and user.is_authenticated
-            and hasattr(user, "organization_membership")
-            and user.organization_membership
-        ):
-            # Regular authenticated user request
-            organization_id = user.organization_membership.organization_id
+        else:
+            # Regular authenticated user request — require an active membership
+            active_membership = (
+                get_active_organization_membership(user) if user and user.is_authenticated else None
+            )
+            if active_membership:
+                organization_id = active_membership.organization_id
 
         # Use organization_id to set up querysets
         user_is_authenticated = (user and user.is_authenticated) or bool(token)
@@ -823,8 +819,11 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 pass
             else:
                 # Use stored user or organization from regular authentication
-                if self.user and hasattr(self.user, "organization_membership"):
-                    organization_id = self.user.organization_membership.organization_id
+                _active_membership = (
+                    get_active_organization_membership(self.user) if self.user else None
+                )
+                if _active_membership:
+                    organization_id = _active_membership.organization_id
                 elif self.organization:
                     organization_id = self.organization.id
                 else:
@@ -1240,7 +1239,7 @@ class BlockedTimeSerializer(VirtualModelSerializer):
                 }
             )
 
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
@@ -1471,7 +1470,7 @@ class AvailableTimeSerializer(VirtualModelSerializer):
                 }
             )
 
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
@@ -1615,7 +1614,7 @@ class BulkBlockedTimeSerializer(serializers.Serializer):
             )
 
         user = self.context["request"].user
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
@@ -1674,7 +1673,7 @@ class BulkAvailableTimeSerializer(serializers.Serializer):
             )
 
         user = self.context["request"].user
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}

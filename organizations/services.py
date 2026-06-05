@@ -156,6 +156,10 @@ class OrganizationService:
         :param user: User who is accepting the invitation.
         :return: Created OrganizationMembership instance.
         """
+        # DESIGN: hasattr check intentionally matches BOTH active and inactive memberships.
+        # An inactive membership still has a DB row, so accept_invitation must refuse
+        # re-provisioning here.  The supported un-disable path is admin REACTIVATION
+        # (setting is_active=True); not re-accepting an invitation.
         if hasattr(user, "organization_membership"):
             raise UserAlreadyHasMembershipError()
 
@@ -208,6 +212,10 @@ class OrganizationService:
         :raises UserAlreadyHasMembershipError: When the user already belongs to an
             organization.
         """
+        # DESIGN: hasattr check intentionally matches BOTH active and inactive memberships.
+        # An inactive membership still has a DB row, so provision_tenant_for_user must
+        # refuse re-provisioning here.  The supported un-disable path is admin REACTIVATION
+        # (setting is_active=True); not re-provisioning the user.
         if hasattr(user, "organization_membership"):
             raise UserAlreadyHasMembershipError()
 

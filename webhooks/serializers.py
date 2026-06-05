@@ -4,6 +4,7 @@ from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
 from common.utils.serializer_utils import VirtualModelSerializer
+from organizations.models import get_active_organization_membership
 from webhooks.models import WebhookConfiguration, WebhookEvent
 from webhooks.services import WebhookService
 from webhooks.virtual_models import WebhookConfigurationVirtualModel, WebhookEventVirtualModel
@@ -34,7 +35,7 @@ class WebhookConfigurationSerializer(VirtualModelSerializer):
         user = (
             self.context["request"].user if self.context and self.context.get("request") else None
         )
-        membership = getattr(user, "organization_membership", None) if user else None
+        membership = get_active_organization_membership(user) if user else None
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}

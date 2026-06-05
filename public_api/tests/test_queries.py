@@ -1839,3 +1839,50 @@ class TestGraphQLQueries:
         response_data = response.json()
         assert "errors" in response_data
         assert "Limit must be between 1 and 100" in str(response_data["errors"])
+
+    def test_users_query_excludes_inactive_members(
+        self, mock_rate_limiter, graphql_client, organization
+    ):
+        """Public API users query must exclude users with is_active=False memberships.
+
+        SHOULD-FIX 5 — confirms that adding organization_membership__is_active=True to
+        the filter in public_api/queries.py actually removes inactive members from the
+        result set, and that active members are still returned.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        user_model = get_user_model()
+
+        # Active member — must appear in results
+        active_user = baker.make(user_model, email="active_inactive_test@example.com")
+        baker.make(
+            OrganizationMembership, user=active_user, organization=organization, is_active=True
+        )
+
+        # Inactive member — must NOT appear in results
+        inactive_user = baker.make(user_model, email="inactive_member_test@example.com")
+        baker.make(
+            OrganizationMembership, user=inactive_user, organization=organization, is_active=False
+        )
+
+        query = """
+            query GetUsers($offset: Int, $limit: Int) {
+                users(offset: $offset, limit: $limit) {
+                    id
+                    email
+                }
+            }
+        """
+        variables = {"offset": 0, "limit": 100}
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_emails = [u["email"] for u in data["users"]]
+
+        assert active_user.email in returned_emails, "Active member must appear in users query"
+        assert inactive_user.email not in returned_emails, "Inactive member must be excluded"

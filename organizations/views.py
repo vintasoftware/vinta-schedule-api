@@ -67,7 +67,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         HTTP 200 — the user is onboarded (has a membership).
         HTTP 404 — the user is gated (no membership yet).
         """
-        membership = getattr(request.user, "organization_membership", None)
+        membership = get_active_organization_membership(request.user)
         if membership is None:
             raise NotFound(detail="No organization membership.")
         serializer = CurrentMembershipSerializer(membership, context={"request": request})

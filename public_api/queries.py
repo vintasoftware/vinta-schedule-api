@@ -264,7 +264,9 @@ class Query:
         """Get users filtered by user's organization."""
         org = _get_org(info)
 
-        queryset = User.objects.filter(organization_membership__organization=org)
+        queryset = User.objects.filter(
+            organization_membership__organization=org, organization_membership__is_active=True
+        )
         if user_id is not None:
             queryset = queryset.filter(id=user_id)
 
