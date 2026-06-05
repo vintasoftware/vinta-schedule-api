@@ -598,3 +598,174 @@ class TestSystemUserTokenViewSetRetrieve:
 
         response = anonymous_client.get(self._url(system_user.id))
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+
+@pytest.mark.django_db
+class TestSystemUserTokenViewSetRevoke:
+    """POST /public-api-tokens/{id}/revoke/ — Phase 14 revoke action."""
+
+    def _url(self, token_id):
+        return reverse("api:PublicAPITokens-revoke", kwargs={"pk": token_id})
+
+    # ------------------------------------------------------------------
+    # Happy path
+    # ------------------------------------------------------------------
+
+    def test_admin_revokes_token_returns_200(self, admin_client, organization):
+        """Admin can revoke a token; 200 returned."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.post(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+    def test_revoke_sets_is_active_false(self, admin_client, organization):
+        """Revoking a token sets SystemUser.is_active to False."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.post(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify the token is now inactive in DB
+        system_user.refresh_from_db()
+        assert system_user.is_active is False
+
+    def test_revoke_response_includes_required_fields(self, admin_client, organization):
+        """Revoke response includes id, integration_name, is_active, available_resources."""
+        system_user = baker.make(
+            SystemUser,
+            organization=organization,
+            integration_name="revoke_test",
+            is_active=True,
+        )
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.post(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+
+        assert "id" in data
+        assert data["id"] == system_user.id
+        assert "integration_name" in data
+        assert data["integration_name"] == "revoke_test"
+        assert "is_active" in data
+        assert data["is_active"] is False
+        assert "available_resources" in data
+
+    def test_revoke_response_does_not_include_token(self, admin_client, organization):
+        """Revoke response must never include token or long_lived_token_hash."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.post(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+
+        assert "token" not in data
+        assert "long_lived_token_hash" not in data
+
+    def test_revoke_makes_token_fail_verification(
+        self, admin_client, admin_user, organization, di_container
+    ):
+        """After revoke, check_system_user_token returns (user, False)."""
+        # Create a token and capture the plaintext
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        # Simulate token creation flow to get the plaintext
+        public_api_auth_service = di_container.public_api_auth_service()
+        system_user, plaintext_token = public_api_auth_service.create_system_user(
+            integration_name="verify_revoke_test",
+            organization=organization,
+        )
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        # Verify token works before revoke
+        _, is_valid_before = public_api_auth_service.check_system_user_token(
+            system_user.id, plaintext_token
+        )
+        assert is_valid_before is True
+
+        # Revoke the token
+        response = admin_client.post(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify token now fails
+        _, is_valid_after = public_api_auth_service.check_system_user_token(
+            system_user.id, plaintext_token
+        )
+        assert is_valid_after is False
+
+    def test_revoking_already_revoked_token_is_idempotent(self, admin_client, organization):
+        """Revoking an already-revoked token is a 200 no-op."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=False)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        # Revoke an already-inactive token
+        response = admin_client.post(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify it remains inactive
+        system_user.refresh_from_db()
+        assert system_user.is_active is False
+
+    def test_revoke_cross_org_token_returns_404(
+        self, admin_client, organization, other_organization
+    ):
+        """Attempt to revoke a token from another org returns 404."""
+        system_user = baker.make(SystemUser, organization=other_organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.post(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    # ------------------------------------------------------------------
+    # Permission / auth failures
+    # ------------------------------------------------------------------
+
+    def test_member_user_gets_403(self, member_client, organization):
+        """A non-admin member is rejected with HTTP 403."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = member_client.post(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_membership_less_user_gets_403(self, membership_less_client, organization):
+        """A user with no membership is rejected with HTTP 403."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = membership_less_client.post(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_anonymous_user_gets_401(self, anonymous_client, organization):
+        """An unauthenticated request is rejected with HTTP 401."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = anonymous_client.post(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)

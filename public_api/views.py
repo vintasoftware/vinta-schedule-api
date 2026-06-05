@@ -2,6 +2,7 @@ import logging
 
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
+from rest_framework.decorators import action
 from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -85,3 +86,22 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
             system_user, context={"request": request}
         )
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(responses={200: SystemUserTokenSerializer})
+    @action(detail=True, methods=["post"], url_path="revoke")
+    def revoke(self, request: Request, pk=None) -> Response:
+        """Revoke a public-API token by setting its SystemUser.is_active to False.
+
+        The token will no longer authenticate requests via check_system_user_token.
+        This is idempotent: revoking an already-revoked token is a 200 no-op.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+        """
+        system_user = self.get_object()
+        system_user.is_active = False
+        system_user.save(update_fields=["is_active"])
+
+        serializer = SystemUserTokenSerializer(system_user, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)

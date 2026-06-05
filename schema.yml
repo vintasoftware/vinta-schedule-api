@@ -6006,6 +6006,95 @@ paths:
               schema:
                 $ref: '#/components/schemas/SystemUserToken'
           description: ''
+  /public-api-tokens/{id}/revoke/:
+    post:
+      operationId: public_api_tokens_revoke_create
+      description: |-
+        Revoke a public-API token by setting its SystemUser.is_active to False.
+
+        The token will no longer authenticate requests via check_system_user_token.
+        This is idempotent: revoking an already-revoked token is a 200 no-op.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+  /public-api-tokens/{id}/revoke{format}:
+    post:
+      operationId: public_api_tokens_revoke_formatted_create
+      description: |-
+        Revoke a public-API token by setting its SystemUser.is_active to False.
+
+        The token will no longer authenticate requests via check_system_user_token.
+        This is idempotent: revoking an already-revoked token is a 200 no-op.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
   /public/organizations/{organization_id}/events/:
     get:
       operationId: public_organizations_events_list
