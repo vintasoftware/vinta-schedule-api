@@ -605,6 +605,40 @@ class TestCalendarEventViewSet:
         assert account_arg == owner_social_account
         assert account_arg.user == source_owner
 
+    def test_transfer_event_same_calendar_no_op(self, organization, calendar, calendar_event):
+        """Admin tries to transfer event to its own calendar → 400, no service call."""
+        from rest_framework.test import APIClient
+
+        from di_core.containers import container
+
+        # Admin user
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Mock calendar service
+        mock_calendar_service = Mock()
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                url, data={"target_calendar_id": calendar_event.calendar_fk_id}, format="json"
+            )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert response.data["detail"] == "Event is already on the target calendar."
+
+        # Verify service was NOT called (guard returned before authentication)
+        mock_calendar_service.authenticate.assert_not_called()
+        mock_calendar_service.transfer_event.assert_not_called()
+
     def test_transfer_event_non_admin_forbidden(self, organization, calendar, calendar_event):
         """Non-admin active member receives 403."""
         from rest_framework.test import APIClient
