@@ -72,11 +72,16 @@
 - **Key**: `OrganizationService.request_rooms_sync` (DRY, used by create_organization too); `POST /organizations/{id}/sync-rooms/` admin action; should_sync_rooms False→True transition fires once (locked). **IMPORTANT reusable infra**: `OrganizationViewSet.get_permissions()` now gates update/partial_update with IsOrganizationAdmin — admins can configure their own org (previously update was unreachable for all). Outer gate green (1320), mypy 108.
 - **Reusable note**: org update is admin-only now; org-config edits go through PATCH /organizations/{id}/.
 
+### Phase 8 — Transfer event between calendars (admin) ✅
+- **Status**: done, reviewed (3 layers; Layer 3 → added same-calendar no-op test), pushed, PR opened.
+- **Model**: sonnet; fixer: haiku. **Branch**: phase-8 (base phase-7). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/50
+- **Key**: `POST /calendar-events/{id}/transfer/` admin-only; authenticates with SOURCE calendar owner's account (transfer reads source event from provider); target resolved via filter_by_organization; same-calendar no-op → 400. Outer gate green (1329), mypy 108.
+
 ## Current Phase
-Phase 8 — Transfer event between calendars (admin) (next). Service: `CalendarService.transfer_event(event, new_calendar) -> CalendarEvent` (~2115). Admin `@action transfer` on CalendarEventViewSet, body target_calendar_id (in-org). Provider-sync side effects → Tier 3.
+Phase 9 — Calendar soft-disable (next). Add `Calendar.is_active` (BooleanField default True, db_default True, db_index) + migration (add-migration skill; non-partitioned table). CalendarViewSet.get_queryset filters is_active=True unless `?include_inactive=true`; override destroy/perform_destroy → set is_active=False (no row delete). Tier 3. CAUTION: CalendarViewSet has many existing tests; default-active keeps reads unchanged, but DELETE behavior changes (existing hard-delete tests must be updated to expect soft-disable).
 
 ## Remaining Phases
-9 (calendar soft-disable), 10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
+10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
 
 ## Reusable infra notes (for later phases)
 - `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
