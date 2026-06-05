@@ -103,6 +103,9 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
 
         Uses select_for_update to lock the row during snapshot + write, serializing
         concurrent PATCHes and preventing double-fire of the sync on False→True transition.
+
+        The creds check is performed BEFORE any write so that unrelated field changes (e.g.
+        renaming the org) are NOT persisted when the 400 is returned.
         """
         partial = kwargs.get("partial", False)
 
@@ -121,6 +124,23 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
 
             serializer = self.get_update_serializer(instance, data=request.data, partial=partial)
             serializer.is_valid(raise_exception=True)
+
+            # Compute desired transition BEFORE writing so we can reject early.
+            desired_should_sync_rooms = serializer.validated_data.get(
+                "should_sync_rooms", old_should_sync_rooms
+            )
+            fire = (not old_should_sync_rooms) and desired_should_sync_rooms
+
+            # Guard: enabling sync without any service account → 400 BEFORE any write.
+            if fire and sa_data is None:
+                has_existing_sa = (
+                    GoogleCalendarServiceAccount.objects.filter_by_organization(instance.id)
+                    .filter(calendar_fk__isnull=True)
+                    .exists()
+                )
+                if not has_existing_sa:
+                    raise NoServiceAccountConfiguredError()
+
             self.perform_update(serializer)
 
             # Upsert the service account if provided.
@@ -138,23 +158,6 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
                     private_key=sa_data["private_key"],
                 )
 
-            # Detect False→True transition (exactly once — only when the flag just became True).
-            new_should_sync_rooms = serializer.instance.should_sync_rooms
-            fire = (not old_should_sync_rooms) and new_should_sync_rooms
-
-            if fire:
-                # Check that a service account is configured (either just provided or pre-existing).
-                has_sa = sa_data is not None or (
-                    GoogleCalendarServiceAccount.objects.filter_by_organization(instance.id)
-                    .filter(calendar_fk__isnull=True)
-                    .exists()
-                )
-                if not has_sa:
-                    raise ValidationError(
-                        detail=NoServiceAccountConfiguredError.default_detail,
-                        code=NoServiceAccountConfiguredError.default_code,
-                    )
-
         # Register the on_commit callback AFTER the atomic block (so it fires post-commit).
         if fire:
             org = serializer.instance
@@ -162,7 +165,14 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
             org_service = self.organization_service
 
             def _trigger():
-                org_service.request_rooms_sync(organization=org, requested_by=user)
+                try:
+                    org_service.request_rooms_sync(organization=org, requested_by=user)
+                except NoServiceAccountConfiguredError:
+                    logger.warning(
+                        "rooms-sync trigger skipped: no service account configured for org %s "
+                        "(account may have been deleted between pre-flight check and commit)",
+                        org.id,
+                    )
 
             transaction.on_commit(_trigger)
 
@@ -247,12 +257,19 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
             raise NoServiceAccountConfiguredError()
 
         def _trigger():
-            org_service.request_rooms_sync(
-                organization=org,
-                requested_by=user,
-                start_time=start_time,
-                end_time=end_time,
-            )
+            try:
+                org_service.request_rooms_sync(
+                    organization=org,
+                    requested_by=user,
+                    start_time=start_time,
+                    end_time=end_time,
+                )
+            except NoServiceAccountConfiguredError:
+                logger.warning(
+                    "rooms-sync trigger skipped: no service account configured for org %s "
+                    "(account may have been deleted between pre-flight check and commit)",
+                    org.id,
+                )
 
         transaction.on_commit(_trigger)
 

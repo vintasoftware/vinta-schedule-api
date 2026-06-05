@@ -2350,6 +2350,7 @@ class TestPhase18ServiceAccountConfig:
         # Secrets MUST NOT be in the response.
         assert "private_key" not in sa_response, "private_key must not be returned"
         assert "private_key_id" not in sa_response, "private_key_id must not be returned"
+        assert "public_key" not in sa_response, "public_key must not be returned"
 
         # DB row created.
         stored = (
@@ -2401,6 +2402,7 @@ class TestPhase18ServiceAccountConfig:
         # Secrets still absent.
         assert "private_key" not in body["google_service_account"]
         assert "private_key_id" not in body["google_service_account"]
+        assert "public_key" not in body["google_service_account"]
 
     def test_patch_omitting_service_account_leaves_existing_unchanged(self, user):
         """Omitting google_service_account on PATCH is a no-op for the SA row."""
@@ -2462,6 +2464,7 @@ class TestPhase18ServiceAccountConfig:
         assert body["google_service_account"]["email"] == _SA_PAYLOAD["email"]
         assert "private_key" not in body["google_service_account"]
         assert "private_key_id" not in body["google_service_account"]
+        assert "public_key" not in body["google_service_account"]
 
     def test_patch_service_account_non_admin_returns_403(self, auth_client, user):
         """Non-admin member cannot configure the service account → 403."""
@@ -2632,7 +2635,40 @@ class TestPhase18TransitionWithNoCredentials:
         assert_response_status_code(response, status.HTTP_200_OK)
         body = response.json()
         assert body["should_sync_rooms"] is True
-        assert body["google_service_account"]["configured"] is True
+        sa_response = body["google_service_account"]
+        assert sa_response["configured"] is True
+
+        # Secrets MUST NOT be in the response.
+        assert "private_key" not in sa_response, "private_key must not be returned"
+        assert "private_key_id" not in sa_response, "private_key_id must not be returned"
+        assert "public_key" not in sa_response, "public_key must not be returned"
+
+        # The sync trigger must have actually fired with the configured account.
+        mock_calendar_service.authenticate.assert_called_once()
+
+    def test_rename_and_enable_sync_without_creds_returns_400_and_name_unchanged(self, user):
+        """PATCH renaming the org AND enabling should_sync_rooms with no creds → 400;
+        the rename must NOT be persisted (no partial write)."""
+        client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
+        original_name = org.name
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
+        response = client.patch(
+            url,
+            {"name": "Should Not Be Saved", "should_sync_rooms": True},
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # The name must remain unchanged in the DB (no partial write).
+        org.refresh_from_db()
+        assert org.name == original_name, (
+            f"Expected org name to remain '{original_name}', got '{org.name}'"
+        )
+        assert org.should_sync_rooms is False, (
+            "should_sync_rooms must not have been enabled after a 400"
+        )
 
     @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
     def test_enable_sync_rooms_with_pre_existing_creds_succeeds(self, _mock_on_commit, user):

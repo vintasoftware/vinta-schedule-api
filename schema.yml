@@ -5336,6 +5336,9 @@ paths:
 
         Uses select_for_update to lock the row during snapshot + write, serializing
         concurrent PATCHes and preventing double-fire of the sync on False→True transition.
+
+        The creds check is performed BEFORE any write so that unrelated field changes (e.g.
+        renaming the org) are NOT persisted when the 400 is returned.
       parameters:
       - in: path
         name: id
@@ -5458,6 +5461,9 @@ paths:
 
         Uses select_for_update to lock the row during snapshot + write, serializing
         concurrent PATCHes and preventing double-fire of the sync on False→True transition.
+
+        The creds check is performed BEFORE any write so that unrelated field changes (e.g.
+        renaming the org) are NOT persisted when the 400 is returned.
       parameters:
       - in: path
         name: format
