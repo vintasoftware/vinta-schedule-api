@@ -88,11 +88,17 @@
 - **Model**: sonnet; fixer: haiku. **Branch**: phase-10 (base phase-9). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/52
 - **Key**: `PATCH /calendar/{id}/bundle/` admin-only; `CalendarService.update_bundle_calendar` atomic reconciliation (add/remove children, exactly-one primary, validates bundle/primary/cross-org/no-nesting); serializer child queryset = active OR existing-children (keeps disabled existing, bars new disabled). Outer gate green (1349), mypy 108.
 
+### Phase 11 — Disable calendar bundle ✅
+- **Status**: done, reviewed (3 layers, clean), pushed, PR opened.
+- **Model**: sonnet. **Branch**: phase-11 (base phase-10). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/53
+- **Key**: destroy gating by type — BUNDLE → admin-only; non-bundle → owner-or-admin (tightened Phase 9's ungated destroy). Bundle disable leaves events/representations/children intact (Open Q #3). Outer gate green (1359), mypy 108.
+
 ## Current Phase
-Phase 11 — Disable calendar bundle (next). Extends Phase 9 destroy. PER RESOLVED OPEN QUESTION #3: LEAVE bundle events + representations (CalendarEvent/BlockedTime via bundle_primary_event) + child calendars intact; only hide the bundle calendar. ALSO gate destroy by object type: BUNDLE → org admin only; personal calendar → owner (CalendarOwnership) or admin (Phase 9 destroy was un-gated — any org member could disable any calendar; tighten here). Tier 3.
+Phase 12 — Create public-API token (admin) (next). NEW REST surface in public_api app (currently GraphQL-only, no routes.py). `POST /public-api-tokens/` → PublicAPIAuthService.create_system_user(integration_name, organization) returns (SystemUser, plaintext token); persist ResourceAccess rows (resource_name ∈ PublicAPIResources); return plaintext token ONCE. New public_api/routes.py + register in vinta_schedule_api/urls.py routes tuple. IsOrganizationAdmin. Tier 3.
+- public_api models: SystemUser(organization FK, integration_name unique, long_lived_token_hash, is_active), ResourceAccess(system_user FK, resource_name). Enum: public_api/constants.py PublicAPIResources.
 
 ## Remaining Phases
-12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
+13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
 
 ## Reusable infra notes (for later phases)
 - `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
