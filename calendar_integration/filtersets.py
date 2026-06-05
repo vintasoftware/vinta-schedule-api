@@ -65,7 +65,9 @@ class CalendarEventFilterSet(filters.FilterSet):
             field_name="calendar_fk_id",
             label="Filter by calendar ID",
             queryset=(
-                Calendar.objects.filter_by_organization(membership.organization_id)
+                Calendar.objects.filter_by_organization(membership.organization_id).filter(
+                    is_active=True
+                )
                 if membership
                 else Calendar.original_manager.none()
             ),
@@ -110,7 +112,9 @@ class BlockedTimeFilterSet(filters.FilterSet):
             field_name="calendar_fk_id",
             label="Filter by calendar ID",
             queryset=(
-                Calendar.objects.filter_by_organization(membership.organization_id)
+                Calendar.objects.filter_by_organization(membership.organization_id).filter(
+                    is_active=True
+                )
                 if membership
                 else Calendar.original_manager.none()
             ),
@@ -143,7 +147,9 @@ class CalendarGroupFilterSet(filters.FilterSet):
             field_name="slots__memberships__calendar_fk_id",
             label="Filter to groups whose slot pools include this calendar",
             queryset=(
-                Calendar.objects.filter_by_organization(membership.organization_id)
+                Calendar.objects.filter_by_organization(membership.organization_id).filter(
+                    is_active=True
+                )
                 if membership
                 else Calendar.original_manager.none()
             ),
@@ -182,7 +188,9 @@ class AvailableTimeFilterSet(filters.FilterSet):
             field_name="calendar_fk_id",
             label="Filter by calendar ID",
             queryset=(
-                Calendar.objects.filter_by_organization(membership.organization_id)
+                Calendar.objects.filter_by_organization(membership.organization_id).filter(
+                    is_active=True
+                )
                 if membership
                 else Calendar.original_manager.none()
             ),

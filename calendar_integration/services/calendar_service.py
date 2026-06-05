@@ -408,13 +408,23 @@ class CalendarService(BaseCalendarService):
             end_time=end_time,
         )
 
-        import_organization_calendar_resources_task.delay(  # type: ignore
-            account_type="google_service_account"
+        # Capture ids by value so the closure is independent of mutable self state.
+        _account_type = (
+            "google_service_account"
             if isinstance(self.account, GoogleCalendarServiceAccount)
-            else "social_account",
-            account_id=self.account.id,
-            organization_id=self.organization.id,
-            import_workflow_state_id=import_workflow_state.id,
+            else "social_account"
+        )
+        _account_id = self.account.id
+        _organization_id = self.organization.id
+        _import_workflow_state_id = import_workflow_state.id
+
+        transaction.on_commit(
+            lambda: import_organization_calendar_resources_task.delay(  # type: ignore
+                account_type=_account_type,
+                account_id=_account_id,
+                organization_id=_organization_id,
+                import_workflow_state_id=_import_workflow_state_id,
+            )
         )
 
     def import_organization_calendar_resources(
@@ -570,7 +580,6 @@ class CalendarService(BaseCalendarService):
             organization_id=self.organization.id,
         )
 
-    @transaction.atomic()
     def request_calendars_import(self) -> None:
         """
         Import calendars associated with the authenticated account and create them as Calendar
@@ -581,12 +590,21 @@ class CalendarService(BaseCalendarService):
         if not is_authenticated_calendar_service(self):
             raise
 
-        import_account_calendars_task.delay(  # type: ignore
-            account_type="google_service_account"
+        # Capture ids by value so the closure is independent of mutable self state.
+        _account_type = (
+            "google_service_account"
             if isinstance(self.account, GoogleCalendarServiceAccount)
-            else "social_account",
-            account_id=self.account.id,
-            organization_id=self.organization.id,
+            else "social_account"
+        )
+        _account_id = self.account.id
+        _organization_id = self.organization.id
+
+        transaction.on_commit(
+            lambda: import_account_calendars_task.delay(  # type: ignore
+                account_type=_account_type,
+                account_id=_account_id,
+                organization_id=_organization_id,
+            )
         )
 
     @transaction.atomic()
@@ -2301,8 +2319,16 @@ class CalendarService(BaseCalendarService):
         if not self.account or not self.account.id:
             raise NotImplementedError("Account is not set for the current service instance.")
 
-        sync_calendar_task.delay(  # type: ignore
-            account_type, self.account.id, calendar_sync.id, calendar.organization_id
+        # Capture ids by value so the closure is independent of mutable self state.
+        _account_type = account_type
+        _account_id = self.account.id
+        _calendar_sync_id = calendar_sync.id
+        _organization_id = calendar.organization_id
+
+        transaction.on_commit(
+            lambda: sync_calendar_task.delay(  # type: ignore
+                _account_type, _account_id, _calendar_sync_id, _organization_id
+            )
         )
         return calendar_sync
 

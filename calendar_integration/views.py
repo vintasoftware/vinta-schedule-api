@@ -2,7 +2,6 @@ import datetime
 from collections.abc import Callable
 from typing import Annotated
 
-from django.db import transaction
 from django.http import Http404
 
 from allauth.socialaccount.models import SocialAccount
@@ -259,10 +258,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                     organization=membership.organization,
                 )
 
-                def enqueue_import(service=fresh_service):
-                    service.request_calendars_import()
-
-                transaction.on_commit(enqueue_import)
+                fresh_service.request_calendars_import()
 
             account_count = social_accounts.count()
             return Response(

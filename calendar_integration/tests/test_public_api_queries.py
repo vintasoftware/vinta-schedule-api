@@ -421,3 +421,38 @@ class TestCalendarQueries:
 
         assert result.total_subscriptions == 0
         assert result.active_subscriptions == 0
+
+    def test_calendars_query_excludes_disabled_calendars(
+        self, mock_request, mock_dependencies
+    ) -> None:
+        """Phase 19: public GraphQL calendars query must exclude is_active=False calendars."""
+        from calendar_integration.models import Calendar
+        from public_api.queries import Query
+
+        organization = mock_request.organization
+
+        active_calendar: Calendar = baker.make(
+            "calendar_integration.Calendar",
+            organization=organization,
+            is_active=True,
+            external_id="ext-active-1",
+        )
+        baker.make(
+            "calendar_integration.Calendar",
+            organization=organization,
+            is_active=False,
+            external_id="ext-disabled-1",
+        )
+
+        mock_info = Mock()
+        mock_info.context = Mock()
+        mock_info.context.request = mock_request
+        mock_request.public_api_organization = organization
+
+        with patch("public_api.queries.get_query_dependencies", return_value=mock_dependencies):
+            query = Query()
+            result = query.calendars(info=mock_info)
+
+        result_ids = [cal.id for cal in result]
+        assert active_calendar.id in result_ids, "Active calendar must be returned"
+        assert all(cal.is_active for cal in result), "All returned calendars must be active"

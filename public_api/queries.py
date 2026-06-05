@@ -129,7 +129,7 @@ class Query:
         if limit <= 0 or limit > 100:
             raise GraphQLError("Limit must be between 1 and 100")
 
-        queryset = Calendar.objects.filter_by_organization(org.id)
+        queryset = Calendar.objects.filter_by_organization(org.id).filter(is_active=True)
         if calendar_id is not None:
             queryset = queryset.filter(id=calendar_id)
 

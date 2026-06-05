@@ -703,7 +703,12 @@ def test_import_account_calendars_not_authenticated():
 def test_create_application_calendar(
     social_account, social_token, mock_google_adapter, patch_calendar_create, organization
 ):
-    """Test creating an application calendar."""
+    """Test creating an application calendar.
+
+    request_calendar_sync now enqueues via on_commit.  We patch on_commit to
+    capture the callback, verify it is not fired before commit, then invoke it
+    and assert the task fires with the correct arguments.
+    """
     created_calendar_data = ApplicationCalendarData(
         id=None,
         organization_id=organization.id,
@@ -719,8 +724,23 @@ def test_create_application_calendar(
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=organization)
 
+    captured_callbacks: list = []
     with patch("calendar_integration.tasks.sync_calendar_task.delay") as mock_task:
-        result = service.create_application_calendar("Test Calendar", organization=organization)
+        with patch(
+            "calendar_integration.services.calendar_service.transaction.on_commit",
+            side_effect=captured_callbacks.append,
+        ):
+            result = service.create_application_calendar("Test Calendar", organization=organization)
+            # Task must NOT fire before commit.
+            mock_task.assert_not_called()
+
+        assert len(captured_callbacks) == 1
+        # Simulate commit: invoke the callback inside the patch context so the
+        # delay mock is still active when the lambda calls sync_calendar_task.delay.
+        captured_callbacks[0]()
+
+        # Verify task was called
+        mock_task.assert_called_once()
 
     # Verify database object was created
     calendar = Calendar.objects.get(organization=organization, external_id="new_cal_123")
@@ -731,16 +751,6 @@ def test_create_application_calendar(
     # Verify return value
     assert result.external_id == "new_cal_123"
     assert result.name == "_virtual_Test Calendar"
-
-    # Verify task was called
-    mock_task.assert_called_once()
-
-    # Verify database object was actually created
-    calendar = Calendar.objects.get(organization=organization, external_id="new_cal_123")
-    assert calendar.name == "_virtual_Test Calendar"
-    assert calendar.provider == CalendarProvider.GOOGLE
-    assert result.name == "_virtual_Test Calendar"
-    mock_task.assert_called_once()
 
 
 @pytest.mark.django_db
@@ -3230,19 +3240,40 @@ def test_transfer_event_with_resources(
 
 @pytest.mark.django_db
 def test_request_calendar_sync(social_account, social_token, mock_google_adapter, calendar):
-    """Test requesting a calendar sync."""
+    """Test requesting a calendar sync.
+
+    The task is now enqueued via transaction.on_commit.  We patch on_commit to
+    capture the callback and verify it is NOT invoked before commit, then invoke
+    it manually and assert the task fires with the correct arguments.
+    """
     start_datetime = datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC)
     end_datetime = datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC)
 
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=calendar.organization)
 
+    captured_callbacks: list = []
     with patch("calendar_integration.tasks.sync_calendar_task.delay") as mock_task:
-        result = service.request_calendar_sync(
-            calendar=calendar,
-            start_datetime=start_datetime,
-            end_datetime=end_datetime,
-            should_update_events=True,
+        with patch(
+            "calendar_integration.services.calendar_service.transaction.on_commit",
+            side_effect=captured_callbacks.append,
+        ):
+            result = service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                should_update_events=True,
+            )
+            # Task must NOT fire before commit.
+            mock_task.assert_not_called()
+
+        # One on_commit callback was registered.
+        assert len(captured_callbacks) == 1
+
+        # Simulate commit: invoke the callback.
+        captured_callbacks[0]()
+        mock_task.assert_called_once_with(
+            "social_account", social_account.id, result.id, calendar.organization.id
         )
 
     # Verify CalendarSync was created
@@ -3252,31 +3283,38 @@ def test_request_calendar_sync(social_account, social_token, mock_google_adapter
     assert result.end_datetime == end_datetime
     assert result.should_update_events is True
 
-    # Verify task was called with correct parameters
-    mock_task.assert_called_once_with(
-        "social_account", social_account.id, result.id, calendar.organization.id
-    )
-
 
 @pytest.mark.django_db
 def test_request_calendar_sync_with_service_account(
     google_service_account, mock_google_adapter, calendar
 ):
-    """Test requesting calendar sync with service account."""
+    """Test requesting calendar sync with service account.
+
+    Verifies the on_commit callback fires the task with the correct account_type.
+    """
     start_datetime = datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC)
     end_datetime = datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC)
 
     service = CalendarService()
     service.authenticate(account=google_service_account, organization=calendar.organization)
 
+    captured_callbacks: list = []
     with patch("calendar_integration.tasks.sync_calendar_task.delay") as mock_task:
-        result = service.request_calendar_sync(
-            calendar=calendar,
-            start_datetime=start_datetime,
-            end_datetime=end_datetime,
-        )
+        with patch(
+            "calendar_integration.services.calendar_service.transaction.on_commit",
+            side_effect=captured_callbacks.append,
+        ):
+            result = service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+            )
+            mock_task.assert_not_called()
 
-    # Verify task was called with correct account type
+        assert len(captured_callbacks) == 1
+        captured_callbacks[0]()
+
+    # Verify task was called with correct account type after commit.
     mock_task.assert_called_once_with(
         "google_service_account",
         google_service_account.id,
@@ -4535,6 +4573,7 @@ def test_create_event_adapter_failure(
 def test_request_organization_calendar_resources_import(
     social_account, organization, mock_google_adapter
 ):
+    """Verify the import task is enqueued via on_commit, not before commit."""
     with patch.object(
         CalendarService,
         "get_calendar_adapter_for_account",
@@ -4547,8 +4586,44 @@ def test_request_organization_calendar_resources_import(
             service.authenticate(account=social_account.user, organization=organization)
             start = timezone.now()
             end = start + timedelta(days=1)
-            service.request_organization_calendar_resources_import(start, end)
+
+            captured_callbacks: list = []
+            with patch(
+                "calendar_integration.services.calendar_service.transaction.on_commit",
+                side_effect=captured_callbacks.append,
+            ):
+                service.request_organization_calendar_resources_import(start, end)
+                # Task must NOT fire before commit.
+                mock_task.assert_not_called()
+
+            assert len(captured_callbacks) == 1
+            captured_callbacks[0]()
             mock_task.assert_called_once()
+
+
+@pytest.mark.django_db
+def test_request_calendars_import(social_account, social_token, mock_google_adapter, calendar):
+    """Verify the account-calendars import task is enqueued via on_commit, not before commit."""
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+
+    captured_callbacks: list = []
+    with patch("calendar_integration.tasks.import_account_calendars_task.delay") as mock_task:
+        with patch(
+            "calendar_integration.services.calendar_service.transaction.on_commit",
+            side_effect=captured_callbacks.append,
+        ):
+            service.request_calendars_import()
+            # Task must NOT fire before commit.
+            mock_task.assert_not_called()
+
+        assert len(captured_callbacks) == 1
+        captured_callbacks[0]()
+        mock_task.assert_called_once_with(
+            account_type="social_account",
+            account_id=social_account.id,
+            organization_id=calendar.organization.id,
+        )
 
 
 @pytest.mark.django_db

@@ -2260,10 +2260,60 @@ class TestCalendarViewSet:
         response = anonymous_client.post(url, data, format="json")
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
+    def test_create_bundle_with_disabled_calendar_rejected(self, auth_client, organization, user):
+        """Phase 19: disabled calendars cannot be used as bundle children or primary.
+
+        CalendarBundleCreateSerializer filters bundle_calendars + primary_calendar
+        querysets to is_active=True, so passing a disabled calendar id should
+        result in a 400 (invalid PK).
+        """
+        active_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        disabled_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        disabled_calendar.is_active = False
+        disabled_calendar.save(update_fields=["is_active"])
+
+        url = reverse("api:Calendars-bundle")
+
+        # disabled calendar as a child → 400
+        data = {
+            "name": "Bad Bundle",
+            "bundle_calendars": [active_calendar.id, disabled_calendar.id],
+            "primary_calendar": active_calendar.id,
+        }
+        response = auth_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # disabled calendar as primary → 400
+        another_active = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        data2 = {
+            "name": "Bad Bundle 2",
+            "bundle_calendars": [active_calendar.id, another_active.id],
+            "primary_calendar": disabled_calendar.id,
+        }
+        response2 = auth_client.post(url, data2, format="json")
+        assert_response_status_code(response2, status.HTTP_400_BAD_REQUEST)
+
     def test_request_import_authenticated_with_social_account(
         self, auth_client, user, calendar, social_account
     ):
-        """Test requesting calendar import with authenticated user and social account"""
+        """Test requesting calendar import with authenticated user and social account.
+
+        The view now calls request_calendars_import() directly; the service owns
+        the on_commit deferral internally.  We just verify authenticate + the
+        service method were both called.
+        """
         from di_core.containers import container
 
         # Create calendar ownership for the user
@@ -2277,23 +2327,15 @@ class TestCalendarViewSet:
         url = reverse("api:Calendars-request-import")
 
         with container.calendar_service.override(mock_calendar_service):
-            with patch("calendar_integration.views.transaction.on_commit") as mock_on_commit:
-                response = auth_client.post(url)
+            response = auth_client.post(url)
 
-                # Verify response
-                assert_response_status_code(response, status.HTTP_202_ACCEPTED)
-                assert response.data["detail"] == "Calendar import requested."
+            # Verify response
+            assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+            assert response.data["detail"] == "Calendar import requested."
 
-                # Verify the mock was called with the correct arguments
-                mock_calendar_service.authenticate.assert_called_once()
-
-                # Verify on_commit was called and invoke the callback
-                mock_on_commit.assert_called_once()
-                callback = mock_on_commit.call_args[0][0]
-                callback()
-
-                # Now verify the service method was called
-                mock_calendar_service.request_calendars_import.assert_called_once()
+            # Verify the mock was called with the correct arguments
+            mock_calendar_service.authenticate.assert_called_once()
+            mock_calendar_service.request_calendars_import.assert_called_once()
 
     def test_request_import_no_social_account(self, auth_client, user):
         """Test requesting calendar import without a connected social account"""
@@ -2360,21 +2402,13 @@ class TestCalendarViewSet:
         from di_core.containers import container
 
         with container.calendar_service.override(mock_service):
-            with patch("calendar_integration.views.transaction.on_commit") as mock_on_commit:
-                response = auth_client.post(url)
+            response = auth_client.post(url)
 
-                # Verify response
-                assert_response_status_code(response, status.HTTP_202_ACCEPTED)
-                assert "2 account(s)" in response.data["detail"]
+            # Verify response
+            assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+            assert "2 account(s)" in response.data["detail"]
 
-                # Verify on_commit was called twice (once per account)
-                assert mock_on_commit.call_count == 2
-
-                # Verify both callbacks invoke request_calendars_import
-                callbacks = [call[0][0] for call in mock_on_commit.call_args_list]
-                for callback in callbacks:
-                    callback()
-                assert mock_service.request_calendars_import.call_count == 2
+            assert mock_service.request_calendars_import.call_count == 2
 
     def test_request_sync_owner_syncs_own_calendar(
         self, auth_client, user, calendar, social_account

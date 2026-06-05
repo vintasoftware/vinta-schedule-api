@@ -196,7 +196,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
             queryset=(
                 Calendar.objects.filter_by_organization(
                     organization_id=active_membership.organization_id
-                )
+                ).filter(is_active=True)
                 if active_membership
                 else Calendar.original_manager.none()
             ),
@@ -205,7 +205,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
             queryset=(
                 Calendar.objects.filter_by_organization(
                     organization_id=active_membership.organization_id
-                )
+                ).filter(is_active=True)
                 if active_membership
                 else Calendar.original_manager.none()
             ),
@@ -556,6 +556,7 @@ class ResourceAllocationSerializer(VirtualModelSerializer):
             queryset=(
                 Calendar.objects.filter_by_organization(membership.organization_id).filter(
                     calendar_type=CalendarType.RESOURCE,
+                    is_active=True,
                 )
                 if membership
                 else Calendar.original_manager.none()

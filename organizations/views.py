@@ -158,23 +158,20 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
                     private_key=sa_data["private_key"],
                 )
 
-        # Register the on_commit callback AFTER the atomic block (so it fires post-commit).
+        # Call request_rooms_sync directly — the service now owns the on_commit
+        # deferral internally, so no view-level on_commit wrap is needed.
         if fire:
-            org = serializer.instance
-            user = request.user
-            org_service = self.organization_service
-
-            def _trigger():
-                try:
-                    org_service.request_rooms_sync(organization=org, requested_by=user)
-                except NoServiceAccountConfiguredError:
-                    logger.warning(
-                        "rooms-sync trigger skipped: no service account configured for org %s "
-                        "(account may have been deleted between pre-flight check and commit)",
-                        org.id,
-                    )
-
-            transaction.on_commit(_trigger)
+            try:
+                self.organization_service.request_rooms_sync(
+                    organization=serializer.instance,
+                    requested_by=request.user,
+                )
+            except NoServiceAccountConfiguredError:
+                logger.warning(
+                    "rooms-sync trigger skipped: no service account configured for org %s "
+                    "(account may have been deleted between pre-flight check and commit)",
+                    serializer.instance.id,
+                )
 
         return_serializer = self.get_retrieve_serializer(
             self.get_return_object(serializer.instance)
@@ -243,11 +240,8 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         except (ValueError, TypeError) as exc:
             raise ValidationError({"detail": f"Invalid datetime format: {exc}"}) from exc
 
-        org_service = self.organization_service
-        user = request.user
-
         # Pre-flight: refuse early (400) if no service account is configured so the
-        # admin gets a clear error instead of a 500 when the on_commit fires.
+        # admin gets a clear error instead of a 500.
         has_sa = (
             GoogleCalendarServiceAccount.objects.filter_by_organization(org.id)
             .filter(calendar_fk__isnull=True)
@@ -256,22 +250,22 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         if not has_sa:
             raise NoServiceAccountConfiguredError()
 
-        def _trigger():
-            try:
-                org_service.request_rooms_sync(
-                    organization=org,
-                    requested_by=user,
-                    start_time=start_time,
-                    end_time=end_time,
-                )
-            except NoServiceAccountConfiguredError:
-                logger.warning(
-                    "rooms-sync trigger skipped: no service account configured for org %s "
-                    "(account may have been deleted between pre-flight check and commit)",
-                    org.id,
-                )
-
-        transaction.on_commit(_trigger)
+        # Call request_rooms_sync directly — the service now owns the on_commit
+        # deferral internally, so no view-level on_commit wrap is needed.
+        # Keep the TOCTOU guard in case the SA is deleted between pre-flight and here.
+        try:
+            self.organization_service.request_rooms_sync(
+                organization=org,
+                requested_by=request.user,
+                start_time=start_time,
+                end_time=end_time,
+            )
+        except NoServiceAccountConfiguredError:
+            logger.warning(
+                "rooms-sync trigger skipped: no service account configured for org %s "
+                "(account may have been deleted between pre-flight check and commit)",
+                org.id,
+            )
 
         serializer = self.get_serializer(org)
         return Response(serializer.data, status=status.HTTP_202_ACCEPTED)

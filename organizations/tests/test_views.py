@@ -1973,13 +1973,15 @@ class TestSyncRoomsAction:
         client.force_authenticate(user=user)
         return client
 
-    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
     @patch("organizations.services.OrganizationService.request_rooms_sync")
-    def test_admin_sync_rooms_default_times_returns_202(self, mock_sync, _mock_on_commit, user):
+    def test_admin_sync_rooms_default_times_returns_202(self, mock_sync, user):
         """Admin POST without body → 202; request_rooms_sync called with no explicit times.
 
         Phase 18: a GoogleCalendarServiceAccount must exist for the org or the
         view returns 400.  Provide one so the pre-flight check passes.
+
+        Phase 19: the view calls request_rooms_sync directly (no view-level
+        on_commit); the service owns the on_commit deferral internally.
         """
         organization = OrganizationTestFactory.create_organization(name="Sync Org")
         admin_client = self._make_admin_client(user, organization)
@@ -2006,13 +2008,15 @@ class TestSyncRoomsAction:
         assert call_kwargs["start_time"] is None
         assert call_kwargs["end_time"] is None
 
-    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
     @patch("organizations.services.OrganizationService.request_rooms_sync")
-    def test_admin_sync_rooms_explicit_times_returns_202(self, mock_sync, _mock_on_commit, user):
+    def test_admin_sync_rooms_explicit_times_returns_202(self, mock_sync, user):
         """Admin POST with ISO start_time/end_time → 202; service called with parsed datetimes.
 
         Phase 18: a GoogleCalendarServiceAccount must exist for the org or the
         view returns 400.  Provide one so the pre-flight check passes.
+
+        Phase 19: the view calls request_rooms_sync directly (no view-level
+        on_commit); the service owns the on_commit deferral internally.
         """
         import datetime
 
@@ -2129,13 +2133,15 @@ class TestShouldSyncRoomsTransition:
         client.force_authenticate(user=user)
         return client, organization
 
-    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
     @patch("organizations.services.OrganizationService.request_rooms_sync")
-    def test_patch_false_to_true_fires_sync_once(self, mock_sync, _mock_on_commit, user):
+    def test_patch_false_to_true_fires_sync_once(self, mock_sync, user):
         """Admin PATCH should_sync_rooms False→True → 200; request_rooms_sync called once.
 
         Phase 18: the view checks for a service account before firing the sync.
         Provide one so the check passes.
+
+        Phase 19: the view calls request_rooms_sync directly (no view-level
+        on_commit); the service owns the on_commit deferral internally.
         """
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
         # Provide a service account so the pre-flight check passes.
@@ -2161,9 +2167,8 @@ class TestShouldSyncRoomsTransition:
         assert call_kwargs["organization"].pk == org.pk
         assert call_kwargs["requested_by"] == user
 
-    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
     @patch("organizations.services.OrganizationService.request_rooms_sync")
-    def test_patch_already_true_does_not_fire_sync(self, mock_sync, _mock_on_commit, user):
+    def test_patch_already_true_does_not_fire_sync(self, mock_sync, user):
         """Admin PATCH on org with should_sync_rooms already True → 200; sync NOT fired."""
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=True)
 
@@ -2175,9 +2180,8 @@ class TestShouldSyncRoomsTransition:
         )
         mock_sync.assert_not_called()
 
-    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
     @patch("organizations.services.OrganizationService.request_rooms_sync")
-    def test_patch_true_to_false_does_not_fire_sync(self, mock_sync, _mock_on_commit, user):
+    def test_patch_true_to_false_does_not_fire_sync(self, mock_sync, user):
         """Admin PATCH should_sync_rooms True→False → 200; sync NOT fired."""
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=True)
 
@@ -2189,9 +2193,8 @@ class TestShouldSyncRoomsTransition:
         )
         mock_sync.assert_not_called()
 
-    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
     @patch("organizations.services.OrganizationService.request_rooms_sync")
-    def test_patch_unrelated_field_does_not_fire_sync(self, mock_sync, _mock_on_commit, user):
+    def test_patch_unrelated_field_does_not_fire_sync(self, mock_sync, user):
         """Admin PATCH on unrelated field (name) while should_sync_rooms stays False — no sync."""
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
 
@@ -2258,13 +2261,14 @@ class TestShouldSyncRoomsTransition:
         )
         mock_sync.assert_not_called()
 
-    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
     @patch("organizations.services.OrganizationService.request_rooms_sync")
-    def test_admin_can_set_should_sync_rooms_value_persists(self, mock_sync, _mock_on_commit, user):
+    def test_admin_can_set_should_sync_rooms_value_persists(self, mock_sync, user):
         """Admin PATCH should_sync_rooms → value persists in DB (configure-org use-case).
 
         Phase 18: the view checks for a service account before firing the sync.
         Provide one so the check passes and the PATCH returns 200.
+
+        Phase 19: no view-level on_commit; service owns the deferral.
         """
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
         # Provide a service account so the False→True transition check passes.
@@ -2529,8 +2533,7 @@ class TestPhase18SyncRoomsTrigger:
         client.force_authenticate(user=user)
         return client
 
-    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
-    def test_sync_rooms_with_service_account_calls_authenticate(self, _mock_on_commit, user):
+    def test_sync_rooms_with_service_account_calls_authenticate(self, user):
         """With a service account configured, sync-rooms authenticates with it."""
         org = baker.make(Organization, name="SA Sync Org", should_sync_rooms=True)
         sa = baker.make(
@@ -2613,8 +2616,7 @@ class TestPhase18TransitionWithNoCredentials:
             f"Expected a 'service account' message in 400 response: {body}"
         )
 
-    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
-    def test_enable_sync_rooms_with_creds_in_same_patch_succeeds(self, _mock_on_commit, user):
+    def test_enable_sync_rooms_with_creds_in_same_patch_succeeds(self, user):
         """PATCH enabling should_sync_rooms + providing SA creds in same request → 200."""
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
 
@@ -2670,8 +2672,7 @@ class TestPhase18TransitionWithNoCredentials:
             "should_sync_rooms must not have been enabled after a 400"
         )
 
-    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
-    def test_enable_sync_rooms_with_pre_existing_creds_succeeds(self, _mock_on_commit, user):
+    def test_enable_sync_rooms_with_pre_existing_creds_succeeds(self, user):
         """PATCH enabling should_sync_rooms when SA already exists → 200; sync fires."""
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
 
