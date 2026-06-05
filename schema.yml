@@ -2606,6 +2606,87 @@ paths:
           description: ''
         '204':
           description: No response body
+  /calendar-events/{id}/transfer/:
+    post:
+      operationId: calendar_events_transfer_create
+      description: Move an event from its current calendar to a target calendar within
+        the same organization. The service authenticates with the SOURCE calendar
+        owner's credentials to read and delete the event from the provider. Admin
+        only.
+      summary: Transfer event to another calendar (admin)
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          type:
+            schema:
+              type: object
+              additionalProperties: {}
+              description: Unspecified request body
+          properties:
+            schema:
+              target_calendar_id:
+                type: integer
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+  /calendar-events/{id}/transfer{format}:
+    post:
+      operationId: calendar_events_transfer_formatted_create
+      description: Move an event from its current calendar to a target calendar within
+        the same organization. The service authenticates with the SOURCE calendar
+        owner's credentials to read and delete the event from the provider. Admin
+        only.
+      summary: Transfer event to another calendar (admin)
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          type:
+            schema:
+              type: object
+              additionalProperties: {}
+              description: Unspecified request body
+          properties:
+            schema:
+              target_calendar_id:
+                type: integer
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
   /calendar-groups/:
     get:
       operationId: calendar_groups_list

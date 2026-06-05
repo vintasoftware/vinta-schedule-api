@@ -527,6 +527,263 @@ class TestCalendarEventViewSet:
 
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
+    # --- Transfer action tests ---
+
+    def test_transfer_event_success(self, organization, calendar, calendar_event):
+        """Admin transfers an in-org event to an in-org target calendar."""
+        from rest_framework.test import APIClient
+
+        from di_core.containers import container
+
+        # Admin user
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Source calendar owner
+        source_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=source_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
+
+        owner_social_account = baker.make(
+            SocialAccount,
+            user=source_owner,
+            provider=calendar.provider,
+        )
+        baker.make(
+            SocialToken,
+            account=owner_social_account,
+            token="fake_access_token",
+            token_secret="fake_refresh_token",
+            expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+        )
+
+        # Target calendar in the same org
+        target_calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+
+        # Mock return value — a new event on the target calendar
+        transferred_event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=target_calendar,
+            title=calendar_event.title,
+        )
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.transfer_event.return_value = transferred_event
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                url, data={"target_calendar_id": target_calendar.id}, format="json"
+            )
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["id"] == transferred_event.id
+
+        # Verify transfer_event called with correct args
+        mock_calendar_service.transfer_event.assert_called_once_with(
+            event=calendar_event,
+            new_calendar=target_calendar,
+        )
+
+        # Verify service authenticated with SOURCE OWNER's account
+        authenticate_call_args = mock_calendar_service.authenticate.call_args
+        assert authenticate_call_args is not None
+        account_arg = authenticate_call_args[1]["account"]
+        assert account_arg == owner_social_account
+        assert account_arg.user == source_owner
+
+    def test_transfer_event_non_admin_forbidden(self, organization, calendar, calendar_event):
+        """Non-admin active member receives 403."""
+        from rest_framework.test import APIClient
+
+        member_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=member_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        target_calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+
+        client = APIClient()
+        client.force_authenticate(user=member_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        response = client.post(url, data={"target_calendar_id": target_calendar.id}, format="json")
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_transfer_event_cross_org_event_not_found(self, organization):
+        """Event from a different org yields 404 (org-scoped queryset)."""
+        from rest_framework.test import APIClient
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+        other_event = CalendarIntegrationTestFactory.create_calendar_event(calendar=other_calendar)
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": other_event.id})
+
+        response = client.post(url, data={"target_calendar_id": 1}, format="json")
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_transfer_event_missing_target_calendar_id(
+        self, organization, calendar, calendar_event
+    ):
+        """Missing target_calendar_id body field yields 400."""
+        from rest_framework.test import APIClient
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        source_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=source_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        response = client.post(url, data={}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_transfer_event_invalid_target_calendar_id(
+        self, organization, calendar, calendar_event
+    ):
+        """Non-existent target_calendar_id yields 400."""
+        from rest_framework.test import APIClient
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        source_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=source_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        response = client.post(url, data={"target_calendar_id": 999999}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "invalid or not in your organization" in response.data["detail"]
+
+    def test_transfer_event_target_calendar_not_in_org(
+        self, organization, calendar, calendar_event
+    ):
+        """target_calendar_id from a different org yields 400."""
+        from rest_framework.test import APIClient
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        source_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=source_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
+
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        response = client.post(url, data={"target_calendar_id": other_calendar.id}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "invalid or not in your organization" in response.data["detail"]
+
+    def test_transfer_event_source_owner_no_linked_account(
+        self, organization, calendar, calendar_event
+    ):
+        """Source calendar owner has no linked social account → 400."""
+        from rest_framework.test import APIClient
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        source_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=source_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
+        # Intentionally do NOT create a SocialAccount for source_owner
+
+        target_calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        response = client.post(url, data={"target_calendar_id": target_calendar.id}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "no linked" in response.data["detail"].lower()
+
+    def test_transfer_event_unauthenticated(self, anonymous_client, calendar_event):
+        """Unauthenticated request yields 401."""
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+        response = anonymous_client.post(url, data={"target_calendar_id": 1}, format="json")
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
 
 @pytest.mark.django_db
 class TestRecurringCalendarEventViewSet:

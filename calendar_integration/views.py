@@ -661,6 +661,116 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
         except (ValueError, CalendarIntegrationError) as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
+    @extend_schema(
+        summary="Transfer event to another calendar (admin)",
+        description=(
+            "Move an event from its current calendar to a target calendar within the same "
+            "organization. The service authenticates with the SOURCE calendar owner's credentials "
+            "to read and delete the event from the provider. Admin only."
+        ),
+        request={"type": "object", "properties": {"target_calendar_id": {"type": "integer"}}},
+        responses={200: CalendarEventSerializer},
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="transfer",
+        url_name="transfer",
+        permission_classes=[IsOrganizationAdmin],
+    )
+    @inject
+    def transfer(
+        self,
+        request,
+        pk: str | None = None,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]] = None,  # type: ignore
+    ) -> Response:
+        """Transfer an event to a different calendar (admin-only)."""
+        event = self.get_object()  # org-scoped → cross-org yields 404; non-admin → 403
+
+        # --- Parse and validate body ---
+        target_calendar_id = request.data.get("target_calendar_id")
+        if target_calendar_id is None:
+            return Response(
+                {"detail": "target_calendar_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Reject no-op transfers
+        if str(target_calendar_id) == str(event.calendar_fk_id):
+            return Response(
+                {"detail": "Event is already on the target calendar."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Resolve the target calendar within the event's organization
+        try:
+            target_calendar = Calendar.objects.filter_by_organization(event.organization_id).get(
+                id=target_calendar_id
+            )
+        except Calendar.DoesNotExist:
+            return Response(
+                {"detail": "target_calendar_id invalid or not in your organization."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # --- Authenticate with the SOURCE calendar owner's credentials ---
+        source_calendar = event.calendar
+        ownership = (
+            CalendarOwnership.objects.filter(
+                calendar=source_calendar,
+                organization_id=source_calendar.organization_id,
+            )
+            .order_by("-is_default", "id")
+            .first()
+        )
+
+        if not ownership:
+            return Response(
+                {"detail": "Source calendar has no owner; cannot read from provider."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        source_owner = ownership.user
+        owner_social_account = SocialAccount.objects.filter(
+            user=source_owner, provider=source_calendar.provider
+        ).first()
+
+        if not owner_social_account:
+            return Response(
+                {
+                    "detail": (
+                        f"Source calendar owner has no linked {source_calendar.provider} account; "
+                        "cannot transfer event."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Use admin's organization for service context
+        membership = get_active_organization_membership(request.user)
+        if not membership:
+            return Response(
+                {"detail": "User is not an active member of any organization."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            calendar_service.authenticate(
+                account=owner_social_account,
+                organization=membership.organization,
+            )
+            new_event = calendar_service.transfer_event(
+                event=event,
+                new_calendar=target_calendar,
+            )
+            return Response(
+                CalendarEventSerializer(new_event, context=self.get_serializer_context()).data,
+                status=status.HTTP_200_OK,
+            )
+        except (ValueError, CalendarIntegrationError, NotImplementedError) as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
 
 class BlockedTimeViewSet(VintaScheduleModelViewSet):
     """
