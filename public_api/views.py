@@ -1,5 +1,7 @@
 import logging
 
+from django.db import transaction
+
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
@@ -10,7 +12,7 @@ from rest_framework.viewsets import GenericViewSet
 
 from organizations.models import get_active_organization_membership
 from organizations.permissions import IsOrganizationAdmin
-from public_api.models import SystemUser
+from public_api.models import ResourceAccess, SystemUser
 from public_api.serializers import (
     SystemUserTokenCreateSerializer,
     SystemUserTokenResponseSerializer,
@@ -156,10 +158,14 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
                     system_user=system_user, resource_name__in=removed_resources
                 ).delete()
 
-            # Add newly-granted resources (de-duplicate)
+            # Add newly-granted resources in a single bulk insert.
             added_resources = desired_set - current_resources
-            for resource_name in added_resources:
-                ResourceAccess.objects.create(system_user=system_user, resource_name=resource_name)
+            ResourceAccess.objects.bulk_create(
+                [
+                    ResourceAccess(system_user=system_user, resource_name=resource_name)
+                    for resource_name in added_resources
+                ]
+            )
 
         # Refresh and return the updated token
         system_user.refresh_from_db()

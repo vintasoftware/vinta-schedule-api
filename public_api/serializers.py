@@ -57,10 +57,12 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
                     integration_name=integration_name,
                     organization=membership.organization,
                 )
+                # dict.fromkeys dedupes while preserving order, so the unique
+                # (system_user, resource_name) constraint cannot be violated.
                 ResourceAccess.objects.bulk_create(
                     [
                         ResourceAccess(system_user=system_user, resource_name=resource_name)
-                        for resource_name in available_resources
+                        for resource_name in dict.fromkeys(available_resources)
                     ]
                 )
         except IntegrityError as e:

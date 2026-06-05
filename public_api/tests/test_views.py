@@ -187,6 +187,34 @@ class TestSystemUserTokenViewSetCreate:
         returned_resources = set(response.json()["available_resources"])
         assert returned_resources == set(resources)
 
+    def test_create_deduplicates_duplicate_resources(self, admin_client, organization):
+        """If the request lists the same resource twice, it is deduplicated.
+
+        Only one ResourceAccess row is created per distinct resource.
+        """
+        payload = {
+            "integration_name": "dedup_test",
+            "available_resources": [
+                PublicAPIResources.CALENDAR,
+                PublicAPIResources.CALENDAR,
+                PublicAPIResources.USER,
+            ],
+        }
+        response = admin_client.post(self._url(), payload, format="json")
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+
+        # Verify only one row per distinct resource exists
+        system_user = SystemUser.objects.get(integration_name="dedup_test")
+        persisted_resources = list(
+            ResourceAccess.objects.filter(system_user=system_user).values_list(
+                "resource_name", flat=True
+            )
+        )
+        # Check exact distinct count: CALENDAR and USER only
+        assert len(persisted_resources) == 2
+        assert persisted_resources.count(PublicAPIResources.CALENDAR) == 1
+        assert persisted_resources.count(PublicAPIResources.USER) == 1
+
     def test_response_is_active_true(self, admin_client, organization):
         """Newly created token is active."""
         payload = {
