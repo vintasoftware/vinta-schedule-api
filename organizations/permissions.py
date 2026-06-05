@@ -113,7 +113,11 @@ class IsOrganizationAdmin(BasePermission):
         elif isinstance(obj, OrganizationModel):
             obj_organization_id = obj.organization_id
         else:
-            return False
+            # Handle SystemUser and other objects with an organization FK
+            if hasattr(obj, "organization_id"):
+                obj_organization_id = obj.organization_id
+            else:
+                return False
 
         # Membership org must match object org; user must be an admin
         if membership.organization_id != obj_organization_id:

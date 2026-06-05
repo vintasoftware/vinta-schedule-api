@@ -338,3 +338,263 @@ class TestSystemUserTokenViewSetCreate:
         system_user = SystemUser.objects.get(integration_name="scope_isolation")
         assert system_user.organization_id == organization.id
         assert system_user.organization_id != other_organization.id
+
+
+@pytest.mark.django_db
+class TestSystemUserTokenViewSetList:
+    """GET /public-api-tokens/ — Phase 13 list endpoint."""
+
+    LIST_URL = "api:PublicAPITokens-list"
+
+    def _url(self):
+        return reverse(self.LIST_URL)
+
+    # ------------------------------------------------------------------
+    # Happy path
+    # ------------------------------------------------------------------
+
+    def test_admin_lists_tokens_returns_200(self, admin_client, organization):
+        """Admin can list tokens; 200 returned."""
+        # Create a token first
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.get(self._url())
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+    def test_list_returns_all_org_tokens(self, admin_client, organization):
+        """List returns all tokens for the caller's org (active and inactive)."""
+        # Create multiple tokens in the org
+        system_user_1 = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user_1, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        system_user_2 = baker.make(SystemUser, organization=organization, is_active=False)
+        baker.make(ResourceAccess, system_user=system_user_2, resource_name=PublicAPIResources.USER)
+
+        response = admin_client.get(self._url())
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+        results = data["results"]
+        assert len(results) == 2
+        ids = [token["id"] for token in results]
+        assert system_user_1.id in ids
+        assert system_user_2.id in ids
+
+    def test_list_response_includes_required_fields(self, admin_client, organization):
+        """List response includes id, integration_name, is_active, available_resources."""
+        system_user = baker.make(
+            SystemUser, organization=organization, integration_name="test_int", is_active=True
+        )
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.get(self._url())
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+        results = data["results"]
+        assert len(results) == 1
+
+        token_data = results[0]
+        assert "id" in token_data
+        assert token_data["id"] == system_user.id
+        assert "integration_name" in token_data
+        assert token_data["integration_name"] == "test_int"
+        assert "is_active" in token_data
+        assert token_data["is_active"] is True
+        assert "available_resources" in token_data
+
+    def test_list_response_includes_available_resources(self, admin_client, organization):
+        """List response includes all available_resources for each token."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        resources = [
+            PublicAPIResources.CALENDAR,
+            PublicAPIResources.USER,
+            PublicAPIResources.CALENDAR_EVENT,
+        ]
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+
+        response = admin_client.get(self._url())
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+        results = data["results"]
+        assert len(results) == 1
+
+        returned_resources = set(results[0]["available_resources"])
+        assert returned_resources == set(resources)
+
+    def test_list_does_not_include_token_or_hash(self, admin_client, organization):
+        """List response must never include token or long_lived_token_hash."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.get(self._url())
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+        results = data["results"]
+        assert len(results) == 1
+
+        token_data = results[0]
+        assert "token" not in token_data
+        assert "long_lived_token_hash" not in token_data
+
+    def test_list_excludes_cross_org_tokens(self, admin_client, organization, other_organization):
+        """List excludes tokens from other organizations."""
+        # Create token in the admin's org
+        system_user_own = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user_own, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        # Create token in another org
+        system_user_other = baker.make(SystemUser, organization=other_organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user_other, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.get(self._url())
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+        results = data["results"]
+        assert len(results) == 1
+        assert results[0]["id"] == system_user_own.id
+
+    # ------------------------------------------------------------------
+    # Permission / auth failures
+    # ------------------------------------------------------------------
+
+    def test_member_user_gets_403(self, member_client):
+        """A non-admin member is rejected with HTTP 403."""
+        response = member_client.get(self._url())
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_membership_less_user_gets_403(self, membership_less_client):
+        """A user with no membership is rejected with HTTP 403."""
+        response = membership_less_client.get(self._url())
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_anonymous_user_gets_401(self, anonymous_client):
+        """An unauthenticated request is rejected with HTTP 401."""
+        response = anonymous_client.get(self._url())
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+
+@pytest.mark.django_db
+class TestSystemUserTokenViewSetRetrieve:
+    """GET /public-api-tokens/{id}/ — Phase 13 retrieve endpoint."""
+
+    def _url(self, token_id):
+        return reverse("api:PublicAPITokens-detail", kwargs={"pk": token_id})
+
+    # ------------------------------------------------------------------
+    # Happy path
+    # ------------------------------------------------------------------
+
+    def test_admin_retrieves_token_returns_200(self, admin_client, organization):
+        """Admin can retrieve a token; 200 returned."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.get(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+    def test_retrieve_response_includes_required_fields(self, admin_client, organization):
+        """Retrieve response includes id, integration_name, is_active, available_resources."""
+        system_user = baker.make(
+            SystemUser, organization=organization, integration_name="retrieve_test", is_active=True
+        )
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.get(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+
+        assert data["id"] == system_user.id
+        assert data["integration_name"] == "retrieve_test"
+        assert data["is_active"] is True
+        assert "available_resources" in data
+
+    def test_retrieve_response_includes_available_resources(self, admin_client, organization):
+        """Retrieve response includes all available_resources for the token."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        resources = [PublicAPIResources.CALENDAR, PublicAPIResources.USER]
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+
+        response = admin_client.get(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+
+        returned_resources = set(data["available_resources"])
+        assert returned_resources == set(resources)
+
+    def test_retrieve_does_not_include_token_or_hash(self, admin_client, organization):
+        """Retrieve response must never include token or long_lived_token_hash."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.get(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+
+        assert "token" not in data
+        assert "long_lived_token_hash" not in data
+
+    def test_retrieve_cross_org_token_returns_404(
+        self, admin_client, organization, other_organization
+    ):
+        """Attempt to retrieve a token from another org returns 404."""
+        system_user = baker.make(SystemUser, organization=other_organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = admin_client.get(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    # ------------------------------------------------------------------
+    # Permission / auth failures
+    # ------------------------------------------------------------------
+
+    def test_member_user_gets_403(self, member_client, organization):
+        """A non-admin member is rejected with HTTP 403."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = member_client.get(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_membership_less_user_gets_403(self, membership_less_client, organization):
+        """A user with no membership is rejected with HTTP 403."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = membership_less_client.get(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_anonymous_user_gets_401(self, anonymous_client, organization):
+        """An unauthenticated request is rejected with HTTP 401."""
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        response = anonymous_client.get(self._url(system_user.id))
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)

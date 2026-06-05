@@ -5761,6 +5761,45 @@ paths:
                 $ref: '#/components/schemas/Profile'
           description: ''
   /public-api-tokens/:
+    get:
+      operationId: public_api_tokens_list
+      description: |-
+        Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
+
+        Phase 12: create only.  Phase 13: list + retrieve.
+        List / retrieve / revoke / edit-grants are supported phases.
+
+        ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
+        organisation, persists the requested ``ResourceAccess`` rows, and returns the
+        plaintext token **once**.  The token is never recoverable after this response.
+
+        ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
+        ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - public-api-tokens
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSystemUserTokenList'
+          description: ''
     post:
       operationId: public_api_tokens_create
       description: |-
@@ -5801,6 +5840,52 @@ paths:
                 $ref: '#/components/schemas/SystemUserTokenResponse'
           description: ''
   /public-api-tokens{format}:
+    get:
+      operationId: public_api_tokens_formatted_list
+      description: |-
+        Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
+
+        Phase 12: create only.  Phase 13: list + retrieve.
+        List / retrieve / revoke / edit-grants are supported phases.
+
+        ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
+        organisation, persists the requested ``ResourceAccess`` rows, and returns the
+        plaintext token **once**.  The token is never recoverable after this response.
+
+        ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
+        ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - public-api-tokens
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSystemUserTokenList'
+          description: ''
     post:
       operationId: public_api_tokens_formatted_create
       description: |-
@@ -5847,6 +5932,79 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SystemUserTokenResponse'
+          description: ''
+  /public-api-tokens/{id}/:
+    get:
+      operationId: public_api_tokens_retrieve
+      description: |-
+        Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
+
+        Phase 12: create only.  Phase 13: list + retrieve.
+        List / retrieve / revoke / edit-grants are supported phases.
+
+        ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
+        organisation, persists the requested ``ResourceAccess`` rows, and returns the
+        plaintext token **once**.  The token is never recoverable after this response.
+
+        ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
+        ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+  /public-api-tokens/{id}{format}:
+    get:
+      operationId: public_api_tokens_formatted_retrieve
+      description: |-
+        Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
+
+        Phase 12: create only.  Phase 13: list + retrieve.
+        List / retrieve / revoke / edit-grants are supported phases.
+
+        ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
+        organisation, persists the requested ``ResourceAccess`` rows, and returns the
+        plaintext token **once**.  The token is never recoverable after this response.
+
+        ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
+        ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
           description: ''
   /public/organizations/{organization_id}/events/:
     get:
@@ -7996,6 +8154,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OrganizationMembership'
+    PaginatedSystemUserTokenList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SystemUserToken'
     PaginatedUnavailableTimeWindowList:
       type: object
       required:
@@ -8641,6 +8822,40 @@ components:
       description: |-
         * `member` - Member
         * `admin` - Admin
+    SystemUserToken:
+      type: object
+      description: |-
+        Read-only serializer for listing and retrieving public-API tokens.
+
+        Exposes ``id``, ``integration_name``, ``is_active``, and ``available_resources``
+        (list of resource_name strings from the related ``ResourceAccess`` rows).
+        Never exposes ``long_lived_token_hash`` or ``token``.
+
+        Optimized for list queries: uses prefetched ``available_resources`` from
+        the viewset's ``get_queryset`` to avoid N+1 queries.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        integration_name:
+          type: string
+          readOnly: true
+        is_active:
+          type: boolean
+          readOnly: true
+          description: Indicates if the user is active.
+        available_resources:
+          type: array
+          items:
+            type: string
+          description: Return a list of resource_name values from the prefetched ResourceAccess
+            rows.
+          readOnly: true
+      required:
+      - available_resources
+      - id
+      - integration_name
+      - is_active
     SystemUserTokenCreate:
       type: object
       description: |-

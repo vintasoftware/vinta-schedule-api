@@ -98,3 +98,26 @@ class SystemUserTokenResponseSerializer(serializers.ModelSerializer):
         return list(
             ResourceAccess.objects.filter(system_user=obj).values_list("resource_name", flat=True)
         )
+
+
+class SystemUserTokenSerializer(serializers.ModelSerializer):
+    """Read-only serializer for listing and retrieving public-API tokens.
+
+    Exposes ``id``, ``integration_name``, ``is_active``, and ``available_resources``
+    (list of resource_name strings from the related ``ResourceAccess`` rows).
+    Never exposes ``long_lived_token_hash`` or ``token``.
+
+    Optimized for list queries: uses prefetched ``available_resources`` from
+    the viewset's ``get_queryset`` to avoid N+1 queries.
+    """
+
+    available_resources = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SystemUser
+        fields = ("id", "integration_name", "is_active", "available_resources")
+        read_only_fields = fields
+
+    def get_available_resources(self, obj: SystemUser) -> list[str]:
+        """Return a list of resource_name values from the prefetched ResourceAccess rows."""
+        return [ra.resource_name for ra in obj.available_resources.all()]
