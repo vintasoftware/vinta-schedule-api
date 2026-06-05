@@ -109,11 +109,16 @@
 - **Model**: haiku. **Branch**: phase-14 (base phase-13). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/56
 - **Key**: `POST /public-api-tokens/{id}/revoke/` admin-only → is_active=False; end-to-end test proves check_system_user_token then returns False; idempotent; no-secret response. Outer gate green (1403), mypy 108.
 
+### Phase 15 — Edit public-API token permissions (admin) ✅
+- **Status**: done, reviewed (3 layers; Layer 3 → added ResourceAccess unique constraint + create dedupe), pushed, PR opened.
+- **Model**: haiku; fixer: haiku. **Branch**: phase-15 (base phase-14). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/57
+- **Key**: `PATCH/PUT /public-api-tokens/{id}/` admin-only; `SystemUserTokenUpdateSerializer` (available_resources only); transactional set-diff reconciliation; secret/integration_name immutable. Migration 0003: UniqueConstraint(system_user, resource_name); create deduped. Outer gate green (1426), mypy 108.
+
 ## Current Phase
-Phase 15 — Edit public-API token permissions (admin) (next). PATCH /public-api-tokens/{id}/ — `SystemUserTokenUpdateSerializer` accepts available_resources ONLY; reconcile ResourceAccess rows (add missing, remove dropped); never re-issue secret or change integration_name. Add update/partial_update to viewset (get_serializer_class → update serializer for those actions). IsOrganizationAdmin. Tier 2.
+Phase 16 — Expanded events action (FINAL) (next). `GET /calendar-events/expanded/?calendar_id=&start_time=&end_time=` → CalendarService.get_calendar_events_expanded(calendar, start, end) (materialized recurring instances + exceptions). MIRROR the existing BlockedTimeViewSet/AvailableTimeViewSet `expanded` actions exactly (param names start_time/end_time, service init via initialize_without_provider, org-scoped calendar resolve). Tier 3. Note: plan said start_datetime/end_datetime but siblings use start_time/end_time — match siblings for frontend consistency.
 
 ## Remaining Phases
-16 (events expanded).
+(none after 16)
 
 ## Reusable infra notes (for later phases)
 - `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
