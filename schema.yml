@@ -3920,6 +3920,89 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedAvailableTimeWindowList'
           description: ''
+  /calendar/{id}/bundle/:
+    patch:
+      operationId: calendar_bundle_partial_update
+      description: Reconcile the child calendars and primary designation for an existing
+        bundle. Provide the full desired set of bundle_calendars; children not in
+        the list will be removed and new ones will be added. Optionally specify primary_calendar
+        (must be one of bundle_calendars). Admin only. Returns the updated bundle
+        calendar.
+      summary: Update a bundle calendar's children and primary
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+  /calendar/{id}/bundle{format}:
+    patch:
+      operationId: calendar_bundle_formatted_partial_update
+      description: Reconcile the child calendars and primary designation for an existing
+        bundle. Provide the full desired set of bundle_calendars; children not in
+        the list will be removed and new ones will be added. Optionally specify primary_calendar
+        (must be one of bundle_calendars). Admin only. Returns the updated bundle
+        calendar.
+      summary: Update a bundle calendar's children and primary
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
   /calendar/{id}/request-sync/:
     post:
       operationId: calendar_request_sync_create
@@ -8080,6 +8163,18 @@ components:
             (sets this to False) instead of deleting the row. Opt-in to see disabled
             calendars via ?include_inactive=true. Default True keeps every existing
             read unchanged.
+    PatchedCalendarBundleUpdate:
+      type: object
+      description: Serializer for updating a bundle calendar's child calendars and
+        primary calendar.
+      properties:
+        bundle_calendars:
+          type: array
+          items:
+            type: integer
+        primary_calendar:
+          type: integer
+          nullable: true
     PatchedCalendarEvent:
       type: object
       properties:

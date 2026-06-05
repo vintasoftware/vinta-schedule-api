@@ -736,6 +736,91 @@ class CalendarService(BaseCalendarService):
 
         return bundle_calendar
 
+    @transaction.atomic()
+    def update_bundle_calendar(
+        self,
+        bundle_calendar: Calendar,
+        child_calendars: Iterable[Calendar],
+        primary_calendar: Calendar | None = None,
+    ) -> Calendar:
+        """
+        Reconcile the children and primary designation for an existing bundle calendar.
+
+        Adds `ChildrenCalendarRelationship` rows for newly-added children, removes rows
+        for dropped children, and updates `is_primary` so that exactly one row is primary
+        when `primary_calendar` is provided.
+
+        :param bundle_calendar: The bundle Calendar instance to update.
+        :param child_calendars: Full desired set of child Calendar instances.
+        :param primary_calendar: The child to designate as primary; must be in child_calendars.
+        :return: The (unchanged) bundle_calendar instance after reconciliation.
+        :raises ValueError: If bundle_calendar is not a BUNDLE type, children are cross-org,
+                            or primary_calendar is not in child_calendars.
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        if bundle_calendar.calendar_type != CalendarType.BUNDLE:
+            raise ValueError("Calendar is not a bundle.")
+
+        child_calendars_list = list(child_calendars)
+
+        if primary_calendar and primary_calendar not in child_calendars_list:
+            raise ValueError("Primary calendar must be one of the child calendars.")
+
+        for calendar in child_calendars_list:
+            if calendar.organization_id != self.organization.id:
+                raise ValueError(
+                    "All child calendars must belong to the same organization as the bundle."
+                )
+            if calendar.calendar_type == CalendarType.BUNDLE:
+                raise ValueError(
+                    "Child calendars of a bundle must not be bundle calendars themselves."
+                )
+
+        desired_ids = {cal.id for cal in child_calendars_list}
+
+        existing_relationships = list(
+            ChildrenCalendarRelationship.objects.filter(
+                bundle_calendar=bundle_calendar,
+                organization=self.organization,
+            )
+        )
+        existing_ids = {rel.child_calendar_fk_id for rel in existing_relationships}
+
+        # Remove dropped children
+        for rel in existing_relationships:
+            if rel.child_calendar_fk_id not in desired_ids:
+                rel.delete()
+
+        # Add new children
+        for calendar in child_calendars_list:
+            if calendar.id not in existing_ids:
+                is_primary = primary_calendar is not None and calendar.id == primary_calendar.id
+                ChildrenCalendarRelationship.objects.create(
+                    bundle_calendar=bundle_calendar,
+                    child_calendar=calendar,
+                    organization=self.organization,
+                    is_primary=is_primary,
+                )
+
+        # Reconcile is_primary on remaining + newly-added relationships
+        if primary_calendar is not None:
+            ChildrenCalendarRelationship.objects.filter(
+                bundle_calendar=bundle_calendar,
+                organization=self.organization,
+            ).exclude(
+                child_calendar_fk_id=primary_calendar.id,
+            ).update(is_primary=False)
+
+            ChildrenCalendarRelationship.objects.filter(
+                bundle_calendar=bundle_calendar,
+                organization=self.organization,
+                child_calendar_fk_id=primary_calendar.id,
+            ).update(is_primary=True)
+
+        return bundle_calendar
+
     def _create_bundle_event(
         self, bundle_calendar: Calendar, event_data: "CalendarEventInputData"
     ) -> CalendarEvent:

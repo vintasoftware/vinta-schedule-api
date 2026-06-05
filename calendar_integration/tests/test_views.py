@@ -18,6 +18,7 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarOwnership,
+    ChildrenCalendarRelationship,
     RecurrenceRule,
 )
 from calendar_integration.services.dataclasses import (
@@ -4416,3 +4417,278 @@ class TestRecurringBlockedAndAvailableTimeViewSets:
 
         response = auth_client.get(available_time_url, params)
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+
+@pytest.mark.django_db
+class TestCalendarBundleUpdateAction:
+    """Tests for PATCH /calendar/{id}/bundle/ (update bundle children and primary)."""
+
+    # --- Helpers ---
+
+    @staticmethod
+    def _make_bundle(organization):
+        """Create a bundle calendar with two child calendars; return (bundle, child1, child2)."""
+        child1 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Child A",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        child2 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Child B",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        bundle = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="My Bundle",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.BUNDLE,
+        )
+        # Wire up relationships directly (bypass service for test setup)
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child1,
+            organization=organization,
+            is_primary=True,
+        )
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child2,
+            organization=organization,
+            is_primary=False,
+        )
+        return bundle, child1, child2
+
+    @staticmethod
+    def _make_admin(organization):
+        """Create an admin user and membership; return (user, APIClient)."""
+        from rest_framework.test import APIClient
+
+        admin = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+        client = APIClient()
+        client.force_authenticate(user=admin)
+        return admin, client
+
+    @staticmethod
+    def _make_member(organization):
+        """Create a regular member and return (user, APIClient)."""
+        from rest_framework.test import APIClient
+
+        member = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=member,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        client = APIClient()
+        client.force_authenticate(user=member)
+        return member, client
+
+    # --- Happy-path ---
+
+    def test_update_bundle_add_child_remove_child_change_primary(self, organization):
+        """Admin adds a child, removes a child, and changes primary → 200, DB updated."""
+        bundle, child1, child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        child3 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Child C",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {
+            "bundle_calendars": [child2.id, child3.id],  # drop child1, add child3
+            "primary_calendar": child3.id,
+        }
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["id"] == bundle.id
+
+        # child1 should be gone
+        assert not ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle,
+            child_calendar_fk_id=child1.id,
+            organization=organization,
+        ).exists()
+
+        # child2 retained, child3 added
+        assert ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle,
+            child_calendar_fk_id=child2.id,
+            organization=organization,
+        ).exists()
+        assert ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle,
+            child_calendar_fk_id=child3.id,
+            organization=organization,
+        ).exists()
+
+        # Exactly one primary — child3
+        assert (
+            ChildrenCalendarRelationship.objects.filter(
+                bundle_calendar=bundle,
+                organization=organization,
+                is_primary=True,
+            ).count()
+            == 1
+        )
+        assert (
+            ChildrenCalendarRelationship.objects.get(
+                bundle_calendar=bundle,
+                organization=organization,
+                is_primary=True,
+            ).child_calendar_fk_id
+            == child3.id
+        )
+
+    # --- Validation errors ---
+
+    def test_update_bundle_non_bundle_calendar_400(self, organization):
+        """PATCH on a PERSONAL calendar returns 400."""
+        _, admin_client = self._make_admin(organization)
+        personal = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        child1 = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        child2 = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": personal.id})
+        data = {"bundle_calendars": [child1.id, child2.id]}
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "not a bundle" in response.data["detail"].lower()
+
+    def test_update_bundle_fewer_than_two_children_400(self, organization):
+        """Providing only one child calendar returns 400."""
+        bundle, child1, _child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {"bundle_calendars": [child1.id]}
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_bundle_primary_not_in_children_400(self, organization):
+        """primary_calendar not in bundle_calendars returns 400."""
+        bundle, child1, child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        outside = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+        )
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {
+            "bundle_calendars": [child1.id, child2.id],
+            "primary_calendar": outside.id,
+        }
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_bundle_child_not_in_org_400(self, organization):
+        """Child calendar from another org is rejected by PrimaryKeyRelatedField → 400."""
+        bundle, child1, _child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        cross_org_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=other_org,
+        )
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {
+            "bundle_calendars": [child1.id, cross_org_calendar.id],
+        }
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_bundle_disabled_child_calendar_400(self, organization):
+        """Providing an is_active=False calendar as a child is rejected → 400."""
+        bundle, child1, _child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        disabled = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        disabled.is_active = False
+        disabled.save(update_fields=["is_active"])
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {"bundle_calendars": [child1.id, disabled.id]}
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    # --- Permission and access ---
+
+    def test_update_bundle_non_admin_member_403(self, organization):
+        """Regular member receives 403."""
+        bundle, child1, child2 = self._make_bundle(organization)
+        _, member_client = self._make_member(organization)
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {"bundle_calendars": [child1.id, child2.id]}
+
+        response = member_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_update_bundle_cross_org_bundle_404(self):
+        """Bundle from a different org yields 404 via org-scoped get_queryset."""
+        org_a = CalendarIntegrationTestFactory.create_organization(name="Org A")
+        org_b = CalendarIntegrationTestFactory.create_organization(name="Org B")
+
+        _, admin_client = self._make_admin(org_a)
+
+        # Bundle lives in org_b
+        _, child1, child2 = self._make_bundle(org_b)
+        other_bundle = CalendarIntegrationTestFactory.create_calendar(
+            organization=org_b,
+            calendar_type=CalendarType.BUNDLE,
+        )
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": other_bundle.id})
+        data = {"bundle_calendars": [child1.id, child2.id]}
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_update_bundle_anonymous_401(self, anonymous_client, organization):
+        """Unauthenticated request returns 401."""
+        bundle, _, _ = self._make_bundle(organization)
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {"bundle_calendars": [1, 2]}
+
+        response = anonymous_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)

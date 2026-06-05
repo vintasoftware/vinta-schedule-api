@@ -249,6 +249,53 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
         )
 
 
+class CalendarBundleUpdateSerializer(serializers.Serializer):
+    """Serializer for updating a bundle calendar's child calendars and primary calendar."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+
+        active_membership = (
+            get_active_organization_membership(user) if user and user.is_authenticated else None
+        )
+        active_org_qs = (
+            Calendar.objects.filter_by_organization(
+                organization_id=active_membership.organization_id
+            ).filter(is_active=True)
+            if active_membership
+            else Calendar.original_manager.none()
+        )
+        self.fields["bundle_calendars"] = serializers.PrimaryKeyRelatedField(
+            many=True,
+            queryset=active_org_qs,
+        )
+        self.fields["primary_calendar"] = serializers.PrimaryKeyRelatedField(
+            queryset=active_org_qs,
+            allow_null=True,
+            required=False,
+        )
+
+    def validate_bundle_calendars(self, bundle_calendars):
+        """Require at least two children, mirroring create."""
+        if len(bundle_calendars) < 2:
+            raise serializers.ValidationError("At least two calendars are required in a bundle.")
+        return bundle_calendars
+
+    def validate(self, attrs: dict) -> dict:
+        primary_calendar: Calendar | None = attrs.get("primary_calendar")
+        bundle_calendars: list[Calendar] = attrs.get("bundle_calendars", [])
+
+        if primary_calendar and primary_calendar not in bundle_calendars:
+            raise serializers.ValidationError(
+                "primary_calendar must be one of the bundle_calendars."
+            )
+
+        return attrs
+
+
 class EventRecurringExceptionSerializer(serializers.Serializer):
     """Serializer for creating recurring event exceptions."""
 
