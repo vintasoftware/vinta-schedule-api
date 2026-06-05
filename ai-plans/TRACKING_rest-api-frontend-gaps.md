@@ -55,11 +55,17 @@
 - **Known nit**: unused injected `calendar_service` param remains (noted in PR; cleanup later).
 - **Pattern for Phases 5/6/7**: resolve fresh service per target if deferring authenticate()+enqueue; otherwise authenticate inline + call synchronously is fine when returning a result.
 
+### Phase 5 — Request own calendar sync ✅
+- **Status**: done, reviewed (3 layers; Layer 3 → 2 fixes: use serializer for input validation + guard None social account), pushed, PR opened.
+- **Model**: haiku; fixers: haiku x1. **Branch**: phase-5 (base phase-4). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/47
+- **Key**: `POST /calendar/{id}/request-sync/` owner-only (get_object org-scope + CalendarOwnership check). Input via `CalendarSyncRequestSerializer`. None-account → 400. Returns `CalendarSync` (id+status) at 202. New `CalendarSyncSerializer`. Outer gate green (1297), mypy 108.
+- **Out-of-scope flagged**: `request_calendar_sync` enqueues `.delay` without on_commit (pre-existing; phase 6 shares it). Candidate follow-up.
+
 ## Current Phase
-Phase 5 — Request own calendar sync (next).
+Phase 6 — Admin syncs another user's calendar (next).
 
 ## Remaining Phases
-6 (admin sync other), 7 (rooms sync trigger), 8 (transfer event), 9 (calendar soft-disable), 10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
+7 (rooms sync trigger), 8 (transfer event), 9 (calendar soft-disable), 10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
 
 ## Reusable infra notes (for later phases)
 - `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
