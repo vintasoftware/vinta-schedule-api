@@ -1,6 +1,10 @@
 from .base import *
 
 
+# Enable DEBUG in tests so VirtualModelSerializer's query-budget guard is active
+# and N+1 regressions fail the suite instead of only surfacing on the dev runtime.
+DEBUG = True
+
 SECRET_KEY = "test-secret-key-not-for-production-use-only-0123456789"  # nosec
 
 STATIC_ROOT = base_dir_join("staticfiles")
