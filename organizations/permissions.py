@@ -5,6 +5,7 @@ from rest_framework.permissions import BasePermission
 from organizations.models import (
     Organization,
     OrganizationInvitation,
+    OrganizationMembership,
     OrganizationModel,
     get_active_organization_membership,
 )
@@ -105,6 +106,8 @@ class IsOrganizationAdmin(BasePermission):
         # Determine the object's organization_id
         if isinstance(obj, Organization):
             obj_organization_id = obj.id
+        elif isinstance(obj, OrganizationMembership):
+            obj_organization_id = obj.organization_id
         elif isinstance(obj, OrganizationModel):
             obj_organization_id = obj.organization_id
         else:

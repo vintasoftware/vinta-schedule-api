@@ -132,6 +132,31 @@ class CurrentMembershipSerializer(serializers.ModelSerializer):
         return OrganizationSerializer(obj.organization, context=self.context).data  # type: ignore[call-arg]
 
 
+class OrganizationMembershipSerializer(serializers.ModelSerializer):
+    """
+    Read-only serializer for listing and retrieving organization members.
+
+    Exposes membership role, active status, and flattened user information
+    (email, first_name, last_name) for the admin datatable.
+    """
+
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    user_first_name = serializers.CharField(source="user.profile.first_name", read_only=True)
+    user_last_name = serializers.CharField(source="user.profile.last_name", read_only=True)
+
+    class Meta:
+        model = OrganizationMembership
+        fields = (
+            "id",
+            "role",
+            "is_active",
+            "user_email",
+            "user_first_name",
+            "user_last_name",
+        )
+        read_only_fields = fields
+
+
 class AcceptInvitationSerializer(serializers.Serializer):
     """
     Serializer for accepting invitations via public endpoint.

@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from common.utils.view_utils import (
     NoListVintaScheduleModelViewSet,
     NoUpdateVintaScheduleModelViewSet,
+    ReadOnlyVintaScheduleModelViewSet,
 )
 from organizations.exceptions import (
     DuplicateInvitationError,
@@ -22,9 +23,11 @@ from organizations.filtersets import OrganizationInvitationFilterSet
 from organizations.models import (
     Organization,
     OrganizationInvitation,
+    OrganizationMembership,
     get_active_organization_membership,
 )
 from organizations.permissions import (
+    IsOrganizationAdmin,
     OrganizationInvitationPermission,
     OrganizationManagementPermission,
 )
@@ -32,6 +35,7 @@ from organizations.serializers import (
     AcceptInvitationSerializer,
     CurrentMembershipSerializer,
     OrganizationInvitationSerializer,
+    OrganizationMembershipSerializer,
     OrganizationSerializer,
 )
 from organizations.services import OrganizationService
@@ -115,6 +119,43 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
     def perform_destroy(self, instance):
         """Revoke invitation by calling the service method."""
         self.organization_service.revoke_invitation(str(instance.id))
+
+
+class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
+    """
+    A viewset for listing and retrieving organization members.
+
+    Admin-only endpoint — lists both active and inactive members of the caller's
+    organization, suitable for a datatable view. Non-admin members get 403.
+    """
+
+    queryset = OrganizationMembership.objects.select_related("user", "user__profile")
+    serializer_class = OrganizationMembershipSerializer
+    permission_classes = (IsOrganizationAdmin,)
+
+    def check_permissions(self, request):
+        """Override to enforce admin check at the view level (both has_permission and admin role)."""
+        super().check_permissions(request)
+        # has_permission checks authenticated + active membership
+        # Now verify the user is actually an admin
+        membership = get_active_organization_membership(request.user)
+        if membership and not membership.is_admin:
+            self.permission_denied(
+                request,
+                message="You must be an admin to access this resource.",
+            )
+
+    def get_queryset(self):
+        """Org-scoped queryset: return members of the caller's organization only."""
+        user = self.request.user
+        membership = get_active_organization_membership(user)
+        if membership:
+            return (
+                OrganizationMembership.objects.filter(organization_id=membership.organization_id)
+                .select_related("user", "user__profile")
+                .order_by("id")
+            )
+        return OrganizationMembership.objects.none()
 
 
 class AcceptInvitationView(generics.CreateAPIView):

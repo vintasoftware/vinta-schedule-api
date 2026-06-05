@@ -1132,3 +1132,241 @@ class TestOrganizationInvitationPermissions:
         url = reverse("api:OrganizationInvitations-list")
         response = anonymous_client.get(url)
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+
+@pytest.mark.django_db
+class TestOrganizationMembershipViewSet:
+    """Test suite for OrganizationMembershipViewSet"""
+
+    def test_list_members_admin_sees_all(self, auth_client, user):
+        """Test that admin can list all members (active and inactive) of their organization"""
+        # Create organization with admin membership for the user
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        admin_membership = baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        # Create some other members (active and inactive)
+        baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        inactive_member = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=False,
+        )
+
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        assert len(results) == 3  # admin + active_member + inactive_member
+
+        # Verify that response includes expected fields
+        for result in results:
+            assert "id" in result
+            assert "role" in result
+            assert "is_active" in result
+            assert "user_email" in result
+            assert "user_first_name" in result
+            assert "user_last_name" in result
+
+        # Verify admin membership is present
+        admin_ids = [r["id"] for r in results if r["id"] == admin_membership.id]
+        assert len(admin_ids) == 1
+
+        # Verify inactive member is present
+        inactive_ids = [r["id"] for r in results if r["id"] == inactive_member.id]
+        assert len(inactive_ids) == 1
+
+    def test_list_members_non_admin_forbidden(self, auth_client, user):
+        """Test that non-admin members get 403 when listing organization members"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        # Create user with member (not admin) role
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_list_members_membership_less_user_forbidden(self, auth_client):
+        """Test that membership-less users get 403 when listing organization members"""
+        # auth_client is already authenticated but has no membership
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_list_members_inactive_membership_forbidden(self, auth_client, user):
+        """Test that users with inactive membership get 403"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        # Create inactive admin membership
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=False,
+        )
+
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_list_members_cross_org_exclusion(self, auth_client, user):
+        """Test that admin only sees members of their own organization"""
+        # Create org1 with admin membership for the user
+        org1 = OrganizationTestFactory.create_organization(name="Org 1")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org1,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        # Create org2 with some members
+        org2 = OrganizationTestFactory.create_organization(name="Org 2")
+        baker.make(
+            OrganizationMembership,
+            organization=org2,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        # Should only see 1 member (the admin from org1)
+        assert len(results) == 1
+        assert results[0]["id"] == user.organization_membership.id
+
+    def test_retrieve_member_admin_success(self, auth_client, user):
+        """Test that admin can retrieve a specific member"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        member = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-detail", kwargs={"pk": member.pk})
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        result = response.json()
+        assert result["id"] == member.id
+        assert result["role"] == OrganizationRole.MEMBER
+        assert result["is_active"] is True
+        assert result["user_email"] == member.user.email
+
+    def test_retrieve_member_cross_org_not_found(self, auth_client, user):
+        """Test that admin cannot retrieve a member from a different organization"""
+        org1 = OrganizationTestFactory.create_organization(name="Org 1")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org1,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        org2 = OrganizationTestFactory.create_organization(name="Org 2")
+        member_in_org2 = baker.make(
+            OrganizationMembership,
+            organization=org2,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-detail", kwargs={"pk": member_in_org2.pk})
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_retrieve_member_non_admin_forbidden(self, auth_client, user):
+        """Test that non-admin members cannot retrieve other members"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        other_member = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-detail", kwargs={"pk": other_member.pk})
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_retrieve_member_includes_profile_info(self, auth_client, user):
+        """Test that member serialization includes user profile information"""
+        from users.factories import UserFactory
+
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        # Create a member with profile info
+        member_user = UserFactory().create_user()
+        member_user.profile.first_name = "John"
+        member_user.profile.last_name = "Doe"
+        member_user.profile.save()
+
+        member = baker.make(
+            OrganizationMembership,
+            user=member_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-detail", kwargs={"pk": member.pk})
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        result = response.json()
+        assert result["user_email"] == member_user.email
+        assert result["user_first_name"] == "John"
+        assert result["user_last_name"] == "Doe"
