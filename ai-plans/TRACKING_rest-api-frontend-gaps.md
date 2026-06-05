@@ -93,12 +93,17 @@
 - **Model**: sonnet. **Branch**: phase-11 (base phase-10). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/53
 - **Key**: destroy gating by type — BUNDLE → admin-only; non-bundle → owner-or-admin (tightened Phase 9's ungated destroy). Bundle disable leaves events/representations/children intact (Open Q #3). Outer gate green (1359), mypy 108.
 
+### Phase 12 — Create public-API token (admin) ✅
+- **Status**: done, reviewed (3 layers; Layer 3 → BLOCKER: savepoint for duplicate-name under ATOMIC_REQUESTS + schema/dead-code fixes), pushed, PR opened.
+- **Model**: sonnet; fixer: haiku. **Branch**: phase-12 (base phase-11). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/54
+- **Key**: NEW public_api REST surface — `SystemUserTokenViewSet` (create-only), `public_api/routes.py` wired into urls. `POST /public-api-tokens/` admin-only → create_system_user, persist ResourceAccess, return plaintext token ONCE (hash never serialized). Duplicate name → 400 via nested savepoint (ATOMIC_REQUESTS-safe). Serializers: `SystemUserTokenCreateSerializer`, `SystemUserTokenResponseSerializer`. Outer gate green (1376), mypy 108.
+- **Infra for 13/14/15**: extend SystemUserTokenViewSet; org-scoped get_queryset already returns SystemUser for caller's org (anon-guarded).
+
 ## Current Phase
-Phase 12 — Create public-API token (admin) (next). NEW REST surface in public_api app (currently GraphQL-only, no routes.py). `POST /public-api-tokens/` → PublicAPIAuthService.create_system_user(integration_name, organization) returns (SystemUser, plaintext token); persist ResourceAccess rows (resource_name ∈ PublicAPIResources); return plaintext token ONCE. New public_api/routes.py + register in vinta_schedule_api/urls.py routes tuple. IsOrganizationAdmin. Tier 3.
-- public_api models: SystemUser(organization FK, integration_name unique, long_lived_token_hash, is_active), ResourceAccess(system_user FK, resource_name). Enum: public_api/constants.py PublicAPIResources.
+Phase 13 — List public-API tokens (admin) (next). Add list+retrieve to SystemUserTokenViewSet; new list serializer exposing id/integration_name/is_active/available_resources — NEVER token or long_lived_token_hash. Tier 2.
 
 ## Remaining Phases
-13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
+14 (token revoke), 15 (token edit perms), 16 (events expanded).
 
 ## Reusable infra notes (for later phases)
 - `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
