@@ -283,7 +283,12 @@ class TestOrganizationViewSet:
     def test_update_organization_authenticated_with_membership(
         self, auth_client, user, organization_with_membership
     ):
-        """Test updating an organization when user has membership"""
+        """Test updating an organization when user has a non-admin membership.
+
+        The organization_with_membership fixture creates a MEMBER-role membership.
+        IsOrganizationAdmin (applied to update/partial_update) rejects non-admin
+        members with 403.
+        """
         url = reverse("api:Organizations-detail", kwargs={"pk": organization_with_membership.pk})
         data = {
             "name": "Updated Organization Name",
@@ -291,18 +296,63 @@ class TestOrganizationViewSet:
         }
         response = auth_client.patch(url, data, format="json")
 
-        # Users with membership get 403 due to permission class logic
+        # Non-admin member → 403 (IsOrganizationAdmin denies)
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
 
+    def test_update_organization_admin_returns_200(self, user):
+        """Admin can PATCH their own organization — the configure-org use-case works."""
+        organization = OrganizationTestFactory.create_organization(name="Admin Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=user)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = admin_client.patch(url, {"name": "Admin Updated Name"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json()["name"] == "Admin Updated Name"
+
+    def test_update_organization_admin_cross_org_returns_404(self, user):
+        """Admin cannot PATCH an organization they don't belong to — 404."""
+        own_org = OrganizationTestFactory.create_organization(name="Own Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=own_org,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        other_org = OrganizationTestFactory.create_organization(name="Other Org")
+
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=user)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": other_org.pk})
+        response = admin_client.patch(url, {"name": "Hacked"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
     def test_update_organization_authenticated_without_membership(self, auth_client, organization):
-        """Test updating an organization when user has no membership"""
+        """Test updating an organization when user has no membership.
+
+        IsOrganizationAdmin.has_permission returns False for membership-less users → 403.
+        (Previously expected 404 under OrganizationManagementPermission, but the update
+        action now uses IsOrganizationAdmin which rejects at has_permission before the
+        queryset is consulted.)
+        """
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
         data = {
             "name": "Updated Organization Name",
         }
         response = auth_client.patch(url, data, format="json")
 
-        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
 
     def test_update_organization_unauthenticated(self, anonymous_client, organization):
         """Test updating an organization without authentication"""
@@ -344,20 +394,25 @@ class TestOrganizationPermissions:
     """Test suite for organization permissions"""
 
     def test_organization_permission_with_membership(self, auth_client, user):
-        """Test organization permissions when user has membership"""
+        """Test organization permissions when user has a non-admin (MEMBER) membership.
+
+        retrieve/delete: still gated by OrganizationManagementPermission → 403.
+        update: gated by IsOrganizationAdmin → non-admin member gets 403.
+        """
         organization = OrganizationTestFactory.create_organization()
+        # create_organization_membership uses baker default role = MEMBER
         OrganizationTestFactory.create_organization_membership(user, organization)
 
-        # Should NOT be able to retrieve due to permission class logic
+        # Should NOT be able to retrieve — OrganizationManagementPermission blocks members
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
         response = auth_client.get(url)
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
 
-        # Should NOT be able to update due to permission class logic
+        # Should NOT be able to update — IsOrganizationAdmin blocks non-admin members
         response = auth_client.patch(url, {"name": "Updated Name"}, format="json")
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
 
-        # Should NOT be able to delete due to permission class logic
+        # Should NOT be able to delete — OrganizationManagementPermission blocks members
         response = auth_client.delete(url)
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
 
@@ -1880,13 +1935,13 @@ class TestSyncRoomsAction:
 class TestShouldSyncRoomsTransition:
     """Verify the False→True transition in OrganizationViewSet.update fires exactly once.
 
-    Because OrganizationManagementPermission blocks members from the default
-    PATCH endpoint, these tests patch the permission to allow the admin through
-    so the view logic can be exercised directly.
+    These tests use a real admin membership — no permission patching.
+    The update/partial_update actions are now gated by IsOrganizationAdmin so
+    the transition trigger is genuinely reachable by an admin PATCH.
     """
 
     def _make_admin_client_and_org(self, user, should_sync_rooms=False):
-        """Create org + admin membership; return (admin_client, organization)."""
+        """Create org + ADMIN membership; return (admin_client, organization)."""
         organization = baker.make(
             Organization, name="Transition Org", should_sync_rooms=should_sync_rooms
         )
@@ -1902,18 +1957,15 @@ class TestShouldSyncRoomsTransition:
         return client, organization
 
     @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
-    @patch("organizations.views.OrganizationManagementPermission.has_permission", return_value=True)
     @patch("organizations.services.OrganizationService.request_rooms_sync")
-    def test_patch_false_to_true_fires_sync_once(
-        self, mock_sync, _mock_perm, _mock_on_commit, user
-    ):
-        """PATCH should_sync_rooms False→True fires request_rooms_sync exactly once."""
+    def test_patch_false_to_true_fires_sync_once(self, mock_sync, _mock_on_commit, user):
+        """Admin PATCH should_sync_rooms False→True → 200; request_rooms_sync called once."""
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
         response = client.patch(url, {"should_sync_rooms": True}, format="json")
 
-        assert response.status_code in (status.HTTP_200_OK,), (
+        assert response.status_code == status.HTTP_200_OK, (
             f"Expected 200, got {response.status_code}: {response.content}"
         )
         mock_sync.assert_called_once()
@@ -1922,52 +1974,114 @@ class TestShouldSyncRoomsTransition:
         assert call_kwargs["requested_by"] == user
 
     @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
-    @patch("organizations.views.OrganizationManagementPermission.has_permission", return_value=True)
     @patch("organizations.services.OrganizationService.request_rooms_sync")
-    def test_patch_already_true_does_not_fire_sync(
-        self, mock_sync, _mock_perm, _mock_on_commit, user
-    ):
-        """PATCH on org with should_sync_rooms already True must NOT fire sync."""
+    def test_patch_already_true_does_not_fire_sync(self, mock_sync, _mock_on_commit, user):
+        """Admin PATCH on org with should_sync_rooms already True → 200; sync NOT fired."""
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=True)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
         response = client.patch(url, {"should_sync_rooms": True}, format="json")
 
-        assert response.status_code in (status.HTTP_200_OK,), (
+        assert response.status_code == status.HTTP_200_OK, (
             f"Expected 200, got {response.status_code}: {response.content}"
         )
         mock_sync.assert_not_called()
 
     @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
-    @patch("organizations.views.OrganizationManagementPermission.has_permission", return_value=True)
     @patch("organizations.services.OrganizationService.request_rooms_sync")
-    def test_patch_true_to_false_does_not_fire_sync(
-        self, mock_sync, _mock_perm, _mock_on_commit, user
-    ):
-        """PATCH should_sync_rooms True→False must NOT fire sync."""
+    def test_patch_true_to_false_does_not_fire_sync(self, mock_sync, _mock_on_commit, user):
+        """Admin PATCH should_sync_rooms True→False → 200; sync NOT fired."""
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=True)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
         response = client.patch(url, {"should_sync_rooms": False}, format="json")
 
-        assert response.status_code in (status.HTTP_200_OK,), (
+        assert response.status_code == status.HTTP_200_OK, (
             f"Expected 200, got {response.status_code}: {response.content}"
         )
         mock_sync.assert_not_called()
 
     @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
-    @patch("organizations.views.OrganizationManagementPermission.has_permission", return_value=True)
     @patch("organizations.services.OrganizationService.request_rooms_sync")
-    def test_patch_unrelated_field_does_not_fire_sync(
-        self, mock_sync, _mock_perm, _mock_on_commit, user
-    ):
-        """PATCH on unrelated field (name) while should_sync_rooms stays False — no sync."""
+    def test_patch_unrelated_field_does_not_fire_sync(self, mock_sync, _mock_on_commit, user):
+        """Admin PATCH on unrelated field (name) while should_sync_rooms stays False — no sync."""
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
         response = client.patch(url, {"name": "New Name"}, format="json")
 
-        assert response.status_code in (status.HTTP_200_OK,), (
+        assert response.status_code == status.HTTP_200_OK, (
             f"Expected 200, got {response.status_code}: {response.content}"
         )
         mock_sync.assert_not_called()
+
+    @patch("organizations.services.OrganizationService.request_rooms_sync")
+    def test_patch_non_admin_member_returns_403(self, mock_sync, user):
+        """Non-admin member PATCH → 403 (IsOrganizationAdmin denies); sync NOT fired."""
+        organization = baker.make(Organization, name="Non-Admin Org", should_sync_rooms=False)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = client.patch(url, {"should_sync_rooms": True}, format="json")
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN, (
+            f"Expected 403, got {response.status_code}: {response.content}"
+        )
+        mock_sync.assert_not_called()
+
+    @patch("organizations.services.OrganizationService.request_rooms_sync")
+    def test_patch_membership_less_user_returns_403(self, mock_sync):
+        """Membership-less authenticated user PATCH → 403; sync NOT fired."""
+        from users.factories import UserFactory
+
+        membership_less_user = UserFactory().create_user()
+        organization = baker.make(Organization, name="No Member Org", should_sync_rooms=False)
+
+        client = APIClient()
+        client.force_authenticate(user=membership_less_user)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = client.patch(url, {"should_sync_rooms": True}, format="json")
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN, (
+            f"Expected 403, got {response.status_code}: {response.content}"
+        )
+        mock_sync.assert_not_called()
+
+    @patch("organizations.services.OrganizationService.request_rooms_sync")
+    def test_patch_unauthenticated_returns_401(self, mock_sync):
+        """Unauthenticated PATCH → 401; sync NOT fired."""
+        organization = baker.make(Organization, name="Anon Org", should_sync_rooms=False)
+        client = APIClient()
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = client.patch(url, {"should_sync_rooms": True}, format="json")
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED, (
+            f"Expected 401, got {response.status_code}: {response.content}"
+        )
+        mock_sync.assert_not_called()
+
+    @patch("organizations.views.transaction.on_commit", side_effect=lambda fn: fn())
+    @patch("organizations.services.OrganizationService.request_rooms_sync")
+    def test_admin_can_set_should_sync_rooms_value_persists(self, mock_sync, _mock_on_commit, user):
+        """Admin PATCH should_sync_rooms → value persists in DB (configure-org use-case)."""
+        client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
+        response = client.patch(url, {"should_sync_rooms": True}, format="json")
+
+        assert response.status_code == status.HTTP_200_OK, (
+            f"Expected 200, got {response.status_code}: {response.content}"
+        )
+        # Verify the value was persisted to the DB.
+        org.refresh_from_db()
+        assert org.should_sync_rooms is True

@@ -53,6 +53,20 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     serializer_class = OrganizationSerializer
     permission_classes = (IsAuthenticated, OrganizationManagementPermission)
 
+    def get_permissions(self):
+        """
+        Override permissions per action:
+        - update / partial_update: admin-only (IsOrganizationAdmin).  An admin
+          can only reach their own org because get_queryset is scoped by
+          membership, so cross-org attempts return 404.
+        - All other actions keep the class-level defaults (IsAuthenticated +
+          OrganizationManagementPermission), which gates onboarding (create)
+          to membership-less users and locks down retrieve/destroy.
+        """
+        if self.action in ("update", "partial_update"):
+            return [IsAuthenticated(), IsOrganizationAdmin()]
+        return super().get_permissions()
+
     @inject
     def __init__(
         self,
