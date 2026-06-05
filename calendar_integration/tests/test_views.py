@@ -1684,6 +1684,64 @@ class TestCalendarViewSet:
         response = anonymous_client.post(url)
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
+    def test_request_import_multiple_social_accounts(self, auth_client, user, organization):
+        """Test requesting calendar import with multiple connected social accounts"""
+        # Create two social accounts (Google and Microsoft)
+        google_account = baker.make(
+            SocialAccount,
+            user=user,
+            provider=CalendarProvider.GOOGLE,
+        )
+        baker.make(
+            SocialToken,
+            account=google_account,
+            token="fake_google_token",
+            token_secret="fake_google_refresh",
+            expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+        )
+
+        microsoft_account = baker.make(
+            SocialAccount,
+            user=user,
+            provider=CalendarProvider.MICROSOFT,
+        )
+        baker.make(
+            SocialToken,
+            account=microsoft_account,
+            token="fake_microsoft_token",
+            token_secret="fake_microsoft_refresh",
+            expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+        )
+
+        url = reverse("api:Calendars-request-import")
+
+        # Setup fresh mocks for each container.calendar_service() call
+        service_instances = [Mock(), Mock()]
+        service_instances[0].authenticate.return_value = None
+        service_instances[0].request_calendars_import.return_value = None
+        service_instances[1].authenticate.return_value = None
+        service_instances[1].request_calendars_import.return_value = None
+
+        with patch(
+            "di_core.containers.container.calendar_service"
+        ) as mock_container_calendar_service:
+            mock_container_calendar_service.side_effect = service_instances
+            with patch("calendar_integration.views.transaction.on_commit") as mock_on_commit:
+                response = auth_client.post(url)
+
+                # Verify response
+                assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+                assert "2 account(s)" in response.data["detail"]
+
+                # Verify on_commit was called twice (once per account)
+                assert mock_on_commit.call_count == 2
+
+                # Verify both callbacks work and call their respective services
+                callbacks = [call[0][0] for call in mock_on_commit.call_args_list]
+                for callback, service in zip(callbacks, service_instances, strict=True):
+                    callback()
+                    service.request_calendars_import.assert_called_once()
+
 
 @pytest.mark.django_db
 class TestCalendarIntegrationPermissions:

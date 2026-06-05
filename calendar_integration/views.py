@@ -126,6 +126,8 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
     ):
         """Request import of external calendars for the authenticated user."""
+        from di_core.containers import container
+
         user = request.user
 
         membership = get_active_organization_membership(user)
@@ -135,26 +137,40 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        social_account = SocialAccount.objects.filter(user=user).first()
-        if not social_account:
+        social_accounts = SocialAccount.objects.filter(user=user)
+        if not social_accounts.exists():
             return Response(
                 {"detail": "User has no connected external calendar account."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
-            calendar_service.authenticate(
-                account=social_account,
-                organization=membership.organization,
-            )
+            # Resolve a fresh CalendarService for each account to avoid closure bug
+            # where the mutated service state gets captured by the on_commit callback
+            for social_account in social_accounts:
+                # Get a fresh service instance for this account
+                if not container:
+                    raise CalendarIntegrationError("DI container not initialized")
+                fresh_service = container.calendar_service()
 
-            def enqueue_import():
-                calendar_service.request_calendars_import()
+                fresh_service.authenticate(
+                    account=social_account,
+                    organization=membership.organization,
+                )
 
-            transaction.on_commit(enqueue_import)
+                # Capture the fresh service by default argument to avoid closure
+                def enqueue_import(service=fresh_service):
+                    service.request_calendars_import()
 
+                transaction.on_commit(enqueue_import)
+
+            account_count = social_accounts.count()
             return Response(
-                {"detail": "Calendar import requested."},
+                {
+                    "detail": f"Calendar import requested for {account_count} account(s)."
+                    if account_count > 1
+                    else "Calendar import requested."
+                },
                 status=status.HTTP_202_ACCEPTED,
             )
         except (ValueError, CalendarIntegrationError) as e:
