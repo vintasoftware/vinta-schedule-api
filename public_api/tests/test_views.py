@@ -151,6 +151,20 @@ class TestSystemUserTokenViewSetCreate:
         assert "token" in data
         assert data["token"]  # non-empty string
 
+    def test_response_includes_id_and_is_active(self, admin_client, organization):
+        """Response body includes id and is_active fields."""
+        payload = {
+            "integration_name": "id_active_test",
+            "available_resources": [PublicAPIResources.CALENDAR],
+        }
+        response = admin_client.post(self._url(), payload, format="json")
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        data = response.json()
+        assert "id" in data
+        assert data["id"] is not None
+        assert "is_active" in data
+        assert data["is_active"] is True
+
     def test_response_includes_integration_name(self, admin_client, organization):
         """Response body contains the submitted integration_name."""
         payload = {
@@ -246,8 +260,23 @@ class TestSystemUserTokenViewSetCreate:
         response = admin_client.post(self._url(), payload, format="json")
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
+    def test_missing_integration_name_returns_400(self, admin_client, organization):
+        """Missing integration_name in request body yields HTTP 400."""
+        payload = {
+            "available_resources": [PublicAPIResources.CALENDAR],
+        }
+        response = admin_client.post(self._url(), payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        data = response.json()
+        assert "integration_name" in data
+
     def test_duplicate_integration_name_returns_400(self, admin_client, organization):
-        """A duplicate integration_name yields HTTP 400 (not 500 from IntegrityError)."""
+        """A duplicate integration_name yields HTTP 400 (not 500 from IntegrityError).
+
+        The savepoint in create() ensures that the IntegrityError on duplicate
+        integration_name is caught and rolled back without poisoning the outer
+        request transaction — this is critical under ATOMIC_REQUESTS=True in production.
+        """
         payload = {
             "integration_name": "dup_name",
             "available_resources": [PublicAPIResources.CALENDAR],

@@ -5798,7 +5798,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SystemUserTokenCreate'
+                $ref: '#/components/schemas/SystemUserTokenResponse'
           description: ''
   /public-api-tokens{format}:
     post:
@@ -5846,7 +5846,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SystemUserTokenCreate'
+                $ref: '#/components/schemas/SystemUserTokenResponse'
           description: ''
   /public/organizations/{organization_id}/events/:
     get:
@@ -8661,6 +8661,41 @@ components:
       required:
       - available_resources
       - integration_name
+    SystemUserTokenResponse:
+      type: object
+      description: |-
+        Read serializer for the created SystemUser.
+
+        Includes the write-once ``token`` field (sourced from the view) and
+        ``available_resources`` (derived from the related ``ResourceAccess`` rows).
+        Never exposes ``long_lived_token_hash``.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        integration_name:
+          type: string
+          readOnly: true
+        is_active:
+          type: boolean
+          readOnly: true
+          description: Indicates if the user is active.
+        available_resources:
+          type: array
+          items:
+            type: string
+          description: Return a list of resource_name values from the related ResourceAccess
+            rows.
+          readOnly: true
+        token:
+          type: string
+          readOnly: true
+      required:
+      - available_resources
+      - id
+      - integration_name
+      - is_active
+      - token
     UnavailableTimeWindow:
       type: object
       properties:

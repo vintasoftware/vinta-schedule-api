@@ -20,16 +20,6 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
         allow_empty=False,
     )
 
-    def validate_available_resources(self, value: list[str]) -> list[str]:
-        """Validate every entry is a known PublicAPIResources value."""
-        valid_values = {choice[0] for choice in PublicAPIResources.choices}
-        invalid = [v for v in value if v not in valid_values]
-        if invalid:
-            raise serializers.ValidationError(
-                f"Invalid resource value(s): {invalid}. Must be one of: {sorted(valid_values)}."
-            )
-        return value
-
 
 class SystemUserTokenResponseSerializer(serializers.ModelSerializer):
     """Read serializer for the created SystemUser.

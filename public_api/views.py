@@ -1,9 +1,10 @@
 import logging
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 
 from dependency_injector.wiring import Provide, inject
+from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -17,10 +18,6 @@ from public_api.serializers import (
     SystemUserTokenResponseSerializer,
 )
 from public_api.services import PublicAPIAuthService
-
-
-if TYPE_CHECKING:
-    pass
 
 
 logger = logging.getLogger(__name__)
@@ -54,11 +51,17 @@ class SystemUserTokenViewSet(GenericViewSet):
     def get_queryset(self):  # type: ignore[override]
         """Org-scoped queryset — used for router introspection."""
         user = self.request.user
+        if not user.is_authenticated:
+            return SystemUser.objects.none()
         membership = get_active_organization_membership(user)
         if membership:
             return SystemUser.objects.filter(organization_id=membership.organization_id)
         return SystemUser.objects.none()
 
+    @extend_schema(
+        request=SystemUserTokenCreateSerializer,
+        responses={201: SystemUserTokenResponseSerializer},
+    )
     def create(self, request: Request, *args, **kwargs) -> Response:
         """Create a SystemUser and ResourceAccess rows; return the plaintext token once.
 
@@ -89,10 +92,11 @@ class SystemUserTokenViewSet(GenericViewSet):
         organization = membership.organization
 
         try:
-            system_user, plaintext_token = self.public_api_auth_service.create_system_user(
-                integration_name=integration_name,
-                organization=organization,
-            )
+            with transaction.atomic():
+                system_user, plaintext_token = self.public_api_auth_service.create_system_user(
+                    integration_name=integration_name,
+                    organization=organization,
+                )
         except IntegrityError:
             return Response(
                 {
