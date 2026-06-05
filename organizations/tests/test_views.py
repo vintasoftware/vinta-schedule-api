@@ -1955,9 +1955,9 @@ class TestOrganizationMembershipViewSet:
 class TestSyncRoomsAction:
     """Test suite for POST /organizations/{id}/sync-rooms/ (Phase 7).
 
-    Only org admins may trigger the sync.  The underlying import is enqueued
-    via transaction.on_commit; tests verify that request_rooms_sync is called
-    with the expected arguments.
+    Only org admins may trigger the sync.  The view calls request_rooms_sync
+    directly; the service layer owns the on_commit deferral.  Tests verify
+    that request_rooms_sync is called with the expected arguments.
     """
 
     def _make_admin_client(self, user, organization):

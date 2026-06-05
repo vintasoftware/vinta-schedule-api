@@ -3,6 +3,7 @@ import zoneinfo
 from datetime import timedelta
 from unittest.mock import MagicMock, Mock, patch
 
+from django.db import transaction
 from django.utils import timezone
 
 import pytest
@@ -4598,7 +4599,15 @@ def test_request_organization_calendar_resources_import(
 
             assert len(captured_callbacks) == 1
             captured_callbacks[0]()
-            mock_task.assert_called_once()
+            import_workflow_state = CalendarOrganizationResourcesImport.objects.get(
+                organization=organization
+            )
+            mock_task.assert_called_once_with(
+                account_type="social_account",
+                account_id=social_account.id,
+                organization_id=organization.id,
+                import_workflow_state_id=import_workflow_state.id,
+            )
 
 
 @pytest.mark.django_db
@@ -4624,6 +4633,71 @@ def test_request_calendars_import(social_account, social_token, mock_google_adap
             account_id=social_account.id,
             organization_id=calendar.organization.id,
         )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_request_calendar_sync_task_not_fired_on_rollback(
+    social_account, social_token, mock_google_adapter, calendar
+):
+    """Prove that the sync task is NOT enqueued when the outer transaction rolls back."""
+    start_datetime = datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC)
+    end_datetime = datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC)
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+
+    with patch("calendar_integration.tasks.sync_calendar_task.delay") as mock_task:
+        with transaction.atomic():
+            service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                should_update_events=True,
+            )
+            transaction.set_rollback(True)
+
+        mock_task.assert_not_called()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_request_calendars_import_task_not_fired_on_rollback(
+    social_account, social_token, mock_google_adapter, calendar
+):
+    """Prove that the import-calendars task is NOT enqueued when the outer transaction rolls back."""
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+
+    with patch("calendar_integration.tasks.import_account_calendars_task.delay") as mock_task:
+        with transaction.atomic():
+            service.request_calendars_import()
+            transaction.set_rollback(True)
+
+        mock_task.assert_not_called()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_request_organization_calendar_resources_import_task_not_fired_on_rollback(
+    social_account, organization, mock_google_adapter
+):
+    """Prove that the resources-import task is NOT enqueued when the outer transaction rolls back."""
+    with patch.object(
+        CalendarService,
+        "get_calendar_adapter_for_account",
+        return_value=(mock_google_adapter, social_account),
+    ):
+        service = CalendarService()
+        service.authenticate(account=social_account.user, organization=organization)
+        start = timezone.now()
+        end = start + timedelta(days=1)
+
+        with patch(
+            "calendar_integration.tasks.import_organization_calendar_resources_task.delay"
+        ) as mock_task:
+            with transaction.atomic():
+                service.request_organization_calendar_resources_import(start, end)
+                transaction.set_rollback(True)
+
+            mock_task.assert_not_called()
 
 
 @pytest.mark.django_db
