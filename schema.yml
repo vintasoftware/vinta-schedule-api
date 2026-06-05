@@ -4210,10 +4210,15 @@ paths:
     get:
       operationId: organization_members_list
       description: |-
-        A viewset for listing and retrieving organization members.
+        A viewset for listing, retrieving, and managing organization members.
 
         Admin-only endpoint — lists both active and inactive members of the caller's
         organization, suitable for a datatable view. Non-admin members get 403.
+
+        Actions:
+        - `deactivate`: POST to disable a member (prevent self-deactivation and
+          protect the last active admin).
+        - `reactivate`: POST to re-enable a member.
       parameters:
       - name: limit
         required: false
@@ -4243,10 +4248,15 @@ paths:
     get:
       operationId: organization_members_formatted_list
       description: |-
-        A viewset for listing and retrieving organization members.
+        A viewset for listing, retrieving, and managing organization members.
 
         Admin-only endpoint — lists both active and inactive members of the caller's
         organization, suitable for a datatable view. Non-admin members get 403.
+
+        Actions:
+        - `deactivate`: POST to disable a member (prevent self-deactivation and
+          protect the last active admin).
+        - `reactivate`: POST to re-enable a member.
       parameters:
       - in: path
         name: format
@@ -4283,10 +4293,15 @@ paths:
     get:
       operationId: organization_members_retrieve
       description: |-
-        A viewset for listing and retrieving organization members.
+        A viewset for listing, retrieving, and managing organization members.
 
         Admin-only endpoint — lists both active and inactive members of the caller's
         organization, suitable for a datatable view. Non-admin members get 403.
+
+        Actions:
+        - `deactivate`: POST to disable a member (prevent self-deactivation and
+          protect the last active admin).
+        - `reactivate`: POST to re-enable a member.
       parameters:
       - in: path
         name: id
@@ -4309,10 +4324,15 @@ paths:
     get:
       operationId: organization_members_formatted_retrieve
       description: |-
-        A viewset for listing and retrieving organization members.
+        A viewset for listing, retrieving, and managing organization members.
 
         Admin-only endpoint — lists both active and inactive members of the caller's
         organization, suitable for a datatable view. Non-admin members get 403.
+
+        Actions:
+        - `deactivate`: POST to disable a member (prevent self-deactivation and
+          protect the last active admin).
+        - `reactivate`: POST to re-enable a member.
       parameters:
       - in: path
         name: format
@@ -4338,6 +4358,200 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
+  /organization-members/{id}/deactivate/:
+    post:
+      operationId: organization_members_deactivate_create
+      description: |-
+        Deactivate a member (set is_active=False).
+
+        Guards:
+        - Cannot deactivate own membership (self-lockout prevention).
+        - Cannot deactivate the last active admin (org lockout prevention).
+
+        Idempotency: deactivating an already-inactive member is a no-op success.
+      summary: Deactivate an organization member
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '400':
+          description: Cannot deactivate self or last active admin
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
+  /organization-members/{id}/deactivate{format}:
+    post:
+      operationId: organization_members_deactivate_formatted_create
+      description: |-
+        Deactivate a member (set is_active=False).
+
+        Guards:
+        - Cannot deactivate own membership (self-lockout prevention).
+        - Cannot deactivate the last active admin (org lockout prevention).
+
+        Idempotency: deactivating an already-inactive member is a no-op success.
+      summary: Deactivate an organization member
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '400':
+          description: Cannot deactivate self or last active admin
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
+  /organization-members/{id}/reactivate/:
+    post:
+      operationId: organization_members_reactivate_create
+      description: |-
+        Reactivate a member (set is_active=True).
+
+        No guards — re-enabling is always safe.
+
+        Idempotency: reactivating an already-active member is a no-op success.
+      summary: Reactivate an organization member
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
+  /organization-members/{id}/reactivate{format}:
+    post:
+      operationId: organization_members_reactivate_formatted_create
+      description: |-
+        Reactivate a member (set is_active=True).
+
+        No guards — re-enabling is always safe.
+
+        Idempotency: reactivating an already-active member is a no-op success.
+      summary: Reactivate an organization member
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
   /organizations/:
     post:
       operationId: organizations_create

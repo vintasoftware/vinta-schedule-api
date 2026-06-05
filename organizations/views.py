@@ -4,7 +4,7 @@ from dependency_injector.wiring import Provide, inject
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import generics, status
 from rest_framework.decorators import action
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -123,10 +123,15 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
 
 class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     """
-    A viewset for listing and retrieving organization members.
+    A viewset for listing, retrieving, and managing organization members.
 
     Admin-only endpoint — lists both active and inactive members of the caller's
     organization, suitable for a datatable view. Non-admin members get 403.
+
+    Actions:
+    - `deactivate`: POST to disable a member (prevent self-deactivation and
+      protect the last active admin).
+    - `reactivate`: POST to re-enable a member.
     """
 
     queryset = OrganizationMembership.objects.select_related("user", "user__profile")
@@ -144,6 +149,88 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
                 .order_by("id")
             )
         return OrganizationMembership.objects.none()
+
+    @extend_schema(
+        summary="Deactivate an organization member",
+        responses={
+            200: OrganizationMembershipSerializer,
+            400: OpenApiResponse(description="Cannot deactivate self or last active admin"),
+            403: OpenApiResponse(description="Not an admin"),
+            404: OpenApiResponse(description="Member not found or cross-org"),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="deactivate")
+    def deactivate(self, request, pk=None):
+        """Deactivate a member (set is_active=False).
+
+        Guards:
+        - Cannot deactivate own membership (self-lockout prevention).
+        - Cannot deactivate the last active admin (org lockout prevention).
+
+        Idempotency: deactivating an already-inactive member is a no-op success.
+        """
+        target = (
+            self.get_object()
+        )  # Permission checks via IsOrganizationAdmin.has_object_permission
+        user = request.user
+
+        # Guard: prevent self-deactivation
+        if target.user_id == user.id:
+            raise PermissionDenied(detail="Cannot deactivate your own membership.")
+
+        # Guard: prevent deactivating the last active admin
+        # Count OTHER active admins; if this is the last one, refuse
+        if target.is_admin:
+            org_id = target.organization_id
+            other_active_admin_count = (
+                OrganizationMembership.objects.filter(
+                    organization_id=org_id,
+                    role=target.role,  # Same role filter (ADMIN)
+                    is_active=True,
+                )
+                .exclude(id=target.id)  # Exclude the target itself
+                .count()
+            )
+            if other_active_admin_count == 0:
+                raise ValidationError(
+                    detail="Cannot deactivate the last active admin of the organization."
+                )
+
+        # Deactivate (idempotent: no-op if already inactive)
+        target.is_active = False
+        target.save(update_fields=["is_active"])
+
+        # Return the updated membership
+        serializer = self.get_serializer(target)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Reactivate an organization member",
+        responses={
+            200: OrganizationMembershipSerializer,
+            403: OpenApiResponse(description="Not an admin"),
+            404: OpenApiResponse(description="Member not found or cross-org"),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="reactivate")
+    def reactivate(self, request, pk=None):
+        """Reactivate a member (set is_active=True).
+
+        No guards — re-enabling is always safe.
+
+        Idempotency: reactivating an already-active member is a no-op success.
+        """
+        target = (
+            self.get_object()
+        )  # Permission checks via IsOrganizationAdmin.has_object_permission
+
+        # Reactivate (idempotent: no-op if already active)
+        target.is_active = True
+        target.save(update_fields=["is_active"])
+
+        # Return the updated membership
+        serializer = self.get_serializer(target)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class AcceptInvitationView(generics.CreateAPIView):

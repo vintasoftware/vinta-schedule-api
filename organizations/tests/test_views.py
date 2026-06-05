@@ -1370,3 +1370,358 @@ class TestOrganizationMembershipViewSet:
         assert result["user_email"] == member_user.email
         assert result["user_first_name"] == "John"
         assert result["user_last_name"] == "Doe"
+
+    def test_deactivate_member_admin_success(self, auth_client, user):
+        """Test that admin can deactivate another active member"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        # Create another admin so we can safely deactivate without triggering last-admin guard
+        baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        target_member = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": target_member.pk})
+        response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        result = response.json()
+        assert result["is_active"] is False
+        assert result["id"] == target_member.id
+
+        # Verify in DB
+        target_member.refresh_from_db()
+        assert target_member.is_active is False
+
+    def test_deactivate_member_idempotent(self, auth_client, user):
+        """Test that deactivating an already-inactive member is a no-op success"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        target_member = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=False,
+        )
+
+        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": target_member.pk})
+        response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        result = response.json()
+        assert result["is_active"] is False
+
+    def test_deactivate_self_forbidden(self, auth_client, user):
+        """Test that admin cannot deactivate their own membership"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        admin_membership = baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        # Create another admin to prevent last-admin guard interference
+        baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": admin_membership.pk})
+        response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+        # Verify unchanged
+        admin_membership.refresh_from_db()
+        assert admin_membership.is_active is True
+
+    def test_deactivate_last_active_admin_succeeds_with_other_admins(self, auth_client, user):
+        """Test that deactivating an admin succeeds when other admins remain.
+
+        The last-admin guard (other_active_admin_count == 0) only fires if the target
+        is the ONLY admin. When there are multiple admins, deactivating one is allowed.
+        """
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        # Create another admin so we can safely deactivate without hitting the last-admin guard
+        other_admin = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": other_admin.pk})
+        response = auth_client.post(url)
+
+        # Should succeed because there's still one admin (the requester)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        other_admin.refresh_from_db()
+        assert other_admin.is_active is False
+
+    def test_deactivate_non_admin_forbidden(self, auth_client, user):
+        """Test that non-admin member cannot deactivate another member"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        target_member = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": target_member.pk})
+        response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_deactivate_cross_org_not_found(self, auth_client, user):
+        """Test that admin cannot deactivate a member from a different organization"""
+        org1 = OrganizationTestFactory.create_organization(name="Org 1")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org1,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        org2 = OrganizationTestFactory.create_organization(name="Org 2")
+        member_in_org2 = baker.make(
+            OrganizationMembership,
+            organization=org2,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": member_in_org2.pk})
+        response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_deactivate_gates_access(self, auth_client, user):
+        """Test that a deactivated member loses access to tenant endpoints.
+
+        When a member is deactivated, the hard-gate treats their membership as
+        inactive and returns 404 (membership-less) for tenant-scoped endpoints.
+        """
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        target_user = baker.make("users.User")
+        target_member = baker.make(
+            OrganizationMembership,
+            user=target_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        # Deactivate the target member
+        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": target_member.pk})
+        response = auth_client.post(url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Now authenticate as the target user and verify they're gated
+        target_client = APIClient()
+        target_client.force_authenticate(user=target_user)
+
+        # Refresh the user's membership from DB to pick up the deactivation
+        target_user.refresh_from_db()
+
+        # Try to access /organizations/current/ — should get 404 (membership inactive = gated)
+        current_url = reverse("api:Organizations-current")
+        response = target_client.get(current_url)
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_reactivate_member_admin_success(self, auth_client, user):
+        """Test that admin can reactivate an inactive member"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        target_member = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=False,
+        )
+
+        url = reverse("api:OrganizationMembers-reactivate", kwargs={"pk": target_member.pk})
+        response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        result = response.json()
+        assert result["is_active"] is True
+        assert result["id"] == target_member.id
+
+        # Verify in DB
+        target_member.refresh_from_db()
+        assert target_member.is_active is True
+
+    def test_reactivate_member_idempotent(self, auth_client, user):
+        """Test that reactivating an already-active member is a no-op success"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        target_member = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-reactivate", kwargs={"pk": target_member.pk})
+        response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        result = response.json()
+        assert result["is_active"] is True
+
+    def test_reactivate_non_admin_forbidden(self, auth_client, user):
+        """Test that non-admin member cannot reactivate another member"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        target_member = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=False,
+        )
+
+        url = reverse("api:OrganizationMembers-reactivate", kwargs={"pk": target_member.pk})
+        response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_reactivate_cross_org_not_found(self, auth_client, user):
+        """Test that admin cannot reactivate a member from a different organization"""
+        org1 = OrganizationTestFactory.create_organization(name="Org 1")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org1,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        org2 = OrganizationTestFactory.create_organization(name="Org 2")
+        member_in_org2 = baker.make(
+            OrganizationMembership,
+            organization=org2,
+            role=OrganizationRole.MEMBER,
+            is_active=False,
+        )
+
+        url = reverse("api:OrganizationMembers-reactivate", kwargs={"pk": member_in_org2.pk})
+        response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_reactivate_restores_access(self, auth_client, user):
+        """Test that a reactivated member regains access to tenant endpoints.
+
+        When a member is reactivated, the hard-gate treats their membership as
+        active and returns 200 with org data for tenant-scoped endpoints.
+        """
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        target_user = baker.make("users.User")
+        target_member = baker.make(
+            OrganizationMembership,
+            user=target_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=False,
+        )
+
+        # Reactivate the target member
+        url = reverse("api:OrganizationMembers-reactivate", kwargs={"pk": target_member.pk})
+        response = auth_client.post(url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Now authenticate as the target user and verify they're no longer gated
+        target_client = APIClient()
+        target_client.force_authenticate(user=target_user)
+
+        # Refresh the user's membership from DB to pick up the reactivation
+        target_user.refresh_from_db()
+
+        # Try to access /organizations/current/ — should now work
+        current_url = reverse("api:Organizations-current")
+        response = target_client.get(current_url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        result = response.json()
+        assert result["organization"]["id"] == organization.id
