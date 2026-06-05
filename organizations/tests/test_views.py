@@ -1462,6 +1462,32 @@ class TestOrganizationMembershipViewSet:
         admin_membership.refresh_from_db()
         assert admin_membership.is_active is True
 
+    def test_sole_admin_cannot_self_deactivate(self, auth_client, user):
+        """Test that sole admin cannot deactivate themselves, preserving org invariant.
+
+        This documents the real protection: even if an admin is the sole admin of the org,
+        the self-lockout guard (target.user_id == request.user.id) returns 403 before
+        the last-admin guard can fire. The org always keeps at least one admin via this path.
+        """
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        sole_admin_membership = baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": sole_admin_membership.pk})
+        response = auth_client.post(url)
+
+        # Self-deactivation is forbidden, even for sole admin
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+        # Membership remains active in DB
+        sole_admin_membership.refresh_from_db()
+        assert sole_admin_membership.is_active is True
+
     def test_deactivate_last_active_admin_succeeds_with_other_admins(self, auth_client, user):
         """Test that deactivating an admin succeeds when other admins remain.
 

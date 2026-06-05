@@ -178,8 +178,12 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         if target.user_id == user.id:
             raise PermissionDenied(detail="Cannot deactivate your own membership.")
 
-        # Guard: prevent deactivating the last active admin
-        # Count OTHER active admins; if this is the last one, refuse
+        # Guard: prevent deactivating the last active admin (defense-in-depth).
+        # This guard is currently unreachable via this endpoint because the requester
+        # must be an active admin of the org (IsOrganizationAdmin), and the self-lockout
+        # guard above blocks the only path that could drop the org to zero admins
+        # (requester attempting to deactivate themselves). Retained to protect any future
+        # non-self deactivation paths (e.g., bulk action or service-layer call).
         if target.is_admin:
             org_id = target.organization_id
             other_active_admin_count = (
