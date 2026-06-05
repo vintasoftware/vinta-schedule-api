@@ -1,6 +1,7 @@
 import datetime
 from typing import Annotated
 
+from django.db import transaction
 from django.http import Http404
 
 from allauth.socialaccount.models import SocialAccount
@@ -106,6 +107,58 @@ class CalendarViewSet(VintaScheduleModelViewSet):
             self.get_serializer_class()(instance=optimized_calendar_bundle).data,
             status=status.HTTP_201_CREATED,
         )
+
+    @extend_schema(
+        summary="Request calendar import",
+        description="Request import of external calendars for the authenticated user.",
+        responses={202: {"type": "object", "properties": {"detail": {"type": "string"}}}},
+    )
+    @action(
+        methods=["post"],
+        detail=False,
+        url_path="request-import",
+        url_name="request-import",
+    )
+    @inject
+    def request_import(
+        self,
+        request,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
+    ):
+        """Request import of external calendars for the authenticated user."""
+        user = request.user
+
+        membership = get_active_organization_membership(user)
+        if not membership:
+            return Response(
+                {"detail": "User is not an active member of any organization."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        social_account = SocialAccount.objects.filter(user=user).first()
+        if not social_account:
+            return Response(
+                {"detail": "User has no connected external calendar account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            calendar_service.authenticate(
+                account=social_account,
+                organization=membership.organization,
+            )
+
+            def enqueue_import():
+                calendar_service.request_calendars_import()
+
+            transaction.on_commit(enqueue_import)
+
+            return Response(
+                {"detail": "Calendar import requested."},
+                status=status.HTTP_202_ACCEPTED,
+            )
+        except (ValueError, CalendarIntegrationError) as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
 
     @extend_schema(
         summary="Get available time windows",

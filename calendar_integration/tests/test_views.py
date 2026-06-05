@@ -1,7 +1,7 @@
 import datetime
 import json
 import uuid
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
@@ -1620,6 +1620,68 @@ class TestCalendarViewSet:
         }
 
         response = anonymous_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_request_import_authenticated_with_social_account(
+        self, auth_client, user, calendar, social_account
+    ):
+        """Test requesting calendar import with authenticated user and social account"""
+        from di_core.containers import container
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.request_calendars_import.return_value = None
+
+        url = reverse("api:Calendars-request-import")
+
+        with container.calendar_service.override(mock_calendar_service):
+            with patch("calendar_integration.views.transaction.on_commit") as mock_on_commit:
+                response = auth_client.post(url)
+
+                # Verify response
+                assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+                assert response.data["detail"] == "Calendar import requested."
+
+                # Verify the mock was called with the correct arguments
+                mock_calendar_service.authenticate.assert_called_once()
+
+                # Verify on_commit was called and invoke the callback
+                mock_on_commit.assert_called_once()
+                callback = mock_on_commit.call_args[0][0]
+                callback()
+
+                # Now verify the service method was called
+                mock_calendar_service.request_calendars_import.assert_called_once()
+
+    def test_request_import_no_social_account(self, auth_client, user):
+        """Test requesting calendar import without a connected social account"""
+        # Create a new organization and membership for the user (but no social account)
+        new_org = CalendarIntegrationTestFactory.create_organization()
+        CalendarIntegrationTestFactory.create_organization_membership(user, new_org)
+
+        url = reverse("api:Calendars-request-import")
+
+        response = auth_client.post(url)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "no connected external calendar account" in response.data["detail"].lower()
+
+    def test_request_import_membership_less_user(self, auth_client, anonymous_client):
+        """Test requesting calendar import as membership-less user"""
+        url = reverse("api:Calendars-request-import")
+
+        response = auth_client.post(url)
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        assert "not an active member" in response.data["detail"].lower()
+
+    def test_request_import_unauthenticated(self, anonymous_client):
+        """Test requesting calendar import as unauthenticated user"""
+        url = reverse("api:Calendars-request-import")
+
+        response = anonymous_client.post(url)
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
 
