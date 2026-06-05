@@ -171,3 +171,48 @@ class TestIsOrganizationAdminPermission:
         request = factory.get("/")
         request.user = admin_user
         assert permission.has_object_permission(request, view_mock, calendar) is False
+
+    def test_has_permission_inactive_admin_denied(self, factory, permission, view_mock):
+        """Admin with an inactive membership is denied — is_active=False gates all access."""
+        user = baker.make(User)
+        org = baker.make(Organization)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org,
+            role=OrganizationRole.ADMIN,
+            is_active=False,
+        )
+        request = factory.get("/")
+        request.user = user
+        assert permission.has_permission(request, view_mock) is False
+
+    def test_has_object_permission_inactive_admin_denied(self, factory, permission, view_mock):
+        """Inactive admin is denied object permission even for their own org."""
+        user = baker.make(User)
+        org = baker.make(Organization)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org,
+            role=OrganizationRole.ADMIN,
+            is_active=False,
+        )
+        request = factory.get("/")
+        request.user = user
+        assert permission.has_object_permission(request, view_mock, org) is False
+
+    def test_has_permission_inactive_member_denied(self, factory, permission, view_mock):
+        """Member with an inactive membership is denied."""
+        user = baker.make(User)
+        org = baker.make(Organization)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org,
+            role=OrganizationRole.MEMBER,
+            is_active=False,
+        )
+        request = factory.get("/")
+        request.user = user
+        assert permission.has_permission(request, view_mock) is False

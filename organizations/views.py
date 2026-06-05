@@ -19,7 +19,11 @@ from organizations.exceptions import (
     UserAlreadyHasMembershipError,
 )
 from organizations.filtersets import OrganizationInvitationFilterSet
-from organizations.models import Organization, OrganizationInvitation
+from organizations.models import (
+    Organization,
+    OrganizationInvitation,
+    get_active_organization_membership,
+)
 from organizations.permissions import (
     OrganizationInvitationPermission,
     OrganizationManagementPermission,
@@ -44,8 +48,9 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        if hasattr(user, "organization_membership") and user.organization_membership:
-            return Organization.objects.filter(id=user.organization_membership.organization_id)
+        membership = get_active_organization_membership(user)
+        if membership:
+            return Organization.objects.filter(id=membership.organization_id)
         return Organization.objects.none()
 
     @extend_schema(
@@ -92,19 +97,19 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
     def get_queryset(self):
         """Filter invitations by the user's organization."""
         user = self.request.user
-        if hasattr(user, "organization_membership") and user.organization_membership:
-            return OrganizationInvitation.objects.filter(
-                organization_id=user.organization_membership.organization_id
-            )
-        # Return empty queryset for users without membership
+        membership = get_active_organization_membership(user)
+        if membership:
+            return OrganizationInvitation.objects.filter(organization_id=membership.organization_id)
+        # Return empty queryset for users without an active membership
         return OrganizationInvitation.objects.none()
 
     def get_serializer_context(self):
         """Add organization to serializer context."""
         context = super().get_serializer_context()
         user = self.request.user
-        if hasattr(user, "organization_membership") and user.organization_membership:
-            context["organization"] = user.organization_membership.organization
+        membership = get_active_organization_membership(user)
+        if membership:
+            context["organization"] = membership.organization
         return context
 
     def perform_destroy(self, instance):

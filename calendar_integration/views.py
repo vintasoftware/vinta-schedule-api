@@ -58,7 +58,7 @@ from calendar_integration.serializers import (
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_service import CalendarService
 from common.utils.view_utils import VintaScheduleModelViewSet
-from organizations.models import OrganizationMembership
+from organizations.models import get_active_organization_membership
 
 
 class CalendarViewSet(VintaScheduleModelViewSet):
@@ -76,12 +76,11 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         if not user.is_authenticated:
             return Calendar.original_manager.none()
 
-        try:
-            organization_id = user.organization_membership.organization_id
-            return super().get_queryset().filter_by_organization(organization_id)
-        except OrganizationMembership.DoesNotExist:
-            # If user has no calendar organization membership, return empty queryset
+        membership = get_active_organization_membership(user)
+        if not membership:
+            # Membership-less or inactive members get an empty queryset, not a 500.
             return Calendar.original_manager.none()
+        return super().get_queryset().filter_by_organization(membership.organization_id)
 
     @extend_schema(request=CalendarBundleCreateSerializer())
     @action(
@@ -283,11 +282,11 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
         """
         Filter events by calendar organization of the authenticated user.
 
-        Returns an empty queryset for membership-less (gated) users rather than
-        raising Http404, so the response is a clean empty list / 404-on-object
-        rather than a 500.
+        Returns an empty queryset for membership-less or inactive-membership users
+        rather than raising Http404, so the response is a clean empty list /
+        404-on-object rather than a 500.
         """
-        membership = getattr(self.request.user, "organization_membership", None)
+        membership = get_active_organization_membership(self.request.user)
         if not membership:
             return CalendarEvent.original_manager.none()
         return super().get_queryset().filter_by_organization(membership.organization_id)
@@ -440,7 +439,7 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
         if not user.is_authenticated:
             return BlockedTime.original_manager.none()
 
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             return BlockedTime.original_manager.none()
 
@@ -521,7 +520,7 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
                 {"non_field_errors": ["calendar_id, start_time, and end_time are required"]}
             )
 
-        membership = getattr(request.user, "organization_membership", None)
+        membership = get_active_organization_membership(request.user)
         if not membership:
             return Response([], status=status.HTTP_200_OK)
 
@@ -664,7 +663,7 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
         if not user.is_authenticated:
             return AvailableTime.original_manager.none()
 
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             return AvailableTime.original_manager.none()
 
@@ -745,7 +744,7 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
                 {"non_field_errors": ["calendar_id, start_time, and end_time are required"]}
             )
 
-        membership = getattr(request.user, "organization_membership", None)
+        membership = get_active_organization_membership(request.user)
         if not membership:
             return Response([], status=status.HTTP_200_OK)
 
@@ -886,11 +885,10 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         user = self.request.user
         if not user.is_authenticated:
             return CalendarGroup.original_manager.none()
-        try:
-            organization_id = user.organization_membership.organization_id
-        except OrganizationMembership.DoesNotExist:
+        membership = get_active_organization_membership(user)
+        if not membership:
             return CalendarGroup.original_manager.none()
-        return super().get_queryset().filter_by_organization(organization_id)
+        return super().get_queryset().filter_by_organization(membership.organization_id)
 
     @extend_schema(
         summary="Delete calendar group",

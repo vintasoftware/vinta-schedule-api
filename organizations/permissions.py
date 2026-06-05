@@ -4,7 +4,12 @@ from django.core.exceptions import ObjectDoesNotExist
 
 from rest_framework.permissions import BasePermission
 
-from organizations.models import Organization, OrganizationInvitation, OrganizationModel
+from organizations.models import (
+    Organization,
+    OrganizationInvitation,
+    OrganizationModel,
+    get_active_organization_membership,
+)
 
 
 if TYPE_CHECKING:
@@ -48,24 +53,18 @@ class OrganizationInvitationPermission(BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
 
-        # User must have an organization membership
-        # Use the same pattern as OrganizationViewSet
-        return (
-            hasattr(request.user, "organization_membership")
-            and request.user.organization_membership is not None
-        )
+        # User must have an active organization membership
+        return get_active_organization_membership(request.user) is not None
 
     def has_object_permission(self, request, view, obj):
-        # User must have an organization membership
-        if (
-            not hasattr(request.user, "organization_membership")
-            or not request.user.organization_membership
-        ):
+        # User must have an active organization membership
+        membership = get_active_organization_membership(request.user)
+        if not membership:
             return False
 
         # User can only manage invitations for their own organization
         if isinstance(obj, OrganizationInvitation):
-            return request.user.organization_membership.organization_id == obj.organization_id
+            return membership.organization_id == obj.organization_id
         return False
 
 
@@ -84,11 +83,11 @@ class IsOrganizationAdmin(BasePermission):
         user: User = request.user
         if not user or not user.is_authenticated:
             return False
-        return getattr(user, "organization_membership", None) is not None
+        return get_active_organization_membership(user) is not None
 
     def has_object_permission(self, request, view, obj) -> bool:
         user: User = request.user
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if membership is None:
             return False
 
