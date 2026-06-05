@@ -39,11 +39,19 @@
 - **Key**: `OrganizationMembershipViewSet` (ReadOnly, IsOrganizationAdmin), `OrganizationMembershipSerializer` (read-only, flattened user email + profile name, select_related no-N+1, no PII leak), route `organization-members`, schema regen. List returns active+inactive. IMPORTANT FIX: `IsOrganizationAdmin.has_permission` now requires `membership.is_admin` (was membership-only) — gates collection actions; reusable by all future admin endpoints with no per-view override. Outer gate green (1272).
 - **Deviations**: none (the permission fix is reused infra, benefits later phases).
 
+### Phase 3 — Deactivate/reactivate a member (admin) ✅
+- **Status**: done, reviewed (3 layers; Layer 3 surfaced that the last-admin 400 is unreachable → documented + sole-admin self-deactivate test), pushed, PR opened.
+- **Model**: haiku (tier 2); fixer: haiku.
+- **Branch**: plan/rest-api-frontend-gaps/phase-3 (base: phase-2) — **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/45
+- **PR-context**: phase-3.md (published)
+- **Key**: `deactivate`/`reactivate` detail @actions on OrganizationMembershipViewSet; self-lockout guard (403) enforces the org-keeps-an-admin invariant; last-admin guard kept as documented defense-in-depth (unreachable via HTTP). Idempotent. Outer gate green (1285). mypy baseline = 108 full-project errors (pre-existing, test files); confirmed zero new across phases.
+- **Deviations**: none.
+
 ## Current Phase
-Phase 3 — Deactivate/reactivate a member (admin) (next).
+Phase 4 — Request own calendar import (next).
 
 ## Remaining Phases
-4 (request own import), 5 (request own sync), 6 (admin sync other), 7 (rooms sync trigger), 8 (transfer event), 9 (calendar soft-disable), 10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
+5 (request own sync), 6 (admin sync other), 7 (rooms sync trigger), 8 (transfer event), 9 (calendar soft-disable), 10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
 
 ## Reusable infra notes (for later phases)
 - `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
