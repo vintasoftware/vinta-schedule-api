@@ -30,11 +30,25 @@
 - **Key**: `is_active` field (default+db_default True, indexed). New `get_active_organization_membership(user)` helper = single source of truth (None for missing OR inactive). Gate closed across get_queryset, all relevant permissions, serializer create/save WRITE paths, OrganizationViewSet.current, public GraphQL users query, User.is_organization_admin. Design note: inactive membership blocks re-provisioning; reactivation (Phase 3) is the un-disable path. Outer gate green (1262 passed); mypy adds no new errors (8 pre-existing in serializers.py).
 - **Deviations**: extended gating to OrganizationInvitationPermission (consistency).
 
+### Phase 2 — List organization members (admin) ✅
+- **Status**: done, reviewed (3 layers; Layer 3 confirmed the IsOrganizationAdmin collection-level flaw the implementer flagged → fixer), pushed, PR opened.
+- **Model**: claude-haiku-4-5 (tier 2); fixer: haiku.
+- **Branch**: plan/rest-api-frontend-gaps/phase-2 (base: phase-1)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/44
+- **PR-context**: .vinta-ai-workflows/prs-context/rest-api-frontend-gaps/phase-2.md (published)
+- **Key**: `OrganizationMembershipViewSet` (ReadOnly, IsOrganizationAdmin), `OrganizationMembershipSerializer` (read-only, flattened user email + profile name, select_related no-N+1, no PII leak), route `organization-members`, schema regen. List returns active+inactive. IMPORTANT FIX: `IsOrganizationAdmin.has_permission` now requires `membership.is_admin` (was membership-only) — gates collection actions; reusable by all future admin endpoints with no per-view override. Outer gate green (1272).
+- **Deviations**: none (the permission fix is reused infra, benefits later phases).
+
 ## Current Phase
-Phase 2 — List organization members (admin) (next).
+Phase 3 — Deactivate/reactivate a member (admin) (next).
 
 ## Remaining Phases
-3 (deactivate/reactivate member), 4 (request own import), 5 (request own sync), 6 (admin sync other), 7 (rooms sync trigger), 8 (transfer event), 9 (calendar soft-disable), 10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
+4 (request own import), 5 (request own sync), 6 (admin sync other), 7 (rooms sync trigger), 8 (transfer event), 9 (calendar soft-disable), 10 (bundle update), 11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
+
+## Reusable infra notes (for later phases)
+- `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
+- `get_active_organization_membership(user)` (organizations/models.py) — canonical active-membership resolver (None for missing OR inactive).
+- DI in actions: `@inject` + `Annotated[Service, Provide["service_name"]]`; authenticate CalendarService with the user's SocialAccount (see CalendarViewSet.available_windows).
 
 ## Deferred Phases
 None (no cross-repo, no flag-removal phases in this plan).
