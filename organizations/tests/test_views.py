@@ -1047,6 +1047,42 @@ class TestOrganizationInvitationViewSet:
 
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
+    def test_resend_pending_invitation_real_reset(
+        self, auth_client, user, organization_with_membership
+    ):
+        """Integration test: resend actually resets token_hash and extends expires_at.
+
+        This test does NOT mock invite_user_to_organization, so it verifies the actual
+        reset behavior end-to-end.
+        """
+        # Create a pending invitation with known initial values
+        original_invite = OrganizationTestFactory.create_organization_invitation(
+            organization_with_membership, email="resend-test@example.com", invited_by=user
+        )
+        original_token_hash = original_invite.token_hash
+        original_expires_at = original_invite.expires_at
+
+        url = reverse("api:OrganizationInvitations-resend", kwargs={"pk": original_invite.pk})
+
+        # Resend the invitation
+        response = auth_client.post(url, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        response_data = response.json()
+
+        # Verify response contains invitation data
+        assert response_data["email"] == "resend-test@example.com"
+        assert response_data["organization"] == organization_with_membership.id
+
+        # Refresh from DB and verify token_hash and expires_at have changed
+        refreshed_invite = OrganizationInvitation.objects.get(pk=original_invite.pk)
+        assert refreshed_invite.token_hash != original_token_hash, (
+            "token_hash should be regenerated"
+        )
+        assert refreshed_invite.expires_at > original_expires_at, (
+            "expires_at should be extended (~7 days)"
+        )
+
 
 @pytest.mark.django_db
 class TestAcceptInvitationView:

@@ -275,16 +275,13 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
             raise PermissionDenied(detail="No active organization membership.")
 
         # Call the service to reset token+expiry and re-send the email
-        try:
-            invitation = self.organization_service.invite_user_to_organization(
-                email=invitation.email,
-                first_name=invitation.first_name,
-                last_name=invitation.last_name,
-                invited_by=request.user,
-                organization=membership.organization,
-            )
-        except Exception as exc:
-            raise ValidationError(detail=str(exc)) from exc
+        invitation = self.organization_service.invite_user_to_organization(
+            email=invitation.email,
+            first_name=invitation.first_name,
+            last_name=invitation.last_name,
+            invited_by=request.user,
+            organization=membership.organization,
+        )
 
         # Return the re-serialized invitation
         serializer = self.get_serializer(invitation)
