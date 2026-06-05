@@ -821,6 +821,216 @@ class TestCalendarEventViewSet:
 
 
 @pytest.mark.django_db
+class TestCalendarEventExpandedAction:
+    """Tests for GET /calendar-events/expanded/ — materialized recurring occurrences."""
+
+    def test_expanded_returns_materialized_instances(self, auth_client, calendar, user):
+        """Recurring master event series → expanded returns instances, not the master."""
+        from di_core.containers import container
+
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        now = datetime.datetime.now(datetime.UTC)
+        # Master recurring event (daily, 3 occurrences)
+        master = CalendarIntegrationTestFactory.create_recurring_event(
+            calendar=calendar,
+            title="Daily Standup",
+            start_time_tz_unaware=now,
+            end_time_tz_unaware=now + datetime.timedelta(hours=1),
+        )
+        # Two synthetic instances that the service would return (simulate expansion)
+        instance1 = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Daily Standup",
+            start_time_tz_unaware=now,
+            end_time_tz_unaware=now + datetime.timedelta(hours=1),
+        )
+        instance2 = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Daily Standup",
+            start_time_tz_unaware=now + datetime.timedelta(days=1),
+            end_time_tz_unaware=now + datetime.timedelta(days=1, hours=1),
+        )
+        # The master should NOT appear; only instances
+        mock_calendar_service = Mock()
+        mock_calendar_service.get_calendar_events_expanded.return_value = [instance1, instance2]
+
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": now.isoformat(),
+            "end_time": (now + datetime.timedelta(days=7)).isoformat(),
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.get(url, params)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert len(response.data) == 2
+        # Master not in results — service was called and its return value serialized
+        result_ids = {r["id"] for r in response.data}
+        assert master.id not in result_ids
+        assert instance1.id in result_ids
+        assert instance2.id in result_ids
+        mock_calendar_service.get_calendar_events_expanded.assert_called_once()
+
+    def test_expanded_returns_non_recurring_events_in_range(self, auth_client, calendar, user):
+        """Non-recurring events within the range are returned."""
+        from di_core.containers import container
+
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        now = datetime.datetime.now(datetime.UTC)
+        event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="One-off meeting",
+            start_time_tz_unaware=now + datetime.timedelta(hours=2),
+            end_time_tz_unaware=now + datetime.timedelta(hours=3),
+        )
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.get_calendar_events_expanded.return_value = [event]
+
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": now.isoformat(),
+            "end_time": (now + datetime.timedelta(days=1)).isoformat(),
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.get(url, params)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert len(response.data) == 1
+        assert response.data[0]["id"] == event.id
+
+    def test_expanded_missing_calendar_id_400(self, auth_client, calendar, user):
+        """Missing calendar_id → 400."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "start_time": "2024-01-01T00:00:00Z",
+            "end_time": "2024-01-31T23:59:59Z",
+        }
+        response = auth_client.get(url, params)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_expanded_missing_start_time_400(self, auth_client, calendar, user):
+        """Missing start_time → 400."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "end_time": "2024-01-31T23:59:59Z",
+        }
+        response = auth_client.get(url, params)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_expanded_missing_end_time_400(self, auth_client, calendar, user):
+        """Missing end_time → 400."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": "2024-01-01T00:00:00Z",
+        }
+        response = auth_client.get(url, params)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_expanded_bad_datetime_format_400(self, auth_client, calendar, user):
+        """Malformed datetime strings → 400."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": "not-a-date",
+            "end_time": "also-not-a-date",
+        }
+        response = auth_client.get(url, params)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_expanded_membership_less_user_returns_empty_list(self, calendar):
+        """User without an active membership gets an empty 200 list (mirrors sibling expanded actions)."""
+        from rest_framework.test import APIClient
+
+        no_membership_user = baker.make(User)
+        client = APIClient()
+        client.force_authenticate(user=no_membership_user)
+
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": "2024-01-01T00:00:00Z",
+            "end_time": "2024-01-31T23:59:59Z",
+        }
+        response = client.get(url, params)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data == []
+
+    def test_expanded_calendar_not_in_org_404(self, auth_client, user, organization):
+        """Calendar from another org → 404."""
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": other_calendar.id,
+            "start_time": "2024-01-01T00:00:00Z",
+            "end_time": "2024-01-31T23:59:59Z",
+        }
+        response = auth_client.get(url, params)
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_expanded_unauthenticated_401(self, anonymous_client, calendar):
+        """Unauthenticated request → 401."""
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": "2024-01-01T00:00:00Z",
+            "end_time": "2024-01-31T23:59:59Z",
+        }
+        response = anonymous_client.get(url, params)
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_expanded_exception_reflected_cancelled_instance_absent(
+        self, auth_client, calendar, user
+    ):
+        """Cancelled exception instance is absent from the expanded results."""
+        from di_core.containers import container
+
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        now = datetime.datetime.now(datetime.UTC)
+        # The service omits the cancelled instance; only the surviving instance is returned
+        surviving = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Weekly Review",
+            start_time_tz_unaware=now + datetime.timedelta(days=7),
+            end_time_tz_unaware=now + datetime.timedelta(days=7, hours=1),
+        )
+
+        mock_calendar_service = Mock()
+        # Only one instance returned — the cancelled one is absent
+        mock_calendar_service.get_calendar_events_expanded.return_value = [surviving]
+
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": now.isoformat(),
+            "end_time": (now + datetime.timedelta(days=14)).isoformat(),
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.get(url, params)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        # Cancelled instance not present; only surviving instance returned
+        assert len(response.data) == 1
+        assert response.data[0]["id"] == surviving.id
+
+
+@pytest.mark.django_db
 class TestRecurringCalendarEventViewSet:
     """Test suite for recurring calendar events"""
 

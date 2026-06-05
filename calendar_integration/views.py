@@ -763,6 +763,85 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
     @extend_schema(
+        summary="Get expanded calendar events",
+        parameters=[
+            OpenApiParameter(
+                name="calendar_id",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Calendar ID to get events for",
+            ),
+            OpenApiParameter(
+                name="start_time",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Start datetime for the range (ISO format)",
+            ),
+            OpenApiParameter(
+                name="end_time",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="End datetime for the range (ISO format)",
+            ),
+        ],
+        responses={200: CalendarEventSerializer(many=True)},
+    )
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path="expanded",
+        url_name="expanded",
+    )
+    @inject
+    def expanded(
+        self,
+        request,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
+    ) -> Response:
+        """Get expanded calendar events including materialized recurring instances."""
+        calendar_id = request.query_params.get("calendar_id")
+        start_datetime = request.query_params.get("start_time")
+        end_datetime = request.query_params.get("end_time")
+
+        if not all([calendar_id, start_datetime, end_datetime]):
+            raise ValidationError(
+                {"non_field_errors": ["calendar_id, start_time, and end_time are required"]}
+            )
+
+        membership = get_active_organization_membership(request.user)
+        if not membership:
+            return Response([], status=status.HTTP_200_OK)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(membership.organization.id).get(
+                id=calendar_id
+            )
+        except Calendar.DoesNotExist as e:
+            raise Http404("Calendar not found") from e
+
+        try:
+            start_dt = datetime.datetime.fromisoformat(start_datetime.replace("Z", "+00:00"))
+            end_dt = datetime.datetime.fromisoformat(end_datetime.replace("Z", "+00:00"))
+        except ValueError as e:
+            raise ValidationError({"non_field_errors": ["Invalid datetime format"]}) from e
+
+        calendar_service.initialize_without_provider(organization=membership.organization)
+
+        expanded_events = calendar_service.get_calendar_events_expanded(
+            calendar=calendar,
+            start_date=start_dt,
+            end_date=end_dt,
+        )
+
+        serializer = CalendarEventSerializer(
+            expanded_events, many=True, context=self.get_serializer_context()
+        )
+        return Response(serializer.data)
+
+    @extend_schema(
         summary="Transfer event to another calendar (admin)",
         description=(
             "Move an event from its current calendar to a target calendar within the same "

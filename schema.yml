@@ -2689,6 +2689,177 @@ paths:
               schema:
                 $ref: '#/components/schemas/CalendarEvent'
           description: ''
+  /calendar-events/expanded/:
+    get:
+      operationId: calendar_events_expanded_list
+      description: Get expanded calendar events including materialized recurring instances.
+      summary: Get expanded calendar events
+      parameters:
+      - in: query
+        name: calendar
+        schema:
+          type: number
+        description: Filter by calendar ID
+      - in: query
+        name: calendar_id
+        schema:
+          type: integer
+        description: Calendar ID to get events for
+        required: true
+      - in: query
+        name: end_time
+        schema:
+          type: string
+        description: End datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: end_time_range_after
+        schema:
+          type: string
+          format: date-time
+        description: End time range
+      - in: query
+        name: end_time_range_before
+        schema:
+          type: string
+          format: date-time
+        description: End time range
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+        description: Start datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: start_time_range_after
+        schema:
+          type: string
+          format: date-time
+        description: Start time range
+      - in: query
+        name: start_time_range_before
+        schema:
+          type: string
+          format: date-time
+        description: Start time range
+      - in: query
+        name: title
+        schema:
+          type: string
+        description: Filter by partial title match
+      tags:
+      - calendar-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarEventList'
+          description: ''
+  /calendar-events/expanded{format}:
+    get:
+      operationId: calendar_events_expanded_formatted_list
+      description: Get expanded calendar events including materialized recurring instances.
+      summary: Get expanded calendar events
+      parameters:
+      - in: query
+        name: calendar
+        schema:
+          type: number
+        description: Filter by calendar ID
+      - in: query
+        name: calendar_id
+        schema:
+          type: integer
+        description: Calendar ID to get events for
+        required: true
+      - in: query
+        name: end_time
+        schema:
+          type: string
+        description: End datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: end_time_range_after
+        schema:
+          type: string
+          format: date-time
+        description: End time range
+      - in: query
+        name: end_time_range_before
+        schema:
+          type: string
+          format: date-time
+        description: End time range
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+        description: Start datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: start_time_range_after
+        schema:
+          type: string
+          format: date-time
+        description: Start time range
+      - in: query
+        name: start_time_range_before
+        schema:
+          type: string
+          format: date-time
+        description: Start time range
+      - in: query
+        name: title
+        schema:
+          type: string
+        description: Filter by partial title match
+      tags:
+      - calendar-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarEventList'
+          description: ''
   /calendar-groups/:
     get:
       operationId: calendar_groups_list
