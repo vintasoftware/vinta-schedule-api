@@ -85,20 +85,28 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         return Organization.objects.none()
 
     def update(self, request, *args, **kwargs):
-        """Override update to trigger rooms sync when should_sync_rooms flips False→True."""
+        """Override update to trigger rooms sync when should_sync_rooms flips False→True.
+
+        Uses select_for_update to lock the row during snapshot + write, serializing
+        concurrent PATCHes and preventing double-fire of the sync on False→True transition.
+        """
         partial = kwargs.get("partial", False)
-        instance = self.get_object()
 
-        # Snapshot the old value BEFORE the serializer writes to the DB.
-        old_should_sync_rooms = instance.should_sync_rooms
+        # Lock the row during snapshot + write.
+        with transaction.atomic():
+            instance = Organization.objects.select_for_update().get(pk=self.get_object().pk)
+            old_should_sync_rooms = instance.should_sync_rooms
 
-        serializer = self.get_update_serializer(instance, data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
+            serializer = self.get_update_serializer(instance, data=request.data, partial=partial)
+            serializer.is_valid(raise_exception=True)
+            self.perform_update(serializer)
 
-        # Detect False→True transition (exactly once — only when the flag just became True).
-        new_should_sync_rooms = serializer.instance.should_sync_rooms
-        if not old_should_sync_rooms and new_should_sync_rooms:
+            # Detect False→True transition (exactly once — only when the flag just became True).
+            new_should_sync_rooms = serializer.instance.should_sync_rooms
+            fire = (not old_should_sync_rooms) and new_should_sync_rooms
+
+        # Register the on_commit callback AFTER the atomic block (so it fires post-commit).
+        if fire:
             org = serializer.instance
             user = request.user
             org_service = self.organization_service
@@ -136,10 +144,8 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     @extend_schema(
         summary="Trigger a rooms/resources import for the organization",
         responses={
-            202: OpenApiResponse(description="Sync enqueued"),
-            400: OpenApiResponse(
-                description="Bad request (invalid datetime format or service error)"
-            ),
+            202: OrganizationSerializer,
+            400: OpenApiResponse(description="Invalid datetime format"),
             403: OpenApiResponse(description="Not an admin"),
             404: OpenApiResponse(description="Organization not found"),
         },
@@ -188,10 +194,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
                 end_time=end_time,
             )
 
-        try:
-            transaction.on_commit(_trigger)
-        except Exception as exc:
-            raise ValidationError({"detail": str(exc)}) from exc
+        transaction.on_commit(_trigger)
 
         serializer = self.get_serializer(org)
         return Response(serializer.data, status=status.HTTP_202_ACCEPTED)

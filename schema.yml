@@ -4866,8 +4866,11 @@ paths:
           description: ''
     put:
       operationId: organizations_update
-      description: Override update to trigger rooms sync when should_sync_rooms flips
-        False→True.
+      description: |-
+        Override update to trigger rooms sync when should_sync_rooms flips False→True.
+
+        Uses select_for_update to lock the row during snapshot + write, serializing
+        concurrent PATCHes and preventing double-fire of the sync on False→True transition.
       parameters:
       - in: path
         name: id
@@ -4978,8 +4981,11 @@ paths:
           description: ''
     put:
       operationId: organizations_formatted_update
-      description: Override update to trigger rooms sync when should_sync_rooms flips
-        False→True.
+      description: |-
+        Override update to trigger rooms sync when should_sync_rooms flips False→True.
+
+        Uses select_for_update to lock the row during snapshot + write, serializing
+        concurrent PATCHes and preventing double-fire of the sync on False→True transition.
       parameters:
       - in: path
         name: format
@@ -5118,9 +5124,13 @@ paths:
       - cookieAuth: []
       responses:
         '202':
-          description: Sync enqueued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+          description: ''
         '400':
-          description: Bad request (invalid datetime format or service error)
+          description: Invalid datetime format
         '403':
           description: Not an admin
         '404':
@@ -5170,9 +5180,13 @@ paths:
       - cookieAuth: []
       responses:
         '202':
-          description: Sync enqueued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+          description: ''
         '400':
-          description: Bad request (invalid datetime format or service error)
+          description: Invalid datetime format
         '403':
           description: Not an admin
         '404':
