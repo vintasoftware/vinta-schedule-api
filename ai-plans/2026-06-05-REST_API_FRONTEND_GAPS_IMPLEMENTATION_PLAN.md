@@ -521,51 +521,53 @@ Tests:
 
 Acceptance: `POST /invitations/{id}/resend/` regenerates + re-sends a pending invitation.
 
-### Phase 18 — Configure organization Google service account (admin)
+### Phase 18 — Rooms-sync configuration (via org partial-update) + working trigger (admin)
 
-**Goal**: an admin can configure the org's `GoogleCalendarServiceAccount` (the credentials the rooms/resource import authenticates with).
+**Goal**: an admin configures the org's Google service-account credentials **through `PATCH /organizations/{id}/`** (alongside `should_sync_rooms`), and the rooms-sync trigger actually runs by authenticating with those credentials.
 
-**Feature flag**: none — new endpoint.
+**Feature flag**: none — additive nested fields on an existing admin endpoint + a bug fix on the (currently-raising) trigger path.
 
-**Security note**: this endpoint accepts a Google service-account **private key**, stored via the model's `EncryptedCharField`. Write-only for secret fields (never returned in any response); admin-only; org-scoped. Treat as a credentials surface.
+**Security note**: the org partial-update accepts a Google service-account **private key**, stored via the model's `EncryptedCharField`. Secret fields (`private_key`, `private_key_id`) are **write-only** — never returned in any response. Admin-only (Phase 7 already gates org update with `IsOrganizationAdmin`); org-scoped.
+
+**Decision (per requester, 2026-06-05): rooms-sync config persists via the organization Partial Update** — do NOT add a separate service-account endpoint; nest it into `OrganizationSerializer`/`OrganizationViewSet.partial_update`.
 
 Changes:
-1. `GoogleServiceAccountViewSet` (create + retrieve/update; no list needed, one per org/resource) or a dedicated serializer-driven endpoint, `IsOrganizationAdmin`, org-scoped. Accepts `email`, `audience`, `public_key`, `private_key_id`, `private_key` (last two write-only). Response exposes only non-secret fields (e.g. `id`, `email`, `audience`, configured-at) — NEVER `private_key`/`private_key_id`.
-2. Route registration in `calendar_integration/routes.py`; `make update_schema`.
+1. `OrganizationSerializer`: add a nested, write-capable `google_service_account` representation (fields `email`, `audience`, `public_key`, `private_key_id`, `private_key`) where `private_key`/`private_key_id` are `write_only`. On the org's `update`/`partial_update`, create-or-update the org's `GoogleCalendarServiceAccount` from the nested payload (encrypted at rest). Read responses expose only non-secret fields (e.g. `email`, `audience`, `configured: true`) — NEVER the private key. `should_sync_rooms` continues to persist via the same PATCH.
+2. `OrganizationService.request_rooms_sync`: resolve the org's `GoogleCalendarServiceAccount`; if present, `calendar_service.authenticate(account=<service_account>, organization=org)` (NOT `initialize_without_provider`) then `request_organization_calendar_resources_import(...)`. If none configured → raise a clear, catchable error so the `sync_rooms` action + the should_sync_rooms False→True transition return **400** ("configure a Google service account first") rather than 500.
+3. `create_organization(should_sync_rooms=True)`: route through the same fixed path; if no service account exists at creation time, do NOT crash — skip the import gracefully (org creation must succeed; document the behavior).
+4. `make update_schema`.
 
-Spec use-case: "Admin configures their organization to sync rooms (service account credentials)."
+Spec use-case: "Admin configures their organization to sync rooms" + "Admin triggers a rooms sync (now actually executes)."
 
 Tests:
-- **Integration**: admin creates/sets the service account → 201/200, secret fields stored (encrypted) but NEVER echoed in the response; update rotates credentials; non-admin → 403; cross-org → 404; response contains no private key.
+- **Integration**: admin `PATCH /organizations/{id}/` with nested service-account creds (+ should_sync_rooms) → 200, creds stored encrypted, response NEVER echoes private_key/private_key_id; a second PATCH rotates them. With creds configured, `POST /organizations/{id}/sync-rooms/` authenticates with the `GoogleCalendarServiceAccount` (assert authenticate called with it) and enqueues the import; without creds → 400 (not 500). create_organization(should_sync_rooms=True) with no creds does not crash. non-admin → 403; cross-org → 404.
 
-**Suggested AI model**: Tier 3 — `claude-sonnet-4-6` / `gpt-5` / `gemini-2.5-pro`. Credentials surface + write-only secret handling.
+**Suggested AI model**: Tier 3 — `claude-sonnet-4-6` / `gpt-5` / `gemini-2.5-pro`. Credentials surface + nested write-only secrets + cross-service auth wiring + fixing a live break.
 
 **Reusable skills**: `create-rest-endpoint`.
 
-Acceptance: `POST /…/google-service-account/` stores the org's service-account credentials; secrets never returned.
+Acceptance: rooms-sync creds persist via org PATCH (secrets never returned); the trigger runs when configured and returns 400 (never 500) when not; org creation never crashes.
 
-### Phase 19 — Authenticate rooms-sync with the service account (fix the trigger)
+### Phase 19 — Service-layer hardening: on_commit enqueue + is_active query filtering
 
-**Goal**: make `request_rooms_sync` (and the `create_organization` rooms path) actually run — authenticate the service with the org's `GoogleCalendarServiceAccount` before `request_organization_calendar_resources_import`.
+**Goal**: make async enqueues transaction-safe at the service layer, and stop disabled calendars leaking through serializer/GraphQL querysets that don't filter `is_active`.
 
-**Feature flag**: none — bug fix on existing (currently-raising) paths.
+**Feature flag**: none — defensive correctness changes.
 
 Changes:
-1. `OrganizationService.request_rooms_sync`: resolve the org's `GoogleCalendarServiceAccount`; if present, `calendar_service.authenticate(account=<service_account>, organization=org)` (NOT `initialize_without_provider`) then `request_organization_calendar_resources_import(...)`. If no service account is configured → raise a clear, catchable error so the `sync_rooms` action returns **400** ("configure a Google service account first") rather than 500.
-2. `create_organization(should_sync_rooms=True)`: route through the same fixed path; if no service account exists at creation time, do NOT crash — skip/queue gracefully (document the chosen behavior; org creation must succeed).
-3. `sync_rooms` action + transition: surface the "no service account" case as 400.
-4. `make update_schema` (if responses change).
+1. **on_commit at the service layer**: wrap the `.delay(...)` calls inside `CalendarService.request_calendar_sync`, `request_organization_calendar_resources_import`, and `request_calendars_import` in `transaction.on_commit(...)` so the Celery task is enqueued only after the surrounding (ATOMIC_REQUESTS) transaction commits — removing the pre-existing race flagged in Phases 4/5/7. Verify existing callers/tests (some patch `transaction.on_commit` or use `captureOnCommitCallbacks`); adjust tests that asserted immediate `.delay` so they run the on_commit callback. Keep behavior correct under both request (atomic) and task (non-atomic) contexts.
+2. **is_active filtering** on calendar-listing querysets that currently omit it (flagged in Phase 9 follow-up): `CalendarBundleCreateSerializer` (and any resource-allocation serializer) child/queryset fields, and the public GraphQL calendars query (`public_api`/`<app>/graphql.py`). Default to active-only; where an existing relation must keep already-selected disabled calendars (mirror the Phase 10 union pattern), allow current selections but bar new disabled ones.
 
-Spec use-case: "Admin triggers a rooms sync (now actually executes)."
+Spec use-case: shared hardening — no new use-case (closes Phase 4/5/7 + Phase 9 follow-ups).
 
 Tests:
-- **Integration**: with a configured service account, `POST /organizations/{id}/sync-rooms/` authenticates with it (assert authenticate called with the GoogleCalendarServiceAccount) and enqueues the import; without one → 400 (not 500); create_organization(should_sync_rooms=True) with no service account does not crash; transition False→True with a service account triggers.
+- **Unit/Integration**: each wrapped service method enqueues its task via on_commit (assert with `captureOnCommitCallbacks`/the project pattern); the task does NOT fire if the transaction rolls back. Bundle-create + resource serializers exclude disabled calendars from selectable options; public GraphQL calendars query omits disabled calendars. Existing tests still pass.
 
-**Suggested AI model**: Tier 3 — `claude-sonnet-4-6` / `gpt-5` / `gemini-2.5-pro`. Cross-service auth wiring + fixing a live break.
+**Suggested AI model**: Tier 3 — `claude-sonnet-4-6` / `gpt-5` / `gemini-2.5-pro`. Touches a shared service used by many callers; transaction semantics + several querysets.
 
 **Reusable skills**: `create-rest-endpoint`.
 
-Acceptance: rooms sync runs when a service account is configured; returns 400 (never 500) when it isn't; org creation never crashes.
+Acceptance: the three service enqueues fire on commit (not before); disabled calendars no longer appear in bundle/resource selection or the public GraphQL calendars query; full suite green.
 
 ## 6. Risk & Rollout Notes
 
