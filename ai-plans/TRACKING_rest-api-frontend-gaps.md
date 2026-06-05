@@ -83,11 +83,16 @@
 - **Key**: `Calendar.is_active` (migration 0011, db_default True). get_queryset hides inactive unless `?include_inactive=true` (uniform across actions). DELETE → soft-disable (204, idempotent). is_active read-only in serializer. Outer gate green (1338), mypy 108.
 - **FOLLOW-UP for Phase 10/11**: serializer querysets (bundle-create, resource-allocation) + public GraphQL calendars query don't filter is_active → disabled calendars still selectable/listed there. Consider when touching bundles.
 
+### Phase 10 — Update calendar bundle ✅
+- **Status**: done, reviewed (3 layers; Layer 3 → fixed disabled-existing-child trap via union queryset), pushed, PR opened.
+- **Model**: sonnet; fixer: haiku. **Branch**: phase-10 (base phase-9). **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/52
+- **Key**: `PATCH /calendar/{id}/bundle/` admin-only; `CalendarService.update_bundle_calendar` atomic reconciliation (add/remove children, exactly-one primary, validates bundle/primary/cross-org/no-nesting); serializer child queryset = active OR existing-children (keeps disabled existing, bars new disabled). Outer gate green (1349), mypy 108.
+
 ## Current Phase
-Phase 10 — Update calendar bundle (next). `PATCH /calendar/{id}/bundle/` reconcile ChildrenCalendarRelationship (add/remove children, set is_primary) for a BUNDLE calendar. New CalendarBundleUpdateSerializer (child_calendars, primary_calendar). Existing create is POST /calendar/bundle/ (CalendarService.create_bundle_calendar). Tier 3.
+Phase 11 — Disable calendar bundle (next). Extends Phase 9 destroy. PER RESOLVED OPEN QUESTION #3: LEAVE bundle events + representations (CalendarEvent/BlockedTime via bundle_primary_event) + child calendars intact; only hide the bundle calendar. ALSO gate destroy by object type: BUNDLE → org admin only; personal calendar → owner (CalendarOwnership) or admin (Phase 9 destroy was un-gated — any org member could disable any calendar; tighten here). Tier 3.
 
 ## Remaining Phases
-11 (bundle disable), 12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
+12 (token create), 13 (token list), 14 (token revoke), 15 (token edit perms), 16 (events expanded).
 
 ## Reusable infra notes (for later phases)
 - `IsOrganizationAdmin` (organizations/permissions.py) — admin gate, works at collection + object level. Use for all admin endpoints.
