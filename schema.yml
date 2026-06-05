@@ -5760,6 +5760,94 @@ paths:
               schema:
                 $ref: '#/components/schemas/Profile'
           description: ''
+  /public-api-tokens/:
+    post:
+      operationId: public_api_tokens_create
+      description: |-
+        Create a SystemUser and ResourceAccess rows; return the plaintext token once.
+
+        Returns HTTP 201 on success.  The response body includes ``id``,
+        ``integration_name``, ``is_active``, ``available_resources``, and a
+        write-once ``token`` field — never ``long_lived_token_hash``.
+
+        HTTP 400 is returned for:
+        - Invalid or unknown ``available_resources`` values.
+        - Empty ``available_resources`` list.
+        - Duplicate ``integration_name`` (unique constraint).
+
+        HTTP 403 is returned for non-admin callers; HTTP 401 for unauthenticated.
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserTokenCreate'
+          description: ''
+  /public-api-tokens{format}:
+    post:
+      operationId: public_api_tokens_formatted_create
+      description: |-
+        Create a SystemUser and ResourceAccess rows; return the plaintext token once.
+
+        Returns HTTP 201 on success.  The response body includes ``id``,
+        ``integration_name``, ``is_active``, ``available_resources``, and a
+        write-once ``token`` field — never ``long_lived_token_hash``.
+
+        HTTP 400 is returned for:
+        - Invalid or unknown ``available_resources`` values.
+        - Empty ``available_resources`` list.
+        - Duplicate ``integration_name`` (unique constraint).
+
+        HTTP 403 is returned for non-admin callers; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserTokenCreate'
+          description: ''
   /public/organizations/{organization_id}/events/:
     get:
       operationId: public_organizations_events_list
@@ -6540,6 +6628,44 @@ components:
           type: string
       required:
       - token
+    AvailableResourcesEnum:
+      enum:
+      - calendar_event
+      - calendar
+      - recurrence_rule
+      - external_attendee
+      - external_attendance
+      - attendance
+      - user
+      - resource_allocation
+      - event_recurring_exception
+      - blocked_time
+      - blocked_time_recurring_exception
+      - available_time
+      - available_time_recurring_exception
+      - availability_windows
+      - unavailable_windows
+      - organization
+      - calendar_group
+      type: string
+      description: |-
+        * `calendar_event` - Calendar Event
+        * `calendar` - Calendar
+        * `recurrence_rule` - Recurrence Rule
+        * `external_attendee` - External Attendee
+        * `external_attendance` - External Attendance
+        * `attendance` - Attendance
+        * `user` - User
+        * `resource_allocation` - Resource Allocation
+        * `event_recurring_exception` - Event Recurring Exception
+        * `blocked_time` - Blocked Time
+        * `blocked_time_recurring_exception` - Blocked Time Recurring Exception
+        * `available_time` - Available Time
+        * `available_time_recurring_exception` - Available Time Recurring Exception
+        * `availability_windows` - Availability Windows
+        * `unavailable_windows` - Unavailable Windows
+        * `organization` - Organization
+        * `calendar_group` - Calendar Group
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.
@@ -8515,6 +8641,26 @@ components:
       description: |-
         * `member` - Member
         * `admin` - Admin
+    SystemUserTokenCreate:
+      type: object
+      description: |-
+        Input serializer for creating a new public-API token (SystemUser + ResourceAccess rows).
+
+        Accepts ``integration_name`` and ``available_resources`` (a non-empty list of valid
+        ``PublicAPIResources`` values).  On a successful create the view adds a write-once
+        ``token`` field to the response data; this serializer never stores or exposes
+        ``long_lived_token_hash``.
+      properties:
+        integration_name:
+          type: string
+          maxLength: 150
+        available_resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableResourcesEnum'
+      required:
+      - available_resources
+      - integration_name
     UnavailableTimeWindow:
       type: object
       properties:
