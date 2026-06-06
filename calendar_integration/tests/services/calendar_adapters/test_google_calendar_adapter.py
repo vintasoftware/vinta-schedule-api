@@ -88,18 +88,24 @@ def mock_build():
 
 @pytest.fixture
 def mock_rate_limiters():
-    """Mock rate limiters to avoid Redis dependencies."""
+    """Mock rate limiters to avoid Redis dependencies.
+
+    Specced to ResilientLimiter so the adapter can only call methods that
+    actually exist (e.g. try_acquire) — calling a non-existent method like
+    ``ratelimit`` raises AttributeError here instead of only blowing up in prod.
+    """
+    from common.redis import ResilientLimiter
+
     with (
         patch(
-            "calendar_integration.services.calendar_adapters.google_calendar_adapter.read_quote_limiter"
+            "calendar_integration.services.calendar_adapters.google_calendar_adapter.read_quote_limiter",
+            spec=ResilientLimiter,
         ) as mock_read,
         patch(
-            "calendar_integration.services.calendar_adapters.google_calendar_adapter.write_quote_limiter"
+            "calendar_integration.services.calendar_adapters.google_calendar_adapter.write_quote_limiter",
+            spec=ResilientLimiter,
         ) as mock_write,
     ):
-        mock_read.try_acquire = Mock()
-        mock_read.ratelimit = Mock()
-        mock_write.try_acquire = Mock()
         yield mock_read, mock_write
 
 
@@ -1173,3 +1179,29 @@ class TestGoogleEventDatetimeParsing:
         }
         out = adapter._convert_google_calendar_event_to_event_data(event, "cal")
         assert out.title == ""
+
+    def test_get_events_generator_runs_end_to_end(self, adapter):
+        """Consume the real get_events generator: it must acquire the limiter,
+        call events().list, and yield converted events (regression: the limiter
+        was called via a non-existent .ratelimit method)."""
+        adapter.client.events.return_value.list.return_value.execute.return_value = {
+            "items": [
+                {
+                    "id": "e1",
+                    "summary": "Real Event",
+                    "start": {"dateTime": "2026-06-06T15:00:00-03:00"},
+                    "end": {"dateTime": "2026-06-06T16:00:00-03:00"},
+                },
+            ],
+            "nextSyncToken": "tok",
+        }
+
+        start = datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 6, 30, tzinfo=datetime.UTC)
+        result = adapter.get_events("cal", False, start, end)
+
+        events = list(result["events"])
+        assert len(events) == 1
+        assert events[0].external_id == "e1"
+        assert events[0].start_time == datetime.datetime(2026, 6, 6, 18, 0, tzinfo=datetime.UTC)
+        adapter.client.events.return_value.list.assert_called_once()

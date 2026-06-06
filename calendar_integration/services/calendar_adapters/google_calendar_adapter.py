@@ -463,7 +463,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
                 if page_token:
                     current_extra_kwargs["pageToken"] = page_token
 
-                read_quote_limiter.ratelimit(f"google_calendar_read_{self.account_id}", delay=True)
+                read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
                 events_result = (
                     self.client.events()
                     .list(
