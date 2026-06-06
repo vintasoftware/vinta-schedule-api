@@ -177,3 +177,16 @@ def test_refresh_token_expired_returns_none_and_deletes(strategy, user):
     )
     assert strategy.refresh_token(token) is None
     assert not RefreshToken.objects.filter(user=user).exists()
+
+
+def test_socialaccount_store_tokens_enabled():
+    """allauth must persist OAuth tokens (SocialToken) for the calendar integration.
+
+    Regression: allauth defaults SOCIALACCOUNT_STORE_TOKENS to False since v65,
+    which silently drops access/refresh tokens after login. Without stored
+    tokens the Google/Microsoft calendar import has nothing to authenticate with.
+    """
+    from allauth.socialaccount import app_settings
+
+    assert settings.SOCIALACCOUNT_STORE_TOKENS is True
+    assert app_settings.STORE_TOKENS is True

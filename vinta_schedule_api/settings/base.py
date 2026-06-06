@@ -312,6 +312,11 @@ ACCOUNT_SIGNUP_FIELDS = [
     "last_name*",
 ]
 SOCIALACCOUNT_AUTO_SIGNUP = True
+# allauth defaults this to False (since v65), which discards OAuth access/refresh
+# tokens after login — no SocialToken row is created. The calendar integration
+# needs the stored token (+ refresh_token) to call Google/Microsoft on the
+# user's behalf, so persistence must be enabled.
+SOCIALACCOUNT_STORE_TOKENS = True
 SOCIALACCOUNT_ADAPTER = "accounts.account_adapters.SocialAccountAdapter"
 ACCOUNT_ADAPTER = "accounts.account_adapters.AccountAdapter"
 ACCOUNT_EMAIL_VERIFICATION = "mandatory"
