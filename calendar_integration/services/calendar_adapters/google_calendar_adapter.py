@@ -385,6 +385,23 @@ class GoogleCalendarAdapter(CalendarAdapter):
             ],
         )
 
+    @staticmethod
+    def _parse_google_datetime(node: dict[str, Any]) -> datetime.datetime:
+        """Parse a Google event start/end node into a tz-aware datetime.
+
+        Google returns either ``dateTime`` (RFC 3339, e.g. ``2026-06-06T15:00:00-03:00``
+        or ``...Z``) for timed events, or ``date`` (``YYYY-MM-DD``) for all-day events.
+        ``datetime.strptime("%Y-%m-%dT%H:%M:%S")`` cannot parse the offset/``Z`` and
+        all-day events have no ``dateTime`` at all — both raise, which fails the whole
+        sync. ``fromisoformat`` (3.11+) handles the offset and ``Z``.
+        """
+        raw = node.get("dateTime")
+        if raw:
+            dt = datetime.datetime.fromisoformat(raw)
+            return dt if dt.tzinfo is not None else dt.replace(tzinfo=datetime.UTC)
+        # All-day event: only a date is present; treat it as midnight UTC.
+        return datetime.datetime.fromisoformat(node["date"]).replace(tzinfo=datetime.UTC)
+
     def _convert_google_calendar_event_to_event_data(
         self, event: dict[str, Any], calendar_id: str
     ) -> CalendarEventAdapterOutputData:
@@ -399,15 +416,13 @@ class GoogleCalendarAdapter(CalendarAdapter):
         return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=event["id"],
-            title=event["summary"],
+            title=event.get("summary", ""),
             description=event.get("description", ""),
-            start_time=datetime.datetime.strptime(
-                event["start"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=event.get("start", {}).get("timeZone")),
-            end_time=datetime.datetime.strptime(
-                event["end"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=datetime.UTC),
-            timezone=event.get("end", {}).get("timeZone"),
+            start_time=self._parse_google_datetime(event["start"]),
+            end_time=self._parse_google_datetime(event["end"]),
+            timezone=event.get("start", {}).get("timeZone")
+            or event.get("end", {}).get("timeZone")
+            or "UTC",
             original_payload=event,
             recurrence_rule=recurrence_rule,
             recurring_event_id=event.get("recurringEventId"),
@@ -485,15 +500,13 @@ class GoogleCalendarAdapter(CalendarAdapter):
         return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=event["id"],
-            title=event["summary"],
+            title=event.get("summary", ""),
             description=event.get("description", ""),
-            start_time=datetime.datetime.strptime(
-                event["start"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=event.get("start", {}).get("timeZone")),
-            end_time=datetime.datetime.strptime(
-                event["end"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=datetime.UTC),
-            timezone=event.get("start", {}).get("timeZone"),
+            start_time=self._parse_google_datetime(event["start"]),
+            end_time=self._parse_google_datetime(event["end"]),
+            timezone=event.get("start", {}).get("timeZone")
+            or event.get("end", {}).get("timeZone")
+            or "UTC",
             original_payload=event,
             attendees=[
                 EventAttendeeData(

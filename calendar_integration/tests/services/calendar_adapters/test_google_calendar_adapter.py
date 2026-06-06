@@ -1126,3 +1126,50 @@ class TestErrorHandling:
                 ValueError, match="Invalid or expired Google service account credentials"
             ):
                 GoogleCalendarAdapter.from_service_account_credentials(service_account_credentials)
+
+
+class TestGoogleEventDatetimeParsing:
+    """Real Google RFC 3339 / all-day datetimes must parse (sync regression)."""
+
+    def test_convert_handles_rfc3339_offset(self, adapter):
+        event = {
+            "id": "e1",
+            "summary": "Meeting",
+            "start": {"dateTime": "2026-06-06T15:00:00-03:00", "timeZone": "America/Sao_Paulo"},
+            "end": {"dateTime": "2026-06-06T16:00:00-03:00", "timeZone": "America/Sao_Paulo"},
+        }
+        out = adapter._convert_google_calendar_event_to_event_data(event, "cal")
+        # -03:00 15:00 == 18:00 UTC (aware datetimes compare by instant).
+        assert out.start_time == datetime.datetime(2026, 6, 6, 18, 0, tzinfo=datetime.UTC)
+        assert out.end_time == datetime.datetime(2026, 6, 6, 19, 0, tzinfo=datetime.UTC)
+        assert out.timezone == "America/Sao_Paulo"
+
+    def test_convert_handles_z_suffix(self, adapter):
+        event = {
+            "id": "e2",
+            "summary": "UTC event",
+            "start": {"dateTime": "2026-06-06T15:00:00Z"},
+            "end": {"dateTime": "2026-06-06T16:00:00Z"},
+        }
+        out = adapter._convert_google_calendar_event_to_event_data(event, "cal")
+        assert out.start_time == datetime.datetime(2026, 6, 6, 15, 0, tzinfo=datetime.UTC)
+
+    def test_convert_handles_all_day_event(self, adapter):
+        event = {
+            "id": "e3",
+            "summary": "All day",
+            "start": {"date": "2026-06-06"},
+            "end": {"date": "2026-06-07"},
+        }
+        out = adapter._convert_google_calendar_event_to_event_data(event, "cal")
+        assert out.start_time == datetime.datetime(2026, 6, 6, 0, 0, tzinfo=datetime.UTC)
+        assert out.end_time == datetime.datetime(2026, 6, 7, 0, 0, tzinfo=datetime.UTC)
+
+    def test_convert_handles_missing_summary(self, adapter):
+        event = {
+            "id": "e4",
+            "start": {"dateTime": "2026-06-06T15:00:00Z"},
+            "end": {"dateTime": "2026-06-06T16:00:00Z"},
+        }
+        out = adapter._convert_google_calendar_event_to_event_data(event, "cal")
+        assert out.title == ""
