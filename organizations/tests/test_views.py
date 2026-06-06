@@ -2733,3 +2733,305 @@ class TestPhase18CreateOrganizationNoCredentials:
         assert Organization.objects.filter(id=org.id).exists()
         membership = OrganizationMembership.objects.get(user=user, organization=org)
         assert membership is not None
+
+
+@pytest.mark.django_db
+class TestPhase20ServiceAccountCRUD:
+    """Admin-only CRUD for the org-level Google Calendar service account.
+
+    Security invariant: private_key / private_key_id / public_key are never
+    returned in any response. Only the org-level account (calendar_fk IS NULL)
+    is managed; one per organization (create refuses a duplicate).
+    """
+
+    def _make_admin(self, user, organization):
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _create_account(self, organization, **overrides):
+        payload = {
+            "organization": organization,
+            "calendar_fk": None,
+            "email": "svc@example.iam.gserviceaccount.com",
+            "audience": "https://www.googleapis.com/auth/admin.directory.resource.calendar",
+            "public_key": "pub",
+            "private_key_id": "kid",
+            "private_key": "secret",
+        }
+        payload.update(overrides)
+        return GoogleCalendarServiceAccount.objects.create(**payload)
+
+    def _assert_no_secrets(self, body: dict):
+        assert "private_key" not in body
+        assert "private_key_id" not in body
+        assert "public_key" not in body
+
+    def test_create_returns_201_persists_and_no_secrets(self, user):
+        org = baker.make(Organization, name="SA CRUD Org")
+        client = self._make_admin(user, org)
+
+        url = reverse("api:ServiceAccounts-list")
+        response = client.post(url, _SA_PAYLOAD, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        body = response.json()
+        assert body["email"] == _SA_PAYLOAD["email"]
+        assert body["audience"] == _SA_PAYLOAD["audience"]
+        assert body["configured"] is True
+        self._assert_no_secrets(body)
+
+        stored = (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(org.id)
+            .filter(calendar_fk__isnull=True)
+            .first()
+        )
+        assert stored is not None
+        assert stored.email == _SA_PAYLOAD["email"]
+        # Secrets persisted (encrypted) and readable from the model.
+        assert stored.private_key == _SA_PAYLOAD["private_key"]
+
+    def test_create_duplicate_returns_400(self, user):
+        org = baker.make(Organization, name="Dup Org")
+        client = self._make_admin(user, org)
+        self._create_account(org)
+
+        url = reverse("api:ServiceAccounts-list")
+        response = client.post(url, _SA_PAYLOAD, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        # Still exactly one row.
+        assert (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(org.id)
+            .filter(calendar_fk__isnull=True)
+            .count()
+            == 1
+        )
+
+    def test_list_returns_account_no_secrets(self, user):
+        org = baker.make(Organization, name="List Org")
+        client = self._make_admin(user, org)
+        account = self._create_account(org)
+
+        url = reverse("api:ServiceAccounts-list")
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        assert len(results) == 1
+        assert results[0]["id"] == account.id
+        self._assert_no_secrets(results[0])
+
+    def test_retrieve_returns_account_no_secrets(self, user):
+        org = baker.make(Organization, name="Retrieve Org")
+        client = self._make_admin(user, org)
+        account = self._create_account(org)
+
+        url = reverse("api:ServiceAccounts-detail", kwargs={"pk": account.id})
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        body = response.json()
+        assert body["id"] == account.id
+        assert body["email"] == account.email
+        self._assert_no_secrets(body)
+
+    def test_put_rotates_credentials(self, user):
+        org = baker.make(Organization, name="Put Org")
+        client = self._make_admin(user, org)
+        account = self._create_account(org)
+
+        new_payload = dict(_SA_PAYLOAD)
+        new_payload["email"] = "rotated@example.iam.gserviceaccount.com"
+        new_payload["private_key"] = "rotated-secret"
+        url = reverse("api:ServiceAccounts-detail", kwargs={"pk": account.id})
+        response = client.put(url, new_payload, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        body = response.json()
+        assert body["email"] == "rotated@example.iam.gserviceaccount.com"
+        self._assert_no_secrets(body)
+
+        account.refresh_from_db()
+        assert account.email == "rotated@example.iam.gserviceaccount.com"
+        assert account.private_key == "rotated-secret"
+
+    def test_patch_partial_updates_email_retains_secrets(self, user):
+        org = baker.make(Organization, name="Patch Org")
+        client = self._make_admin(user, org)
+        account = self._create_account(org, private_key="keep-me")
+
+        url = reverse("api:ServiceAccounts-detail", kwargs={"pk": account.id})
+        response = client.patch(
+            url, {"email": "newmail@example.iam.gserviceaccount.com"}, format="json"
+        )
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        body = response.json()
+        assert body["email"] == "newmail@example.iam.gserviceaccount.com"
+        self._assert_no_secrets(body)
+
+        account.refresh_from_db()
+        assert account.email == "newmail@example.iam.gserviceaccount.com"
+        # Secret retained because it was not part of the partial payload.
+        assert account.private_key == "keep-me"
+
+    def test_delete_removes_account(self, user):
+        org = baker.make(Organization, name="Delete Org")
+        client = self._make_admin(user, org)
+        account = self._create_account(org)
+
+        url = reverse("api:ServiceAccounts-detail", kwargs={"pk": account.id})
+        response = client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+        assert not GoogleCalendarServiceAccount.objects.filter(id=account.id).exists()
+
+    def test_create_non_admin_returns_403(self, user):
+        org = baker.make(Organization, name="NonAdmin Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        url = reverse("api:ServiceAccounts-list")
+        response = client.post(url, _SA_PAYLOAD, format="json")
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_retrieve_cross_org_returns_404(self, user):
+        org_a = baker.make(Organization, name="Org A")
+        org_b = baker.make(Organization, name="Org B")
+        client = self._make_admin(user, org_a)
+        other_account = self._create_account(org_b)
+
+        url = reverse("api:ServiceAccounts-detail", kwargs={"pk": other_account.id})
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_anonymous_returns_401(self, anonymous_client):
+        url = reverse("api:ServiceAccounts-list")
+        response = anonymous_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+
+@pytest.mark.django_db
+class TestPhase20SyncAllCalendars:
+    """POST /organizations/{id}/sync-calendars/ — admin triggers a sync of all calendars."""
+
+    def _make_admin(self, user, organization):
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    @patch("organizations.services.OrganizationService.request_all_calendars_sync")
+    def test_sync_calendars_returns_202_with_summary(self, mock_sync, user):
+        org = baker.make(Organization, name="Sync All Org")
+        client = self._make_admin(user, org)
+        mock_sync.return_value = {
+            "synced": [1, 2],
+            "skipped": [{"calendar_id": 3, "reason": "no owner"}],
+        }
+
+        url = reverse("api:Organizations-sync-calendars", kwargs={"pk": org.pk})
+        response = client.post(
+            url,
+            {
+                "start_datetime": "2026-06-01T00:00:00Z",
+                "end_datetime": "2026-06-30T00:00:00Z",
+                "should_update_events": True,
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+        body = response.json()
+        assert body == {"synced": [1, 2], "skipped": [{"calendar_id": 3, "reason": "no owner"}]}
+        mock_sync.assert_called_once()
+        _, kwargs = mock_sync.call_args
+        assert kwargs["organization"].id == org.id
+        assert kwargs["should_update_events"] is True
+
+    @patch("organizations.services.OrganizationService.request_all_calendars_sync")
+    def test_sync_calendars_bad_datetime_returns_400(self, mock_sync, user):
+        org = baker.make(Organization, name="Bad DT Org")
+        client = self._make_admin(user, org)
+
+        url = reverse("api:Organizations-sync-calendars", kwargs={"pk": org.pk})
+        response = client.post(url, {"start_datetime": "not-a-date"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        mock_sync.assert_not_called()
+
+    @patch("organizations.services.OrganizationService.request_all_calendars_sync")
+    def test_sync_calendars_non_admin_returns_403(self, mock_sync, user):
+        org = baker.make(Organization, name="NonAdmin Sync Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        url = reverse("api:Organizations-sync-calendars", kwargs={"pk": org.pk})
+        response = client.post(
+            url,
+            {"start_datetime": "2026-06-01T00:00:00Z", "end_datetime": "2026-06-30T00:00:00Z"},
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        mock_sync.assert_not_called()
+
+    @patch("organizations.services.OrganizationService.request_all_calendars_sync")
+    def test_sync_calendars_cross_org_returns_404(self, mock_sync, user):
+        org_a = baker.make(Organization, name="Sync Org A")
+        org_b = baker.make(Organization, name="Sync Org B")
+        client = self._make_admin(user, org_a)
+
+        url = reverse("api:Organizations-sync-calendars", kwargs={"pk": org_b.pk})
+        response = client.post(
+            url,
+            {"start_datetime": "2026-06-01T00:00:00Z", "end_datetime": "2026-06-30T00:00:00Z"},
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+        mock_sync.assert_not_called()
+
+    @patch("organizations.services.OrganizationService.request_all_calendars_sync")
+    def test_sync_calendars_anonymous_returns_401(self, mock_sync, anonymous_client):
+        org = baker.make(Organization, name="Anon Sync Org")
+        url = reverse("api:Organizations-sync-calendars", kwargs={"pk": org.pk})
+        response = anonymous_client.post(
+            url,
+            {"start_datetime": "2026-06-01T00:00:00Z", "end_datetime": "2026-06-30T00:00:00Z"},
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+        mock_sync.assert_not_called()

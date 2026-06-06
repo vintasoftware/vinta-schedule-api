@@ -569,6 +569,36 @@ Tests:
 
 Acceptance: the three service enqueues fire on commit (not before); disabled calendars no longer appear in bundle/resource selection or the public GraphQL calendars query; full suite green.
 
+### Phase 20 — Service Account CRUD + org-wide calendar sync trigger (admin)
+
+**Goal**: give admins a first-class REST surface to manage the organization's Google service account (create / read / rotate / delete) and a one-shot endpoint to enqueue a sync of every calendar in the organization.
+
+**Feature flag**: none — additive new surface (new viewset/route + one new detail action). No change to existing read paths.
+
+Decisions (confirmed with requester):
+- **SA CRUD scope = org-level only.** The endpoints manage exactly the org-level `GoogleCalendarServiceAccount` (`calendar_fk IS NULL`), the one used for rooms sync. Per-calendar service accounts (`calendar_fk` set) remain internal/auto-assigned by the calendar auth flow and are NOT exposed here (deleting one would silently break that calendar's sync).
+- **Sync-all auth = each calendar's owner account.** Mirror the existing `admin-sync`: for every active org calendar, resolve its default `CalendarOwnership` → owner's `SocialAccount` for the calendar provider → authenticate and enqueue a per-calendar `request_calendar_sync`. Calendars with no owner or no linked social account are skipped and reported, never error the whole call.
+- **Sync-all endpoint = `OrganizationViewSet` detail action** `POST /organizations/{id}/sync-calendars/`, next to `sync-rooms`.
+
+Changes:
+1. `organizations/serializers.py`: add `ServiceAccountReadSerializer` (id, email, audience, `configured`, created, modified — **no** `public_key`/`private_key`/`private_key_id`) and `ServiceAccountWriteSerializer` (ModelSerializer; email, audience, public_key, private_key_id [write-only], private_key [write-only]).
+2. `organizations/views.py`: new admin-only `ServiceAccountViewSet` (GenericViewSet + list/retrieve, explicit create/update/partial_update/destroy). Org-scoped `get_queryset` filtered to `calendar_fk__isnull=True`; create enforces the org-level singleton (409/400 if one already exists — rotate via PUT/PATCH or DELETE first); responses always use the read serializer (secrets never echoed). Cross-org → 404 (queryset scoping); non-admin → 403; anon → 401.
+3. `organizations/routes.py`: register `service-accounts` → `ServiceAccountViewSet` (basename `ServiceAccounts`).
+4. `organizations/services.py`: add `OrganizationService.request_all_calendars_sync(organization, requested_by, start_datetime, end_datetime, should_update_events)` returning `{"synced": [...], "skipped": [{"calendar_id", "reason"}]}`. Iterates active org calendars, authenticates per calendar with the owner's social account, enqueues `request_calendar_sync` (which already defers via on_commit), collects skipped.
+5. `organizations/views.py`: add `sync_calendars` detail action on `OrganizationViewSet` (`url_path="sync-calendars"`, `IsOrganizationAdmin`). Validates the window via `CalendarSyncRequestSerializer`, calls the service method, returns the summary with HTTP 202.
+
+Spec use-case: closes the "manage service accounts" + "trigger a sync of all calendars in an organization" gaps surfaced after Phase 19.
+
+Tests:
+- **Integration** (`organizations/tests/test_views.py`): SA CRUD — create (201, stored encrypted, response has **no** secrets), duplicate create → 400, retrieve/list (no secrets), PUT rotate, PATCH partial (email only, secrets retained), DELETE (204, then `configured:false`/empty list); cross-org → 404; non-admin → 403; anon → 401. Sync-calendars — active calendars with owner+social account enqueue a sync (assert via `captureOnCommitCallbacks`/CalendarSync rows); calendars without owner or linked account are reported under `skipped`; empty org → `{synced:[], skipped:[]}`; non-admin → 403; anon → 401.
+- **Unit** (`organizations/tests/test_services.py`): `request_all_calendars_sync` returns the synced/skipped split and authenticates with each owner's account.
+
+**Suggested AI model**: Tier 3 — `claude-sonnet-4-6` / `gpt-5` / `gemini-2.5-pro`. Credentials surface (secret hygiene) + multi-calendar fan-out with per-calendar auth.
+
+**Reusable skills**: `create-rest-endpoint`.
+
+Acceptance: admins can create/read/rotate/delete the org-level service account via `/service-accounts/` with no secret ever returned; `POST /organizations/{id}/sync-calendars/` enqueues a sync for every syncable active calendar and reports the rest as skipped; full suite green.
+
 ## 6. Risk & Rollout Notes
 
 - **No feature flags** (none exist in project). Safety comes from additive design: new routes/actions/fields with `default=True`, plus same-phase read filters so pre-existing data reads unchanged. The only behavior change to an existing endpoint is `Calendar.destroy` (Phase 9) and bundle destroy cascade (Phase 11) — each ships a test asserting prior data stays intact (rows persist as inactive).
@@ -619,3 +649,5 @@ Acceptance: the three service enqueues fire on commit (not before); disabled cal
 **Phase 15** — Edit `public_api/views.py`, `public_api/serializers.py`; edit `public_api/tests/test_views.py`; `schema.yml`.
 
 **Phase 16** — Edit [calendar_integration/views.py](../calendar_integration/views.py) (`CalendarEventViewSet`); edit tests; `schema.yml`.
+
+**Phase 20** — Edit [organizations/serializers.py](../organizations/serializers.py), [organizations/views.py](../organizations/views.py) (`ServiceAccountViewSet` + `OrganizationViewSet.sync_calendars`), [organizations/routes.py](../organizations/routes.py), [organizations/services.py](../organizations/services.py); edit `organizations/tests/test_views.py`, `organizations/tests/test_services.py`; `schema.yml`.

@@ -5564,6 +5564,107 @@ paths:
       responses:
         '204':
           description: No response body
+  /organizations/{id}/sync-calendars/:
+    post:
+      operationId: organizations_sync_calendars_create
+      description: |-
+        POST /organizations/{id}/sync-calendars/ — enqueue a sync of all calendars.
+
+        Each active calendar in the organization is synced using its owner's
+        linked account. Calendars without an owner or a linked provider account
+        are reported under ``skipped`` rather than failing the whole request.
+
+        Body (``CalendarSyncRequestSerializer``): ``start_datetime``,
+        ``end_datetime`` (required ISO 8601) and ``should_update_events``.
+        Returns HTTP 202 with ``{"synced": [...], "skipped": [...]}``.
+      summary: Trigger a sync of every calendar in the organization
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          description: 'Sync enqueued. Body: {synced: [calendar_id, ...], skipped:
+            [{calendar_id, reason}, ...]}.'
+        '400':
+          description: Invalid sync window
+        '403':
+          description: Not an admin
+        '404':
+          description: Organization not found
+  /organizations/{id}/sync-calendars{format}:
+    post:
+      operationId: organizations_sync_calendars_formatted_create
+      description: |-
+        POST /organizations/{id}/sync-calendars/ — enqueue a sync of all calendars.
+
+        Each active calendar in the organization is synced using its owner's
+        linked account. Calendars without an owner or a linked provider account
+        are reported under ``skipped`` rather than failing the whole request.
+
+        Body (``CalendarSyncRequestSerializer``): ``start_datetime``,
+        ``end_datetime`` (required ISO 8601) and ``should_update_events``.
+        Returns HTTP 202 with ``{"synced": [...], "skipped": [...]}``.
+      summary: Trigger a sync of every calendar in the organization
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          description: 'Sync enqueued. Body: {synced: [calendar_id, ...], skipped:
+            [{calendar_id, reason}, ...]}.'
+        '400':
+          description: Invalid sync window
+        '403':
+          description: Not an admin
+        '404':
+          description: Organization not found
   /organizations/{id}/sync-rooms/:
     post:
       operationId: organizations_sync_rooms_create
@@ -6764,6 +6865,455 @@ paths:
         required: true
       tags:
       - public
+      responses:
+        '204':
+          description: No response body
+  /service-accounts/:
+    get:
+      operationId: service_accounts_list
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedServiceAccountReadList'
+          description: ''
+    post:
+      operationId: service_accounts_create
+      description: |-
+        Create the org-level service account (one per organization).
+
+        HTTP 201 with the secret-free representation. HTTP 400 if an org-level
+        account already exists (rotate via PUT/PATCH or DELETE first) or the
+        payload is invalid.
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+  /service-accounts{format}:
+    get:
+      operationId: service_accounts_formatted_list
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedServiceAccountReadList'
+          description: ''
+    post:
+      operationId: service_accounts_formatted_create
+      description: |-
+        Create the org-level service account (one per organization).
+
+        HTTP 201 with the secret-free representation. HTTP 400 if an org-level
+        account already exists (rotate via PUT/PATCH or DELETE first) or the
+        payload is invalid.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+  /service-accounts/{id}/:
+    get:
+      operationId: service_accounts_retrieve
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+    put:
+      operationId: service_accounts_update
+      description: |-
+        Rotate/update the org-level service account.
+
+        PUT requires all writable fields; PATCH updates the provided subset
+        (secrets are retained when omitted). Returns HTTP 200 with the
+        secret-free representation.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+    patch:
+      operationId: service_accounts_partial_update
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountWrite'
+          description: ''
+    delete:
+      operationId: service_accounts_destroy
+      description: Delete the org-level service account. HTTP 204.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /service-accounts/{id}{format}:
+    get:
+      operationId: service_accounts_formatted_retrieve
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+    put:
+      operationId: service_accounts_formatted_update
+      description: |-
+        Rotate/update the org-level service account.
+
+        PUT requires all writable fields; PATCH updates the provided subset
+        (secrets are retained when omitted). Returns HTTP 200 with the
+        secret-free representation.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+    patch:
+      operationId: service_accounts_formatted_partial_update
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountWrite'
+          description: ''
+    delete:
+      operationId: service_accounts_formatted_destroy
+      description: Delete the org-level service account. HTTP 204.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -8748,6 +9298,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OrganizationMembership'
+    PaginatedServiceAccountReadList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceAccountRead'
     PaginatedSystemUserTokenList:
       type: object
       required:
@@ -9247,6 +9820,31 @@ components:
           type: string
           format: uri
           nullable: true
+    PatchedServiceAccountWrite:
+      type: object
+      description: |-
+        Write serializer for creating/rotating the org-level service account.
+
+        ``private_key`` and ``private_key_id`` are write-only and are never echoed
+        back in any response (reads go through ``ServiceAccountReadSerializer``).
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        audience:
+          type: string
+          maxLength: 255
+        public_key:
+          type: string
+        private_key_id:
+          type: string
+          writeOnly: true
+          maxLength: 255
+        private_key:
+          type: string
+          writeOnly: true
+          maxLength: 255
     PatchedSystemUserTokenUpdate:
       type: object
       description: |-
@@ -9446,6 +10044,74 @@ components:
       description: |-
         * `member` - Member
         * `admin` - Admin
+    ServiceAccountRead:
+      type: object
+      description: |-
+        Read serializer for the org-level Google Calendar service account (CRUD surface).
+
+        Exposes only non-secret fields plus a ``configured`` flag. ``public_key``,
+        ``private_key`` and ``private_key_id`` are never returned.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        email:
+          type: string
+          format: email
+          readOnly: true
+        audience:
+          type: string
+          readOnly: true
+        configured:
+          type: boolean
+          description: A persisted row is, by definition, configured.
+          readOnly: true
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - audience
+      - configured
+      - created
+      - email
+      - id
+      - modified
+    ServiceAccountWrite:
+      type: object
+      description: |-
+        Write serializer for creating/rotating the org-level service account.
+
+        ``private_key`` and ``private_key_id`` are write-only and are never echoed
+        back in any response (reads go through ``ServiceAccountReadSerializer``).
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        audience:
+          type: string
+          maxLength: 255
+        public_key:
+          type: string
+        private_key_id:
+          type: string
+          writeOnly: true
+          maxLength: 255
+        private_key:
+          type: string
+          writeOnly: true
+          maxLength: 255
+      required:
+      - audience
+      - email
+      - private_key
+      - private_key_id
+      - public_key
     SystemUserToken:
       type: object
       description: |-

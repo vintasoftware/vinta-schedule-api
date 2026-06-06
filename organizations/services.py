@@ -5,6 +5,7 @@ from typing import Annotated
 from django.db import IntegrityError, transaction
 from django.urls import reverse
 
+from allauth.socialaccount.models import SocialAccount
 from allauth.utils import build_absolute_uri
 from dependency_injector.wiring import Provide, inject
 from vintasend.services.notification_service import (
@@ -13,7 +14,11 @@ from vintasend.services.notification_service import (
     NotificationTypes,
 )
 
-from calendar_integration.models import GoogleCalendarServiceAccount
+from calendar_integration.models import (
+    Calendar,
+    CalendarOwnership,
+    GoogleCalendarServiceAccount,
+)
 from calendar_integration.services.calendar_service import CalendarService
 from common.utils.authentication_utils import (
     generate_long_lived_token,
@@ -124,6 +129,68 @@ class OrganizationService:
             start_time=start_time or now,
             end_time=end_time or (now + datetime.timedelta(days=365)),
         )
+
+    def request_all_calendars_sync(
+        self,
+        organization: Organization,
+        requested_by: User,
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+        should_update_events: bool = False,
+    ) -> dict[str, list]:
+        """Enqueue a sync for every active calendar in the organization.
+
+        Each active calendar is synced using its owner's linked provider account
+        (mirroring admin-sync): the default ``CalendarOwnership`` resolves the
+        owner, and the owner's ``SocialAccount`` for the calendar's provider
+        authenticates the sync. Calendars with no owner or no matching linked
+        account are reported under ``skipped`` rather than failing the request.
+
+        :param organization: The organization whose calendars should be synced.
+        :param requested_by: The admin authorizing the sync.
+        :param start_datetime: Sync window start.
+        :param end_datetime: Sync window end.
+        :param should_update_events: Whether to update existing events.
+        :return: ``{"synced": [calendar_id, ...], "skipped": [{"calendar_id", "reason"}, ...]}``.
+        """
+        synced: list[int] = []
+        skipped: list[dict] = []
+
+        calendars = Calendar.objects.filter_by_organization(organization.id).filter(is_active=True)
+
+        for calendar in calendars:
+            ownership = (
+                CalendarOwnership.objects.filter_by_organization(organization.id)
+                .filter(calendar=calendar)
+                .order_by("-is_default", "id")
+                .first()
+            )
+            if ownership is None:
+                skipped.append({"calendar_id": calendar.id, "reason": "no owner"})
+                continue
+
+            social_account = SocialAccount.objects.filter(
+                user=ownership.user, provider=calendar.provider
+            ).first()
+            if social_account is None:
+                skipped.append(
+                    {
+                        "calendar_id": calendar.id,
+                        "reason": f"owner has no linked {calendar.provider} account",
+                    }
+                )
+                continue
+
+            self.calendar_service.authenticate(account=social_account, organization=organization)
+            self.calendar_service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                should_update_events=should_update_events,
+            )
+            synced.append(calendar.id)
+
+        return {"synced": synced, "skipped": skipped}
 
     @transaction.atomic()
     def invite_user_to_organization(

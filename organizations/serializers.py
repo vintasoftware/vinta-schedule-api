@@ -45,6 +45,40 @@ class GoogleServiceAccountReadSerializer(serializers.Serializer):
         return True
 
 
+class ServiceAccountReadSerializer(serializers.ModelSerializer):
+    """Read serializer for the org-level Google Calendar service account (CRUD surface).
+
+    Exposes only non-secret fields plus a ``configured`` flag. ``public_key``,
+    ``private_key`` and ``private_key_id`` are never returned.
+    """
+
+    configured = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GoogleCalendarServiceAccount
+        fields = ("id", "email", "audience", "configured", "created", "modified")
+        read_only_fields = fields
+
+    def get_configured(self, obj: GoogleCalendarServiceAccount) -> bool:
+        """A persisted row is, by definition, configured."""
+        return True
+
+
+class ServiceAccountWriteSerializer(serializers.ModelSerializer):
+    """Write serializer for creating/rotating the org-level service account.
+
+    ``private_key`` and ``private_key_id`` are write-only and are never echoed
+    back in any response (reads go through ``ServiceAccountReadSerializer``).
+    """
+
+    private_key_id = serializers.CharField(max_length=255, write_only=True)
+    private_key = serializers.CharField(max_length=255, write_only=True)
+
+    class Meta:
+        model = GoogleCalendarServiceAccount
+        fields = ("email", "audience", "public_key", "private_key_id", "private_key")
+
+
 class OrganizationSerializer(VirtualModelSerializer):
     """Serializer for Organization instances.
 

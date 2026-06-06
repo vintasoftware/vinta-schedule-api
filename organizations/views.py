@@ -9,10 +9,13 @@ from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import generics, status
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.viewsets import GenericViewSet
 
 from calendar_integration.models import GoogleCalendarServiceAccount
+from calendar_integration.serializers import CalendarSyncRequestSerializer
 from common.utils.view_utils import (
     NoListVintaScheduleModelViewSet,
     NoUpdateVintaScheduleModelViewSet,
@@ -44,6 +47,8 @@ from organizations.serializers import (
     OrganizationInvitationSerializer,
     OrganizationMembershipSerializer,
     OrganizationSerializer,
+    ServiceAccountReadSerializer,
+    ServiceAccountWriteSerializer,
 )
 from organizations.services import OrganizationService
 
@@ -269,6 +274,165 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
 
         serializer = self.get_serializer(org)
         return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
+
+    @extend_schema(
+        summary="Trigger a sync of every calendar in the organization",
+        request=CalendarSyncRequestSerializer,
+        responses={
+            202: OpenApiResponse(
+                description=(
+                    "Sync enqueued. Body: {synced: [calendar_id, ...], "
+                    "skipped: [{calendar_id, reason}, ...]}."
+                )
+            ),
+            400: OpenApiResponse(description="Invalid sync window"),
+            403: OpenApiResponse(description="Not an admin"),
+            404: OpenApiResponse(description="Organization not found"),
+        },
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="sync-calendars",
+        permission_classes=[IsOrganizationAdmin],
+    )
+    def sync_calendars(self, request, pk=None):
+        """POST /organizations/{id}/sync-calendars/ — enqueue a sync of all calendars.
+
+        Each active calendar in the organization is synced using its owner's
+        linked account. Calendars without an owner or a linked provider account
+        are reported under ``skipped`` rather than failing the whole request.
+
+        Body (``CalendarSyncRequestSerializer``): ``start_datetime``,
+        ``end_datetime`` (required ISO 8601) and ``should_update_events``.
+        Returns HTTP 202 with ``{"synced": [...], "skipped": [...]}``.
+        """
+        org = self.get_object()
+
+        input_serializer = CalendarSyncRequestSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+
+        result = self.organization_service.request_all_calendars_sync(
+            organization=org,
+            requested_by=request.user,
+            start_datetime=data["start_datetime"],
+            end_datetime=data["end_datetime"],
+            should_update_events=data["should_update_events"],
+        )
+        return Response(result, status=status.HTTP_202_ACCEPTED)
+
+
+class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
+    """Admin-only CRUD for the organization's Google Calendar service account.
+
+    Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+    one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+    calendar auth flow and are intentionally not exposed here.
+
+    Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+    all responses use ``ServiceAccountReadSerializer``. There is at most one
+    org-level account per organization: ``create`` refuses a duplicate (rotate via
+    PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+    queryset; non-admins get 403; anonymous requests 401.
+    """
+
+    permission_classes = (IsOrganizationAdmin,)
+    serializer_class = ServiceAccountReadSerializer
+
+    def get_queryset(self):  # type: ignore[override]
+        """Org-scoped queryset limited to the org-level service account."""
+        user = self.request.user
+        if not user.is_authenticated:
+            return GoogleCalendarServiceAccount.objects.none()
+        membership = get_active_organization_membership(user)
+        if membership is None:
+            return GoogleCalendarServiceAccount.objects.none()
+        return GoogleCalendarServiceAccount.objects.filter_by_organization(
+            membership.organization_id
+        ).filter(calendar_fk__isnull=True)
+
+    def get_serializer_class(self):  # type: ignore[override]
+        if self.action in ("create", "update", "partial_update"):
+            return ServiceAccountWriteSerializer
+        return ServiceAccountReadSerializer
+
+    @extend_schema(
+        request=ServiceAccountWriteSerializer,
+        responses={201: ServiceAccountReadSerializer},
+    )
+    def create(self, request, *args, **kwargs):
+        """Create the org-level service account (one per organization).
+
+        HTTP 201 with the secret-free representation. HTTP 400 if an org-level
+        account already exists (rotate via PUT/PATCH or DELETE first) or the
+        payload is invalid.
+        """
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            # IsOrganizationAdmin already guards this; defensive fallback.
+            return Response(
+                {"detail": "No active organization membership."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = ServiceAccountWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        already_configured = (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(membership.organization_id)
+            .filter(calendar_fk__isnull=True)
+            .exists()
+        )
+        if already_configured:
+            raise ValidationError(
+                {
+                    "detail": (
+                        "A service account is already configured for this organization. "
+                        "Use PUT/PATCH to rotate it, or DELETE it first."
+                    )
+                }
+            )
+
+        account = GoogleCalendarServiceAccount.objects.create(
+            organization=membership.organization,
+            calendar_fk=None,
+            **serializer.validated_data,
+        )
+        return Response(ServiceAccountReadSerializer(account).data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(
+        request=ServiceAccountWriteSerializer,
+        responses={200: ServiceAccountReadSerializer},
+    )
+    def update(self, request, *args, **kwargs):
+        """Rotate/update the org-level service account.
+
+        PUT requires all writable fields; PATCH updates the provided subset
+        (secrets are retained when omitted). Returns HTTP 200 with the
+        secret-free representation.
+        """
+        partial = kwargs.get("partial", False)
+        account = self.get_object()
+
+        serializer = ServiceAccountWriteSerializer(data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+
+        for field_name, value in serializer.validated_data.items():
+            setattr(account, field_name, value)
+        account.save()
+
+        return Response(ServiceAccountReadSerializer(account).data, status=status.HTTP_200_OK)
+
+    def partial_update(self, request, *args, **kwargs):
+        kwargs["partial"] = True
+        return self.update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete the org-level service account. HTTP 204."""
+        account = self.get_object()
+        account.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):

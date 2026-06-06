@@ -4,8 +4,11 @@ from unittest.mock import Mock, patch
 from django.db.utils import IntegrityError
 
 import pytest
+from allauth.socialaccount.models import SocialAccount
 from model_bakery import baker
 
+from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.models import Calendar, CalendarOwnership
 from organizations.exceptions import (
     InvalidInvitationTokenError,
     InvitationNotFoundError,
@@ -846,3 +849,157 @@ class TestOrganizationService:
         # TransactionManagementError or InternalError.
         count = Organization.objects.count()
         assert count >= 0, "DB query after backstop must succeed (transaction not poisoned)"
+
+
+@pytest.mark.django_db
+class TestRequestAllCalendarsSync:
+    """OrganizationService.request_all_calendars_sync — owner-account fan-out."""
+
+    @pytest.fixture
+    def mock_calendar_service(self):
+        mock_service = Mock()
+        mock_service.authenticate.return_value = None
+        mock_service.request_calendar_sync.return_value = None
+        return mock_service
+
+    @pytest.fixture
+    def organization_service(self, mock_calendar_service):
+        from di_core.containers import container
+
+        with container.calendar_service.override(mock_calendar_service):
+            yield OrganizationService()
+
+    def _make_calendar(self, organization, **overrides):
+        defaults = {
+            "organization": organization,
+            "name": "Cal",
+            "provider": CalendarProvider.GOOGLE,
+            "calendar_type": CalendarType.PERSONAL,
+            "is_active": True,
+        }
+        defaults.update(overrides)
+        return baker.make(Calendar, **defaults)
+
+    def test_syncs_calendars_with_owner_and_social_account(
+        self, organization_service, mock_calendar_service
+    ):
+        org = baker.make(Organization, name="Sync Org")
+        admin = baker.make(User, email="admin-sync@example.com")
+        owner = baker.make(User, email="owner@example.com")
+
+        calendar = self._make_calendar(org, external_id="cal-1")
+        baker.make(
+            CalendarOwnership,
+            organization=org,
+            calendar=calendar,
+            user=owner,
+            is_default=True,
+        )
+        SocialAccount.objects.create(user=owner, provider=CalendarProvider.GOOGLE)
+
+        start = datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 6, 30, tzinfo=datetime.UTC)
+        result = organization_service.request_all_calendars_sync(
+            organization=org,
+            requested_by=admin,
+            start_datetime=start,
+            end_datetime=end,
+            should_update_events=True,
+        )
+
+        assert result == {"synced": [calendar.id], "skipped": []}
+        mock_calendar_service.authenticate.assert_called_once()
+        _, auth_kwargs = mock_calendar_service.authenticate.call_args
+        assert auth_kwargs["account"].user_id == owner.id
+        assert auth_kwargs["organization"].id == org.id
+        mock_calendar_service.request_calendar_sync.assert_called_once_with(
+            calendar=calendar,
+            start_datetime=start,
+            end_datetime=end,
+            should_update_events=True,
+        )
+
+    def test_skips_calendar_without_owner(self, organization_service, mock_calendar_service):
+        org = baker.make(Organization, name="No Owner Org")
+        admin = baker.make(User, email="admin-noowner@example.com")
+        calendar = self._make_calendar(org, external_id="cal-noowner")
+
+        result = organization_service.request_all_calendars_sync(
+            organization=org,
+            requested_by=admin,
+            start_datetime=datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC),
+            end_datetime=datetime.datetime(2026, 6, 30, tzinfo=datetime.UTC),
+        )
+
+        assert result["synced"] == []
+        assert result["skipped"] == [{"calendar_id": calendar.id, "reason": "no owner"}]
+        mock_calendar_service.request_calendar_sync.assert_not_called()
+
+    def test_skips_calendar_without_linked_account(
+        self, organization_service, mock_calendar_service
+    ):
+        org = baker.make(Organization, name="No Link Org")
+        admin = baker.make(User, email="admin-nolink@example.com")
+        owner = baker.make(User, email="owner-nolink@example.com")
+        calendar = self._make_calendar(org, external_id="cal-nolink")
+        baker.make(
+            CalendarOwnership,
+            organization=org,
+            calendar=calendar,
+            user=owner,
+            is_default=True,
+        )
+        # No SocialAccount created for the owner.
+
+        result = organization_service.request_all_calendars_sync(
+            organization=org,
+            requested_by=admin,
+            start_datetime=datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC),
+            end_datetime=datetime.datetime(2026, 6, 30, tzinfo=datetime.UTC),
+        )
+
+        assert result["synced"] == []
+        assert len(result["skipped"]) == 1
+        assert result["skipped"][0]["calendar_id"] == calendar.id
+        assert "no linked" in result["skipped"][0]["reason"]
+        mock_calendar_service.request_calendar_sync.assert_not_called()
+
+    def test_empty_organization_returns_empty_summary(
+        self, organization_service, mock_calendar_service
+    ):
+        org = baker.make(Organization, name="Empty Org")
+        admin = baker.make(User, email="admin-empty@example.com")
+
+        result = organization_service.request_all_calendars_sync(
+            organization=org,
+            requested_by=admin,
+            start_datetime=datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC),
+            end_datetime=datetime.datetime(2026, 6, 30, tzinfo=datetime.UTC),
+        )
+
+        assert result == {"synced": [], "skipped": []}
+        mock_calendar_service.request_calendar_sync.assert_not_called()
+
+    def test_inactive_calendar_excluded(self, organization_service, mock_calendar_service):
+        org = baker.make(Organization, name="Inactive Cal Org")
+        admin = baker.make(User, email="admin-inactive@example.com")
+        owner = baker.make(User, email="owner-inactive@example.com")
+        calendar = self._make_calendar(org, external_id="cal-inactive", is_active=False)
+        baker.make(
+            CalendarOwnership,
+            organization=org,
+            calendar=calendar,
+            user=owner,
+            is_default=True,
+        )
+        SocialAccount.objects.create(user=owner, provider=CalendarProvider.GOOGLE)
+
+        result = organization_service.request_all_calendars_sync(
+            organization=org,
+            requested_by=admin,
+            start_datetime=datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC),
+            end_datetime=datetime.datetime(2026, 6, 30, tzinfo=datetime.UTC),
+        )
+
+        assert result == {"synced": [], "skipped": []}
+        mock_calendar_service.request_calendar_sync.assert_not_called()
