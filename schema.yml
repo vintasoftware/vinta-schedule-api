@@ -9844,7 +9844,6 @@ components:
         private_key:
           type: string
           writeOnly: true
-          maxLength: 255
     PatchedSystemUserTokenUpdate:
       type: object
       description: |-
@@ -10105,9 +10104,7 @@ components:
         private_key:
           type: string
           writeOnly: true
-          maxLength: 255
       required:
-      - audience
       - email
       - private_key
       - private_key_id

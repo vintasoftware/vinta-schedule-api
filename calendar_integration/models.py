@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from encrypted_fields.fields import EncryptedCharField  # type:ignore
+from encrypted_fields.fields import EncryptedCharField, EncryptedTextField  # type:ignore
 
 from calendar_integration.constants import (
     CalendarOrganizationResourceImportStatus,
@@ -1550,10 +1550,10 @@ class GoogleCalendarServiceAccount(OrganizationModel):
         related_name="google_service_accounts",
     )
     email = models.EmailField()
-    audience = models.CharField(max_length=255)
+    audience = models.CharField(max_length=255, blank=True)
     public_key = models.TextField()
     private_key_id = EncryptedCharField(max_length=255)
-    private_key = EncryptedCharField(max_length=255)
+    private_key = EncryptedTextField()
 
     def __str__(self):
         return f"Service Account for {self.calendar} ({self.email})"

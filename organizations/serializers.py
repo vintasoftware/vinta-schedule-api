@@ -22,9 +22,9 @@ class GoogleServiceAccountWriteSerializer(serializers.Serializer):
     """
 
     email = serializers.EmailField()
-    audience = serializers.CharField(max_length=255)
+    audience = serializers.CharField(max_length=255, allow_blank=True)
     public_key = serializers.CharField()
-    private_key_id = serializers.CharField(max_length=255, write_only=True)
+    private_key_id = serializers.CharField(write_only=True)
     private_key = serializers.CharField(write_only=True)
 
 
@@ -72,7 +72,11 @@ class ServiceAccountWriteSerializer(serializers.ModelSerializer):
     """
 
     private_key_id = serializers.CharField(max_length=255, write_only=True)
-    private_key = serializers.CharField(max_length=255, write_only=True)
+    # No max_length: a Google service-account private_key is a full PEM (~1.7KB),
+    # far over 255 chars. The model stores it in an EncryptedTextField (unbounded).
+    # trim_whitespace=False keeps the PEM byte-exact (its trailing newline matters
+    # to some key parsers); DRF would otherwise strip it.
+    private_key = serializers.CharField(write_only=True, trim_whitespace=False)
 
     class Meta:
         model = GoogleCalendarServiceAccount

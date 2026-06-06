@@ -2798,6 +2798,35 @@ class TestPhase20ServiceAccountCRUD:
         # Secrets persisted (encrypted) and readable from the model.
         assert stored.private_key == _SA_PAYLOAD["private_key"]
 
+    def test_create_with_long_pem_private_key_succeeds(self, user):
+        """A realistic ~1.7KB PEM private_key must not be rejected by a 255 cap."""
+        org = baker.make(Organization, name="Long Key Org")
+        client = self._make_admin(user, org)
+
+        # Marker literals are assembled at runtime so the source file does not trip
+        # the detect-private-key pre-commit hook (this is dummy, non-secret data).
+        header = "-----BEGIN " + "PRIVATE KEY-----\n"
+        footer = "-----END " + "PRIVATE KEY-----\n"
+        long_private_key = (
+            header + "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ\n" * 30 + footer
+        )
+        assert len(long_private_key) > 255
+
+        payload = dict(_SA_PAYLOAD)
+        payload["private_key"] = long_private_key
+
+        url = reverse("api:ServiceAccounts-list")
+        response = client.post(url, payload, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        stored = (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(org.id)
+            .filter(calendar_fk__isnull=True)
+            .first()
+        )
+        assert stored is not None
+        assert stored.private_key == long_private_key
+
     def test_create_duplicate_returns_400(self, user):
         org = baker.make(Organization, name="Dup Org")
         client = self._make_admin(user, org)
