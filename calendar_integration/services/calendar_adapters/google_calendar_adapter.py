@@ -248,8 +248,11 @@ class GoogleCalendarAdapter(CalendarAdapter):
 
     def get_account_calendars(self) -> Iterable[CalendarResourceData]:
         read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
+        # Use calendarList (the user's list of calendars), NOT calendars() — the
+        # latter is single-calendar CRUD by id and has no .list() method
+        # ("'Resource' object has no attribute 'list'").
         calendars_data = (
-            self.client.calendars()
+            self.client.calendarList()
             .list(
                 maxResults=250,  # Adjust as needed, Google API has a default limit
                 showDeleted=False,

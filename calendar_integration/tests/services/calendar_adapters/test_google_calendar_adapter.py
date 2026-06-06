@@ -356,12 +356,14 @@ class TestAccountCalendarOperations:
             ]
         }
 
-        adapter.client.calendars.return_value.list.return_value.execute.return_value = (
+        adapter.client.calendarList.return_value.list.return_value.execute.return_value = (
             mock_calendars
         )
 
         calendars = list(adapter.get_account_calendars())
 
+        # Must call calendarList().list() — calendars() has no .list() method.
+        adapter.client.calendarList.return_value.list.assert_called_once()
         assert len(calendars) == 3
         assert isinstance(calendars[0], CalendarResourceData)
 
@@ -388,7 +390,7 @@ class TestAccountCalendarOperations:
         assert calendars[2].is_default is False
 
         # Verify API call parameters
-        adapter.client.calendars.return_value.list.assert_called_once_with(
+        adapter.client.calendarList.return_value.list.assert_called_once_with(
             maxResults=250,
             showDeleted=False,
             minAccessRole="reader",
@@ -399,12 +401,14 @@ class TestAccountCalendarOperations:
 
     def test_get_account_calendars_empty_result(self, adapter, mock_rate_limiters):
         """Test get_account_calendars when no calendars exist."""
-        adapter.client.calendars.return_value.list.return_value.execute.return_value = {"items": []}
+        adapter.client.calendarList.return_value.list.return_value.execute.return_value = {
+            "items": []
+        }
 
         calendars = list(adapter.get_account_calendars())
 
         assert len(calendars) == 0
-        adapter.client.calendars.return_value.list.assert_called_once()
+        adapter.client.calendarList.return_value.list.assert_called_once()
         mock_rate_limiters[0].try_acquire.assert_called_once()
 
     def test_get_account_calendars_missing_optional_fields(self, adapter, mock_rate_limiters):
@@ -419,7 +423,7 @@ class TestAccountCalendarOperations:
             ]
         }
 
-        adapter.client.calendars.return_value.list.return_value.execute.return_value = (
+        adapter.client.calendarList.return_value.list.return_value.execute.return_value = (
             mock_calendars
         )
 
@@ -437,7 +441,7 @@ class TestAccountCalendarOperations:
     def test_get_account_calendars_rate_limiting(self, adapter, mock_rate_limiters):
         """Test that rate limiting is properly applied."""
         mock_calendars = {"items": []}
-        adapter.client.calendars.return_value.list.return_value.execute.return_value = (
+        adapter.client.calendarList.return_value.list.return_value.execute.return_value = (
             mock_calendars
         )
 
@@ -460,7 +464,7 @@ class TestAccountCalendarOperations:
         }
         mock_calendars = {"items": [mock_calendar_data]}
 
-        adapter.client.calendars.return_value.list.return_value.execute.return_value = (
+        adapter.client.calendarList.return_value.list.return_value.execute.return_value = (
             mock_calendars
         )
 
