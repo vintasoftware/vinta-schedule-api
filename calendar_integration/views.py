@@ -6,10 +6,10 @@ from django.http import Http404
 
 from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
-from drf_spectacular.utils import OpenApiParameter, extend_schema
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from calendar_integration.constants import CalendarProvider, CalendarType
@@ -100,6 +100,42 @@ class CalendarViewSet(VintaScheduleModelViewSet):
             qs = qs.filter(is_active=True)
 
         return qs
+
+    @extend_schema(
+        summary="Get the caller's default calendar",
+        description=(
+            "Returns the authenticated user's default calendar in their organization "
+            "(the active CalendarOwnership flagged is_default). 404 when the user has no "
+            "default calendar (e.g. before importing any calendars)."
+        ),
+        responses={
+            200: CalendarSerializer,
+            404: OpenApiResponse(description="No default calendar for this user"),
+        },
+    )
+    @action(methods=["get"], detail=False, url_path="default", url_name="default")
+    def default(self, request):
+        """GET /calendar/default/ — the caller's own default calendar.
+
+        Resolved via the user's ``CalendarOwnership`` with ``is_default=True`` in
+        their active organization, restricted to active calendars. 404 if none.
+        """
+        membership = get_active_organization_membership(request.user)
+        if not membership:
+            raise NotFound("User has no default calendar.")
+
+        ownership = (
+            CalendarOwnership.objects.filter_by_organization(membership.organization_id)
+            .filter(user=request.user, is_default=True, calendar__is_active=True)
+            .select_related("calendar")
+            .order_by("id")
+            .first()
+        )
+        if ownership is None or ownership.calendar is None:
+            raise NotFound("User has no default calendar.")
+
+        serializer = self.get_serializer(ownership.calendar)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(
         summary="Soft-disable a calendar",

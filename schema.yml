@@ -4428,6 +4428,56 @@ paths:
               schema:
                 $ref: '#/components/schemas/Calendar'
           description: ''
+  /calendar/default/:
+    get:
+      operationId: calendar_default_retrieve
+      description: Returns the authenticated user's default calendar in their organization
+        (the active CalendarOwnership flagged is_default). 404 when the user has no
+        default calendar (e.g. before importing any calendars).
+      summary: Get the caller's default calendar
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+        '404':
+          description: No default calendar for this user
+  /calendar/default{format}:
+    get:
+      operationId: calendar_default_formatted_retrieve
+      description: Returns the authenticated user's default calendar in their organization
+        (the active CalendarOwnership flagged is_default). 404 when the user has no
+        default calendar (e.g. before importing any calendars).
+      summary: Get the caller's default calendar
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+        '404':
+          description: No default calendar for this user
   /calendar/request-import/:
     post:
       operationId: calendar_request_import_create

@@ -5329,3 +5329,58 @@ class TestCalendarDisableGating:
         url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
         response = anonymous_client.delete(url)
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+
+@pytest.mark.django_db
+class TestCalendarDefaultAction:
+    """GET /calendar/default/ — the caller's own default calendar.
+
+    The ``organization`` / ``calendar`` fixtures already create the user's
+    membership (one membership per user), so tests must not create another.
+    """
+
+    def test_returns_default_calendar(self, auth_client, user, calendar):
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
+
+        url = reverse("api:Calendars-default")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["id"] == calendar.id
+
+    def test_non_default_ownership_returns_404(self, auth_client, user, calendar):
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=False)
+
+        url = reverse("api:Calendars-default")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_inactive_default_calendar_returns_404(self, auth_client, user, calendar):
+        calendar.is_active = False
+        calendar.save(update_fields=["is_active"])
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
+
+        url = reverse("api:Calendars-default")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_no_default_returns_404(self, auth_client, organization):
+        # organization fixture creates the membership; no ownership exists.
+        url = reverse("api:Calendars-default")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_membership_less_user_returns_404(self, auth_client, user):
+        url = reverse("api:Calendars-default")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_unauthenticated_returns_401(self, anonymous_client):
+        url = reverse("api:Calendars-default")
+        response = anonymous_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
