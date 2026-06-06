@@ -448,9 +448,23 @@ if config("GOOGLE_CLIENT_ID", default=""):
             "profile",
             "email",
             "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/calendar.freebusy",
+            "https://www.googleapis.com/auth/calendar.events",
+            "https://www.googleapis.com/auth/calendar.events.freebusy",
+            "https://www.googleapis.com/auth/calendar.calendars",
+            "https://www.googleapis.com/auth/calendar.app.created",
+            "https://www.googleapis.com/auth/calendar.events.owned",
+            "https://www.googleapis.com/auth/calendar.addons.execute",
+            "https://www.googleapis.com/auth/calendar.addons.current.event.read",
+            "https://www.googleapis.com/auth/calendar.addons.current.event.write",
+            "https://www.googleapis.com/auth/calendar.acls",
         ],
         "AUTH_PARAMS": {
-            "access_type": "online",
+            # offline + consent so Google returns a refresh_token (stored as
+            # SocialToken.token_secret). Access tokens expire in ~1h; without a
+            # refresh_token the calendar integration breaks after the first hour.
+            "access_type": "offline",
+            "prompt": "consent",
         },
         # "CERTS_URL": "https://www.googleapis.com/oauth2/v3/certs"
     }
@@ -487,3 +501,6 @@ PUBLIC_API_REQUESTS_PER_SECOND_LIMIT = config("PUBLIC_API_REQUESTS_PER_SECOND_LI
 PUBLIC_API_REQUESTS_PER_MINUTE_LIMIT = config("PUBLIC_API_REQUESTS_PER_MINUTE_LIMIT", default=100)
 PUBLIC_API_REQUESTS_PER_HOUR_LIMIT = config("PUBLIC_API_REQUESTS_PER_HOUR_LIMIT", default=1000)
 PUBLIC_API_RATE_LIMITER_KEY = config("PUBLIC_API_RATE_LIMITER_KEY", default="public_api")
+
+GOOGLE_CLIENT_ID = config("GOOGLE_CLIENT_ID", default="")
+GOOGLE_CLIENT_SECRET = config("GOOGLE_CLIENT_SECRET", default="")

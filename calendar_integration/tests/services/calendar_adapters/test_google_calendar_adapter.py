@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 from django.core.exceptions import ImproperlyConfigured
 
 import pytest
+from allauth.socialaccount.models import SocialAccount, SocialToken
 
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
@@ -106,6 +107,44 @@ def mock_rate_limiters():
 def adapter(google_credentials, mock_settings, mock_credentials, mock_build, mock_rate_limiters):
     """Create a GoogleCalendarAdapter instance with mocked dependencies."""
     return GoogleCalendarAdapter(google_credentials)
+
+
+class TestGoogleCalendarAdapterTokenRefresh:
+    """Refreshed access tokens are persisted back to the originating SocialToken."""
+
+    @pytest.mark.django_db
+    def test_persist_refreshed_token_updates_socialtoken(self):
+        from users.models import User
+
+        user = User.objects.create_user(email="refresh@example.com", password="pw")  # noqa: S106
+        account = SocialAccount.objects.create(
+            user=user, provider=CalendarProvider.GOOGLE, uid="refresh-uid"
+        )
+        token = SocialToken.objects.create(
+            account=account,
+            token="old_access_token",
+            token_secret="refresh_token_value",
+            expires_at=datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1),
+        )
+
+        creds = Mock()
+        creds.token = "new_access_token"
+        creds.expiry = datetime.datetime(2030, 1, 1, 0, 0, 0)  # naive UTC, as google-auth uses
+
+        GoogleCalendarAdapter._persist_refreshed_token(creds, token.id)
+
+        token.refresh_from_db()
+        assert token.token == "new_access_token"
+        assert token.expires_at.year == 2030
+        assert token.expires_at.tzinfo is not None  # stored tz-aware
+
+    @pytest.mark.django_db
+    def test_persist_refreshed_token_noop_without_id(self):
+        # No social_token_id → no DB write, no error.
+        creds = Mock()
+        creds.token = "x"
+        creds.expiry = None
+        GoogleCalendarAdapter._persist_refreshed_token(creds, None)
 
 
 class TestGoogleCalendarAdapterInitialization:

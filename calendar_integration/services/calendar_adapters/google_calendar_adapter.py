@@ -3,7 +3,7 @@ import re
 import time
 import uuid
 from collections.abc import Iterable
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -54,6 +54,10 @@ class GoogleCredentialTypedDict(TypedDict):
     token: str
     refresh_token: str
     account_id: str
+    # Optional: when present, lets the adapter know the access-token expiry and
+    # persist a refreshed token back to the originating SocialToken row.
+    expiry: NotRequired[datetime.datetime | None]
+    social_token_id: NotRequired[int | None]
 
 
 class GoogleServiceAccountCredentialsTypedDict(TypedDict):
@@ -90,18 +94,49 @@ class GoogleCalendarAdapter(CalendarAdapter):
                 "Google Calendar integration requires GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET settings."
             )
 
+        # google-auth tracks expiry as a naive UTC datetime; convert the
+        # (tz-aware) SocialToken expiry so credentials.valid/expired is accurate
+        # and a stale access token actually triggers a refresh.
+        expiry = credentials_dict.get("expiry")
+        naive_expiry = expiry.astimezone(datetime.UTC).replace(tzinfo=None) if expiry else None
+
         credentials = Credentials(
             token=credentials_dict["token"],
             refresh_token=credentials_dict["refresh_token"],
+            token_uri="https://oauth2.googleapis.com/token",  # noqa: S106
             client_id=GOOGLE_CLIENT_ID,
             client_secret=GOOGLE_CLIENT_SECRET,
+            expiry=naive_expiry,
         )
         if (not credentials or not credentials.valid) and credentials.refresh_token:
             credentials.refresh(Request())
+            self._persist_refreshed_token(credentials, credentials_dict.get("social_token_id"))
         elif not credentials or not credentials.valid:
             raise ValueError("Invalid or expired Google credentials provided.")
 
         self.client = build("calendar", "v3", credentials=credentials)
+
+    @staticmethod
+    def _persist_refreshed_token(credentials: Credentials, social_token_id: int | None) -> None:
+        """Write a refreshed access token + expiry back to its SocialToken row.
+
+        Keeps the stored token fresh so later requests don't re-refresh and the
+        token-resolution query sees an up-to-date expiry. Best-effort: a failure
+        here must not break the in-flight request that already has valid creds.
+        """
+        if not social_token_id:
+            return
+
+        from allauth.socialaccount.models import SocialToken
+
+        new_expiry = credentials.expiry
+        if new_expiry is not None:
+            new_expiry = new_expiry.replace(tzinfo=datetime.UTC)
+
+        SocialToken.objects.filter(id=social_token_id).update(
+            token=credentials.token,
+            expires_at=new_expiry,
+        )
 
     @staticmethod
     def _generate_jwt(

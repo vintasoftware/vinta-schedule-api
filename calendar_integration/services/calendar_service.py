@@ -329,20 +329,22 @@ class CalendarService(BaseCalendarService):
                 }
             ), account
 
-        now = datetime.datetime.now(datetime.UTC)
+        # Do NOT exclude expired tokens here: an expired access token that still
+        # carries a refresh_token (token_secret) is refreshed by the adapter on
+        # construction. Filtering on expires_at would hide exactly those tokens
+        # (and any with a NULL expiry), producing a false "reauthenticate" error.
         token_qs = SocialToken.objects.select_related("account").filter(
             account__provider__in=[CalendarProvider.GOOGLE, CalendarProvider.MICROSOFT],
-            expires_at__gte=now,
         )
         if isinstance(account, SocialAccount):
             # Provider-precise: the token for exactly this connected account.
             token_qs = token_qs.filter(account=account)
         else:
-            # A User: newest valid token across their connected providers.
+            # A User: newest token across their connected providers.
             token_qs = token_qs.filter(account__user=account)
         token = token_qs.order_by("-id").first()
 
-        if not token:
+        if not token or not token.token:
             raise InvalidCalendarTokenError(
                 "User doesn't have a valid calendar token. Please reauthenticate"
             )
@@ -356,6 +358,8 @@ class CalendarService(BaseCalendarService):
                 "token": token.token,
                 "refresh_token": token.token_secret,
                 "account_id": f"social-{token.account_id}",
+                "expiry": token.expires_at,
+                "social_token_id": token.id,
             }
         ), token.account
 

@@ -505,6 +505,44 @@ def test_get_calendar_adapter_accepts_social_account_directly(
 
 
 @pytest.mark.django_db
+def test_get_calendar_adapter_resolves_expired_token_for_refresh(
+    social_account, mock_google_adapter
+):
+    """An expired access token is still resolved so the adapter can refresh it.
+
+    Regression: the resolver filtered ``expires_at__gte=now``, hiding expired
+    (but refreshable) tokens and raising a false 'reauthenticate' error.
+    """
+    SocialToken.objects.create(
+        account=social_account,
+        token="expired_access_token",
+        token_secret="refresh_token_value",
+        expires_at=datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=2),
+    )
+
+    adapter, account = CalendarService.get_calendar_adapter_for_account(social_account)
+
+    assert adapter == mock_google_adapter
+    assert account == social_account
+
+
+@pytest.mark.django_db
+def test_get_calendar_adapter_resolves_null_expiry_token(social_account, mock_google_adapter):
+    """A token with NULL expires_at is resolved (not excluded by the expiry filter)."""
+    SocialToken.objects.create(
+        account=social_account,
+        token="access_token_no_expiry",
+        token_secret="refresh_token_value",
+        expires_at=None,
+    )
+
+    adapter, account = CalendarService.get_calendar_adapter_for_account(social_account)
+
+    assert adapter == mock_google_adapter
+    assert account == social_account
+
+
+@pytest.mark.django_db
 def test_authenticate_with_social_account_sets_owning_user(
     social_account, social_token, organization, mock_google_adapter
 ):
