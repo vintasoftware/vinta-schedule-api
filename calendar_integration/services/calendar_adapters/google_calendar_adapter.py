@@ -1,4 +1,5 @@
 import datetime
+import logging
 import re
 import time
 import uuid
@@ -29,6 +30,8 @@ from calendar_integration.services.dataclasses import (
 from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
 from common.redis import build_resilient_limiter
 
+
+logger = logging.getLogger(__name__)
 
 # Precompiled regex for extracting calendar ID from Google Calendar resource URIs
 _CALENDAR_ID_RE = re.compile(r"/calendars/([^/]+)/events")
@@ -109,9 +112,22 @@ class GoogleCalendarAdapter(CalendarAdapter):
             expiry=naive_expiry,
         )
         if (not credentials or not credentials.valid) and credentials.refresh_token:
-            credentials.refresh(Request())
+            try:
+                credentials.refresh(Request())
+            except Exception as e:
+                logger.warning(
+                    "Google token refresh failed for account_id=%s: %s",
+                    self.account_id,
+                    e,
+                )
+                raise ValueError(f"Google token refresh failed: {e}") from e
             self._persist_refreshed_token(credentials, credentials_dict.get("social_token_id"))
         elif not credentials or not credentials.valid:
+            logger.warning(
+                "Google credentials invalid and no refresh_token for account_id=%s "
+                "(expired access token, reconnect required)",
+                self.account_id,
+            )
             raise ValueError("Invalid or expired Google credentials provided.")
 
         self.client = build("calendar", "v3", credentials=credentials)

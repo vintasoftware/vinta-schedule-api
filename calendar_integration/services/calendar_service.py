@@ -100,6 +100,9 @@ class WebhookHealthStatus(TypedDict):
     success_rate: float
 
 
+logger = logging.getLogger(__name__)
+
+
 class CalendarService(BaseCalendarService):
     organization: Organization | None
     user_or_token: User | str | SystemUser | None
@@ -345,9 +348,41 @@ class CalendarService(BaseCalendarService):
         token = token_qs.order_by("-id").first()
 
         if not token or not token.token:
+            # Diagnostic: dump what tokens DO exist for this account/user so the
+            # docker logs reveal WHY resolution failed (missing token row, empty
+            # token, wrong provider, ...) instead of a bare "reauthenticate".
+            if isinstance(account, SocialAccount):
+                scope = SocialToken.objects.filter(account=account)
+                who = f"social_account id={account.id} provider={account.provider!r}"
+            else:
+                scope = SocialToken.objects.filter(account__user=account)
+                who = f"user id={getattr(account, 'id', None)}"
+            diag = [
+                {
+                    "token_id": t.id,
+                    "provider": t.account.provider,
+                    "has_token": bool(t.token),
+                    "has_refresh": bool(t.token_secret),
+                    "expires_at": t.expires_at.isoformat() if t.expires_at else None,
+                }
+                for t in scope.select_related("account")
+            ]
+            logger.warning(
+                "calendar token resolution failed for %s; all tokens for it = %s",
+                who,
+                diag,
+            )
             raise InvalidCalendarTokenError(
                 "User doesn't have a valid calendar token. Please reauthenticate"
             )
+
+        logger.info(
+            "resolved calendar token id=%s provider=%s has_refresh=%s expires_at=%s",
+            token.id,
+            token.account.provider,
+            bool(token.token_secret),
+            token.expires_at.isoformat() if token.expires_at else None,
+        )
 
         calendar_adapter_cls = CalendarService._get_calendar_adapter_cls_for_provider(
             token.account.provider

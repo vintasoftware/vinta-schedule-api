@@ -12,7 +12,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarIntegrationError,
@@ -242,35 +242,60 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        social_accounts = SocialAccount.objects.filter(user=user)
-        if not social_accounts.exists():
+        # Only Google/Microsoft accounts carry calendars. Other connected
+        # providers (e.g. a pure auth login) are ignored rather than aborting.
+        social_accounts = list(
+            SocialAccount.objects.filter(
+                user=user,
+                provider__in=[CalendarProvider.GOOGLE, CalendarProvider.MICROSOFT],
+            )
+        )
+        if not social_accounts:
             return Response(
-                {"detail": "User has no connected external calendar account."},
+                {"detail": "User has no connected Google or Microsoft calendar account."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        try:
-            for social_account in social_accounts:
+        # Import each account independently. A failure on one account (e.g. an
+        # expired token with no refresh_token) must not abort the others — it is
+        # reported under ``skipped`` so the caller knows which account to fix.
+        imported: list[int] = []
+        skipped: list[dict] = []
+        for social_account in social_accounts:
+            try:
                 fresh_service = calendar_service_factory()
-
                 fresh_service.authenticate(
                     account=social_account,
                     organization=membership.organization,
                 )
-
                 fresh_service.request_calendars_import()
+                imported.append(social_account.id)
+            except (ValueError, CalendarIntegrationError) as e:
+                skipped.append({"account_id": social_account.id, "reason": str(e)})
 
-            account_count = social_accounts.count()
+        if not imported:
+            # Nothing could be imported — surface the per-account reasons (400).
+            # Use a plain Response (not ValidationError) so the structured
+            # ``skipped`` payload survives instead of being coerced to strings.
             return Response(
                 {
-                    "detail": f"Calendar import requested for {account_count} account(s)."
-                    if account_count > 1
-                    else "Calendar import requested."
+                    "detail": (
+                        "No calendar account could be imported. "
+                        "Reconnect the account to grant calendar access."
+                    ),
+                    "skipped": skipped,
                 },
-                status=status.HTTP_202_ACCEPTED,
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        except (ValueError, CalendarIntegrationError) as e:
-            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+        return Response(
+            {
+                "detail": f"Calendar import requested for {len(imported)} account(s).",
+                "imported": imported,
+                "skipped": skipped,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
     @extend_schema(
         summary="Request calendar sync",

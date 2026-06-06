@@ -2331,11 +2331,54 @@ class TestCalendarViewSet:
 
             # Verify response
             assert_response_status_code(response, status.HTTP_202_ACCEPTED)
-            assert response.data["detail"] == "Calendar import requested."
+            assert "1 account(s)" in response.data["detail"]
 
             # Verify the mock was called with the correct arguments
             mock_calendar_service.authenticate.assert_called_once()
             mock_calendar_service.request_calendars_import.assert_called_once()
+
+    def test_request_import_reports_per_account_failure(self, auth_client, user, organization):
+        """A failing account is reported under `skipped` (400) instead of an opaque error."""
+        from calendar_integration.exceptions import InvalidCalendarTokenError
+        from di_core.containers import container
+
+        google_account = baker.make(SocialAccount, user=user, provider=CalendarProvider.GOOGLE)
+
+        failing_service = Mock()
+        failing_service.authenticate.side_effect = InvalidCalendarTokenError("no token")
+
+        url = reverse("api:Calendars-request-import")
+        with container.calendar_service.override(failing_service):
+            response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        skipped = response.data["skipped"]
+        assert len(skipped) == 1
+        assert skipped[0]["account_id"] == google_account.id
+        assert "no token" in skipped[0]["reason"]
+
+    def test_request_import_ignores_non_calendar_providers(
+        self, auth_client, user, organization, calendar
+    ):
+        """A non-Google/Microsoft social account does not abort the import."""
+        from di_core.containers import container
+
+        # A calendar-capable account that imports fine...
+        baker.make(SocialAccount, user=user, provider=CalendarProvider.GOOGLE)
+        # ...plus an unrelated auth-only provider that must be ignored.
+        baker.make(SocialAccount, user=user, provider="github")
+
+        ok_service = Mock()
+        ok_service.authenticate.return_value = None
+        ok_service.request_calendars_import.return_value = None
+
+        url = reverse("api:Calendars-request-import")
+        with container.calendar_service.override(ok_service):
+            response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+        # Only the Google account was imported; github was filtered out entirely.
+        assert "1 account(s)" in response.data["detail"]
 
     def test_request_import_no_social_account(self, auth_client, user):
         """Test requesting calendar import without a connected social account"""
@@ -2347,7 +2390,9 @@ class TestCalendarViewSet:
 
         response = auth_client.post(url)
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        assert "no connected external calendar account" in response.data["detail"].lower()
+        assert (
+            "no connected google or microsoft calendar account" in response.data["detail"].lower()
+        )
 
     def test_request_import_membership_less_user(self, auth_client, anonymous_client):
         """Test requesting calendar import as membership-less user"""
