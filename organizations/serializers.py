@@ -58,6 +58,17 @@ class OrganizationSerializer(VirtualModelSerializer):
 
     google_service_account = serializers.SerializerMethodField()
 
+    # ``get_google_service_account`` issues exactly one bounded, org-scoped query
+    # through the tenant manager (the org-level GoogleCalendarServiceAccount,
+    # ``calendar_fk__isnull=True``). It can't be prefetched: OrganizationModel's
+    # ``organization`` FK uses ``related_name="+"`` (no reverse accessor), so the
+    # manager lookup is the sanctioned tenant access path. This serializer only
+    # ever serializes a single Organization (retrieve / current / update — there
+    # is no list endpoint), so the extra query is bounded at 1. Without this the
+    # VirtualModelSerializer's zero-query budget raises QueryCountExceededException
+    # on every read under DEBUG.
+    max_queries_count = 1
+
     class Meta:
         model = Organization
         virtual_model = OrganizationVirtualModel
