@@ -303,11 +303,14 @@ class CalendarService(BaseCalendarService):
 
     @staticmethod
     def get_calendar_adapter_for_account(
-        account: User | GoogleCalendarServiceAccount,
+        account: "User | SocialAccount | GoogleCalendarServiceAccount",
     ) -> tuple[CalendarAdapter, SocialAccount | GoogleCalendarServiceAccount]:
         """
-        Retrieve a calendar adapter for the given social account.
-        :param account: Social account instance or GoogleCalendarServiceAccount instance.
+        Retrieve a calendar adapter for the given account.
+        :param account: A ``User`` (resolves the newest valid token across the
+            user's connected providers), a specific ``SocialAccount`` (resolves
+            that account's token — provider-precise), or a
+            ``GoogleCalendarServiceAccount``.
         :return: CalendarAdapter instance and the account used (SocialAccount or GoogleCalendarServiceAccount).
         """
         if isinstance(account, GoogleCalendarServiceAccount):
@@ -327,16 +330,17 @@ class CalendarService(BaseCalendarService):
             ), account
 
         now = datetime.datetime.now(datetime.UTC)
-        token = (
-            SocialToken.objects.select_related("account")
-            .filter(
-                account__user=account,
-                account__provider__in=[CalendarProvider.GOOGLE, CalendarProvider.MICROSOFT],
-                expires_at__gte=now,
-            )
-            .order_by("-id")
-            .first()
+        token_qs = SocialToken.objects.select_related("account").filter(
+            account__provider__in=[CalendarProvider.GOOGLE, CalendarProvider.MICROSOFT],
+            expires_at__gte=now,
         )
+        if isinstance(account, SocialAccount):
+            # Provider-precise: the token for exactly this connected account.
+            token_qs = token_qs.filter(account=account)
+        else:
+            # A User: newest valid token across their connected providers.
+            token_qs = token_qs.filter(account__user=account)
+        token = token_qs.order_by("-id").first()
 
         if not token:
             raise InvalidCalendarTokenError(
@@ -357,15 +361,23 @@ class CalendarService(BaseCalendarService):
 
     def authenticate(
         self,
-        account: User | GoogleCalendarServiceAccount,
+        account: "User | SocialAccount | GoogleCalendarServiceAccount",
         organization: Organization,
     ) -> None:
         """
-        Authenticate the service with the provided social account.
-        :param account: Social account instance or GoogleCalendarServiceAccount instance.
+        Authenticate the service with the provided account.
+        :param account: A ``User``, a ``SocialAccount``, or a
+            ``GoogleCalendarServiceAccount``. When a ``SocialAccount`` is given,
+            the owning ``User`` is used for record attribution (e.g.
+            ``CalendarOwnership``).
         :param organization: Calendar organization instance.
         """
-        self.user_or_token = account if isinstance(account, User) else None
+        if isinstance(account, User):
+            self.user_or_token = account
+        elif isinstance(account, SocialAccount):
+            self.user_or_token = account.user
+        else:
+            self.user_or_token = None
         self.organization = organization
         self.calendar_adapter, self.account = self.get_calendar_adapter_for_account(account)
 

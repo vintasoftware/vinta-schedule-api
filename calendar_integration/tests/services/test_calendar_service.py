@@ -489,6 +489,35 @@ def test_get_calendar_adapter_for_google_social_account(
 
 
 @pytest.mark.django_db
+def test_get_calendar_adapter_accepts_social_account_directly(
+    social_account, social_token, mock_google_adapter
+):
+    """A SocialAccount may be passed directly (the request-import / sync view path).
+
+    Regression: the views authenticate with a SocialAccount, but the resolver
+    used ``account__user=account`` which raised
+    'Cannot query "...": Must be "User" instance.' when given a SocialAccount.
+    """
+    adapter, account = CalendarService.get_calendar_adapter_for_account(social_account)
+
+    assert adapter == mock_google_adapter
+    assert account == social_account
+
+
+@pytest.mark.django_db
+def test_authenticate_with_social_account_sets_owning_user(
+    social_account, social_token, organization, mock_google_adapter
+):
+    """authenticate(account=<SocialAccount>) resolves the adapter and attributes
+    records to the owning user (user_or_token), so CalendarOwnership.user is set."""
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=organization)
+
+    assert service.account == social_account
+    assert service.user_or_token == social_account.user
+
+
+@pytest.mark.django_db
 def test_get_calendar_adapter_for_microsoft_social_account(
     social_account, social_token, mock_ms_adapter
 ):
