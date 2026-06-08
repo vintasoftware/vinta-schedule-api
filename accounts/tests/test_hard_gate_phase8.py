@@ -347,24 +347,23 @@ class TestWriteBulkGatedRefusal:
             "No BlockedTime row must be created for a gated user"
         )
 
-    def test_available_times_bulk_create_returns_400_for_gated_user(self):
+    def test_available_times_batch_returns_400_for_gated_user(self):
         """
-        POST /available-times/bulk-create/ as a gated user → 400.
-        Same mechanism as blocked times: empty Calendar queryset causes FK
-        validation failure before save().
+        POST /available-times/batch/ as a gated user → 400.
+        The batch serializer refuses membership-less users before any write.
         No AvailableTime row is created.
         """
         from calendar_integration.models import AvailableTime
 
         _, client = _gated_client("gated-bulk-at@test.example")
-        url = reverse("api:AvailableTimes-bulk-create")
+        url = reverse("api:AvailableTimes-batch")
         before_count = AvailableTime.original_manager.count()
         response = client.post(
             url,
             {
-                "available_times": [
+                "operations": [
                     {
-                        "calendar": 9999,
+                        "action": "create",
                         "start_time": "2025-06-01T09:00:00Z",
                         "end_time": "2025-06-01T10:00:00Z",
                         "timezone": "UTC",
@@ -374,7 +373,7 @@ class TestWriteBulkGatedRefusal:
             format="json",
         )
         assert response.status_code == status.HTTP_400_BAD_REQUEST, (
-            f"Expected 400 for gated user on POST /available-times/bulk-create/, got "
+            f"Expected 400 for gated user on POST /available-times/batch/, got "
             f"{response.status_code}: {response.data}"
         )
         assert AvailableTime.original_manager.count() == before_count, (

@@ -46,7 +46,6 @@ from calendar_integration.serializers import (
     BlockedTimeRecurringExceptionSerializer,
     BlockedTimeSerializer,
     BookableSlotProposalSerializer,
-    BulkAvailableTimeSerializer,
     BulkBlockedTimeSerializer,
     CalendarBundleCreateSerializer,
     CalendarBundleUpdateSerializer,
@@ -1278,46 +1277,6 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
         # See BlockedTimeViewSet.get_queryset: `super()` applies the VirtualModel
         # optimization so the `calendar` relation is prefetched, not loaded per row.
         return super().get_queryset().filter_by_organization(membership.organization.id)
-
-    @extend_schema(
-        summary="Create bulk available times",
-        request=BulkAvailableTimeSerializer,
-        responses={201: AvailableTimeSerializer(many=True)},
-    )
-    @action(
-        methods=["POST"],
-        detail=False,
-        url_path="bulk-create",
-        url_name="bulk-create",
-    )
-    def bulk_create(self, request):
-        """Create multiple available times."""
-        serializer = BulkAvailableTimeSerializer(
-            data=request.data, context=self.get_serializer_context()
-        )
-        serializer.is_valid(raise_exception=True)
-        available_times = serializer.save()
-
-        # Re-fetch through the optimized queryset so nested relations are prefetched
-        # (created rows expose `calendar` as a composite FK that loads per row).
-        context = self.get_serializer_context()
-        if not available_times:
-            return Response([], status=status.HTTP_201_CREATED)
-        ids = [at.id for at in available_times]
-        optimized_by_id = {
-            at.id: at
-            for at in AvailableTimeSerializer(context=context)
-            .get_optimized_queryset(
-                AvailableTime.objects.filter_by_organization(available_times[0].organization_id)
-            )
-            .filter(id__in=ids)
-        }
-        ordered = [optimized_by_id[at.id] for at in available_times if at.id in optimized_by_id]
-
-        return Response(
-            AvailableTimeSerializer(ordered, many=True, context=context).data,
-            status=status.HTTP_201_CREATED,
-        )
 
     @extend_schema(
         summary="Batch create/update/delete available times",
