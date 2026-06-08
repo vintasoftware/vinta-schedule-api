@@ -8604,6 +8604,88 @@ def test_available_time_window_serializer_renders_local_timezone():
     assert data["end_time"] == "2024-01-01T17:00:00-03:00"
 
 
+@pytest.mark.django_db
+def test_create_instance_from_occurrence_preserves_instant(organization, db):
+    """Materializing an occurrence keeps the true instant (no tz re-attach shift).
+
+    Regression: create_instance_from_occurrence did `occurrence_start.replace(tzinfo=tz)`,
+    turning the correct 12:00Z (09:00 America/Recife) into 15:00Z. The instant from the
+    recurrence calc must be preserved; only tz_unaware holds the local wall-clock.
+    """
+    calendar = Calendar.objects.create(
+        name="Recife Calendar",
+        external_id="recife-occ",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.PERSONAL,
+        organization=organization,
+        manage_available_windows=True,
+    )
+    master = AvailableTime(
+        calendar=calendar,
+        organization=organization,
+        timezone="America/Recife",  # UTC-3, no DST
+        start_time_tz_unaware=datetime.datetime(2024, 1, 1, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2024, 1, 1, 17, 0),
+    )
+
+    occ_start = datetime.datetime(2024, 1, 8, 12, 0, tzinfo=datetime.UTC)  # 09:00 Recife
+    occ_end = datetime.datetime(2024, 1, 8, 20, 0, tzinfo=datetime.UTC)  # 17:00 Recife
+    instance = master.create_instance_from_occurrence(occ_start, occ_end)
+
+    # Instant preserved (not shifted to 15:00Z).
+    assert instance.start_time == occ_start
+    assert instance.end_time == occ_end
+    # tz_unaware holds the local wall-clock (09:00 / 17:00), naive.
+    assert instance.start_time_tz_unaware == datetime.datetime(2024, 1, 8, 9, 0)
+    assert instance.end_time_tz_unaware == datetime.datetime(2024, 1, 8, 17, 0)
+
+
+@pytest.mark.django_db
+def test_recurring_availability_windows_keep_local_time(organization):
+    """A weekly 09:00-17:00 Recife availability yields 09:00 Recife windows every week.
+
+    Exercises the occurrence-materialization path (weeks beyond the master) end to end.
+    """
+    from zoneinfo import ZoneInfo
+
+    from calendar_integration.serializers import AvailableTimeWindowSerializer
+
+    recife = ZoneInfo("America/Recife")
+    calendar = Calendar.objects.create(
+        name="Recife Calendar",
+        external_id="recife-1",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.PERSONAL,
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # 09:00 Recife == 12:00Z; weekly.
+    service.create_available_time(
+        calendar=calendar,
+        start_time=datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2024, 1, 1, 17, 0, tzinfo=datetime.UTC),
+        timezone="America/Recife",
+        rrule_string="FREQ=WEEKLY",
+    )
+
+    start = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
+    end = datetime.datetime(2024, 1, 31, tzinfo=datetime.UTC)
+    windows = list(service.get_availability_windows_in_range(calendar, start, end))
+
+    assert len(windows) >= 4  # several weekly occurrences in January
+    for window in windows:
+        # Every occurrence is 09:00-17:00 in Recife, regardless of week.
+        assert window.start_time.astimezone(recife).hour == 9
+        assert window.end_time.astimezone(recife).hour == 17
+        data = AvailableTimeWindowSerializer(window).data
+        assert data["start_time"].endswith("09:00:00-03:00")
+        assert data["end_time"].endswith("17:00:00-03:00")
+
+
 def test_subtract_busy_intervals_unit():
     """_subtract_busy_intervals handles overlap, multiple busy, and full coverage."""
     ws = datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC)

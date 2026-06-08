@@ -44,6 +44,24 @@ if TYPE_CHECKING:
     from django_stubs_ext.db.models.manager import RelatedManager
 
 
+def _normalize_occurrence_instants(
+    occurrence_start_time: datetime.datetime,
+    occurrence_end_time: datetime.datetime,
+) -> tuple[datetime.datetime, datetime.datetime]:
+    """Normalize recurrence-occurrence datetimes to timezone-aware UTC instants.
+
+    The recurrence calc derives occurrences from the model's ``start_time`` (a true
+    UTC instant). Postgres may hand them back naive; treat naive values as UTC so the
+    instant is preserved. Crucially this never re-attaches the local timezone to the
+    wall-clock, which would shift the instant by the zone's offset.
+    """
+    if occurrence_start_time.tzinfo is None:
+        occurrence_start_time = occurrence_start_time.replace(tzinfo=datetime.UTC)
+    if occurrence_end_time.tzinfo is None:
+        occurrence_end_time = occurrence_end_time.replace(tzinfo=datetime.UTC)
+    return occurrence_start_time, occurrence_end_time
+
+
 class Calendar(OrganizationModel):
     """
     Represents a calendar that can be used for scheduling.
@@ -1080,16 +1098,19 @@ class CalendarEvent(RecurringMixin):
         )
 
     def create_instance_from_occurrence(self, occurrence_start_time, occurrence_end_time):
-        tz = zoneinfo.ZoneInfo(self.timezone)  # Validate timezone
+        occurrence_start_time, occurrence_end_time = _normalize_occurrence_instants(
+            occurrence_start_time, occurrence_end_time
+        )
+        tz = zoneinfo.ZoneInfo(self.timezone)
         return self.__class__(
             calendar_fk=self.calendar,
             organization=self.organization,
             title=self.title,
             description=self.description,
-            start_time_tz_unaware=occurrence_start_time,
-            end_time_tz_unaware=occurrence_end_time,
-            start_time=occurrence_start_time.replace(tzinfo=tz),
-            end_time=occurrence_end_time.replace(tzinfo=tz),
+            start_time_tz_unaware=occurrence_start_time.astimezone(tz).replace(tzinfo=None),
+            end_time_tz_unaware=occurrence_end_time.astimezone(tz).replace(tzinfo=None),
+            start_time=occurrence_start_time,
+            end_time=occurrence_end_time,
             timezone=self.timezone,
             recurrence_rule_fk=self.recurrence_rule,
             recurrence_id=occurrence_start_time,
@@ -1265,15 +1286,18 @@ class BlockedTime(RecurringMixin):
         )
 
     def create_instance_from_occurrence(self, occurrence_start_time, occurrence_end_time):
+        occurrence_start_time, occurrence_end_time = _normalize_occurrence_instants(
+            occurrence_start_time, occurrence_end_time
+        )
         tz = zoneinfo.ZoneInfo(self.timezone)
         return self.__class__(
             calendar_fk=self.calendar,
             organization=self.organization,
             reason=self.reason,
-            start_time_tz_unaware=occurrence_start_time,
-            end_time_tz_unaware=occurrence_end_time,
-            start_time=occurrence_start_time.replace(tzinfo=tz),
-            end_time=occurrence_end_time.replace(tzinfo=tz),
+            start_time_tz_unaware=occurrence_start_time.astimezone(tz).replace(tzinfo=None),
+            end_time_tz_unaware=occurrence_end_time.astimezone(tz).replace(tzinfo=None),
+            start_time=occurrence_start_time,
+            end_time=occurrence_end_time,
             timezone=self.timezone,
             recurrence_rule_fk=self.recurrence_rule,
             recurrence_id=occurrence_start_time,
@@ -1326,14 +1350,17 @@ class AvailableTime(RecurringMixin):
         )
 
     def create_instance_from_occurrence(self, occurrence_start_time, occurrence_end_time):
+        occurrence_start_time, occurrence_end_time = _normalize_occurrence_instants(
+            occurrence_start_time, occurrence_end_time
+        )
         tz = zoneinfo.ZoneInfo(self.timezone)
         return self.__class__(
             calendar_fk=self.calendar,
             organization=self.organization,
-            start_time_tz_unaware=occurrence_start_time,
-            end_time_tz_unaware=occurrence_end_time,
-            start_time=occurrence_start_time.replace(tzinfo=tz),
-            end_time=occurrence_end_time.replace(tzinfo=tz),
+            start_time_tz_unaware=occurrence_start_time.astimezone(tz).replace(tzinfo=None),
+            end_time_tz_unaware=occurrence_end_time.astimezone(tz).replace(tzinfo=None),
+            start_time=occurrence_start_time,
+            end_time=occurrence_end_time,
             timezone=self.timezone,
             recurrence_rule_fk=self.recurrence_rule,
             recurrence_id=occurrence_start_time,
