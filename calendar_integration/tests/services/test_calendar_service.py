@@ -8528,3 +8528,80 @@ class TestCalendarServicePermissionScenarios:
 
                 assert set(calendar_permissions) == set(DEFAULT_CALENDAR_OWNER_PERMISSIONS)
                 assert set(event_permissions) == set(DEFAULT_ATTENDEE_PERMISSIONS)
+
+
+@pytest.mark.django_db
+def test_get_availability_windows_subtracts_busy_for_managed_calendar(organization):
+    """Managed-calendar availability nets out events/blocked times.
+
+    A declared window 09:00-17:00 with a blocked time 12:00-13:00 inside it must
+    return two free windows (09:00-12:00, 13:00-17:00), not the raw declared window.
+    """
+    calendar = Calendar.objects.create(
+        name="Managed Calendar",
+        external_id="managed-net-1",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.PERSONAL,
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    start = datetime.datetime(2024, 1, 1, 0, 0, tzinfo=datetime.UTC)
+    end = datetime.datetime(2024, 1, 2, 0, 0, tzinfo=datetime.UTC)
+
+    service.create_available_time(
+        calendar=calendar,
+        start_time=datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2024, 1, 1, 17, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+    )
+    service.create_blocked_time(
+        calendar=calendar,
+        reason="busy",
+        start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2024, 1, 1, 13, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+    )
+
+    windows = sorted(
+        service.get_availability_windows_in_range(calendar, start, end),
+        key=lambda w: w.start_time,
+    )
+
+    spans = [(w.start_time, w.end_time) for w in windows]
+    assert spans == [
+        (
+            datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),
+        ),
+        (
+            datetime.datetime(2024, 1, 1, 13, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2024, 1, 1, 17, 0, tzinfo=datetime.UTC),
+        ),
+    ]
+
+
+def test_subtract_busy_intervals_unit():
+    """_subtract_busy_intervals handles overlap, multiple busy, and full coverage."""
+    ws = datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC)
+    we = datetime.datetime(2024, 1, 1, 17, 0, tzinfo=datetime.UTC)
+
+    def at(h):
+        return datetime.datetime(2024, 1, 1, h, 0, tzinfo=datetime.UTC)
+
+    # no busy -> whole window
+    assert CalendarService._subtract_busy_intervals(ws, we, []) == [(ws, we)]
+    # one busy in the middle -> two pieces
+    assert CalendarService._subtract_busy_intervals(ws, we, [(at(12), at(13))]) == [
+        (ws, at(12)),
+        (at(13), we),
+    ]
+    # overlapping/adjacent busy merge; busy beyond window is clipped
+    assert CalendarService._subtract_busy_intervals(
+        ws, we, [(at(11), at(13)), (at(12), at(14)), (at(16), at(20))]
+    ) == [(ws, at(11)), (at(14), at(16))]
+    # fully covered -> empty
+    assert CalendarService._subtract_busy_intervals(ws, we, [(at(8), at(18))]) == []

@@ -2923,6 +2923,34 @@ class CalendarService(BaseCalendarService):
             calendar_fk_id=calendar_id,
         ).delete()
 
+    @staticmethod
+    def _subtract_busy_intervals(
+        window_start: datetime.datetime,
+        window_end: datetime.datetime,
+        busy_intervals: Iterable[tuple[datetime.datetime, datetime.datetime]],
+    ) -> list[tuple[datetime.datetime, datetime.datetime]]:
+        """Return the parts of [window_start, window_end] not covered by any busy interval.
+
+        Busy intervals may be unsorted, overlapping, or extend beyond the window; they
+        are clipped to the window and merged on the fly. A window fully covered by busy
+        time yields an empty list.
+        """
+        clipped = sorted(
+            (max(start, window_start), min(end, window_end))
+            for start, end in busy_intervals
+            if end > window_start and start < window_end
+        )
+
+        free: list[tuple[datetime.datetime, datetime.datetime]] = []
+        cursor = window_start
+        for busy_start, busy_end in clipped:
+            if busy_start > cursor:
+                free.append((cursor, busy_start))
+            cursor = max(cursor, busy_end)
+        if cursor < window_end:
+            free.append((cursor, window_end))
+        return free
+
     def get_unavailable_time_windows_in_range(
         self,
         calendar: Calendar,
@@ -3032,21 +3060,32 @@ class CalendarService(BaseCalendarService):
             raise
 
         if calendar.manage_available_windows:
-            # Replace the current query with:
+            # Declared availability windows (recurring instances expanded).
             available_times = self.get_available_times_expanded(
                 calendar=calendar,
                 start_date=start_datetime,
                 end_date=end_datetime,
             )
 
+            # Net availability = declared windows minus busy (events + blocked times).
+            # Subtract the unavailable windows so callers get true bookable time and
+            # don't have to reconcile two overlapping lists client-side.
+            unavailable_windows = self.get_unavailable_time_windows_in_range(
+                calendar, start_datetime, end_datetime
+            )
+            busy_intervals = [(uw.start_time, uw.end_time) for uw in unavailable_windows]
+
             return [
                 AvailableTimeWindow(
-                    start_time=available_time.start_time,
-                    end_time=available_time.end_time,
+                    start_time=free_start,
+                    end_time=free_end,
                     id=available_time.id,
                     can_book_partially=False,
                 )
                 for available_time in available_times
+                for free_start, free_end in CalendarService._subtract_busy_intervals(
+                    available_time.start_time, available_time.end_time, busy_intervals
+                )
             ]
 
         unavailable_windows_sorted_by_start_datetime = self.get_unavailable_time_windows_in_range(
@@ -3091,7 +3130,6 @@ class CalendarService(BaseCalendarService):
             for start, end in available_windows
         ]
 
-    @transaction.atomic()
     @transaction.atomic()
     def get_default_calendar_for_user(self, user: "User") -> Calendar | None:
         """Resolve a user's default calendar in the service's organization.
