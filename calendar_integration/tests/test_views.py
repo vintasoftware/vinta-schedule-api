@@ -3235,6 +3235,24 @@ class TestBlockedTimeViewSet:
         assert len(response.data["results"]) == 1
         assert response.data["results"][0]["reason"] == "Lunch break"
 
+    def test_list_blocked_times_no_n1_on_calendar(self, auth_client, calendar, user):
+        """Listing many blocked times must not issue one Calendar query per row.
+
+        Regression: BlockedTimeViewSet.get_queryset bypassed the VirtualModel
+        optimization, so the ``calendar`` PrimaryKeyRelatedField loaded one Calendar
+        row per BlockedTime and tripped the serializer query budget (500 under the
+        DEBUG-only guard, now active in tests). An N+1 here returns 500.
+        """
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        for i in range(5):
+            CalendarIntegrationTestFactory.create_blocked_time(calendar=calendar, reason=f"b{i}")
+
+        url = reverse("api:BlockedTimes-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert len(response.data["results"]) == 5
+
     def test_list_blocked_times_unauthenticated(self, anonymous_client):
         """Test listing blocked times as unauthenticated user"""
         url = reverse("api:BlockedTimes-list")
@@ -3892,6 +3910,23 @@ class TestAvailableTimeViewSet:
         assert len(response.data["results"]) == 1
         # Note: AvailableTime model doesn't have can_book_partially field
         # This field exists only in AvailableTimeWindow dataclass
+
+    def test_list_available_times_no_n1_on_calendar(self, auth_client, calendar, user):
+        """Listing many available times must not issue one Calendar query per row.
+
+        Same regression as BlockedTimeViewSet: get_queryset bypassed the VirtualModel
+        optimization, so the ``calendar`` PrimaryKeyRelatedField loaded per row and
+        tripped the serializer query budget. An N+1 here returns 500.
+        """
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        for _ in range(5):
+            CalendarIntegrationTestFactory.create_available_time(calendar=calendar)
+
+        url = reverse("api:AvailableTimes-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert len(response.data["results"]) == 5
 
     def test_list_available_times_unauthenticated(self, anonymous_client):
         """Test listing available times as unauthenticated user"""

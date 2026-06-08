@@ -55,6 +55,7 @@ from calendar_integration.models import (
     RecurringMixin,
     ResourceAllocation,
 )
+from calendar_integration.querysets import CalendarEventQuerySet
 from calendar_integration.recurrence_utils import OccurrenceValidator, RecurrenceRuleSplitter
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
@@ -2062,6 +2063,7 @@ class CalendarService(BaseCalendarService):
         calendar: Calendar,
         start_date: datetime.datetime,
         end_date: datetime.datetime,
+        optimize_queryset: Callable[[CalendarEventQuerySet], CalendarEventQuerySet] | None = None,
     ) -> list[CalendarEvent]:
         """
         Get all calendar events in a date range with recurring events expanded to instances.
@@ -2078,6 +2080,10 @@ class CalendarService(BaseCalendarService):
         :param calendar: The calendar to get events from
         :param start_date: Start of the date range
         :param end_date: End of the date range
+        :param optimize_queryset: Optional callable (typically a serializer's
+            ``get_optimized_queryset``) applied to the master-event base queryset so its
+            nested relations are prefetched. Generated occurrences reuse their master's
+            prefetch cache, so the whole result serializes without per-event N+1s.
         :return: List of all event instances in the range
         """
         if not is_initialized_or_authenticated_calendar_service(self):
@@ -2108,13 +2114,17 @@ class CalendarService(BaseCalendarService):
             is_recurring_exception=False,  # Exclude exception objects
         )
 
-        # Get recurring master events and generate their instances
+        # Get recurring master events and generate their instances. Apply the
+        # serializer optimization here so generated occurrences inherit prefetched
+        # relations from their master (real events are optimized by the caller).
         recurring_events = base_qs.filter(
             recurrence_rule__isnull=False,  # Recurring only
         ).filter(
             Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start_date),
             start_time__lte=end_date,
         )
+        if optimize_queryset is not None:
+            recurring_events = optimize_queryset(recurring_events)
 
         events: list[CalendarEvent] = list(non_recurring_events)
 
@@ -2122,6 +2132,13 @@ class CalendarService(BaseCalendarService):
             instances = master_event.get_occurrences_in_range(
                 start_date, end_date, include_self=False, include_exceptions=True
             )
+            # Occurrences are in-memory copies of the master (pk=None). Reuse the
+            # master's prefetched relations so each occurrence serializes without
+            # re-querying attendances/resources (occurrences inherit them by design).
+            master_cache = getattr(master_event, "_prefetched_objects_cache", None)
+            if master_cache:
+                for instance in instances:
+                    instance._prefetched_objects_cache = master_cache
             events.extend(instances)
 
         # Sort by start time

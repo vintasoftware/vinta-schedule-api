@@ -887,15 +887,37 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
 
         calendar_service.initialize_without_provider(organization=membership.organization)
 
+        # Pass the serializer's optimizer so recurring masters are prefetched; their
+        # generated (pk-less) occurrences reuse that cache (see
+        # get_calendar_events_expanded).
+        context = self.get_serializer_context()
         expanded_events = calendar_service.get_calendar_events_expanded(
             calendar=calendar,
             start_date=start_dt,
             end_date=end_dt,
+            optimize_queryset=CalendarEventSerializer(context=context).get_optimized_queryset,
         )
 
-        serializer = CalendarEventSerializer(
-            expanded_events, many=True, context=self.get_serializer_context()
-        )
+        # Real (pk-backed) events are re-fetched through the optimized queryset so
+        # their nested relations are prefetched; generated occurrences (pk=None)
+        # already carry their master's cache. Keeps the endpoint within the query
+        # budget regardless of how events were produced.
+        real_ids = [event.id for event in expanded_events if event.id is not None]
+        if real_ids:
+            optimized_by_id = {
+                event.id: event
+                for event in CalendarEventSerializer(context=context).get_optimized_queryset(
+                    CalendarEvent.objects.filter_by_organization(membership.organization.id).filter(
+                        id__in=real_ids
+                    )
+                )
+            }
+            expanded_events = [
+                optimized_by_id.get(event.id, event) if event.id is not None else event
+                for event in expanded_events
+            ]
+
+        serializer = CalendarEventSerializer(expanded_events, many=True, context=context)
         return Response(serializer.data)
 
     @extend_schema(
@@ -1009,7 +1031,10 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
         if not membership:
             return BlockedTime.original_manager.none()
 
-        return BlockedTime.objects.filter_by_organization(membership.organization.id)
+        # `super().get_queryset()` runs the VirtualModel optimization (prefetches
+        # `calendar`, etc.) — without it the `calendar` PrimaryKeyRelatedField loads
+        # one Calendar row per BlockedTime and trips the serializer query budget.
+        return super().get_queryset().filter_by_organization(membership.organization.id)
 
     @extend_schema(
         summary="Create bulk blocked times",
@@ -1233,7 +1258,9 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
         if not membership:
             return AvailableTime.original_manager.none()
 
-        return AvailableTime.objects.filter_by_organization(membership.organization.id)
+        # See BlockedTimeViewSet.get_queryset: `super()` applies the VirtualModel
+        # optimization so the `calendar` relation is prefetched, not loaded per row.
+        return super().get_queryset().filter_by_organization(membership.organization.id)
 
     @extend_schema(
         summary="Create bulk available times",
@@ -1495,8 +1522,18 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         )
         serializer.is_valid(raise_exception=True)
         event = serializer.save(group=group)
+        # Re-fetch through the serializer's optimized queryset so nested
+        # attendances/resource relations are prefetched (avoids the query-budget N+1).
+        context = self.get_serializer_context()
+        optimized_event = (
+            CalendarEventSerializer(context=context)
+            .get_optimized_queryset(
+                CalendarEvent.objects.filter_by_organization(group.organization_id)
+            )
+            .get(id=event.id)
+        )
         return Response(
-            CalendarEventSerializer(event, context=self.get_serializer_context()).data,
+            CalendarEventSerializer(optimized_event, context=context).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -1552,10 +1589,12 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         events = calendar_group_service.get_group_events(
             group_id=group.id, start=start_dt, end=end_dt
         )
+        # Apply the serializer's optimization so nested relations are prefetched
+        # (get_group_events returns a real queryset, not synthetic occurrences).
+        context = self.get_serializer_context()
+        optimized_events = CalendarEventSerializer(context=context).get_optimized_queryset(events)
         return Response(
-            CalendarEventSerializer(
-                list(events), many=True, context=self.get_serializer_context()
-            ).data
+            CalendarEventSerializer(list(optimized_events), many=True, context=context).data
         )
 
     @extend_schema(

@@ -123,15 +123,29 @@ class EventRecurrenceExceptionVirtualModel(v.VirtualModel):
         model = EventRecurrenceException
 
 
+class NestedBlockedTimeVirtualModel(v.VirtualModel):
+    class Meta:
+        model = BlockedTime
+
+
 class BlockedTimeVirtualModel(v.VirtualModel):
     calendar = CalendarVirtualModel()
+    recurrence_rule = RecurrenceRuleVirtualModel()
+    parent_recurring_object = NestedBlockedTimeVirtualModel()
 
     class Meta:
         model = BlockedTime
 
 
+class NestedAvailableTimeVirtualModel(v.VirtualModel):
+    class Meta:
+        model = AvailableTime
+
+
 class AvailableTimeVirtualModel(v.VirtualModel):
     calendar = CalendarVirtualModel()
+    recurrence_rule = RecurrenceRuleVirtualModel()
+    parent_recurring_object = NestedAvailableTimeVirtualModel()
 
     class Meta:
         model = AvailableTime
