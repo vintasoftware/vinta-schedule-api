@@ -530,6 +530,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         detail=True,
         url_path="available-windows",
         url_name="available-windows",
+        pagination_class=None,  # returns a bare array, not a paginated page
     )
     @inject
     def available_windows(
@@ -607,6 +608,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         detail=True,
         url_path="unavailable-windows",
         url_name="unavailable-windows",
+        pagination_class=None,  # returns a bare array, not a paginated page
     )
     @inject
     def unavailable_windows(
