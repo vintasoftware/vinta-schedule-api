@@ -1058,18 +1058,32 @@ class CalendarService(BaseCalendarService):
         return self.calendar_adapter
 
     def convert_naive_utc_datetime_to_timezone(self, datetime_obj: datetime.datetime, iana_tz: str):
-        """
-        Convert a naive UTC datetime object to a timezone-aware datetime in the specified IANA timezone.
-        :param datetime_obj: Naive datetime object in UTC.
-        :param iana_tz: IANA timezone string (e.g., "America/New_York").
-        :return: Timezone-aware datetime object in the specified timezone.
+        """Return the naive local wall-clock of an instant in the given IANA timezone.
+
+        Used to populate ``*_tz_unaware`` fields: the model stores the naive local
+        wall-clock paired with the IANA ``timezone``, and the DB-generated
+        ``start_time``/``end_time`` re-derive the true instant from them via
+        ``convert_naive_utc_to_timezone``. Naive inputs are treated as UTC.
+
+        Previously this did ``datetime_obj.replace(tzinfo=target_tz)``, which keeps the
+        wall-clock and swaps the zone — storing the instant instead of the local
+        wall-clock and shifting synced times by the zone offset. ``astimezone`` converts
+        the instant correctly.
+
+        e.g. 12:00Z + "America/Recife" -> 09:00 (naive).
         """
         try:
             target_tz = zoneinfo.ZoneInfo(iana_tz)
         except zoneinfo.ZoneInfoNotFoundError as e:
             raise ValueError(f"Invalid IANA timezone: {iana_tz}") from e
 
-        return datetime_obj.replace(tzinfo=target_tz)
+        if datetime_obj.tzinfo is None:
+            datetime_obj = datetime_obj.replace(tzinfo=datetime.UTC)
+        # Local wall-clock, tagged UTC so it stores cleanly under USE_TZ (matching how
+        # the batch-create path stores tz_unaware). The generated start_time/end_time
+        # re-interpret this wall-clock in `timezone` to recover the true instant.
+        local_wall_clock = datetime_obj.astimezone(target_tz).replace(tzinfo=None)
+        return local_wall_clock.replace(tzinfo=datetime.UTC)
 
     def _serialize_event_data_input(
         self, event: CalendarEvent, event_data: CalendarEventInputData

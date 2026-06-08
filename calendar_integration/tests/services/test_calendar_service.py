@@ -8714,6 +8714,73 @@ def test_unavailable_time_window_serializer_renders_local_timezone():
     assert data["end_time"] == "2024-01-01T17:00:00-03:00"
 
 
+def test_convert_naive_utc_datetime_to_timezone_returns_local_wall_clock():
+    """The instant becomes the tz's local wall-clock, tagged UTC for clean storage."""
+    service = CalendarService()
+
+    # aware instant 12:00Z -> 09:00 local in Recife (UTC-3), tagged UTC for storage
+    out = service.convert_naive_utc_datetime_to_timezone(
+        datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC), "America/Recife"
+    )
+    assert out == datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC)
+    # the original-offset form of the same instant yields the same wall-clock
+    out_offset = service.convert_naive_utc_datetime_to_timezone(
+        datetime.datetime(2024, 1, 1, 9, 0, tzinfo=zoneinfo.ZoneInfo("America/Recife")),
+        "America/Recife",
+    )
+    assert out_offset == datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC)
+    # naive input is treated as UTC
+    out_naive = service.convert_naive_utc_datetime_to_timezone(
+        datetime.datetime(2024, 1, 1, 12, 0), "America/Recife"
+    )
+    assert out_naive == datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC)
+    # UTC target leaves the wall-clock unchanged
+    out_utc = service.convert_naive_utc_datetime_to_timezone(
+        datetime.datetime(2024, 1, 1, 10, 0, tzinfo=datetime.UTC), "UTC"
+    )
+    assert out_utc == datetime.datetime(2024, 1, 1, 10, 0, tzinfo=datetime.UTC)
+
+
+@pytest.mark.django_db
+def test_sync_new_blocked_time_stores_correct_instant(organization):
+    """A synced external event at 09:00 Recife is stored as the 12:00Z instant.
+
+    Regression: convert_naive_utc_datetime_to_timezone re-tagged the wall-clock,
+    storing tz_unaware as the instant and shifting the generated start_time +3h
+    (BlockedTimes landed 3h later than in the source calendar).
+    """
+    calendar = Calendar.objects.create(
+        name="Recife Calendar",
+        external_id="recife-sync",
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.PERSONAL,
+        organization=organization,
+    )
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    event = CalendarEventAdapterOutputData(
+        calendar_external_id="recife-sync",
+        external_id="ext-1",
+        title="Busy",
+        description="",
+        start_time=datetime.datetime(2024, 1, 1, 9, 0, tzinfo=zoneinfo.ZoneInfo("America/Recife")),
+        end_time=datetime.datetime(2024, 1, 1, 10, 0, tzinfo=zoneinfo.ZoneInfo("America/Recife")),
+        timezone="America/Recife",
+        attendees=[],
+    )
+
+    changes = EventsSyncChanges()
+    service._process_new_event(event, calendar, changes)
+    BlockedTime.objects.bulk_create(changes.blocked_times_to_create)
+
+    blocked = BlockedTime.objects.filter_by_organization(organization.id).get()
+    # 09:00 America/Recife == 12:00Z; must NOT be 15:00Z.
+    assert blocked.start_time == datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC)
+    assert blocked.end_time == datetime.datetime(2024, 1, 1, 13, 0, tzinfo=datetime.UTC)
+    assert blocked.timezone == "America/Recife"
+
+
 def test_subtract_busy_intervals_unit():
     """_subtract_busy_intervals handles overlap, multiple busy, and full coverage."""
     ws = datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC)
