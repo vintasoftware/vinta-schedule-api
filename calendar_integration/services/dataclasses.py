@@ -162,6 +162,8 @@ class AvailableTimeWindow:
     end_time: datetime.datetime
     id: int | None = None  # noqa: A003
     can_book_partially: bool = False
+    # IANA timezone the window should be rendered in; None falls back to UTC.
+    timezone: str | None = None
 
 
 @dataclass

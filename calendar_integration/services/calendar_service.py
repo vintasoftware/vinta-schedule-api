@@ -3081,6 +3081,7 @@ class CalendarService(BaseCalendarService):
                     end_time=free_end,
                     id=available_time.id,
                     can_book_partially=False,
+                    timezone=available_time.timezone,
                 )
                 for available_time in available_times
                 for free_start, free_end in CalendarService._subtract_busy_intervals(

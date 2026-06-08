@@ -1755,6 +1755,26 @@ class AvailableTimeWindowSerializer(serializers.Serializer):
     end_time = serializers.DateTimeField()
     can_book_partially = serializers.BooleanField()
 
+    def to_representation(self, instance):
+        """Render start_time/end_time in the window's IANA timezone, not UTC.
+
+        The windows are UTC-aware instants; without this they'd serialize as e.g.
+        12:00:00Z for 09:00 in America/Recife. Re-express them in the window's
+        timezone so the response carries the local wall-clock the user declared.
+        """
+        data = super().to_representation(instance)
+        tz_name = getattr(instance, "timezone", None)
+        if tz_name:
+            try:
+                tz = zoneinfo.ZoneInfo(tz_name)
+            except zoneinfo.ZoneInfoNotFoundError:
+                return data
+            for field in ("start_time", "end_time"):
+                value = getattr(instance, field, None)
+                if value is not None:
+                    data[field] = value.astimezone(tz).isoformat()
+        return data
+
 
 class UnavailableTimeWindowSerializer(serializers.Serializer):
     id = serializers.IntegerField()  # noqa: A003

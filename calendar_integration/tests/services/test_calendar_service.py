@@ -8582,6 +8582,26 @@ def test_get_availability_windows_subtracts_busy_for_managed_calendar(organizati
             datetime.datetime(2024, 1, 1, 17, 0, tzinfo=datetime.UTC),
         ),
     ]
+    # Each window carries the declared window's timezone for local rendering.
+    assert all(w.timezone == "UTC" for w in windows)
+
+
+def test_available_time_window_serializer_renders_local_timezone():
+    """The window serializer emits start/end in the window's timezone, not UTC."""
+    from calendar_integration.serializers import AvailableTimeWindowSerializer
+
+    window = AvailableTimeWindow(
+        start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),  # 09:00 Recife
+        end_time=datetime.datetime(2024, 1, 1, 20, 0, tzinfo=datetime.UTC),  # 17:00 Recife
+        id=1,
+        can_book_partially=False,
+        timezone="America/Recife",  # UTC-3, no DST
+    )
+
+    data = AvailableTimeWindowSerializer(window).data
+
+    assert data["start_time"] == "2024-01-01T09:00:00-03:00"
+    assert data["end_time"] == "2024-01-01T17:00:00-03:00"
 
 
 def test_subtract_busy_intervals_unit():
