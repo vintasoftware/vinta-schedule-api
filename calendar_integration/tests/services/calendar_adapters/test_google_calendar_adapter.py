@@ -1205,3 +1205,55 @@ class TestGoogleEventDatetimeParsing:
         assert events[0].external_id == "e1"
         assert events[0].start_time == datetime.datetime(2026, 6, 6, 18, 0, tzinfo=datetime.UTC)
         adapter.client.events.return_value.list.assert_called_once()
+
+    def test_is_busy_event_classification(self):
+        """Working-location/birthday/free events are non-busy; the rest are busy."""
+        busy = [
+            {"id": "a"},  # no eventType -> default -> busy
+            {"id": "b", "eventType": "default"},
+            {"id": "c", "eventType": "outOfOffice"},
+            {"id": "d", "eventType": "focusTime"},
+        ]
+        non_busy = [
+            {"id": "e", "eventType": "workingLocation"},  # "Home"/"Office"
+            {"id": "f", "eventType": "birthday"},
+            {"id": "g", "transparency": "transparent"},  # explicitly free
+            {"id": "h", "eventType": "workingLocation", "transparency": "transparent"},
+        ]
+        assert all(GoogleCalendarAdapter._is_busy_event(e) for e in busy)
+        assert not any(GoogleCalendarAdapter._is_busy_event(e) for e in non_busy)
+
+    def test_get_events_skips_non_busy_events(self, adapter):
+        """get_events drops working-location/birthday/free markers so they don't
+        block availability; real events still come through."""
+        adapter.client.events.return_value.list.return_value.execute.return_value = {
+            "items": [
+                {
+                    "id": "real",
+                    "summary": "Meeting",
+                    "start": {"dateTime": "2026-06-06T15:00:00Z"},
+                    "end": {"dateTime": "2026-06-06T16:00:00Z"},
+                },
+                {
+                    "id": "home",
+                    "summary": "Home",
+                    "eventType": "workingLocation",
+                    "start": {"date": "2026-06-06"},
+                    "end": {"date": "2026-06-07"},
+                },
+                {
+                    "id": "free",
+                    "summary": "Tentative hold",
+                    "transparency": "transparent",
+                    "start": {"dateTime": "2026-06-06T18:00:00Z"},
+                    "end": {"dateTime": "2026-06-06T19:00:00Z"},
+                },
+            ],
+            "nextSyncToken": "tok",
+        }
+
+        start = datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 6, 30, tzinfo=datetime.UTC)
+        events = list(adapter.get_events("cal", False, start, end)["events"])
+
+        assert [e.external_id for e in events] == ["real"]

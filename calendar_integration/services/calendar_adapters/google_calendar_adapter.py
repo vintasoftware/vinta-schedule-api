@@ -87,6 +87,26 @@ class GoogleCalendarAdapter(CalendarAdapter):
         "declined": "declined",
         None: "needsAction",
     }
+    # Google eventTypes that don't occupy the owner's time. These are informational
+    # markers (e.g. "Home"/"Office" working-location, birthdays) that Google returns
+    # alongside real events; counting them as busy wrongly blocks availability.
+    NON_BUSY_EVENT_TYPES: frozenset[str] = frozenset(  # noqa: RUF012
+        {"workingLocation", "birthday"}
+    )
+
+    @classmethod
+    def _is_busy_event(cls, event: dict[str, Any]) -> bool:
+        """Whether a Google event occupies the owner's time (counts against availability).
+
+        Excludes working-location / birthday markers and any event explicitly marked
+        free (``transparency == "transparent"``). Everything else — ``default``,
+        ``outOfOffice``, ``focusTime`` — is treated as busy.
+        """
+        if event.get("eventType") in cls.NON_BUSY_EVENT_TYPES:
+            return False
+        if event.get("transparency") == "transparent":
+            return False
+        return True
 
     def __init__(self, credentials_dict: GoogleCredentialTypedDict):
         self.account_id = credentials_dict["account_id"]
@@ -477,8 +497,11 @@ class GoogleCalendarAdapter(CalendarAdapter):
                     .execute()
                 )
 
-                # Yield events from current page
+                # Yield events from current page, skipping non-busy markers
+                # (working-location/birthday/free) so they don't block availability.
                 for event in events_result.get("items", []):
+                    if not self._is_busy_event(event):
+                        continue
                     yield self._convert_google_calendar_event_to_event_data(event, calendar_id)
 
                 page_token = events_result.get("nextPageToken")
