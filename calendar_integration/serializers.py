@@ -1575,6 +1575,27 @@ class AvailableTimeSerializer(VirtualModelSerializer):
             }
         return None
 
+    def to_representation(self, instance):
+        """Render start_time/end_time in the record's IANA timezone, not UTC.
+
+        ``start_time``/``end_time`` are DB-computed instants; Django returns them as
+        UTC-aware datetimes, so DRF would emit e.g. ``...12:00:00Z`` for 09:00 in
+        America/Recife. Re-express them in ``instance.timezone`` so the response
+        carries the local wall-clock (``...09:00:00-03:00``) the client sent.
+        """
+        data = super().to_representation(instance)
+        tz_name = getattr(instance, "timezone", None)
+        if tz_name:
+            try:
+                tz = zoneinfo.ZoneInfo(tz_name)
+            except zoneinfo.ZoneInfoNotFoundError:
+                return data
+            for field in ("start_time", "end_time"):
+                value = getattr(instance, field, None)
+                if value is not None:
+                    data[field] = value.astimezone(tz).isoformat()
+        return data
+
     @inject
     def __init__(
         self,

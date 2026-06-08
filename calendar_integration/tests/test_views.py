@@ -4018,6 +4018,37 @@ class TestAvailableTimeViewSet:
     def _batch_url(self):
         return reverse("api:AvailableTimes-batch")
 
+    def test_batch_returns_times_in_record_timezone(self, auth_client, calendar, user):
+        """Datetimes round-trip in the sent IANA timezone, not UTC.
+
+        Client sends a naive local wall-clock (09:00) + timezone; the response must
+        carry the same local time (09:00 with the zone's offset), not 12:00Z.
+        """
+        calendar.manage_available_windows = True
+        calendar.save()
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        data = {
+            "calendar": calendar.id,
+            "operations": [
+                {
+                    "action": "create",
+                    "start_time": "2024-01-01T09:00:00",
+                    "end_time": "2024-01-01T17:00:00",
+                    "timezone": "America/Recife",  # UTC-3, no DST
+                },
+            ],
+        }
+
+        response = auth_client.post(self._batch_url(), data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        window = response.data[0]
+        assert window["timezone"] == "America/Recife"
+        # Local wall-clock preserved with the zone's offset (not 12:00:00Z).
+        assert window["start_time"] == "2024-01-01T09:00:00-03:00"
+        assert window["end_time"] == "2024-01-01T17:00:00-03:00"
+
     def test_batch_create_update_delete(self, auth_client, calendar, user):
         """A single batch creates, updates, and deletes available times atomically."""
         from calendar_integration.models import AvailableTime
