@@ -37,6 +37,7 @@ from calendar_integration.permissions import (
     CalendarGroupPermission,
 )
 from calendar_integration.serializers import (
+    AvailableTimeBatchSerializer,
     AvailableTimeBulkModificationSerializer,
     AvailableTimeRecurringExceptionSerializer,
     AvailableTimeSerializer,
@@ -1316,6 +1317,46 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
         return Response(
             AvailableTimeSerializer(ordered, many=True, context=context).data,
             status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        summary="Batch create/update/delete available times",
+        description=(
+            "Apply a list of create/update/delete operations to a single calendar's "
+            "available times in one transaction (all-or-nothing). The calendar defaults "
+            "to the user's default calendar when omitted. Returns the calendar's "
+            "available times after the batch."
+        ),
+        request=AvailableTimeBatchSerializer,
+        responses={200: AvailableTimeSerializer(many=True)},
+    )
+    @action(
+        methods=["POST"],
+        detail=False,
+        url_path="batch",
+        url_name="batch",
+    )
+    def batch(self, request):
+        """Transactionally create/update/delete available times for a calendar."""
+        serializer = AvailableTimeBatchSerializer(
+            data=request.data, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        calendar = serializer.save()
+
+        # Read back the calendar's resulting set through the optimized queryset so
+        # nested relations are prefetched (composite `calendar` FK loads per row).
+        context = self.get_serializer_context()
+        resulting = (
+            AvailableTimeSerializer(context=context)
+            .get_optimized_queryset(
+                AvailableTime.objects.filter_by_organization(calendar.organization_id)
+            )
+            .filter(calendar_fk=calendar)
+        )
+        return Response(
+            AvailableTimeSerializer(list(resulting), many=True, context=context).data,
+            status=status.HTTP_200_OK,
         )
 
     @extend_schema(

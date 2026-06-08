@@ -555,6 +555,127 @@ paths:
           description: ''
         '204':
           description: No response body
+  /available-times/batch/:
+    post:
+      operationId: available_times_batch_create
+      description: Apply a list of create/update/delete operations to a single calendar's
+        available times in one transaction (all-or-nothing). The calendar defaults
+        to the user's default calendar when omitted. Returns the calendar's available
+        times after the batch.
+      summary: Batch create/update/delete available times
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBatch'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBatch'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBatch'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAvailableTimeList'
+          description: ''
+  /available-times/batch{format}:
+    post:
+      operationId: available_times_batch_formatted_create
+      description: Apply a list of create/update/delete operations to a single calendar's
+        available times in one transaction (all-or-nothing). The calendar defaults
+        to the user's default calendar when omitted. Returns the calendar's available
+        times after the batch.
+      summary: Batch create/update/delete available times
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBatch'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBatch'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBatch'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAvailableTimeList'
+          description: ''
   /available-times/bulk-create/:
     post:
       operationId: available_times_bulk_create_create
@@ -7923,6 +8044,16 @@ components:
           type: string
       required:
       - token
+    ActionEnum:
+      enum:
+      - create
+      - update
+      - delete
+      type: string
+      description: |-
+        * `create` - create
+        * `update` - update
+        * `delete` - delete
     AvailableResourcesEnum:
       enum:
       - calendar_event
@@ -8032,6 +8163,25 @@ components:
       - recurrence_id
       - start_time
       - timezone
+    AvailableTimeBatch:
+      type: object
+      description: |-
+        Transactional batch of create/update/delete operations on a calendar's available times.
+
+        All operations target a single calendar (resolved from ``calendar`` or the user's
+        default) and run in one transaction — any failure rolls the whole batch back.
+      properties:
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableTimeOperation'
+        calendar:
+          type: integer
+          nullable: true
+          description: Calendar to apply the batch to. Defaults to the user's default
+            calendar.
+      required:
+      - operations
     AvailableTimeBulkModification:
       type: object
       properties:
@@ -8058,6 +8208,30 @@ components:
           default: false
       required:
       - modification_start_date
+    AvailableTimeOperation:
+      type: object
+      description: A single create/update/delete operation in an available-times batch.
+      properties:
+        action:
+          $ref: '#/components/schemas/ActionEnum'
+        id:
+          type: integer
+          description: Target AvailableTime id (required for update/delete).
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        rrule_string:
+          type: string
+          nullable: true
+          description: RRULE string; null clears recurrence. Omit to leave unchanged
+            on update.
+      required:
+      - action
     AvailableTimeRecurringException:
       type: object
       description: Serializer for creating recurring available time exceptions.

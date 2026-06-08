@@ -4131,6 +4131,141 @@ class TestAvailableTimeViewSet:
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
+    def _batch_url(self):
+        return reverse("api:AvailableTimes-batch")
+
+    def test_batch_create_update_delete(self, auth_client, calendar, user):
+        """A single batch creates, updates, and deletes available times atomically."""
+        from calendar_integration.models import AvailableTime
+
+        calendar.manage_available_windows = True
+        calendar.save()
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        keep = CalendarIntegrationTestFactory.create_available_time(calendar=calendar)
+        to_delete = CalendarIntegrationTestFactory.create_available_time(calendar=calendar)
+
+        now = datetime.datetime.now(datetime.UTC)
+        data = {
+            "calendar": calendar.id,
+            "operations": [
+                {
+                    "action": "create",
+                    "start_time": (now + datetime.timedelta(hours=5)).isoformat(),
+                    "end_time": (now + datetime.timedelta(hours=6)).isoformat(),
+                    "timezone": "UTC",
+                },
+                {
+                    "action": "update",
+                    "id": keep.id,
+                    "timezone": "America/New_York",
+                },
+                {"action": "delete", "id": to_delete.id},
+            ],
+        }
+
+        response = auth_client.post(self._batch_url(), data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        remaining = AvailableTime.objects.filter_by_organization(calendar.organization_id).filter(
+            calendar_fk=calendar
+        )
+        # to_delete gone, keep updated, one created -> 2 rows
+        assert remaining.count() == 2
+        assert not remaining.filter(id=to_delete.id).exists()
+        keep.refresh_from_db()
+        assert keep.timezone == "America/New_York"
+
+    def test_batch_is_transactional_on_bad_operation(self, auth_client, calendar, user):
+        """A failing operation rolls back the whole batch — no partial application."""
+        from calendar_integration.models import AvailableTime
+
+        calendar.manage_available_windows = True
+        calendar.save()
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        existing = CalendarIntegrationTestFactory.create_available_time(calendar=calendar)
+        now = datetime.datetime.now(datetime.UTC)
+        data = {
+            "calendar": calendar.id,
+            "operations": [
+                {
+                    "action": "create",
+                    "start_time": (now + datetime.timedelta(hours=5)).isoformat(),
+                    "end_time": (now + datetime.timedelta(hours=6)).isoformat(),
+                    "timezone": "UTC",
+                },
+                # references a non-existent row -> service raises -> 400, full rollback
+                {"action": "delete", "id": 99999999},
+            ],
+        }
+
+        response = auth_client.post(self._batch_url(), data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        # The create above must NOT have persisted (rolled back); only the original row remains.
+        remaining = AvailableTime.objects.filter_by_organization(calendar.organization_id).filter(
+            calendar_fk=calendar
+        )
+        assert remaining.count() == 1
+        assert remaining.get().id == existing.id
+
+    def test_batch_defaults_to_user_default_calendar(self, auth_client, calendar, user):
+        """Omitting calendar applies the batch to the user's default calendar."""
+        from calendar_integration.models import AvailableTime
+
+        calendar.manage_available_windows = True
+        calendar.save()
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
+
+        now = datetime.datetime.now(datetime.UTC)
+        data = {
+            "operations": [
+                {
+                    "action": "create",
+                    "start_time": (now + datetime.timedelta(hours=1)).isoformat(),
+                    "end_time": (now + datetime.timedelta(hours=2)).isoformat(),
+                    "timezone": "UTC",
+                },
+            ],
+        }
+
+        response = auth_client.post(self._batch_url(), data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert (
+            AvailableTime.objects.filter_by_organization(calendar.organization_id)
+            .filter(calendar_fk=calendar)
+            .count()
+            == 1
+        )
+
+    def test_batch_create_missing_fields_400(self, auth_client, calendar, user):
+        """A create operation without required fields is rejected."""
+        calendar.manage_available_windows = True
+        calendar.save()
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        data = {
+            "calendar": calendar.id,
+            "operations": [{"action": "create", "timezone": "UTC"}],
+        }
+        response = auth_client.post(self._batch_url(), data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_batch_update_without_id_400(self, auth_client, calendar, user):
+        """An update operation without an id is rejected."""
+        calendar.manage_available_windows = True
+        calendar.save()
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        data = {
+            "calendar": calendar.id,
+            "operations": [{"action": "update", "timezone": "UTC"}],
+        }
+        response = auth_client.post(self._batch_url(), data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
     def test_get_available_times_expanded(self, auth_client, calendar, user):
         """Test getting expanded available times (including recurring occurrences)"""
         from di_core.containers import container

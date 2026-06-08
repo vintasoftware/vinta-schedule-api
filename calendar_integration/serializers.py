@@ -1902,6 +1902,126 @@ class BulkAvailableTimeSerializer(serializers.Serializer):
         return list(available_times)
 
 
+class AvailableTimeOperationSerializer(serializers.Serializer):
+    """A single create/update/delete operation in an available-times batch."""
+
+    action = serializers.ChoiceField(choices=["create", "update", "delete"])
+    id = serializers.IntegerField(
+        required=False, help_text="Target AvailableTime id (required for update/delete)."
+    )
+    start_time = serializers.DateTimeField(required=False)
+    end_time = serializers.DateTimeField(required=False)
+    timezone = serializers.CharField(required=False)
+    rrule_string = serializers.CharField(
+        required=False,
+        allow_null=True,
+        help_text="RRULE string; null clears recurrence. Omit to leave unchanged on update.",
+    )
+
+    def validate(self, attrs):
+        action = attrs["action"]
+
+        if action == "create":
+            if attrs.get("id") is not None:
+                raise serializers.ValidationError("`id` is not allowed for create operations.")
+            missing = [f for f in ("start_time", "end_time", "timezone") if attrs.get(f) is None]
+            if missing:
+                raise serializers.ValidationError(
+                    f"create operations require: {', '.join(missing)}."
+                )
+        else:  # update / delete
+            if attrs.get("id") is None:
+                raise serializers.ValidationError(f"`id` is required for {action} operations.")
+
+        start_time = attrs.get("start_time")
+        end_time = attrs.get("end_time")
+        if start_time and end_time and end_time <= start_time:
+            raise serializers.ValidationError("end_time must be after start_time.")
+
+        return attrs
+
+
+class AvailableTimeBatchSerializer(serializers.Serializer):
+    """Transactional batch of create/update/delete operations on a calendar's available times.
+
+    All operations target a single calendar (resolved from ``calendar`` or the user's
+    default) and run in one transaction — any failure rolls the whole batch back.
+    """
+
+    operations = AvailableTimeOperationSerializer(many=True)
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.calendar_service = calendar_service
+
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+        membership = (
+            getattr(user, "organization_membership", None)
+            if user and user.is_authenticated
+            else None
+        )
+        self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
+            queryset=(
+                Calendar.objects.filter_by_organization(organization_id=membership.organization_id)
+                if membership
+                else Calendar.original_manager.none()
+            ),
+            allow_null=True,
+            required=False,
+            help_text="Calendar to apply the batch to. Defaults to the user's default calendar.",
+        )
+
+    def validate_operations(self, operations):
+        if not operations:
+            raise serializers.ValidationError("At least one operation must be provided.")
+        return operations
+
+    def save(self, **kwargs):
+        if not self.calendar_service:
+            raise CalendarServiceNotInjectedError(
+                "calendar_service is not defined, please configure your DI container correctly"
+            )
+
+        user = self.context["request"].user
+        membership = get_active_organization_membership(user)
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
+
+        self.calendar_service.initialize_without_provider(organization=membership.organization)
+
+        calendar = self.validated_data.get("calendar")
+        if calendar is None:
+            # No calendar specified — fall back to the user's default calendar.
+            calendar = self.calendar_service.get_default_calendar_for_user(user)
+            if calendar is None:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "No calendar specified and you have no default calendar."
+                        ]
+                    }
+                )
+
+        try:
+            self.calendar_service.batch_modify_available_times(
+                calendar=calendar, operations=self.validated_data["operations"]
+            )
+        except ValueError as e:
+            raise serializers.ValidationError({"non_field_errors": [str(e)]}) from e
+
+        return calendar
+
+
 class BlockedTimeRecurringExceptionSerializer(serializers.Serializer):
     """Serializer for creating recurring blocked time exceptions."""
 

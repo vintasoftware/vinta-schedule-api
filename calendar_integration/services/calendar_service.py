@@ -3149,6 +3149,81 @@ class CalendarService(BaseCalendarService):
         return AvailableTime.objects.bulk_create(availability_windows_to_create)
 
     @transaction.atomic()
+    def batch_modify_available_times(
+        self,
+        calendar: Calendar,
+        operations: Iterable[dict],
+    ) -> list[AvailableTime]:
+        """Apply a batch of create/update/delete operations to a calendar's available times.
+
+        Row-atomic: each operation acts on a whole AvailableTime row. Runs in a single
+        transaction — any failure rolls the whole batch back. Update/delete operations
+        are scoped to this calendar (and organization); a missing id raises ValueError.
+
+        :param calendar: The calendar whose available times are being modified.
+        :param operations: Iterable of dicts, each with an ``action`` of
+            ``create`` / ``update`` / ``delete`` plus the relevant fields
+            (``id``, ``start_time``, ``end_time``, ``timezone``, ``rrule_string``).
+        :return: The calendar's available times after the batch is applied.
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        if not calendar.manage_available_windows:
+            raise ValueError("This calendar does not manage available windows.")
+
+        scoped = AvailableTime.objects.filter_by_organization(self.organization.id).filter(
+            calendar_fk=calendar
+        )
+
+        for operation in operations:
+            action = operation["action"]
+
+            if action == "create":
+                recurrence_rule = self._create_recurrence_rule_if_needed(
+                    operation.get("rrule_string")
+                )
+                AvailableTime.objects.create(
+                    calendar=calendar,
+                    organization_id=calendar.organization_id,
+                    start_time_tz_unaware=operation["start_time"],
+                    end_time_tz_unaware=operation["end_time"],
+                    timezone=operation["timezone"],
+                    recurrence_rule=recurrence_rule,
+                )
+            elif action == "update":
+                try:
+                    available_time = scoped.get(id=operation["id"])
+                except AvailableTime.DoesNotExist as e:
+                    raise ValueError(
+                        f"Available time {operation['id']} not found in this calendar."
+                    ) from e
+                if "start_time" in operation:
+                    available_time.start_time_tz_unaware = operation["start_time"]
+                if "end_time" in operation:
+                    available_time.end_time_tz_unaware = operation["end_time"]
+                if "timezone" in operation:
+                    available_time.timezone = operation["timezone"]
+                if "rrule_string" in operation:
+                    available_time.recurrence_rule = self._create_recurrence_rule_if_needed(
+                        operation["rrule_string"]
+                    )
+                available_time.save()
+            elif action == "delete":
+                try:
+                    scoped.get(id=operation["id"]).delete()
+                except AvailableTime.DoesNotExist as e:
+                    raise ValueError(
+                        f"Available time {operation['id']} not found in this calendar."
+                    ) from e
+
+        return list(
+            AvailableTime.objects.filter_by_organization(self.organization.id).filter(
+                calendar_fk=calendar
+            )
+        )
+
+    @transaction.atomic()
     def bulk_create_manual_blocked_times(
         self,
         calendar: Calendar,
