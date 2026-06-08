@@ -8062,7 +8062,6 @@ components:
           type: integer
           nullable: true
       required:
-      - calendar
       - created
       - end_time
       - id
@@ -8270,7 +8269,6 @@ components:
           type: integer
           nullable: true
       required:
-      - calendar
       - created
       - end_time
       - external_id

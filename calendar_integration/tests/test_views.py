@@ -4069,10 +4069,46 @@ class TestAvailableTimeViewSet:
             == 2
         )
 
-    def test_bulk_create_available_times_null_calendar_400(self, auth_client, calendar, user):
-        """A null calendar is rejected with 400, not an opaque 500 from the service."""
+    def test_bulk_create_available_times_omitted_calendar_uses_default(
+        self, auth_client, calendar, user
+    ):
+        """Omitting the calendar falls back to the user's default calendar."""
+        from calendar_integration.models import AvailableTime
+
         calendar.manage_available_windows = True
         calendar.save()
+        # is_default=True makes this the user's default calendar.
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
+
+        url = reverse("api:AvailableTimes-bulk-create")
+        data = {
+            "available_times": [
+                {
+                    "start_time": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+                    ).isoformat(),
+                    "end_time": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+                    ).isoformat(),
+                    "timezone": "UTC",
+                },
+            ],
+        }
+
+        response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert len(response.data) == 1
+        created = AvailableTime.objects.filter_by_organization(calendar.organization_id).get()
+        assert created.calendar_fk_id == calendar.id
+
+    def test_bulk_create_available_times_no_calendar_no_default_400(
+        self, auth_client, calendar, user
+    ):
+        """No calendar and no default → 400, not an opaque 500 from the service."""
+        calendar.manage_available_windows = True
+        calendar.save()
+        # Ownership without is_default → user has no default calendar.
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
 
         url = reverse("api:AvailableTimes-bulk-create")

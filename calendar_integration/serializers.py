@@ -1370,6 +1370,7 @@ class BlockedTimeSerializer(VirtualModelSerializer):
                 else Calendar.original_manager.none()
             ),
             allow_null=True,
+            required=False,
         )
 
     def create(self, validated_data: dict):
@@ -1396,9 +1397,20 @@ class BlockedTimeSerializer(VirtualModelSerializer):
                 {"non_field_errors": ["User has no organization membership."]}
             )
 
-        calendar = validated_data.pop("calendar")
+        calendar = validated_data.pop("calendar", None)
         organization: Organization = membership.organization
         self.calendar_service.initialize_without_provider(user, organization)
+        if calendar is None:
+            # No calendar specified — fall back to the user's default calendar.
+            calendar = self.calendar_service.get_default_calendar_for_user(user)
+            if calendar is None:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "No calendar specified and you have no default calendar."
+                        ]
+                    }
+                )
 
         # Handle recurrence fields
         recurrence_rule_data = validated_data.pop("recurrence_rule", None)
@@ -1601,6 +1613,7 @@ class AvailableTimeSerializer(VirtualModelSerializer):
                 else Calendar.original_manager.none()
             ),
             allow_null=True,
+            required=False,
         )
 
     def create(self, validated_data: dict):
@@ -1627,9 +1640,20 @@ class AvailableTimeSerializer(VirtualModelSerializer):
                 {"non_field_errors": ["User has no organization membership."]}
             )
 
-        calendar = validated_data.pop("calendar")
+        calendar = validated_data.pop("calendar", None)
         organization: Organization = membership.organization
         self.calendar_service.initialize_without_provider(user, organization)
+        if calendar is None:
+            # No calendar specified — fall back to the user's default calendar.
+            calendar = self.calendar_service.get_default_calendar_for_user(user)
+            if calendar is None:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "No calendar specified and you have no default calendar."
+                        ]
+                    }
+                )
 
         # Handle recurrence fields
         recurrence_rule_data = validated_data.pop("recurrence_rule", None)
@@ -1747,12 +1771,9 @@ class BulkBlockedTimeSerializer(serializers.Serializer):
         if not blocked_times_data:
             raise serializers.ValidationError("At least one blocked time must be provided")
 
-        # `calendar` is nullable on the item serializer, but a null calendar can't be
-        # bulk-created (the service needs one) — reject it here with a clear message.
-        if any(bt.get("calendar") is None for bt in blocked_times_data):
-            raise serializers.ValidationError("Each blocked time must specify a calendar")
-
-        # check all blocked time instances are for the same calendar
+        # `calendar` is optional: when omitted on every item, save() falls back to the
+        # user's default calendar. All items must agree on the calendar (including all
+        # omitting it) — mixing a calendar with omissions is ambiguous and rejected.
         first_blocked_time_calendar = blocked_times_data[0].get("calendar")
         for blocked_time in blocked_times_data[1:]:
             if blocked_time.get("calendar") != first_blocked_time_calendar:
@@ -1785,7 +1806,18 @@ class BulkBlockedTimeSerializer(serializers.Serializer):
             (bt["start_time"], bt["end_time"], bt["reason"], bt.get("rrule_string"))
             for bt in self.validated_data["blocked_times"]
         ]
-        calendar = self.validated_data["blocked_times"][0]["calendar"]
+        calendar = self.validated_data["blocked_times"][0].get("calendar")
+        if calendar is None:
+            # No calendar specified — fall back to the user's default calendar.
+            calendar = self.calendar_service.get_default_calendar_for_user(user)
+            if calendar is None:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "No calendar specified and you have no default calendar."
+                        ]
+                    }
+                )
 
         blocked_times = self.calendar_service.bulk_create_manual_blocked_times(
             calendar=calendar, blocked_times=blocked_times_tuples
@@ -1813,13 +1845,9 @@ class BulkAvailableTimeSerializer(serializers.Serializer):
         if not available_times_data:
             raise serializers.ValidationError("At least one available time must be provided")
 
-        # `calendar` is nullable on the item serializer, but a null calendar can't be
-        # bulk-created (the service needs one) — reject it here with a clear message
-        # instead of letting None reach the service and raise an opaque 500.
-        if any(at.get("calendar") is None for at in available_times_data):
-            raise serializers.ValidationError("Each available time must specify a calendar")
-
-        # check all available time instances are for the same calendar
+        # `calendar` is optional: when omitted on every item, save() falls back to the
+        # user's default calendar. All items must agree on the calendar (including all
+        # omitting it) — mixing a calendar with omissions is ambiguous and rejected.
         first_available_time_calendar = available_times_data[0].get("calendar")
         for available_time in available_times_data[1:]:
             if available_time.get("calendar") != first_available_time_calendar:
@@ -1842,11 +1870,22 @@ class BulkAvailableTimeSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
-        calendar = self.validated_data["available_times"][0]["calendar"]
-
         # `organization` is the 2nd param (1st is user_or_token) — must be keyword,
         # else self.organization stays None and the type guard raises.
         self.calendar_service.initialize_without_provider(organization=membership.organization)
+
+        calendar = self.validated_data["available_times"][0].get("calendar")
+        if calendar is None:
+            # No calendar specified — fall back to the user's default calendar.
+            calendar = self.calendar_service.get_default_calendar_for_user(user)
+            if calendar is None:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "No calendar specified and you have no default calendar."
+                        ]
+                    }
+                )
 
         # Convert to the format expected by bulk_create_availability_windows:
         # (start_time, end_time, timezone, rrule_string).

@@ -3093,6 +3093,24 @@ class CalendarService(BaseCalendarService):
 
     @transaction.atomic()
     @transaction.atomic()
+    def get_default_calendar_for_user(self, user: "User") -> Calendar | None:
+        """Resolve a user's default calendar in the service's organization.
+
+        The default is the active CalendarOwnership flagged ``is_default``, restricted
+        to active calendars. Returns None when the user has no default calendar.
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        ownership = (
+            CalendarOwnership.objects.filter_by_organization(self.organization.id)
+            .filter(user=user, is_default=True, calendar__is_active=True)
+            .select_related("calendar")
+            .order_by("id")
+            .first()
+        )
+        return ownership.calendar if ownership else None
+
     def bulk_create_availability_windows(
         self,
         calendar: Calendar,
