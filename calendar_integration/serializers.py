@@ -1893,10 +1893,12 @@ class BulkAvailableTimeSerializer(serializers.Serializer):
             (at["start_time"], at["end_time"], at["timezone"], at.get("rrule_string"))
             for at in self.validated_data["available_times"]
         ]
-
-        available_times = self.calendar_service.bulk_create_availability_windows(
-            calendar=calendar, availability_windows=availability_tuples
-        )
+        try:
+            available_times = self.calendar_service.bulk_create_availability_windows(
+                calendar=calendar, availability_windows=availability_tuples
+            )
+        except ValueError as e:
+            raise serializers.ValidationError({"non_field_errors": [str(e)]}) from e
         return list(available_times)
 
 
