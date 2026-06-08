@@ -162,7 +162,8 @@ class CalendarSerializer(VirtualModelSerializer):
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
-        self.calendar_service.initialize_without_provider(membership.organization)
+        # `organization` is the 2nd param (1st is user_or_token) — pass as keyword.
+        self.calendar_service.initialize_without_provider(organization=membership.organization)
         return self.calendar_service.create_virtual_calendar(
             name=validated_data.get("name"),
             description=validated_data.get("description"),
@@ -244,6 +245,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
+        # `organization` is the 2nd param (1st is user_or_token) — pass as keyword.
         self.calendar_service.initialize_without_provider(organization=membership.organization)
 
         return self.calendar_service.create_bundle_calendar(
@@ -1745,6 +1747,11 @@ class BulkBlockedTimeSerializer(serializers.Serializer):
         if not blocked_times_data:
             raise serializers.ValidationError("At least one blocked time must be provided")
 
+        # `calendar` is nullable on the item serializer, but a null calendar can't be
+        # bulk-created (the service needs one) — reject it here with a clear message.
+        if any(bt.get("calendar") is None for bt in blocked_times_data):
+            raise serializers.ValidationError("Each blocked time must specify a calendar")
+
         # check all blocked time instances are for the same calendar
         first_blocked_time_calendar = blocked_times_data[0].get("calendar")
         for blocked_time in blocked_times_data[1:]:
@@ -1769,7 +1776,9 @@ class BulkBlockedTimeSerializer(serializers.Serializer):
                 {"non_field_errors": ["User has no organization membership."]}
             )
 
-        self.calendar_service.initialize_without_provider(membership.organization)
+        # `organization` is the 2nd param (1st is user_or_token) — must be keyword,
+        # else self.organization stays None and the type guard raises.
+        self.calendar_service.initialize_without_provider(organization=membership.organization)
 
         # Convert to the format expected by bulk_create_manual_blocked_times
         blocked_times_tuples = [
@@ -1804,6 +1813,12 @@ class BulkAvailableTimeSerializer(serializers.Serializer):
         if not available_times_data:
             raise serializers.ValidationError("At least one available time must be provided")
 
+        # `calendar` is nullable on the item serializer, but a null calendar can't be
+        # bulk-created (the service needs one) — reject it here with a clear message
+        # instead of letting None reach the service and raise an opaque 500.
+        if any(at.get("calendar") is None for at in available_times_data):
+            raise serializers.ValidationError("Each available time must specify a calendar")
+
         # check all available time instances are for the same calendar
         first_available_time_calendar = available_times_data[0].get("calendar")
         for available_time in available_times_data[1:]:
@@ -1829,11 +1844,14 @@ class BulkAvailableTimeSerializer(serializers.Serializer):
             )
         calendar = self.validated_data["available_times"][0]["calendar"]
 
-        self.calendar_service.initialize_without_provider(membership.organization)
+        # `organization` is the 2nd param (1st is user_or_token) — must be keyword,
+        # else self.organization stays None and the type guard raises.
+        self.calendar_service.initialize_without_provider(organization=membership.organization)
 
-        # Convert to the format expected by bulk_create_availability_windows
+        # Convert to the format expected by bulk_create_availability_windows:
+        # (start_time, end_time, timezone, rrule_string).
         availability_tuples = [
-            (at["start_time"], at["end_time"], at.get("rrule_string"))
+            (at["start_time"], at["end_time"], at["timezone"], at.get("rrule_string"))
             for at in self.validated_data["available_times"]
         ]
 

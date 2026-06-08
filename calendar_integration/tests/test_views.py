@@ -4016,31 +4016,21 @@ class TestAvailableTimeViewSet:
         mock_calendar_service.create_available_time.assert_called_once()
 
     def test_bulk_create_available_times(self, auth_client, calendar, user):
-        """Test bulk creating available times"""
-        from di_core.containers import container
+        """Bulk creating available times runs the real calendar service end-to-end.
+
+        Uses the real (non-mocked) service so initialization and tuple-shape bugs
+        surface: ``initialize_without_provider`` must receive ``organization`` as a
+        keyword (else CalendarServiceOrganizationNotSetError), and the serializer
+        must emit (start, end, timezone, rrule) tuples matching the service.
+        """
+        from calendar_integration.models import AvailableTime
 
         # Set up the calendar to allow available windows management
-        calendar.can_manage_available_windows = True
+        calendar.manage_available_windows = True
         calendar.save()
 
         # Create calendar ownership
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
-
-        # Create a mock calendar service
-        mock_calendar_service = Mock()
-
-        created_available_times = [
-            CalendarIntegrationTestFactory.create_available_time(
-                calendar=calendar,
-            ),
-            CalendarIntegrationTestFactory.create_available_time(
-                calendar=calendar,
-            ),
-        ]
-
-        mock_calendar_service.bulk_create_availability_windows.return_value = (
-            created_available_times
-        )
 
         url = reverse("api:AvailableTimes-bulk-create")
         data = {
@@ -4068,15 +4058,42 @@ class TestAvailableTimeViewSet:
             ],
         }
 
-        # Use container override to inject the mock service
-        with container.calendar_service.override(mock_calendar_service):
-            response = auth_client.post(url, data, format="json")
+        response = auth_client.post(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_201_CREATED)
         assert len(response.data) == 2
+        assert (
+            AvailableTime.objects.filter_by_organization(calendar.organization_id)
+            .filter(calendar_fk=calendar)
+            .count()
+            == 2
+        )
 
-        # Verify the mock was called
-        mock_calendar_service.bulk_create_availability_windows.assert_called_once()
+    def test_bulk_create_available_times_null_calendar_400(self, auth_client, calendar, user):
+        """A null calendar is rejected with 400, not an opaque 500 from the service."""
+        calendar.manage_available_windows = True
+        calendar.save()
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:AvailableTimes-bulk-create")
+        data = {
+            "available_times": [
+                {
+                    "calendar": None,
+                    "start_time": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+                    ).isoformat(),
+                    "end_time": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+                    ).isoformat(),
+                    "timezone": "UTC",
+                },
+            ],
+        }
+
+        response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
     def test_get_available_times_expanded(self, auth_client, calendar, user):
         """Test getting expanded available times (including recurring occurrences)"""

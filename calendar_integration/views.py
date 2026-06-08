@@ -1055,10 +1055,24 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
         serializer.is_valid(raise_exception=True)
         blocked_times = serializer.save()
 
+        # Re-fetch through the optimized queryset so nested relations are prefetched
+        # (created rows expose `calendar` as a composite FK that loads per row).
+        context = self.get_serializer_context()
+        if not blocked_times:
+            return Response([], status=status.HTTP_201_CREATED)
+        ids = [bt.id for bt in blocked_times]
+        optimized_by_id = {
+            bt.id: bt
+            for bt in BlockedTimeSerializer(context=context)
+            .get_optimized_queryset(
+                BlockedTime.objects.filter_by_organization(blocked_times[0].organization_id)
+            )
+            .filter(id__in=ids)
+        }
+        ordered = [optimized_by_id[bt.id] for bt in blocked_times if bt.id in optimized_by_id]
+
         return Response(
-            BlockedTimeSerializer(
-                blocked_times, many=True, context=self.get_serializer_context()
-            ).data,
+            BlockedTimeSerializer(ordered, many=True, context=context).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -1281,10 +1295,24 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
         serializer.is_valid(raise_exception=True)
         available_times = serializer.save()
 
+        # Re-fetch through the optimized queryset so nested relations are prefetched
+        # (created rows expose `calendar` as a composite FK that loads per row).
+        context = self.get_serializer_context()
+        if not available_times:
+            return Response([], status=status.HTTP_201_CREATED)
+        ids = [at.id for at in available_times]
+        optimized_by_id = {
+            at.id: at
+            for at in AvailableTimeSerializer(context=context)
+            .get_optimized_queryset(
+                AvailableTime.objects.filter_by_organization(available_times[0].organization_id)
+            )
+            .filter(id__in=ids)
+        }
+        ordered = [optimized_by_id[at.id] for at in available_times if at.id in optimized_by_id]
+
         return Response(
-            AvailableTimeSerializer(
-                available_times, many=True, context=self.get_serializer_context()
-            ).data,
+            AvailableTimeSerializer(ordered, many=True, context=context).data,
             status=status.HTTP_201_CREATED,
         )
 
