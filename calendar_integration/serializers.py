@@ -78,6 +78,32 @@ if TYPE_CHECKING:
     from calendar_integration.services.calendar_service import CalendarService
 
 
+def _localize_times_in_representation(
+    data: dict,
+    instance,
+    tz_name: str | None,
+    fields: tuple[str, ...] = ("start_time", "end_time"),
+) -> dict:
+    """Re-render datetime fields in ``tz_name`` instead of UTC, in place.
+
+    start_time/end_time are stored/computed as UTC-aware instants; Django returns
+    them UTC, so DRF would emit e.g. 12:00:00Z for 09:00 America/Recife. Re-express
+    them in the record's IANA timezone so responses carry the local wall-clock. No-op
+    when the timezone is missing or unknown.
+    """
+    if not tz_name or not isinstance(tz_name, str):
+        return data
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        return data
+    for field in fields:
+        value = getattr(instance, field, None)
+        if value is not None:
+            data[field] = value.astimezone(tz).isoformat()
+    return data
+
+
 class CalendarOwnershipSerializer(VirtualModelSerializer):
     class Meta:
         model = CalendarOwnership
@@ -1236,6 +1262,13 @@ class CalendarEventSerializer(VirtualModelSerializer):
         """
         return obj.is_recurring
 
+    def to_representation(self, instance):
+        """Render start_time/end_time in the event's IANA timezone, not UTC."""
+        data = super().to_representation(instance)
+        return _localize_times_in_representation(
+            data, instance, getattr(instance, "timezone", None)
+        )
+
 
 class CalendarEventTransferSerializer(serializers.Serializer):
     target_calendar_id = serializers.IntegerField()
@@ -1331,6 +1364,13 @@ class BlockedTimeSerializer(VirtualModelSerializer):
                 "reason": obj.parent_recurring_object.reason,
             }
         return None
+
+    def to_representation(self, instance):
+        """Render start_time/end_time in the record's IANA timezone, not UTC."""
+        data = super().to_representation(instance)
+        return _localize_times_in_representation(
+            data, instance, getattr(instance, "timezone", None)
+        )
 
     @inject
     def __init__(
@@ -1576,25 +1616,11 @@ class AvailableTimeSerializer(VirtualModelSerializer):
         return None
 
     def to_representation(self, instance):
-        """Render start_time/end_time in the record's IANA timezone, not UTC.
-
-        ``start_time``/``end_time`` are DB-computed instants; Django returns them as
-        UTC-aware datetimes, so DRF would emit e.g. ``...12:00:00Z`` for 09:00 in
-        America/Recife. Re-express them in ``instance.timezone`` so the response
-        carries the local wall-clock (``...09:00:00-03:00``) the client sent.
-        """
+        """Render start_time/end_time in the record's IANA timezone, not UTC."""
         data = super().to_representation(instance)
-        tz_name = getattr(instance, "timezone", None)
-        if tz_name:
-            try:
-                tz = zoneinfo.ZoneInfo(tz_name)
-            except zoneinfo.ZoneInfoNotFoundError:
-                return data
-            for field in ("start_time", "end_time"):
-                value = getattr(instance, field, None)
-                if value is not None:
-                    data[field] = value.astimezone(tz).isoformat()
-        return data
+        return _localize_times_in_representation(
+            data, instance, getattr(instance, "timezone", None)
+        )
 
     @inject
     def __init__(
@@ -1756,24 +1782,11 @@ class AvailableTimeWindowSerializer(serializers.Serializer):
     can_book_partially = serializers.BooleanField()
 
     def to_representation(self, instance):
-        """Render start_time/end_time in the window's IANA timezone, not UTC.
-
-        The windows are UTC-aware instants; without this they'd serialize as e.g.
-        12:00:00Z for 09:00 in America/Recife. Re-express them in the window's
-        timezone so the response carries the local wall-clock the user declared.
-        """
+        """Render start_time/end_time in the window's IANA timezone, not UTC."""
         data = super().to_representation(instance)
-        tz_name = getattr(instance, "timezone", None)
-        if tz_name:
-            try:
-                tz = zoneinfo.ZoneInfo(tz_name)
-            except zoneinfo.ZoneInfoNotFoundError:
-                return data
-            for field in ("start_time", "end_time"):
-                value = getattr(instance, field, None)
-                if value is not None:
-                    data[field] = value.astimezone(tz).isoformat()
-        return data
+        return _localize_times_in_representation(
+            data, instance, getattr(instance, "timezone", None)
+        )
 
 
 class UnavailableTimeWindowSerializer(serializers.Serializer):
@@ -1790,6 +1803,14 @@ class UnavailableTimeWindowSerializer(serializers.Serializer):
 
         blocked_time_data = cast(BlockedTimeData, obj.data)
         return blocked_time_data.reason
+
+    def to_representation(self, instance):
+        """Render start_time/end_time in the underlying record's timezone, not UTC."""
+        data = super().to_representation(instance)
+        # UnavailableTimeWindow has no timezone of its own; take it from the
+        # underlying event/blocked-time payload it wraps.
+        tz_name = getattr(getattr(instance, "data", None), "timezone", None)
+        return _localize_times_in_representation(data, instance, tz_name)
 
 
 class BulkBlockedTimeSerializer(serializers.Serializer):

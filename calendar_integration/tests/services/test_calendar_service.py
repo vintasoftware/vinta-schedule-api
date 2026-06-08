@@ -8686,6 +8686,34 @@ def test_recurring_availability_windows_keep_local_time(organization):
         assert data["end_time"].endswith("17:00:00-03:00")
 
 
+def test_unavailable_time_window_serializer_renders_local_timezone():
+    """Unavailable windows render in the underlying record's timezone, not UTC."""
+    from calendar_integration.serializers import UnavailableTimeWindowSerializer
+    from calendar_integration.services.dataclasses import BlockedTimeData
+
+    window = UnavailableTimeWindow(
+        start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),  # 09:00 Recife
+        end_time=datetime.datetime(2024, 1, 1, 20, 0, tzinfo=datetime.UTC),  # 17:00 Recife
+        reason="blocked_time",
+        id=1,
+        data=BlockedTimeData(
+            id=1,
+            calendar_external_id="cal",
+            start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2024, 1, 1, 20, 0, tzinfo=datetime.UTC),
+            timezone="America/Recife",  # UTC-3, no DST
+            reason="busy",
+            external_id=None,
+            meta={},
+        ),
+    )
+
+    data = UnavailableTimeWindowSerializer(window).data
+
+    assert data["start_time"] == "2024-01-01T09:00:00-03:00"
+    assert data["end_time"] == "2024-01-01T17:00:00-03:00"
+
+
 def test_subtract_busy_intervals_unit():
     """_subtract_busy_intervals handles overlap, multiple busy, and full coverage."""
     ws = datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC)

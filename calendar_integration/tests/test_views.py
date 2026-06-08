@@ -3235,6 +3235,27 @@ class TestBlockedTimeViewSet:
         assert len(response.data["results"]) == 1
         assert response.data["results"][0]["reason"] == "Lunch break"
 
+    def test_list_blocked_times_renders_local_timezone(self, auth_client, calendar, user):
+        """Blocked times serialize start/end in the record's timezone, not UTC."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        # tz_unaware 09:00 + America/Recife -> stored instant 12:00Z, rendered 09:00-03:00.
+        CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Recife block",
+            start_time_tz_unaware=datetime.datetime(2024, 1, 1, 9, 0),
+            end_time_tz_unaware=datetime.datetime(2024, 1, 1, 17, 0),
+            timezone="America/Recife",
+        )
+
+        url = reverse("api:BlockedTimes-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        row = response.data["results"][0]
+        assert row["timezone"] == "America/Recife"
+        assert row["start_time"] == "2024-01-01T09:00:00-03:00"
+        assert row["end_time"] == "2024-01-01T17:00:00-03:00"
+
     def test_list_blocked_times_no_n1_on_calendar(self, auth_client, calendar, user):
         """Listing many blocked times must not issue one Calendar query per row.
 
