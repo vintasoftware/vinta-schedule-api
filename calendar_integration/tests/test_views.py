@@ -4575,7 +4575,7 @@ class TestCalendarBundleUpdateAction:
         response = admin_client.patch(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        assert "not a bundle" in response.data["detail"].lower()
+        assert "not a bundle" in str(response.data["non_field_errors"]).lower()
 
     def test_update_bundle_fewer_than_two_children_400(self, organization):
         """Providing only one child calendar returns 400."""

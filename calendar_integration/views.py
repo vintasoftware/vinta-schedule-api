@@ -13,7 +13,6 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarIntegrationError,
@@ -162,50 +161,17 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         url_name="bundle-update",
         permission_classes=[IsOrganizationAdmin],
     )
-    @inject
-    def update_bundle(
-        self,
-        request,
-        pk: str | None = None,
-        calendar_service: Annotated[CalendarService, Provide["calendar_service"]] = None,  # type: ignore
-    ) -> Response:
+    def update_bundle(self, request, pk: str | None = None) -> Response:
         """Update the children and primary calendar of an existing bundle (admin only)."""
         calendar = self.get_object()
 
-        if calendar.calendar_type != CalendarType.BUNDLE:
-            return Response(
-                {"detail": "Calendar is not a bundle."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Pass the bundle into serializer context so it can fetch existing children
-        context = {**self.get_serializer_context(), "bundle": calendar}
         serializer = CalendarBundleUpdateSerializer(
+            instance=calendar,
             data=request.data,
-            context=context,
+            context=self.get_serializer_context(),
         )
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        membership = get_active_organization_membership(request.user)
-        if not membership:
-            return Response(
-                {"detail": "User is not an active member of any organization."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        try:
-            calendar_service.initialize_without_provider(organization=membership.organization)
-            calendar_service.update_bundle_calendar(
-                bundle_calendar=calendar,
-                child_calendars=serializer.validated_data["bundle_calendars"],
-                primary_calendar=serializer.validated_data.get("primary_calendar"),
-            )
-        except (ValueError, CalendarIntegrationError) as e:
-            return Response(
-                {"detail": str(e)},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
 
         updated_bundle = self.get_queryset().get(id=calendar.id)
         return Response(

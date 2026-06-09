@@ -11,7 +11,11 @@ from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
 from calendar_integration.constants import CalendarProvider, CalendarType
-from calendar_integration.exceptions import CalendarGroupError, CalendarServiceNotInjectedError
+from calendar_integration.exceptions import (
+    CalendarGroupError,
+    CalendarIntegrationError,
+    CalendarServiceNotInjectedError,
+)
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -240,7 +244,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
-        self.calendar_service.initialize_without_provider(membership.organization)
+        self.calendar_service.initialize_without_provider(organization=membership.organization)
 
         return self.calendar_service.create_bundle_calendar(
             name=validated_data.get("name"),
@@ -253,7 +257,14 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
 class CalendarBundleUpdateSerializer(serializers.Serializer):
     """Serializer for updating a bundle calendar's child calendars and primary calendar."""
 
-    def __init__(self, *args, **kwargs):
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        self.calendar_service = calendar_service
         super().__init__(*args, **kwargs)
         user = (
             self.context["request"].user if self.context and self.context.get("request") else None
@@ -269,8 +280,8 @@ class CalendarBundleUpdateSerializer(serializers.Serializer):
         if org_id:
             from django.db.models import Q
 
-            # Get the target bundle from context (passed from the view)
-            bundle = self.context.get("bundle") if self.context else None
+            # The bundle being updated is passed as `instance`.
+            bundle = self.instance
 
             # Fetch existing child IDs
             existing_child_ids = []
@@ -306,6 +317,9 @@ class CalendarBundleUpdateSerializer(serializers.Serializer):
         return bundle_calendars
 
     def validate(self, attrs: dict) -> dict:
+        if self.instance and self.instance.calendar_type != CalendarType.BUNDLE:
+            raise serializers.ValidationError("Calendar is not a bundle.")
+
         primary_calendar: Calendar | None = attrs.get("primary_calendar")
         bundle_calendars: list[Calendar] = attrs.get("bundle_calendars", [])
 
@@ -315,6 +329,26 @@ class CalendarBundleUpdateSerializer(serializers.Serializer):
             )
 
         return attrs
+
+    def update(self, instance: Calendar, validated_data: dict) -> Calendar:
+        user = self.context["request"].user
+        membership = get_active_organization_membership(user)
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
+
+        self.calendar_service.initialize_without_provider(organization=membership.organization)
+        try:
+            self.calendar_service.update_bundle_calendar(
+                bundle_calendar=instance,
+                child_calendars=validated_data["bundle_calendars"],
+                primary_calendar=validated_data.get("primary_calendar"),
+            )
+        except (ValueError, CalendarIntegrationError) as e:
+            raise serializers.ValidationError(str(e)) from e
+
+        return instance
 
 
 class EventRecurringExceptionSerializer(serializers.Serializer):
