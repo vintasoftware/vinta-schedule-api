@@ -43,7 +43,9 @@ X_FRAME_OPTIONS = "DENY"
 
 # Celery
 # Recommended settings for reliability: https://gist.github.com/fjsj/da41321ac96cf28a96235cb20e7236f6
-CELERY_BROKER_URL = config("RABBITMQ_URL", default="")
+# Broker: prefer RABBITMQ_URL when provided; otherwise fall back to Redis as the
+# broker (Render has no managed RabbitMQ, and Redis is already provisioned).
+CELERY_BROKER_URL = config("RABBITMQ_URL", default="") or REDIS_URL
 # Redis result backend is optional; when REDIS_URL is unset, task results are
 # simply not stored (the broker still drives task execution).
 CELERY_RESULT_BACKEND = config("REDIS_URL", default="") or None

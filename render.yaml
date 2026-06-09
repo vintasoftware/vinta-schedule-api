@@ -1,21 +1,21 @@
 databases:
-  - name: vinta_schedule_api-postgres
+  - name: vinta_schedule_api-staging-postgres
     databaseName: vinta_schedule_api
     plan: free
     user: vinta_schedule_api
 
 services:
   - type: redis
-    name: vinta_schedule_api-redis
+    name: vinta_schedule_api-staging-redis
     plan: free
     ipAllowList: [] # only allow internal connections
 
   - type: web
-    name: vinta_schedule_api
+    name: vinta_schedule_api-staging
     plan: free
     runtime: python
     buildCommand: "./render_build.sh"
-    startCommand: "uv run gunicorn vinta_schedule_api.wsgi:application --chdir backend --limit-request-line 8188 --log-file -"
+    startCommand: "uv run gunicorn vinta_schedule_api.wsgi:application --limit-request-line 8188 --log-file -"
     envVars:
       - key: ENABLE_DJANGO_COLLECTSTATIC
         value: 1
@@ -23,85 +23,85 @@ services:
         value: 1
       - key: DATABASE_URL
         fromDatabase:
-          name: vinta_schedule_api-postgres
+          name: vinta_schedule_api-staging-postgres
           property: connectionString
       - key: REDIS_URL
         fromService:
           type: redis
-          name: vinta_schedule_api-redis
+          name: vinta_schedule_api-staging-redis
           property: connectionString
       - fromGroup: python-services
       - fromGroup: integrations-credentials
+      - fromGroup: aws-storage
 
-  # As there aren't free plans for Workers in Render, the configuration for
-  # celery workers/beat will be commented by default
-  #
-  # - type: worker
-  #   name: worker-default
-  #   runtime: python
-  #   env: python
-  #   buildCommand: uv sync --frozen --no-dev --no-install-project
-  #   startCommand: "uv run celery --workdir backend --app=vinta_schedule_api worker --loglevel=info --max-memory-per-child=$WORKER_MAX_MEMORY  --concurrency=$WORKER_CONCURRENCY"
-  #   envVars:
-  #     - key: REMAP_SIGTERM
-  #       value: SIGQUIT
-  #     - key: CELERY_BROKER_POOL_LIMIT
-  #       value: 1
-  #     - key: CELERY_BROKER_CONNECTION_TIMEOUT
-  #       value: 30.0
-  #     - key: CELERY_REDIS_MAX_CONNECTIONS
-  #       value: null
-  #     - key: CELERY_TASK_ACKS_ON_FAILURE_OR_TIMEOUT
-  #       value: true
-  #     - key: CELERY_TASK_REJECT_ON_WORKER_LOST
-  #       value: false
-  #     - key: CELERY_WORKER_PREFETCH_MULTIPLIER
-  #       value: 1
-  #     - key: CELERY_WORKER_CONCURRENCY
-  #       value: null
-  #     - key: CELERY_WORKER_MAX_TASKS_PER_CHILD
-  #       value: 1000
-  #     - key: CELERY_WORKER_SEND_TASK_EVENTS
-  #       value: true
-  #     - key: CELERY_EVENT_QUEUE_EXPIRES
-  #       value: 60.0
-  #     - key: CELERY_EVENT_QUEUE_TTL
-  #       value: 5.0
-  #     - key: WORKER_MAX_MEMORY
-  #       sync: false
-  #     - key: WORKER_CONCURRENCY
-  #       sync: false
-  #     - key: DATABASE_URL
-  #       fromDatabase:
-  #         name: vinta_schedule_api-postgres
-  #         property: connectionString
-  #     - key: REDIS_URL
-  #       fromService:
-  #         type: redis
-  #         name: vinta_schedule_api-redis
-  #         property: connectionString
-  #     - fromGroup: python-services
-  #     - fromGroup: integrations-credentials
-  # - type: worker
-  #   name: beat
-  #   runtime: python
-  #   env: python
-  #   buildCommand: uv sync --frozen --no-dev --no-install-project
-  #   startCommand: "uv run celery --workdir backend --app=vinta_schedule_api beat --loglevel=info"
-  #   envVars:
-  #     - key: REMAP_SIGTERM
-  #       value: SIGQUIT
-  #     - key: DATABASE_URL
-  #       fromDatabase:
-  #         name: vinta_schedule_api-postgres
-  #         property: connectionString
-  #     - key: REDIS_URL
-  #       fromService:
-  #         type: redis
-  #         name: vinta_schedule_api-redis
-  #         property: connectionString
-  #     - fromGroup: python-services
-  #     - fromGroup: integrations-credentials
+  - type: worker
+    name: worker-default-staging
+    runtime: python
+    env: python
+    buildCommand: uv sync --frozen --no-dev --no-install-project
+    startCommand: "uv run celery --app=vinta_schedule_api worker --loglevel=info --max-memory-per-child=$WORKER_MAX_MEMORY  --concurrency=$WORKER_CONCURRENCY"
+    envVars:
+      - key: REMAP_SIGTERM
+        value: SIGQUIT
+      - key: CELERY_BROKER_POOL_LIMIT
+        value: 1
+      - key: CELERY_BROKER_CONNECTION_TIMEOUT
+        value: 30.0
+      - key: CELERY_REDIS_MAX_CONNECTIONS
+        value: null
+      - key: CELERY_TASK_ACKS_ON_FAILURE_OR_TIMEOUT
+        value: true
+      - key: CELERY_TASK_REJECT_ON_WORKER_LOST
+        value: false
+      - key: CELERY_WORKER_PREFETCH_MULTIPLIER
+        value: 1
+      - key: CELERY_WORKER_CONCURRENCY
+        value: null
+      - key: CELERY_WORKER_MAX_TASKS_PER_CHILD
+        value: 1000
+      - key: CELERY_WORKER_SEND_TASK_EVENTS
+        value: true
+      - key: CELERY_EVENT_QUEUE_EXPIRES
+        value: 60.0
+      - key: CELERY_EVENT_QUEUE_TTL
+        value: 5.0
+      - key: WORKER_MAX_MEMORY
+        sync: false
+      - key: WORKER_CONCURRENCY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vinta_schedule_api-staging-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: vinta_schedule_api-staging-redis
+          property: connectionString
+      - fromGroup: python-services
+      - fromGroup: integrations-credentials
+      - fromGroup: aws-storage
+  - type: worker
+    name: beat-staging
+    runtime: python
+    env: python
+    buildCommand: uv sync --frozen --no-dev --no-install-project
+    startCommand: "uv run celery --app=vinta_schedule_api beat --loglevel=info"
+    envVars:
+      - key: REMAP_SIGTERM
+        value: SIGQUIT
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vinta_schedule_api-staging-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: vinta_schedule_api-staging-redis
+          property: connectionString
+      - fromGroup: python-services
+      - fromGroup: integrations-credentials
+      - fromGroup: aws-storage
 
 envVarGroups:
   - name: python-services
@@ -112,18 +112,26 @@ envVarGroups:
         value: 0.11.18
       - key: SECRET_KEY
         generateValue: true
+      # Fernet at-rest encryption salt. generateValue is fine for a fresh deploy;
+      # if data is already encrypted with another key, set the existing value here
+      # instead — rotating it makes prior encrypted fields unreadable.
+      - key: SALT_KEY
+        generateValue: true
       - key: DJANGO_SETTINGS_MODULE
-        value: vinta_schedule_api.settings.production
+        value: vinta_schedule_api.settings.staging
       - key: ALLOWED_HOSTS
         value: '*'
       - key: SITE_DOMAIN
-        value: 'https://vinta_schedule-site.onrender.com'
+        value: 'https://staging.schedule.vinta.com.br'
       - key: API_DOMAIN
-        value: 'https://vinta_schedule-api.onrender.com'
+        value: 'https://vinta-schedule-api-staging.onrender.com'
+      # Staging frontend base; account/email flows link here (settings/staging.py).
+      - key: FRONTEND_BASE_URL
+        value: 'https://staging.schedule.vinta.com.br'
       - key: SENTRY_DSN
         value: apikey
       - key: DEFAULT_BCC_EMAILS
-        value: 'hugo@bessa.me'
+        value: 'hugo@vinta.com.br'
   - name: integrations-credentials
     envVars:
       - key: SMTP_HOST
@@ -132,3 +140,51 @@ envVarGroups:
         value: apikey
       - key: SMTP_PASSWORD
         value: apikey
+      # Google OAuth / Calendar integration. Set real values in the dashboard.
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      # Twilio SMS (vintasend). Required by settings/base.py — boot fails if unset.
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_NUMBER
+        sync: false
+      - key: TWILIO_DEFAULT_BROADCAST_NUMBERS
+        sync: false
+
+  # AWS S3 + CloudFront storage. Values come from the Terragrunt/Scalr stack
+  # under infrastructure/ — see `terragrunt output`. Secrets are sync:false so
+  # they are set in the Render dashboard, never committed.
+  - name: aws-storage
+    envVars:
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_REGION
+        value: us-east-1
+      # Media bucket (private, served via signed CloudFront URLs).
+      - key: AWS_MEDIA_BUCKET_NAME
+        sync: false
+      - key: AWS_MEDIA_REGION
+        value: us-east-1
+      - key: AWS_MEDIA_S3_ENDPOINT_URL
+        value: https://s3.us-east-1.amazonaws.com
+      # CloudFront distribution domain for media (terragrunt: media_cloudfront_domain).
+      - key: AWS_MEDIA_S3_CUSTOM_DOMAIN
+        sync: false
+      # CloudFront signed-URL key pair (terragrunt: cloudfront_key_id / cloudfront_private_key).
+      - key: AWS_CLOUDFRONT_KEY_ID
+        sync: false
+      - key: AWS_CLOUDFRONT_KEY
+        sync: false
+      # Static bucket + its CloudFront domain (terragrunt: static_bucket_name / static_cloudfront_domain).
+      - key: AWS_STATIC_BUCKET_NAME
+        sync: false
+      - key: AWS_STATIC_REGION
+        value: us-east-1
+      - key: AWS_STATIC_S3_CUSTOM_DOMAIN
+        sync: false
