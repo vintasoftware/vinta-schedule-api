@@ -44,3 +44,10 @@ SALT_KEY = "123467890asdfghjkl"
 PUBLIC_API_REQUESTS_PER_SECOND_LIMIT = 0
 PUBLIC_API_REQUESTS_PER_MINUTE_LIMIT = 0
 PUBLIC_API_REQUESTS_PER_HOUR_LIMIT = 0
+
+# Redis is optional. Tests must not depend on (or spin up) a Redis server: with an empty
+# REDIS_URL the rate limiters transparently use their in-process bucket fallback and
+# django-defender is disabled. Keeps CI free of a Redis service.
+REDIS_URL = ""
+PUBLIC_API_REDIS_URL = ""
+CELERY_RESULT_BACKEND = None

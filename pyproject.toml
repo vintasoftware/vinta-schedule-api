@@ -73,6 +73,7 @@ dev = [
     "pytest>=9.0,<10",
     "pytest-django>=4.11.1,<5",
     "pytest-cov>=7.0,<8",
+    "pytest-timeout>=2.4.0,<3",
     "ipdb>=0.13.13,<0.14.0",
 ]
 

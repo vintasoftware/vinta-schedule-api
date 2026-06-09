@@ -2590,6 +2590,7 @@ class TestCalendarViewSet:
         mock_calendar_sync.end_datetime = datetime.datetime(2024, 1, 31, tzinfo=datetime.UTC)
         mock_calendar_sync.should_update_events = False
         mock_calendar_sync.error_message = ""
+        mock_calendar_sync.trigger_source = "manual"
         mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
 
         url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
@@ -2776,6 +2777,7 @@ class TestCalendarViewSet:
         mock_calendar_sync.end_datetime = datetime.datetime(2024, 1, 31, tzinfo=datetime.UTC)
         mock_calendar_sync.should_update_events = False
         mock_calendar_sync.error_message = ""
+        mock_calendar_sync.trigger_source = "manual"
         mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
 
         # Authenticate as admin and make request
@@ -3080,6 +3082,7 @@ class TestCalendarViewSet:
         mock_calendar_sync.end_datetime = datetime.datetime(2024, 1, 31, tzinfo=datetime.UTC)
         mock_calendar_sync.should_update_events = False
         mock_calendar_sync.error_message = ""
+        mock_calendar_sync.trigger_source = "manual"
         mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
 
         from rest_framework.test import APIClient
