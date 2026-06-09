@@ -11,6 +11,7 @@ from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncTriggerSource,
     CalendarType,
+    CalendarVisibility,
 )
 from calendar_integration.models import Calendar, CalendarOwnership
 from organizations.exceptions import (
@@ -881,7 +882,7 @@ class TestRequestAllCalendarsSync:
             "name": "Cal",
             "provider": CalendarProvider.GOOGLE,
             "calendar_type": CalendarType.PERSONAL,
-            "is_active": True,
+            "visibility": CalendarVisibility.ACTIVE,
         }
         defaults.update(overrides)
         return baker.make(Calendar, **defaults)
@@ -991,7 +992,9 @@ class TestRequestAllCalendarsSync:
         org = baker.make(Organization, name="Inactive Cal Org")
         admin = baker.make(User, email="admin-inactive@example.com")
         owner = baker.make(User, email="owner-inactive@example.com")
-        calendar = self._make_calendar(org, external_id="cal-inactive", is_active=False)
+        calendar = self._make_calendar(
+            org, external_id="cal-inactive", visibility=CalendarVisibility.INACTIVE
+        )
         baker.make(
             CalendarOwnership,
             organization=org,
