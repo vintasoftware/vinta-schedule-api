@@ -49,6 +49,7 @@ from calendar_integration.serializers import (
     BulkBlockedTimeSerializer,
     CalendarBundleCreateSerializer,
     CalendarEventSerializer,
+    CalendarEventTransferSerializer,
     CalendarGroupAvailabilityQuerySerializer,
     CalendarGroupEventCreateSerializer,
     CalendarGroupRangeAvailabilitySerializer,
@@ -668,7 +669,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
             "organization. The service authenticates with the SOURCE calendar owner's credentials "
             "to read and delete the event from the provider. Admin only."
         ),
-        request={"type": "object", "properties": {"target_calendar_id": {"type": "integer"}}},
+        request=CalendarEventTransferSerializer,
         responses={200: CalendarEventSerializer},
     )
     @action(
@@ -688,31 +689,11 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
         """Transfer an event to a different calendar (admin-only)."""
         event = self.get_object()  # org-scoped → cross-org yields 404; non-admin → 403
 
-        # --- Parse and validate body ---
-        target_calendar_id = request.data.get("target_calendar_id")
-        if target_calendar_id is None:
-            return Response(
-                {"detail": "target_calendar_id is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Reject no-op transfers
-        if str(target_calendar_id) == str(event.calendar_fk_id):
-            return Response(
-                {"detail": "Event is already on the target calendar."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Resolve the target calendar within the event's organization
-        try:
-            target_calendar = Calendar.objects.filter_by_organization(event.organization_id).get(
-                id=target_calendar_id
-            )
-        except Calendar.DoesNotExist:
-            return Response(
-                {"detail": "target_calendar_id invalid or not in your organization."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        input_serializer = CalendarEventTransferSerializer(
+            data=request.data, context={**self.get_serializer_context(), "event": event}
+        )
+        input_serializer.is_valid(raise_exception=True)
+        target_calendar = input_serializer.validated_data["target_calendar_id"]
 
         # --- Authenticate with the SOURCE calendar owner's credentials ---
         source_calendar = event.calendar

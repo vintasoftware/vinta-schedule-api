@@ -2624,15 +2624,16 @@ paths:
       - calendar-events
       requestBody:
         content:
-          type:
+          application/json:
             schema:
-              type: object
-              additionalProperties: {}
-              description: Unspecified request body
-          properties:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+          application/x-www-form-urlencoded:
             schema:
-              target_calendar_id:
-                type: integer
+              $ref: '#/components/schemas/CalendarEventTransfer'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+        required: true
       security:
       - jwtAuth: []
       - cookieAuth: []
@@ -2668,15 +2669,16 @@ paths:
       - calendar-events
       requestBody:
         content:
-          type:
+          application/json:
             schema:
-              type: object
-              additionalProperties: {}
-              description: Unspecified request body
-          properties:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+          application/x-www-form-urlencoded:
             schema:
-              target_calendar_id:
-                type: integer
+              $ref: '#/components/schemas/CalendarEventTransfer'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+        required: true
       security:
       - jwtAuth: []
       - cookieAuth: []
@@ -6977,6 +6979,13 @@ components:
       - start_time
       - timezone
       - title
+    CalendarEventTransfer:
+      type: object
+      properties:
+        target_calendar_id:
+          type: integer
+      required:
+      - target_calendar_id
     CalendarGroup:
       type: object
       properties:

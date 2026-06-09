@@ -111,6 +111,10 @@ class CalendarSyncRequestSerializer(serializers.Serializer):
     should_update_events = serializers.BooleanField(required=False, default=False)
 
 
+class CalendarImportRequestSerializer(serializers.Serializer):
+    sync_after_import = serializers.BooleanField(required=False, default=True)
+
+
 class CalendarSerializer(VirtualModelSerializer):
     class Meta:
         model = Calendar
@@ -1124,6 +1128,21 @@ class CalendarEventSerializer(VirtualModelSerializer):
         Returns True if this event is a recurring event.
         """
         return obj.is_recurring
+
+
+class CalendarEventTransferSerializer(serializers.Serializer):
+    target_calendar_id = serializers.IntegerField()
+
+    def validate_target_calendar_id(self, value):
+        event = self.context["event"]
+        if value == event.calendar_fk_id:
+            raise serializers.ValidationError("Event is already on the target calendar.")
+        try:
+            return Calendar.objects.filter_by_organization(event.organization_id).get(id=value)
+        except Calendar.DoesNotExist as exc:
+            raise serializers.ValidationError(
+                "target_calendar_id invalid or not in your organization."
+            ) from exc
 
 
 class SerializedParentBlockedTimeTypedDict(TypedDict):
