@@ -633,7 +633,7 @@ class TestCalendarEventViewSet:
             )
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        assert response.data["detail"] == "Event is already on the target calendar."
+        assert response.data["target_calendar_id"][0] == "Event is already on the target calendar."
 
         # Verify service was NOT called (guard returned before authentication)
         mock_calendar_service.authenticate.assert_not_called()
@@ -742,7 +742,7 @@ class TestCalendarEventViewSet:
 
         response = client.post(url, data={"target_calendar_id": 999999}, format="json")
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        assert "invalid or not in your organization" in response.data["detail"]
+        assert "invalid or not in your organization" in response.data["target_calendar_id"][0]
 
     def test_transfer_event_target_calendar_not_in_org(
         self, organization, calendar, calendar_event
@@ -776,7 +776,7 @@ class TestCalendarEventViewSet:
 
         response = client.post(url, data={"target_calendar_id": other_calendar.id}, format="json")
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        assert "invalid or not in your organization" in response.data["detail"]
+        assert "invalid or not in your organization" in response.data["target_calendar_id"][0]
 
     def test_transfer_event_source_owner_no_linked_account(
         self, organization, calendar, calendar_event
