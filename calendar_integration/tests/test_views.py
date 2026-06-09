@@ -11,20 +11,26 @@ from allauth.socialaccount.models import SocialAccount, SocialToken
 from model_bakery import baker
 from rest_framework import status
 
-from calendar_integration.constants import CalendarProvider, CalendarType, RecurrenceFrequency
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarType,
+    CalendarVisibility,
+    RecurrenceFrequency,
+)
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
     CalendarOwnership,
+    ChildrenCalendarRelationship,
     RecurrenceRule,
 )
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     UnavailableTimeWindow,
 )
-from organizations.models import Organization, OrganizationMembership
+from organizations.models import Organization, OrganizationMembership, OrganizationRole
 
 
 User = get_user_model()
@@ -432,6 +438,89 @@ class TestCalendarEventViewSet:
         mock_calendar_service.authenticate.assert_called_once()
         mock_calendar_service.create_event.assert_called_once()
 
+    def test_create_event_localizes_input_to_request_timezone(
+        self, auth_client, calendar, user, social_account
+    ):
+        """Naive input wall-clock must be interpreted in the request ``timezone``.
+
+        Regression: DRF coerces naive datetimes to UTC under the server default
+        (TIME_ZONE=UTC), so "16:30" + "America/Recife" was reaching the service as
+        16:30 UTC (13:30 Recife) instead of the intended 19:30 UTC. The service
+        treats start_time/end_time as true instants, so the shift corrupted both the
+        availability lookup and storage.
+        """
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+
+        created_event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Recife Event",
+            description="",
+            start_time_tz_unaware=datetime.datetime(2026, 6, 12, 16, 30),
+            end_time_tz_unaware=datetime.datetime(2026, 6, 12, 17, 0),
+            timezone="America/Recife",
+            external_id="recife_external_id",
+        )
+        mock_calendar_service.create_event.return_value = created_event
+
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
+
+        url = reverse("api:CalendarEvents-list")
+        data = {
+            "organization": calendar.organization.id,
+            "calendar": calendar.id,
+            "title": "Recife Event",
+            "start_time": "2026-06-12T16:30:00",
+            "end_time": "2026-06-12T17:00:00",
+            "timezone": "America/Recife",
+            "resource_allocations": [],
+            "attendances": [],
+            "external_attendances": [],
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+            assert_response_status_code(response, status.HTTP_201_CREATED)
+
+        event_data = mock_calendar_service.create_event.call_args.kwargs["event_data"]
+        # 16:30 Recife (UTC-3) == 19:30 UTC.
+        assert event_data.start_time == datetime.datetime(2026, 6, 12, 19, 30, tzinfo=datetime.UTC)
+        assert event_data.end_time == datetime.datetime(2026, 6, 12, 20, 0, tzinfo=datetime.UTC)
+
+    def test_create_event_out_of_window_returns_400(
+        self, auth_client, calendar, user, social_account
+    ):
+        """A booking with no available window must be a 400, not a 500."""
+        from calendar_integration.exceptions import NoAvailableTimeWindowsError
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.create_event.side_effect = NoAvailableTimeWindowsError()
+
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
+
+        url = reverse("api:CalendarEvents-list")
+        data = {
+            "organization": calendar.organization.id,
+            "calendar": calendar.id,
+            "title": "Out of window",
+            "start_time": "2026-06-12T16:30:00",
+            "end_time": "2026-06-12T17:00:00",
+            "timezone": "America/Recife",
+            "resource_allocations": [],
+            "attendances": [],
+            "external_attendances": [],
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "No available time windows" in json.dumps(response.data)
+
     def test_create_calendar_event_validation_errors(self, auth_client, calendar):
         """Test creating calendar event with validation errors"""
         url = reverse("api:CalendarEvents-list")
@@ -526,6 +615,507 @@ class TestCalendarEventViewSet:
         response = anonymous_client.delete(url)
 
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    # --- Transfer action tests ---
+
+    def test_transfer_event_success(self, organization, calendar, calendar_event):
+        """Admin transfers an in-org event to an in-org target calendar."""
+        from rest_framework.test import APIClient
+
+        from di_core.containers import container
+
+        # Admin user
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Source calendar owner
+        source_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=source_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
+
+        owner_social_account = baker.make(
+            SocialAccount,
+            user=source_owner,
+            provider=calendar.provider,
+        )
+        baker.make(
+            SocialToken,
+            account=owner_social_account,
+            token="fake_access_token",
+            token_secret="fake_refresh_token",
+            expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+        )
+
+        # Target calendar in the same org
+        target_calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+
+        # Mock return value — a new event on the target calendar
+        transferred_event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=target_calendar,
+            title=calendar_event.title,
+        )
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.transfer_event.return_value = transferred_event
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                url, data={"target_calendar_id": target_calendar.id}, format="json"
+            )
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["id"] == transferred_event.id
+
+        # Verify transfer_event called with correct args
+        mock_calendar_service.transfer_event.assert_called_once_with(
+            event=calendar_event,
+            new_calendar=target_calendar,
+        )
+
+        # Verify service authenticated with SOURCE OWNER's account
+        authenticate_call_args = mock_calendar_service.authenticate.call_args
+        assert authenticate_call_args is not None
+        account_arg = authenticate_call_args[1]["account"]
+        assert account_arg == owner_social_account
+        assert account_arg.user == source_owner
+
+    def test_transfer_event_same_calendar_no_op(self, organization, calendar, calendar_event):
+        """Admin tries to transfer event to its own calendar → 400, no service call."""
+        from rest_framework.test import APIClient
+
+        from di_core.containers import container
+
+        # Admin user
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Mock calendar service
+        mock_calendar_service = Mock()
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                url, data={"target_calendar_id": calendar_event.calendar_fk_id}, format="json"
+            )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert response.data["target_calendar_id"][0] == "Event is already on the target calendar."
+
+        # Verify service was NOT called (guard returned before authentication)
+        mock_calendar_service.authenticate.assert_not_called()
+        mock_calendar_service.transfer_event.assert_not_called()
+
+    def test_transfer_event_non_admin_forbidden(self, organization, calendar, calendar_event):
+        """Non-admin active member receives 403."""
+        from rest_framework.test import APIClient
+
+        member_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=member_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        target_calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+
+        client = APIClient()
+        client.force_authenticate(user=member_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        response = client.post(url, data={"target_calendar_id": target_calendar.id}, format="json")
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_transfer_event_cross_org_event_not_found(self, organization):
+        """Event from a different org yields 404 (org-scoped queryset)."""
+        from rest_framework.test import APIClient
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+        other_event = CalendarIntegrationTestFactory.create_calendar_event(calendar=other_calendar)
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": other_event.id})
+
+        response = client.post(url, data={"target_calendar_id": 1}, format="json")
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_transfer_event_missing_target_calendar_id(
+        self, organization, calendar, calendar_event
+    ):
+        """Missing target_calendar_id body field yields 400."""
+        from rest_framework.test import APIClient
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        source_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=source_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        response = client.post(url, data={}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_transfer_event_invalid_target_calendar_id(
+        self, organization, calendar, calendar_event
+    ):
+        """Non-existent target_calendar_id yields 400."""
+        from rest_framework.test import APIClient
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        source_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=source_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        response = client.post(url, data={"target_calendar_id": 999999}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "invalid or not in your organization" in response.data["target_calendar_id"][0]
+
+    def test_transfer_event_target_calendar_not_in_org(
+        self, organization, calendar, calendar_event
+    ):
+        """target_calendar_id from a different org yields 400."""
+        from rest_framework.test import APIClient
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        source_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=source_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
+
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        response = client.post(url, data={"target_calendar_id": other_calendar.id}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "invalid or not in your organization" in response.data["target_calendar_id"][0]
+
+    def test_transfer_event_source_owner_no_linked_account(
+        self, organization, calendar, calendar_event
+    ):
+        """Source calendar owner has no linked social account → 400."""
+        from rest_framework.test import APIClient
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        source_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=source_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
+        # Intentionally do NOT create a SocialAccount for source_owner
+
+        target_calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        response = client.post(url, data={"target_calendar_id": target_calendar.id}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "no linked" in response.data["detail"].lower()
+
+    def test_transfer_event_unauthenticated(self, anonymous_client, calendar_event):
+        """Unauthenticated request yields 401."""
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+        response = anonymous_client.post(url, data={"target_calendar_id": 1}, format="json")
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+
+@pytest.mark.django_db
+class TestCalendarEventExpandedAction:
+    """Tests for GET /calendar-events/expanded/ — materialized recurring occurrences."""
+
+    def test_expanded_returns_materialized_instances(self, auth_client, calendar, user):
+        """Recurring master event series → expanded returns instances, not the master."""
+        from di_core.containers import container
+
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        now = datetime.datetime.now(datetime.UTC)
+        # Master recurring event (daily, 3 occurrences)
+        master = CalendarIntegrationTestFactory.create_recurring_event(
+            calendar=calendar,
+            title="Daily Standup",
+            start_time_tz_unaware=now,
+            end_time_tz_unaware=now + datetime.timedelta(hours=1),
+        )
+        # Two synthetic instances that the service would return (simulate expansion)
+        instance1 = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Daily Standup",
+            start_time_tz_unaware=now,
+            end_time_tz_unaware=now + datetime.timedelta(hours=1),
+        )
+        instance2 = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Daily Standup",
+            start_time_tz_unaware=now + datetime.timedelta(days=1),
+            end_time_tz_unaware=now + datetime.timedelta(days=1, hours=1),
+        )
+        # The master should NOT appear; only instances
+        mock_calendar_service = Mock()
+        mock_calendar_service.get_calendar_events_expanded.return_value = [instance1, instance2]
+
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": now.isoformat(),
+            "end_time": (now + datetime.timedelta(days=7)).isoformat(),
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.get(url, params)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert len(response.data) == 2
+        # Master not in results — service was called and its return value serialized
+        result_ids = {r["id"] for r in response.data}
+        assert master.id not in result_ids
+        assert instance1.id in result_ids
+        assert instance2.id in result_ids
+        mock_calendar_service.get_calendar_events_expanded.assert_called_once()
+
+    def test_expanded_returns_non_recurring_events_in_range(self, auth_client, calendar, user):
+        """Non-recurring events within the range are returned."""
+        from di_core.containers import container
+
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        now = datetime.datetime.now(datetime.UTC)
+        event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="One-off meeting",
+            start_time_tz_unaware=now + datetime.timedelta(hours=2),
+            end_time_tz_unaware=now + datetime.timedelta(hours=3),
+        )
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.get_calendar_events_expanded.return_value = [event]
+
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": now.isoformat(),
+            "end_time": (now + datetime.timedelta(days=1)).isoformat(),
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.get(url, params)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert len(response.data) == 1
+        assert response.data[0]["id"] == event.id
+
+    def test_expanded_missing_calendar_id_400(self, auth_client, calendar, user):
+        """Missing calendar_id → 400."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "start_time": "2024-01-01T00:00:00Z",
+            "end_time": "2024-01-31T23:59:59Z",
+        }
+        response = auth_client.get(url, params)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_expanded_missing_start_time_400(self, auth_client, calendar, user):
+        """Missing start_time → 400."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "end_time": "2024-01-31T23:59:59Z",
+        }
+        response = auth_client.get(url, params)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_expanded_missing_end_time_400(self, auth_client, calendar, user):
+        """Missing end_time → 400."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": "2024-01-01T00:00:00Z",
+        }
+        response = auth_client.get(url, params)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_expanded_bad_datetime_format_400(self, auth_client, calendar, user):
+        """Malformed datetime strings → 400."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": "not-a-date",
+            "end_time": "also-not-a-date",
+        }
+        response = auth_client.get(url, params)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_expanded_membership_less_user_returns_empty_list(self, calendar):
+        """User without an active membership gets an empty 200 list (mirrors sibling expanded actions)."""
+        from rest_framework.test import APIClient
+
+        no_membership_user = baker.make(User)
+        client = APIClient()
+        client.force_authenticate(user=no_membership_user)
+
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": "2024-01-01T00:00:00Z",
+            "end_time": "2024-01-31T23:59:59Z",
+        }
+        response = client.get(url, params)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data == []
+
+    def test_expanded_calendar_not_in_org_404(self, auth_client, user, organization):
+        """Calendar from another org → 404."""
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": other_calendar.id,
+            "start_time": "2024-01-01T00:00:00Z",
+            "end_time": "2024-01-31T23:59:59Z",
+        }
+        response = auth_client.get(url, params)
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_expanded_unauthenticated_401(self, anonymous_client, calendar):
+        """Unauthenticated request → 401."""
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": "2024-01-01T00:00:00Z",
+            "end_time": "2024-01-31T23:59:59Z",
+        }
+        response = anonymous_client.get(url, params)
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_expanded_exception_reflected_cancelled_instance_absent(
+        self, auth_client, calendar, user
+    ):
+        """Cancelled exception instance is absent from the expanded results."""
+        from di_core.containers import container
+
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        now = datetime.datetime.now(datetime.UTC)
+        # The service omits the cancelled instance; only the surviving instance is returned
+        surviving = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Weekly Review",
+            start_time_tz_unaware=now + datetime.timedelta(days=7),
+            end_time_tz_unaware=now + datetime.timedelta(days=7, hours=1),
+        )
+
+        mock_calendar_service = Mock()
+        # Only one instance returned — the cancelled one is absent
+        mock_calendar_service.get_calendar_events_expanded.return_value = [surviving]
+
+        url = reverse("api:CalendarEvents-expanded")
+        params = {
+            "calendar_id": calendar.id,
+            "start_time": now.isoformat(),
+            "end_time": (now + datetime.timedelta(days=14)).isoformat(),
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.get(url, params)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        # Cancelled instance not present; only surviving instance returned
+        assert len(response.data) == 1
+        assert response.data[0]["id"] == surviving.id
 
 
 @pytest.mark.django_db
@@ -1499,8 +2089,8 @@ class TestCalendarViewSet:
         assert response.data["name"] == "Updated Calendar Name"
         assert response.data["description"] == "Updated description"
 
-    def test_delete_calendar(self, auth_client, calendar, user):
-        """Test deleting a calendar"""
+    def test_delete_calendar_soft_disables(self, auth_client, calendar, user):
+        """DELETE /calendar/{id}/ sets visibility=inactive — row persists, not hard-deleted."""
         # Create calendar ownership so user can access the calendar
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
 
@@ -1508,6 +2098,168 @@ class TestCalendarViewSet:
         response = auth_client.delete(url)
 
         assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+
+        # Row must still exist with visibility=inactive
+        calendar.refresh_from_db()
+        assert calendar.visibility == CalendarVisibility.INACTIVE
+
+    def test_delete_calendar_hidden_from_default_list(self, auth_client, calendar, user):
+        """After soft-disable, default GET /calendar/ list excludes the disabled calendar."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Soft-disable
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        auth_client.delete(url)
+
+        # Default list should be empty
+        list_url = reverse("api:Calendars-list")
+        response = auth_client.get(list_url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert calendar.id not in ids
+
+    def test_include_inactive_shows_disabled_calendar(self, auth_client, calendar, user):
+        """GET /calendar/?include_inactive=true includes disabled calendars."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Soft-disable
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        auth_client.delete(url)
+
+        # include_inactive=true should surface the calendar
+        list_url = reverse("api:Calendars-list")
+        response = auth_client.get(list_url, {"include_inactive": "true"})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert calendar.id in ids
+
+    def test_unlisted_calendar_hidden_from_default_list(self, auth_client, organization, user):
+        """Unlisted calendar is excluded from default GET /calendar/ list."""
+        unlisted = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, unlisted)
+        unlisted.visibility = CalendarVisibility.UNLISTED
+        unlisted.save(update_fields=["visibility"])
+
+        list_url = reverse("api:Calendars-list")
+        response = auth_client.get(list_url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert unlisted.id not in ids
+
+    def test_include_unlisted_shows_unlisted_calendar(self, auth_client, organization, user):
+        """GET /calendar/?include_unlisted=true surfaces unlisted calendars."""
+        unlisted = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, unlisted)
+        unlisted.visibility = CalendarVisibility.UNLISTED
+        unlisted.save(update_fields=["visibility"])
+
+        list_url = reverse("api:Calendars-list")
+        response = auth_client.get(list_url, {"include_unlisted": "true"})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert unlisted.id in ids
+
+    def test_retrieve_disabled_calendar_returns_404_by_default(self, auth_client, calendar, user):
+        """Retrieve of a disabled calendar via the default queryset → 404."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Soft-disable
+        calendar.visibility = CalendarVisibility.INACTIVE
+        calendar.save(update_fields=["visibility"])
+
+        detail_url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        response = auth_client.get(detail_url)
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_retrieve_disabled_calendar_visible_with_include_inactive(
+        self, auth_client, calendar, user
+    ):
+        """Retrieve of a disabled calendar with ?include_inactive=true → 200."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Soft-disable
+        calendar.visibility = CalendarVisibility.INACTIVE
+        calendar.save(update_fields=["visibility"])
+
+        detail_url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        response = auth_client.get(detail_url, {"include_inactive": "true"})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["id"] == calendar.id
+        assert response.data["visibility"] == CalendarVisibility.INACTIVE
+
+    def test_delete_calendar_idempotent(self, auth_client, calendar, user):
+        """Soft-disabling an already-inactive calendar returns 404 (calendar already hidden)."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+
+        # First soft-disable
+        response = auth_client.delete(url)
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+
+        # Second delete attempt — calendar is now hidden from default queryset → 404
+        response = auth_client.delete(url)
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_create_calendar_visibility_defaults_active(self, auth_client, organization, user):
+        """Creating a calendar defaults visibility=active; it appears in the default list."""
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+
+        created_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Active Calendar",
+            description="Should be active by default",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        mock_calendar_service.create_virtual_calendar.return_value = created_calendar
+
+        url = reverse("api:Calendars-list")
+        data = {"name": "Active Calendar", "description": "Should be active by default"}
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.data["visibility"] == CalendarVisibility.ACTIVE
+
+        # Calendar should appear in default list
+        list_url = reverse("api:Calendars-list")
+        list_response = auth_client.get(list_url)
+        assert_response_status_code(list_response, status.HTTP_200_OK)
+        ids = [c["id"] for c in list_response.data["results"]]
+        assert created_calendar.id in ids
+
+    def test_org_scoping_still_holds(self, auth_client, organization, user):
+        """Cross-org calendar is still excluded even when include_inactive=true."""
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+
+        list_url = reverse("api:Calendars-list")
+        response = auth_client.get(list_url, {"include_inactive": "true"})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert other_calendar.id not in ids
+
+    def test_membership_less_user_gets_empty_list(self):
+        """User without org membership gets an empty list (not 500)."""
+        from django.contrib.auth import get_user_model as _get_user_model
+
+        from rest_framework.test import APIClient
+
+        user_model = _get_user_model()
+        memberless_user = baker.make(user_model)
+
+        client = APIClient()
+        client.force_authenticate(user=memberless_user)
+
+        list_url = reverse("api:Calendars-list")
+        response = client.get(list_url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["results"] == []
 
     def test_create_bundle_calendar(self, auth_client, organization, user):
         """Test creating a bundle calendar"""
@@ -1621,6 +2373,762 @@ class TestCalendarViewSet:
 
         response = anonymous_client.post(url, data, format="json")
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_create_bundle_with_disabled_calendar_rejected(self, auth_client, organization, user):
+        """Phase 19: inactive calendars cannot be used as bundle children or primary.
+
+        CalendarBundleCreateSerializer filters bundle_calendars + primary_calendar
+        querysets to exclude inactive, so passing an inactive calendar id should
+        result in a 400 (invalid PK).
+        """
+        active_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        disabled_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        disabled_calendar.visibility = CalendarVisibility.INACTIVE
+        disabled_calendar.save(update_fields=["visibility"])
+
+        url = reverse("api:Calendars-bundle")
+
+        # disabled calendar as a child → 400
+        data = {
+            "name": "Bad Bundle",
+            "bundle_calendars": [active_calendar.id, disabled_calendar.id],
+            "primary_calendar": active_calendar.id,
+        }
+        response = auth_client.post(url, data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # disabled calendar as primary → 400
+        another_active = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        data2 = {
+            "name": "Bad Bundle 2",
+            "bundle_calendars": [active_calendar.id, another_active.id],
+            "primary_calendar": disabled_calendar.id,
+        }
+        response2 = auth_client.post(url, data2, format="json")
+        assert_response_status_code(response2, status.HTTP_400_BAD_REQUEST)
+
+    def test_request_import_authenticated_with_social_account(
+        self, auth_client, user, calendar, social_account
+    ):
+        """Test requesting calendar import with authenticated user and social account.
+
+        The view now calls request_calendars_import() directly; the service owns
+        the on_commit deferral internally.  We just verify authenticate + the
+        service method were both called.
+        """
+        from di_core.containers import container
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.request_calendars_import.return_value = None
+
+        url = reverse("api:Calendars-request-import")
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url)
+
+            # Verify response
+            assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+            assert "1 account(s)" in response.data["detail"]
+
+            # Verify the mock was called with the correct arguments
+            mock_calendar_service.authenticate.assert_called_once()
+            mock_calendar_service.request_calendars_import.assert_called_once()
+
+    def test_request_import_reports_per_account_failure(self, auth_client, user, organization):
+        """A failing account is reported under `skipped` (400) instead of an opaque error."""
+        from calendar_integration.exceptions import InvalidCalendarTokenError
+        from di_core.containers import container
+
+        google_account = baker.make(SocialAccount, user=user, provider=CalendarProvider.GOOGLE)
+
+        failing_service = Mock()
+        failing_service.authenticate.side_effect = InvalidCalendarTokenError("no token")
+
+        url = reverse("api:Calendars-request-import")
+        with container.calendar_service.override(failing_service):
+            response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        skipped = response.data["skipped"]
+        assert len(skipped) == 1
+        assert skipped[0]["account_id"] == google_account.id
+        assert "no token" in skipped[0]["reason"]
+
+    def test_request_import_ignores_non_calendar_providers(
+        self, auth_client, user, organization, calendar
+    ):
+        """A non-Google/Microsoft social account does not abort the import."""
+        from di_core.containers import container
+
+        # A calendar-capable account that imports fine...
+        baker.make(SocialAccount, user=user, provider=CalendarProvider.GOOGLE)
+        # ...plus an unrelated auth-only provider that must be ignored.
+        baker.make(SocialAccount, user=user, provider="github")
+
+        ok_service = Mock()
+        ok_service.authenticate.return_value = None
+        ok_service.request_calendars_import.return_value = None
+
+        url = reverse("api:Calendars-request-import")
+        with container.calendar_service.override(ok_service):
+            response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+        # Only the Google account was imported; github was filtered out entirely.
+        assert "1 account(s)" in response.data["detail"]
+
+    def test_request_import_no_social_account(self, auth_client, user):
+        """Test requesting calendar import without a connected social account"""
+        # Create a new organization and membership for the user (but no social account)
+        new_org = CalendarIntegrationTestFactory.create_organization()
+        CalendarIntegrationTestFactory.create_organization_membership(user, new_org)
+
+        url = reverse("api:Calendars-request-import")
+
+        response = auth_client.post(url)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert (
+            "no connected google or microsoft calendar account" in response.data["detail"].lower()
+        )
+
+    def test_request_import_membership_less_user(self, auth_client, anonymous_client):
+        """Test requesting calendar import as membership-less user"""
+        url = reverse("api:Calendars-request-import")
+
+        response = auth_client.post(url)
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        assert "not an active member" in response.data["detail"].lower()
+
+    def test_request_import_unauthenticated(self, anonymous_client):
+        """Test requesting calendar import as unauthenticated user"""
+        url = reverse("api:Calendars-request-import")
+
+        response = anonymous_client.post(url)
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_request_import_multiple_social_accounts(self, auth_client, user, organization):
+        """Test requesting calendar import with multiple connected social accounts"""
+        # Create two social accounts (Google and Microsoft)
+        google_account = baker.make(
+            SocialAccount,
+            user=user,
+            provider=CalendarProvider.GOOGLE,
+        )
+        baker.make(
+            SocialToken,
+            account=google_account,
+            token="fake_google_token",
+            token_secret="fake_google_refresh",
+            expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+        )
+
+        microsoft_account = baker.make(
+            SocialAccount,
+            user=user,
+            provider=CalendarProvider.MICROSOFT,
+        )
+        baker.make(
+            SocialToken,
+            account=microsoft_account,
+            token="fake_microsoft_token",
+            token_secret="fake_microsoft_refresh",
+            expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+        )
+
+        url = reverse("api:Calendars-request-import")
+
+        mock_service = Mock()
+        mock_service.authenticate.return_value = None
+        mock_service.request_calendars_import.return_value = None
+
+        from di_core.containers import container
+
+        with container.calendar_service.override(mock_service):
+            response = auth_client.post(url)
+
+            # Verify response
+            assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+            assert "2 account(s)" in response.data["detail"]
+
+            assert mock_service.request_calendars_import.call_count == 2
+
+    def test_request_sync_owner_syncs_own_calendar(
+        self, auth_client, user, calendar, social_account
+    ):
+        """Test owner syncs their own calendar with valid range"""
+        from di_core.containers import container
+
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+
+        # Create a mock CalendarSync instance
+        mock_calendar_sync = Mock()
+        mock_calendar_sync.id = 123
+        mock_calendar_sync.status = "NOT_STARTED"
+        mock_calendar_sync.start_datetime = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
+        mock_calendar_sync.end_datetime = datetime.datetime(2024, 1, 31, tzinfo=datetime.UTC)
+        mock_calendar_sync.should_update_events = False
+        mock_calendar_sync.error_message = ""
+        mock_calendar_sync.trigger_source = "manual"
+        mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
+
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(
+                url,
+                data={
+                    "start_datetime": "2024-01-01T00:00:00Z",
+                    "end_datetime": "2024-01-31T23:59:59Z",
+                    "should_update_events": False,
+                },
+                format="json",
+            )
+
+            # Verify response
+            assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+            assert response.data["id"] == 123
+            assert response.data["status"] == "NOT_STARTED"
+
+            # Verify the mock was called with the correct arguments
+            mock_calendar_service.authenticate.assert_called_once()
+            mock_calendar_service.request_calendar_sync.assert_called_once()
+
+    def test_request_sync_non_owner_forbidden(self, auth_client, user, calendar):
+        """Test non-owner cannot sync a calendar"""
+        # Don't create calendar ownership - user is not an owner
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
+
+        response = auth_client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        assert "do not own this calendar" in response.data["detail"].lower()
+
+    def test_request_sync_cross_org_calendar_not_found(
+        self, auth_client, user, calendar, organization
+    ):
+        """Test cross-org calendar returns 404"""
+        # Create a different organization and calendar
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+
+        # User is only a member of the first org (from fixture)
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": other_calendar.id})
+
+        response = auth_client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_request_sync_missing_datetimes(self, auth_client, user, calendar):
+        """Test missing datetime parameters returns 400"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
+
+        # Missing both datetimes
+        response = auth_client.post(url, data={}, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # Missing end_datetime
+        response = auth_client.post(
+            url,
+            data={"start_datetime": "2024-01-01T00:00:00Z"},
+            format="json",
+        )
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_request_sync_invalid_datetimes(self, auth_client, user, calendar):
+        """Test invalid datetime format returns 400"""
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
+
+        response = auth_client.post(
+            url,
+            data={
+                "start_datetime": "invalid-date",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_request_sync_unauthenticated(self, anonymous_client, calendar):
+        """Test unauthenticated user cannot sync"""
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
+
+        response = anonymous_client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_request_sync_no_social_account_for_provider(self, auth_client, user, calendar):
+        """Test sync fails with 400 when user has no linked account for calendar provider"""
+        # Create calendar ownership for the user
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Do NOT create a social account for this provider - this is the test case
+
+        url = reverse("api:Calendars-request-sync", kwargs={"pk": calendar.id})
+
+        response = auth_client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "No linked account found" in str(response.data)
+        assert calendar.provider in str(response.data)
+
+    def test_admin_sync_another_users_calendar(self, auth_client, organization, calendar):
+        """Test admin syncs another user's calendar"""
+        from di_core.containers import container
+
+        # Create admin user in the organization
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Create calendar owner (different user)
+        calendar_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=calendar_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Create calendar ownership linking owner to calendar
+        CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
+
+        # Create social account for the calendar owner (not the admin)
+        owner_social_account = baker.make(
+            SocialAccount,
+            user=calendar_owner,
+            provider=calendar.provider,
+        )
+        baker.make(
+            SocialToken,
+            account=owner_social_account,
+            token="fake_access_token",
+            token_secret="fake_refresh_token",
+            expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+        )
+
+        # Create a mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+
+        # Create a mock CalendarSync instance
+        mock_calendar_sync = Mock()
+        mock_calendar_sync.id = 123
+        mock_calendar_sync.status = "NOT_STARTED"
+        mock_calendar_sync.start_datetime = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
+        mock_calendar_sync.end_datetime = datetime.datetime(2024, 1, 31, tzinfo=datetime.UTC)
+        mock_calendar_sync.should_update_events = False
+        mock_calendar_sync.error_message = ""
+        mock_calendar_sync.trigger_source = "manual"
+        mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
+
+        # Authenticate as admin and make request
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                url,
+                data={
+                    "start_datetime": "2024-01-01T00:00:00Z",
+                    "end_datetime": "2024-01-31T23:59:59Z",
+                    "should_update_events": False,
+                },
+                format="json",
+            )
+
+            # Verify response
+            assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+            assert response.data["id"] == 123
+            assert response.data["status"] == "NOT_STARTED"
+
+            # Verify authenticate was called with OWNER's account, not admin's
+            authenticate_call_args = mock_calendar_service.authenticate.call_args
+            assert authenticate_call_args is not None
+            account_arg = authenticate_call_args[1]["account"]
+            assert account_arg == owner_social_account
+            assert account_arg.user == calendar_owner
+            assert account_arg.user != admin_user
+
+            # Verify request_calendar_sync was called
+            mock_calendar_service.request_calendar_sync.assert_called_once()
+
+    def test_admin_sync_non_admin_member_forbidden(self, auth_client, organization, calendar):
+        """Test non-admin member cannot sync any calendar"""
+        # Create regular member user
+        member_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=member_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Create calendar owner (another user)
+        calendar_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=calendar_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
+
+        # Authenticate as regular member
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=member_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        response = client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_sync_cross_org_calendar_not_found(self, auth_client, organization):
+        """Test admin cannot sync calendar from different organization"""
+        # Create admin in first organization
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Create calendar in different organization
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+
+        # Authenticate as admin and try to sync cross-org calendar
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": other_calendar.id})
+
+        response = client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_sync_owner_has_no_linked_account(self, auth_client, organization, calendar):
+        """Test admin cannot sync if calendar owner has no linked account for provider"""
+        # Create admin user
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Create calendar owner
+        calendar_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=calendar_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
+
+        # Do NOT create social account for the owner - this is the test case
+
+        # Authenticate as admin and make request
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        response = client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "has no linked" in response.data["detail"].lower()
+        assert calendar.provider in response.data["detail"]
+
+    def test_admin_sync_calendar_has_no_owner(self, auth_client, organization):
+        """Test admin cannot sync calendar with no owner"""
+        # Create admin user
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Create calendar with no ownership
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+
+        # Authenticate as admin and make request
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        response = client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "has no owner" in response.data["detail"].lower()
+
+    def test_admin_sync_invalid_datetimes(self, auth_client, organization, calendar):
+        """Test admin-sync with invalid datetimes returns 400"""
+        # Create admin user
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Create calendar owner
+        calendar_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=calendar_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Create calendar ownership
+        CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
+
+        # Authenticate as admin
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        response = client.post(
+            url,
+            data={
+                "start_datetime": "invalid-date",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_admin_sync_unauthenticated(self, anonymous_client, calendar):
+        """Test unauthenticated user cannot admin-sync"""
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        response = anonymous_client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_admin_sync_disabled_calendar_reachable_with_include_inactive(self, organization):
+        """Admin can reach disabled calendar on action route via ?include_inactive=true."""
+        from di_core.containers import container
+
+        # Create admin user
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Create calendar owner
+        calendar_owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=calendar_owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Create calendar and ownership
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
+
+        # Create social account for the owner
+        owner_social_account = baker.make(
+            SocialAccount,
+            user=calendar_owner,
+            provider=calendar.provider,
+        )
+        baker.make(
+            SocialToken,
+            account=owner_social_account,
+            token="fake_access_token",
+            token_secret="fake_refresh_token",
+            expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+        )
+
+        # Disable the calendar
+        calendar.visibility = CalendarVisibility.INACTIVE
+        calendar.save(update_fields=["visibility"])
+
+        # Create mock calendar service
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_sync = Mock()
+        mock_calendar_sync.id = 456
+        mock_calendar_sync.status = "NOT_STARTED"
+        mock_calendar_sync.start_datetime = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
+        mock_calendar_sync.end_datetime = datetime.datetime(2024, 1, 31, tzinfo=datetime.UTC)
+        mock_calendar_sync.should_update_events = False
+        mock_calendar_sync.error_message = ""
+        mock_calendar_sync.trigger_source = "manual"
+        mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
+
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        with container.calendar_service.override(mock_calendar_service):
+            # Test WITHOUT include_inactive — should be 404
+            response = client.post(
+                url,
+                data={
+                    "start_datetime": "2024-01-01T00:00:00Z",
+                    "end_datetime": "2024-01-31T23:59:59Z",
+                    "should_update_events": False,
+                },
+                format="json",
+            )
+            assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+            # Test WITH include_inactive=true — should be 202
+            response = client.post(
+                url,
+                data={
+                    "start_datetime": "2024-01-01T00:00:00Z",
+                    "end_datetime": "2024-01-31T23:59:59Z",
+                    "should_update_events": False,
+                },
+                format="json",
+                **{"HTTP_X_INCLUDE_INACTIVE": "true"} if False else {},
+            )
+            # Need to use query params instead of headers for action routes
+            response = client.post(
+                f"{url}?include_inactive=true",
+                data={
+                    "start_datetime": "2024-01-01T00:00:00Z",
+                    "end_datetime": "2024-01-31T23:59:59Z",
+                    "should_update_events": False,
+                },
+                format="json",
+            )
+            assert_response_status_code(response, status.HTTP_202_ACCEPTED)
+            assert response.data["id"] == 456
+            assert response.data["status"] == "NOT_STARTED"
 
 
 @pytest.mark.django_db
@@ -1843,6 +3351,45 @@ class TestBlockedTimeViewSet:
         assert "results" in response.data
         assert len(response.data["results"]) == 1
         assert response.data["results"][0]["reason"] == "Lunch break"
+
+    def test_list_blocked_times_renders_local_timezone(self, auth_client, calendar, user):
+        """Blocked times serialize start/end in the record's timezone, not UTC."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        # tz_unaware 09:00 + America/Recife -> stored instant 12:00Z, rendered 09:00-03:00.
+        CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Recife block",
+            start_time_tz_unaware=datetime.datetime(2024, 1, 1, 9, 0),
+            end_time_tz_unaware=datetime.datetime(2024, 1, 1, 17, 0),
+            timezone="America/Recife",
+        )
+
+        url = reverse("api:BlockedTimes-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        row = response.data["results"][0]
+        assert row["timezone"] == "America/Recife"
+        assert row["start_time"] == "2024-01-01T09:00:00-03:00"
+        assert row["end_time"] == "2024-01-01T17:00:00-03:00"
+
+    def test_list_blocked_times_no_n1_on_calendar(self, auth_client, calendar, user):
+        """Listing many blocked times must not issue one Calendar query per row.
+
+        Regression: BlockedTimeViewSet.get_queryset bypassed the VirtualModel
+        optimization, so the ``calendar`` PrimaryKeyRelatedField loaded one Calendar
+        row per BlockedTime and tripped the serializer query budget (500 under the
+        DEBUG-only guard, now active in tests). An N+1 here returns 500.
+        """
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        for i in range(5):
+            CalendarIntegrationTestFactory.create_blocked_time(calendar=calendar, reason=f"b{i}")
+
+        url = reverse("api:BlockedTimes-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert len(response.data["results"]) == 5
 
     def test_list_blocked_times_unauthenticated(self, anonymous_client):
         """Test listing blocked times as unauthenticated user"""
@@ -2502,6 +4049,23 @@ class TestAvailableTimeViewSet:
         # Note: AvailableTime model doesn't have can_book_partially field
         # This field exists only in AvailableTimeWindow dataclass
 
+    def test_list_available_times_no_n1_on_calendar(self, auth_client, calendar, user):
+        """Listing many available times must not issue one Calendar query per row.
+
+        Same regression as BlockedTimeViewSet: get_queryset bypassed the VirtualModel
+        optimization, so the ``calendar`` PrimaryKeyRelatedField loaded per row and
+        tripped the serializer query budget. An N+1 here returns 500.
+        """
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        for _ in range(5):
+            CalendarIntegrationTestFactory.create_available_time(calendar=calendar)
+
+        url = reverse("api:AvailableTimes-list")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert len(response.data["results"]) == 5
+
     def test_list_available_times_unauthenticated(self, anonymous_client):
         """Test listing available times as unauthenticated user"""
         url = reverse("api:AvailableTimes-list")
@@ -2589,68 +4153,171 @@ class TestAvailableTimeViewSet:
         # Verify the mock was called
         mock_calendar_service.create_available_time.assert_called_once()
 
-    def test_bulk_create_available_times(self, auth_client, calendar, user):
-        """Test bulk creating available times"""
-        from di_core.containers import container
+    def _batch_url(self):
+        return reverse("api:AvailableTimes-batch")
 
-        # Set up the calendar to allow available windows management
-        calendar.can_manage_available_windows = True
+    def test_batch_returns_times_in_record_timezone(self, auth_client, calendar, user):
+        """Datetimes round-trip in the sent IANA timezone, not UTC.
+
+        Client sends a naive local wall-clock (09:00) + timezone; the response must
+        carry the same local time (09:00 with the zone's offset), not 12:00Z.
+        """
+        calendar.manage_available_windows = True
         calendar.save()
-
-        # Create calendar ownership
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
 
-        # Create a mock calendar service
-        mock_calendar_service = Mock()
-
-        created_available_times = [
-            CalendarIntegrationTestFactory.create_available_time(
-                calendar=calendar,
-            ),
-            CalendarIntegrationTestFactory.create_available_time(
-                calendar=calendar,
-            ),
-        ]
-
-        mock_calendar_service.bulk_create_availability_windows.return_value = (
-            created_available_times
-        )
-
-        url = reverse("api:AvailableTimes-bulk-create")
         data = {
-            "available_times": [
+            "calendar": calendar.id,
+            "operations": [
                 {
-                    "calendar": calendar.id,
-                    "start_time": (
-                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
-                    ).isoformat(),
-                    "end_time": (
-                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
-                    ).isoformat(),
+                    "action": "create",
+                    "start_time": "2024-01-01T09:00:00",
+                    "end_time": "2024-01-01T17:00:00",
+                    "timezone": "America/Recife",  # UTC-3, no DST
+                },
+            ],
+        }
+
+        response = auth_client.post(self._batch_url(), data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        window = response.data[0]
+        assert window["timezone"] == "America/Recife"
+        # Local wall-clock preserved with the zone's offset (not 12:00:00Z).
+        assert window["start_time"] == "2024-01-01T09:00:00-03:00"
+        assert window["end_time"] == "2024-01-01T17:00:00-03:00"
+
+    def test_batch_create_update_delete(self, auth_client, calendar, user):
+        """A single batch creates, updates, and deletes available times atomically."""
+        from calendar_integration.models import AvailableTime
+
+        calendar.manage_available_windows = True
+        calendar.save()
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        keep = CalendarIntegrationTestFactory.create_available_time(calendar=calendar)
+        to_delete = CalendarIntegrationTestFactory.create_available_time(calendar=calendar)
+
+        now = datetime.datetime.now(datetime.UTC)
+        data = {
+            "calendar": calendar.id,
+            "operations": [
+                {
+                    "action": "create",
+                    "start_time": (now + datetime.timedelta(hours=5)).isoformat(),
+                    "end_time": (now + datetime.timedelta(hours=6)).isoformat(),
                     "timezone": "UTC",
                 },
                 {
-                    "calendar": calendar.id,
-                    "start_time": (
-                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)
-                    ).isoformat(),
-                    "end_time": (
-                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=4)
-                    ).isoformat(),
+                    "action": "update",
+                    "id": keep.id,
+                    "timezone": "America/New_York",
+                },
+                {"action": "delete", "id": to_delete.id},
+            ],
+        }
+
+        response = auth_client.post(self._batch_url(), data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        remaining = AvailableTime.objects.filter_by_organization(calendar.organization_id).filter(
+            calendar_fk=calendar
+        )
+        # to_delete gone, keep updated, one created -> 2 rows
+        assert remaining.count() == 2
+        assert not remaining.filter(id=to_delete.id).exists()
+        keep.refresh_from_db()
+        assert keep.timezone == "America/New_York"
+
+    def test_batch_is_transactional_on_bad_operation(self, auth_client, calendar, user):
+        """A failing operation rolls back the whole batch — no partial application."""
+        from calendar_integration.models import AvailableTime
+
+        calendar.manage_available_windows = True
+        calendar.save()
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        existing = CalendarIntegrationTestFactory.create_available_time(calendar=calendar)
+        now = datetime.datetime.now(datetime.UTC)
+        data = {
+            "calendar": calendar.id,
+            "operations": [
+                {
+                    "action": "create",
+                    "start_time": (now + datetime.timedelta(hours=5)).isoformat(),
+                    "end_time": (now + datetime.timedelta(hours=6)).isoformat(),
+                    "timezone": "UTC",
+                },
+                # references a non-existent row -> service raises -> 400, full rollback
+                {"action": "delete", "id": 99999999},
+            ],
+        }
+
+        response = auth_client.post(self._batch_url(), data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        # The create above must NOT have persisted (rolled back); only the original row remains.
+        remaining = AvailableTime.objects.filter_by_organization(calendar.organization_id).filter(
+            calendar_fk=calendar
+        )
+        assert remaining.count() == 1
+        assert remaining.get().id == existing.id
+
+    def test_batch_defaults_to_user_default_calendar(self, auth_client, calendar, user):
+        """Omitting calendar applies the batch to the user's default calendar."""
+        from calendar_integration.models import AvailableTime
+
+        calendar.manage_available_windows = True
+        calendar.save()
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
+
+        now = datetime.datetime.now(datetime.UTC)
+        data = {
+            "operations": [
+                {
+                    "action": "create",
+                    "start_time": (now + datetime.timedelta(hours=1)).isoformat(),
+                    "end_time": (now + datetime.timedelta(hours=2)).isoformat(),
                     "timezone": "UTC",
                 },
             ],
         }
 
-        # Use container override to inject the mock service
-        with container.calendar_service.override(mock_calendar_service):
-            response = auth_client.post(url, data, format="json")
+        response = auth_client.post(self._batch_url(), data, format="json")
 
-        assert_response_status_code(response, status.HTTP_201_CREATED)
-        assert len(response.data) == 2
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert (
+            AvailableTime.objects.filter_by_organization(calendar.organization_id)
+            .filter(calendar_fk=calendar)
+            .count()
+            == 1
+        )
 
-        # Verify the mock was called
-        mock_calendar_service.bulk_create_availability_windows.assert_called_once()
+    def test_batch_create_missing_fields_400(self, auth_client, calendar, user):
+        """A create operation without required fields is rejected."""
+        calendar.manage_available_windows = True
+        calendar.save()
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        data = {
+            "calendar": calendar.id,
+            "operations": [{"action": "create", "timezone": "UTC"}],
+        }
+        response = auth_client.post(self._batch_url(), data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_batch_update_without_id_400(self, auth_client, calendar, user):
+        """An update operation without an id is rejected."""
+        calendar.manage_available_windows = True
+        calendar.save()
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        data = {
+            "calendar": calendar.id,
+            "operations": [{"action": "update", "timezone": "UTC"}],
+        }
+        response = auth_client.post(self._batch_url(), data, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
     def test_get_available_times_expanded(self, auth_client, calendar, user):
         """Test getting expanded available times (including recurring occurrences)"""
@@ -3315,3 +4982,681 @@ class TestRecurringBlockedAndAvailableTimeViewSets:
 
         response = auth_client.get(available_time_url, params)
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+
+@pytest.mark.django_db
+class TestCalendarBundleUpdateAction:
+    """Tests for PATCH /calendar/{id}/bundle/ (update bundle children and primary)."""
+
+    # --- Helpers ---
+
+    @staticmethod
+    def _make_bundle(organization):
+        """Create a bundle calendar with two child calendars; return (bundle, child1, child2)."""
+        child1 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Child A",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        child2 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Child B",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        bundle = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="My Bundle",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.BUNDLE,
+        )
+        # Wire up relationships directly (bypass service for test setup)
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child1,
+            organization=organization,
+            is_primary=True,
+        )
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child2,
+            organization=organization,
+            is_primary=False,
+        )
+        return bundle, child1, child2
+
+    @staticmethod
+    def _make_admin(organization):
+        """Create an admin user and membership; return (user, APIClient)."""
+        from rest_framework.test import APIClient
+
+        admin = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+        client = APIClient()
+        client.force_authenticate(user=admin)
+        return admin, client
+
+    @staticmethod
+    def _make_member(organization):
+        """Create a regular member and return (user, APIClient)."""
+        from rest_framework.test import APIClient
+
+        member = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=member,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        client = APIClient()
+        client.force_authenticate(user=member)
+        return member, client
+
+    # --- Happy-path ---
+
+    def test_update_bundle_add_child_remove_child_change_primary(self, organization):
+        """Admin adds a child, removes a child, and changes primary → 200, DB updated."""
+        bundle, child1, child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        child3 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Child C",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {
+            "bundle_calendars": [child2.id, child3.id],  # drop child1, add child3
+            "primary_calendar": child3.id,
+        }
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["id"] == bundle.id
+
+        # child1 should be gone
+        assert not ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle,
+            child_calendar_fk_id=child1.id,
+            organization=organization,
+        ).exists()
+
+        # child2 retained, child3 added
+        assert ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle,
+            child_calendar_fk_id=child2.id,
+            organization=organization,
+        ).exists()
+        assert ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle,
+            child_calendar_fk_id=child3.id,
+            organization=organization,
+        ).exists()
+
+        # Exactly one primary — child3
+        assert (
+            ChildrenCalendarRelationship.objects.filter(
+                bundle_calendar=bundle,
+                organization=organization,
+                is_primary=True,
+            ).count()
+            == 1
+        )
+        assert (
+            ChildrenCalendarRelationship.objects.get(
+                bundle_calendar=bundle,
+                organization=organization,
+                is_primary=True,
+            ).child_calendar_fk_id
+            == child3.id
+        )
+
+    # --- Validation errors ---
+
+    def test_update_bundle_non_bundle_calendar_400(self, organization):
+        """PATCH on a PERSONAL calendar returns 400."""
+        _, admin_client = self._make_admin(organization)
+        personal = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        child1 = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        child2 = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": personal.id})
+        data = {"bundle_calendars": [child1.id, child2.id]}
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "not a bundle" in str(response.data["non_field_errors"]).lower()
+
+    def test_update_bundle_fewer_than_two_children_400(self, organization):
+        """Providing only one child calendar returns 400."""
+        bundle, child1, _child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {"bundle_calendars": [child1.id]}
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_bundle_primary_not_in_children_400(self, organization):
+        """primary_calendar not in bundle_calendars returns 400."""
+        bundle, child1, child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        outside = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+        )
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {
+            "bundle_calendars": [child1.id, child2.id],
+            "primary_calendar": outside.id,
+        }
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_bundle_child_not_in_org_400(self, organization):
+        """Child calendar from another org is rejected by PrimaryKeyRelatedField → 400."""
+        bundle, child1, _child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        cross_org_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=other_org,
+        )
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {
+            "bundle_calendars": [child1.id, cross_org_calendar.id],
+        }
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_bundle_disabled_child_calendar_400(self, organization):
+        """Providing an inactive calendar as a child is rejected → 400."""
+        bundle, child1, _child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        disabled = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        disabled.visibility = CalendarVisibility.INACTIVE
+        disabled.save(update_fields=["visibility"])
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {"bundle_calendars": [child1.id, disabled.id]}
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    # --- Permission and access ---
+
+    def test_update_bundle_non_admin_member_403(self, organization):
+        """Regular member receives 403."""
+        bundle, child1, child2 = self._make_bundle(organization)
+        _, member_client = self._make_member(organization)
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {"bundle_calendars": [child1.id, child2.id]}
+
+        response = member_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_update_bundle_cross_org_bundle_404(self):
+        """Bundle from a different org yields 404 via org-scoped get_queryset."""
+        org_a = CalendarIntegrationTestFactory.create_organization(name="Org A")
+        org_b = CalendarIntegrationTestFactory.create_organization(name="Org B")
+
+        _, admin_client = self._make_admin(org_a)
+
+        # Bundle lives in org_b
+        _, child1, child2 = self._make_bundle(org_b)
+        other_bundle = CalendarIntegrationTestFactory.create_calendar(
+            organization=org_b,
+            calendar_type=CalendarType.BUNDLE,
+        )
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": other_bundle.id})
+        data = {"bundle_calendars": [child1.id, child2.id]}
+
+        response = admin_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_update_bundle_anonymous_401(self, anonymous_client, organization):
+        """Unauthenticated request returns 401."""
+        bundle, _, _ = self._make_bundle(organization)
+
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {"bundle_calendars": [1, 2]}
+
+        response = anonymous_client.patch(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_bundle_update_keeps_existing_disabled_child(self, organization):
+        """
+        Bundle has child A (active) + child B; disable B (visibility=inactive) directly;
+        admin PATCHes the bundle resending [A, B] (+ valid primary among them) → 200,
+        B remains a child, reconciliation succeeds.
+        Proves the trap is gone.
+        """
+        bundle, child_active, child_disabled = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        # Disable child_disabled
+        child_disabled.visibility = CalendarVisibility.INACTIVE
+        child_disabled.save(update_fields=["visibility"])
+
+        # Admin PATCHes with both children
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {
+            "bundle_calendars": [child_active.id, child_disabled.id],
+            "primary_calendar": child_active.id,
+        }
+
+        response = admin_client.patch(url, data, format="json")
+
+        # Should succeed (200)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["id"] == bundle.id
+
+        # child_disabled should still be a child
+        assert ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle,
+            child_calendar_fk_id=child_disabled.id,
+            organization=organization,
+        ).exists()
+
+        # child_active should still be a child and marked primary
+        assert ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle,
+            child_calendar_fk_id=child_active.id,
+            organization=organization,
+            is_primary=True,
+        ).exists()
+
+    def test_bundle_update_rejects_new_disabled_child(self, organization):
+        """
+        A disabled calendar that is NOT currently a child cannot be ADDED → 400.
+        Proves new-disabled still barred.
+        """
+        bundle, child_active, _child_other = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        # Create a disabled calendar that is NOT a child
+        disabled_new = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Disabled New",
+            calendar_type=CalendarType.PERSONAL,
+        )
+        disabled_new.visibility = CalendarVisibility.INACTIVE
+        disabled_new.save(update_fields=["visibility"])
+
+        # Try to add it as a child
+        url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
+        data = {
+            "bundle_calendars": [child_active.id, disabled_new.id],
+        }
+
+        response = admin_client.patch(url, data, format="json")
+
+        # Should fail (400)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+        # disabled_new should NOT be a child
+        assert not ChildrenCalendarRelationship.objects.filter(
+            bundle_calendar=bundle,
+            child_calendar_fk_id=disabled_new.id,
+            organization=organization,
+        ).exists()
+
+
+@pytest.mark.django_db
+class TestCalendarDisableGating:
+    """Tests for Phase 11: object-type-aware gating on DELETE /calendar/{id}/.
+
+    BUNDLE   → admin-only; 403 for non-admins.
+    Non-bundle → owner or admin; 403 for non-owner non-admins.
+    Events/children preserved when a bundle is disabled.
+    """
+
+    # --- Shared helpers (mirrors TestCalendarBundleUpdateAction) ---
+
+    @staticmethod
+    def _make_bundle(organization):
+        """Create a bundle with two child calendars; return (bundle, child1, child2)."""
+        child1 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Bundle Child A",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        child2 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Bundle Child B",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        bundle = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Test Bundle",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.BUNDLE,
+        )
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child1,
+            organization=organization,
+            is_primary=True,
+        )
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child2,
+            organization=organization,
+            is_primary=False,
+        )
+        return bundle, child1, child2
+
+    @staticmethod
+    def _make_admin(organization):
+        """Create an admin user+membership; return (user, APIClient)."""
+        from rest_framework.test import APIClient
+
+        admin = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+        client = APIClient()
+        client.force_authenticate(user=admin)
+        return admin, client
+
+    @staticmethod
+    def _make_member(organization):
+        """Create a regular member; return (user, APIClient)."""
+        from rest_framework.test import APIClient
+
+        member = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=member,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        client = APIClient()
+        client.force_authenticate(user=member)
+        return member, client
+
+    # --- BUNDLE disable tests ---
+
+    def test_bundle_disable_by_admin_204(self, organization):
+        """Org admin DELETEs a bundle → 204, bundle.visibility=inactive."""
+        bundle, _child1, _child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": bundle.id})
+        response = admin_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+        bundle.refresh_from_db()
+        assert bundle.visibility == CalendarVisibility.INACTIVE
+
+    def test_bundle_disable_hidden_from_default_list(self, organization):
+        """After admin disables a bundle, it no longer appears in the default list."""
+        bundle, _child1, _child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": bundle.id})
+        admin_client.delete(url)
+
+        list_url = reverse("api:Calendars-list")
+        response = admin_client.get(list_url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert bundle.id not in ids
+
+    def test_bundle_disable_child_calendars_remain_active(self, organization):
+        """Disabling a bundle must NOT affect child calendars — they stay visibility=active."""
+        bundle, child1, child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": bundle.id})
+        admin_client.delete(url)
+
+        child1.refresh_from_db()
+        child2.refresh_from_db()
+        assert child1.visibility == CalendarVisibility.ACTIVE
+        assert child2.visibility == CalendarVisibility.ACTIVE
+
+    def test_bundle_disable_events_and_representations_preserved(self, organization):
+        """Disabling a bundle must NOT delete bundle events or representation BlockedTimes."""
+        bundle, child1, _child2 = self._make_bundle(organization)
+        _, admin_client = self._make_admin(organization)
+
+        # Create a bundle primary event on child1
+        primary_event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=child1,
+            title="Bundle Primary Event",
+        )
+
+        # Create a representation CalendarEvent linked via bundle_primary_event
+        now = datetime.datetime.now(datetime.UTC)
+        representation_event = baker.make(
+            CalendarEvent,
+            calendar=child1,
+            organization=organization,
+            title="Representation Event",
+            bundle_primary_event=primary_event,
+            bundle_calendar=bundle,
+            external_id=f"repr_{uuid.uuid4().hex[:8]}",
+            timezone="UTC",
+            start_time_tz_unaware=now + datetime.timedelta(hours=1),
+            end_time_tz_unaware=now + datetime.timedelta(hours=2),
+        )
+
+        # Create a representation BlockedTime linked via bundle_primary_event
+        representation_blocked = baker.make(
+            BlockedTime,
+            calendar=child1,
+            organization=organization,
+            reason="Bundle representation blocked time",
+            bundle_primary_event=primary_event,
+            timezone="UTC",
+            start_time_tz_unaware=now + datetime.timedelta(hours=1),
+            end_time_tz_unaware=now + datetime.timedelta(hours=2),
+        )
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": bundle.id})
+        admin_client.delete(url)
+
+        # Events must still exist
+        assert CalendarEvent.objects.filter(id=primary_event.id).exists()
+        assert CalendarEvent.objects.filter(id=representation_event.id).exists()
+        # BlockedTime must still exist
+        assert BlockedTime.objects.filter(id=representation_blocked.id).exists()
+
+    def test_bundle_disable_by_non_admin_member_403(self, organization):
+        """Non-admin org member cannot disable a bundle → 403, bundle unchanged."""
+        bundle, _child1, _child2 = self._make_bundle(organization)
+        _, member_client = self._make_member(organization)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": bundle.id})
+        response = member_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        bundle.refresh_from_db()
+        assert bundle.visibility == CalendarVisibility.ACTIVE
+
+    # --- Non-bundle (personal) calendar disable tests ---
+
+    def test_personal_calendar_disable_by_owner_204(self, organization):
+        """Calendar owner can disable their own personal calendar → 204."""
+        from rest_framework.test import APIClient
+
+        owner = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=owner,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        personal = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(owner, personal)
+
+        client = APIClient()
+        client.force_authenticate(user=owner)
+        url = reverse("api:Calendars-detail", kwargs={"pk": personal.id})
+        response = client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+        personal.refresh_from_db()
+        assert personal.visibility == CalendarVisibility.INACTIVE
+
+    def test_personal_calendar_disable_by_non_owner_non_admin_403(self, organization):
+        """Non-owner, non-admin member cannot disable another user's calendar → 403."""
+        other_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=other_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+        personal = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        # personal belongs to another user; other_user has no ownership
+
+        _, member_client = self._make_member(organization)
+        url = reverse("api:Calendars-detail", kwargs={"pk": personal.id})
+        response = member_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        personal.refresh_from_db()
+        assert personal.visibility == CalendarVisibility.ACTIVE
+
+    def test_personal_calendar_disable_by_admin_not_owner_204(self, organization):
+        """Org admin who does NOT own the calendar can still disable it → 204."""
+        personal = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        # Don't create ownership for the admin
+
+        _, admin_client = self._make_admin(organization)
+        url = reverse("api:Calendars-detail", kwargs={"pk": personal.id})
+        response = admin_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+        personal.refresh_from_db()
+        assert personal.visibility == CalendarVisibility.INACTIVE
+
+    # --- Cross-org and anon edge cases ---
+
+    def test_disable_cross_org_calendar_404(self, organization):
+        """Calendar from another org is not in queryset → 404."""
+        _, admin_client = self._make_admin(organization)
+
+        other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
+        other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": other_calendar.id})
+        response = admin_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+        other_calendar.refresh_from_db()
+        assert other_calendar.visibility == CalendarVisibility.ACTIVE
+
+    def test_disable_calendar_anonymous_401(self, anonymous_client, organization):
+        """Unauthenticated request → 401."""
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        response = anonymous_client.delete(url)
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+
+@pytest.mark.django_db
+class TestCalendarDefaultAction:
+    """GET /calendar/default/ — the caller's own default calendar.
+
+    The ``organization`` / ``calendar`` fixtures already create the user's
+    membership (one membership per user), so tests must not create another.
+    """
+
+    def test_returns_default_calendar(self, auth_client, user, calendar):
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
+
+        url = reverse("api:Calendars-default")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.data["id"] == calendar.id
+
+    def test_non_default_ownership_returns_404(self, auth_client, user, calendar):
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=False)
+
+        url = reverse("api:Calendars-default")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_inactive_default_calendar_returns_404(self, auth_client, user, calendar):
+        calendar.visibility = CalendarVisibility.INACTIVE
+        calendar.save(update_fields=["visibility"])
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
+
+        url = reverse("api:Calendars-default")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_no_default_returns_404(self, auth_client, organization):
+        # organization fixture creates the membership; no ownership exists.
+        url = reverse("api:Calendars-default")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_membership_less_user_returns_404(self, auth_client, user):
+        url = reverse("api:Calendars-default")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_unauthenticated_returns_401(self, anonymous_client):
+        url = reverse("api:Calendars-default")
+        response = anonymous_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)

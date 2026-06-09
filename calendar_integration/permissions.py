@@ -3,6 +3,7 @@ from rest_framework.permissions import BasePermission
 
 from calendar_integration.models import CalendarOwnership
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
+from organizations.models import get_active_organization_membership
 
 
 class CalendarEventPermission(BasePermission):
@@ -64,10 +65,10 @@ class CalendarGroupPermission(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
-        return getattr(user, "organization_membership", None) is not None
+        return get_active_organization_membership(user) is not None
 
     def has_object_permission(self, request, view, obj):
-        membership = getattr(request.user, "organization_membership", None)
+        membership = get_active_organization_membership(request.user)
         if membership is None or obj.organization_id != membership.organization_id:
             return False
         if self.calendar_permission_service is None:

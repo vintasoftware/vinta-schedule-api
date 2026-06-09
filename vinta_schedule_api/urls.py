@@ -16,6 +16,7 @@ from calendar_integration.routes import routes as calendar_integration_routes
 from organizations.routes import routes as organizations_routes
 from organizations.views import AcceptInvitationView
 from payments.routes import routes as payments_routes
+from public_api.routes import routes as public_api_routes
 from public_api.schema import schema
 from users.routes import routes as users_routes
 from webhooks.routes import routes as webhooks_routes
@@ -27,6 +28,7 @@ routes = (
     *calendar_integration_routes,
     *organizations_routes,
     *payments_routes,
+    *public_api_routes,
     *users_routes,
     *webhooks_routes,
 )

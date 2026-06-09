@@ -1,9 +1,10 @@
 import datetime
+import logging
 import re
 import time
 import uuid
 from collections.abc import Iterable
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -30,6 +31,8 @@ from calendar_integration.services.protocols.calendar_adapter import CalendarAda
 from common.redis import build_resilient_limiter
 
 
+logger = logging.getLogger(__name__)
+
 # Precompiled regex for extracting calendar ID from Google Calendar resource URIs
 _CALENDAR_ID_RE = re.compile(r"/calendars/([^/]+)/events")
 
@@ -54,6 +57,10 @@ class GoogleCredentialTypedDict(TypedDict):
     token: str
     refresh_token: str
     account_id: str
+    # Optional: when present, lets the adapter know the access-token expiry and
+    # persist a refreshed token back to the originating SocialToken row.
+    expiry: NotRequired[datetime.datetime | None]
+    social_token_id: NotRequired[int | None]
 
 
 class GoogleServiceAccountCredentialsTypedDict(TypedDict):
@@ -80,6 +87,26 @@ class GoogleCalendarAdapter(CalendarAdapter):
         "declined": "declined",
         None: "needsAction",
     }
+    # Google eventTypes that don't occupy the owner's time. These are informational
+    # markers (e.g. "Home"/"Office" working-location, birthdays) that Google returns
+    # alongside real events; counting them as busy wrongly blocks availability.
+    NON_BUSY_EVENT_TYPES: frozenset[str] = frozenset(  # noqa: RUF012
+        {"workingLocation", "birthday"}
+    )
+
+    @classmethod
+    def _is_busy_event(cls, event: dict[str, Any]) -> bool:
+        """Whether a Google event occupies the owner's time (counts against availability).
+
+        Excludes working-location / birthday markers and any event explicitly marked
+        free (``transparency == "transparent"``). Everything else — ``default``,
+        ``outOfOffice``, ``focusTime`` — is treated as busy.
+        """
+        if event.get("eventType") in cls.NON_BUSY_EVENT_TYPES:
+            return False
+        if event.get("transparency") == "transparent":
+            return False
+        return True
 
     def __init__(self, credentials_dict: GoogleCredentialTypedDict):
         self.account_id = credentials_dict["account_id"]
@@ -90,18 +117,62 @@ class GoogleCalendarAdapter(CalendarAdapter):
                 "Google Calendar integration requires GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET settings."
             )
 
+        # google-auth tracks expiry as a naive UTC datetime; convert the
+        # (tz-aware) SocialToken expiry so credentials.valid/expired is accurate
+        # and a stale access token actually triggers a refresh.
+        expiry = credentials_dict.get("expiry")
+        naive_expiry = expiry.astimezone(datetime.UTC).replace(tzinfo=None) if expiry else None
+
         credentials = Credentials(
             token=credentials_dict["token"],
             refresh_token=credentials_dict["refresh_token"],
+            token_uri="https://oauth2.googleapis.com/token",  # noqa: S106
             client_id=GOOGLE_CLIENT_ID,
             client_secret=GOOGLE_CLIENT_SECRET,
+            expiry=naive_expiry,
         )
         if (not credentials or not credentials.valid) and credentials.refresh_token:
-            credentials.refresh(Request())
+            try:
+                credentials.refresh(Request())
+            except Exception as e:
+                logger.warning(
+                    "Google token refresh failed for account_id=%s: %s",
+                    self.account_id,
+                    e,
+                )
+                raise ValueError(f"Google token refresh failed: {e}") from e
+            self._persist_refreshed_token(credentials, credentials_dict.get("social_token_id"))
         elif not credentials or not credentials.valid:
+            logger.warning(
+                "Google credentials invalid and no refresh_token for account_id=%s "
+                "(expired access token, reconnect required)",
+                self.account_id,
+            )
             raise ValueError("Invalid or expired Google credentials provided.")
 
         self.client = build("calendar", "v3", credentials=credentials)
+
+    @staticmethod
+    def _persist_refreshed_token(credentials: Credentials, social_token_id: int | None) -> None:
+        """Write a refreshed access token + expiry back to its SocialToken row.
+
+        Keeps the stored token fresh so later requests don't re-refresh and the
+        token-resolution query sees an up-to-date expiry. Best-effort: a failure
+        here must not break the in-flight request that already has valid creds.
+        """
+        if not social_token_id:
+            return
+
+        from allauth.socialaccount.models import SocialToken
+
+        new_expiry = credentials.expiry
+        if new_expiry is not None:
+            new_expiry = new_expiry.replace(tzinfo=datetime.UTC)
+
+        SocialToken.objects.filter(id=social_token_id).update(
+            token=credentials.token,
+            expires_at=new_expiry,
+        )
 
     @staticmethod
     def _generate_jwt(
@@ -197,8 +268,11 @@ class GoogleCalendarAdapter(CalendarAdapter):
 
     def get_account_calendars(self) -> Iterable[CalendarResourceData]:
         read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
+        # Use calendarList (the user's list of calendars), NOT calendars() — the
+        # latter is single-calendar CRUD by id and has no .list() method
+        # ("'Resource' object has no attribute 'list'").
         calendars_data = (
-            self.client.calendars()
+            self.client.calendarList()
             .list(
                 maxResults=250,  # Adjust as needed, Google API has a default limit
                 showDeleted=False,
@@ -213,6 +287,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
                 description=c.get("description", ""),
                 email=c.get("email", ""),
                 is_default=c.get("primary", False),
+                access_role=c.get("accessRole"),
                 provider=self.provider,
                 original_payload=c,
             )
@@ -255,15 +330,11 @@ class GoogleCalendarAdapter(CalendarAdapter):
             "description": event_data.description,
             "start": {
                 "dateTime": event_data.start_time.isoformat(),
-                "timeZone": event_data.start_time.tzinfo.tzname
-                if event_data.start_time.tzinfo
-                else "UTC",
+                "timeZone": event_data.timezone,
             },
             "end": {
                 "dateTime": event_data.end_time.isoformat(),
-                "timeZone": event_data.end_time.tzinfo.tzname
-                if event_data.end_time.tzinfo
-                else "UTC",
+                "timeZone": event_data.timezone,
             },
             "attendees": [
                 {
@@ -311,12 +382,8 @@ class GoogleCalendarAdapter(CalendarAdapter):
             external_id=created_event["id"],
             title=created_event["summary"],
             description=created_event.get("description", ""),
-            start_time=datetime.datetime.strptime(
-                created_event["start"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=datetime.UTC),
-            end_time=datetime.datetime.strptime(
-                created_event["end"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=datetime.UTC),
+            start_time=self._parse_google_datetime(created_event["start"]),
+            end_time=self._parse_google_datetime(created_event["end"]),
             timezone=created_event.get("start", {}).get("timeZone"),
             original_payload=created_event,
             recurrence_rule=recurrence_rule,
@@ -330,6 +397,23 @@ class GoogleCalendarAdapter(CalendarAdapter):
                 for attendee in created_event.get("attendees", [])
             ],
         )
+
+    @staticmethod
+    def _parse_google_datetime(node: dict[str, Any]) -> datetime.datetime:
+        """Parse a Google event start/end node into a tz-aware datetime.
+
+        Google returns either ``dateTime`` (RFC 3339, e.g. ``2026-06-06T15:00:00-03:00``
+        or ``...Z``) for timed events, or ``date`` (``YYYY-MM-DD``) for all-day events.
+        ``datetime.strptime("%Y-%m-%dT%H:%M:%S")`` cannot parse the offset/``Z`` and
+        all-day events have no ``dateTime`` at all — both raise, which fails the whole
+        sync. ``fromisoformat`` (3.11+) handles the offset and ``Z``.
+        """
+        raw = node.get("dateTime")
+        if raw:
+            dt = datetime.datetime.fromisoformat(raw)
+            return dt if dt.tzinfo is not None else dt.replace(tzinfo=datetime.UTC)
+        # All-day event: only a date is present; treat it as midnight UTC.
+        return datetime.datetime.fromisoformat(node["date"]).replace(tzinfo=datetime.UTC)
 
     def _convert_google_calendar_event_to_event_data(
         self, event: dict[str, Any], calendar_id: str
@@ -345,15 +429,13 @@ class GoogleCalendarAdapter(CalendarAdapter):
         return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=event["id"],
-            title=event["summary"],
+            title=event.get("summary", ""),
             description=event.get("description", ""),
-            start_time=datetime.datetime.strptime(
-                event["start"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=event.get("start", {}).get("timeZone")),
-            end_time=datetime.datetime.strptime(
-                event["end"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=datetime.UTC),
-            timezone=event.get("end", {}).get("timeZone"),
+            start_time=self._parse_google_datetime(event["start"]),
+            end_time=self._parse_google_datetime(event["end"]),
+            timezone=event.get("start", {}).get("timeZone")
+            or event.get("end", {}).get("timeZone")
+            or "UTC",
             original_payload=event,
             recurrence_rule=recurrence_rule,
             recurring_event_id=event.get("recurringEventId"),
@@ -394,7 +476,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
                 if page_token:
                     current_extra_kwargs["pageToken"] = page_token
 
-                read_quote_limiter.ratelimit(f"google_calendar_read_{self.account_id}", delay=True)
+                read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
                 events_result = (
                     self.client.events()
                     .list(
@@ -408,8 +490,11 @@ class GoogleCalendarAdapter(CalendarAdapter):
                     .execute()
                 )
 
-                # Yield events from current page
+                # Yield events from current page, skipping non-busy markers
+                # (working-location/birthday/free) so they don't block availability.
                 for event in events_result.get("items", []):
+                    if not self._is_busy_event(event):
+                        continue
                     yield self._convert_google_calendar_event_to_event_data(event, calendar_id)
 
                 page_token = events_result.get("nextPageToken")
@@ -431,15 +516,13 @@ class GoogleCalendarAdapter(CalendarAdapter):
         return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=event["id"],
-            title=event["summary"],
+            title=event.get("summary", ""),
             description=event.get("description", ""),
-            start_time=datetime.datetime.strptime(
-                event["start"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=event.get("start", {}).get("timeZone")),
-            end_time=datetime.datetime.strptime(
-                event["end"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=datetime.UTC),
-            timezone=event.get("start", {}).get("timeZone"),
+            start_time=self._parse_google_datetime(event["start"]),
+            end_time=self._parse_google_datetime(event["end"]),
+            timezone=event.get("start", {}).get("timeZone")
+            or event.get("end", {}).get("timeZone")
+            or "UTC",
             original_payload=event,
             attendees=[
                 EventAttendeeData(
@@ -460,15 +543,11 @@ class GoogleCalendarAdapter(CalendarAdapter):
             "description": event_data.description,
             "start": {
                 "dateTime": event_data.start_time.isoformat(),
-                "timeZone": event_data.start_time.tzinfo.tzname
-                if event_data.start_time.tzinfo
-                else "UTC",
+                "timeZone": event_data.timezone,
             },
             "end": {
                 "dateTime": event_data.end_time.isoformat(),
-                "timeZone": event_data.end_time.tzinfo.tzname
-                if event_data.end_time.tzinfo
-                else "UTC",
+                "timeZone": event_data.timezone,
             },
         }
 
@@ -496,12 +575,8 @@ class GoogleCalendarAdapter(CalendarAdapter):
             external_id=updated_event["id"],
             title=updated_event["summary"],
             description=updated_event.get("description", ""),
-            start_time=datetime.datetime.strptime(
-                updated_event["start"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=datetime.UTC),
-            end_time=datetime.datetime.strptime(
-                updated_event["end"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=datetime.UTC),
+            start_time=self._parse_google_datetime(updated_event["start"]),
+            end_time=self._parse_google_datetime(updated_event["end"]),
             timezone=updated_event.get("start", {}).get("timeZone"),
             original_payload=updated_event,
             recurrence_rule=recurrence_rule,

@@ -10,8 +10,12 @@ from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
-from calendar_integration.constants import CalendarProvider, CalendarType
-from calendar_integration.exceptions import CalendarGroupError, CalendarServiceNotInjectedError
+from calendar_integration.constants import CalendarProvider, CalendarType, CalendarVisibility
+from calendar_integration.exceptions import (
+    CalendarGroupError,
+    CalendarIntegrationError,
+    CalendarServiceNotInjectedError,
+)
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -22,6 +26,8 @@ from calendar_integration.models import (
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
     CalendarOwnership,
+    CalendarSync,
+    ChildrenCalendarRelationship,
     EventAttendance,
     EventExternalAttendance,
     EventRecurrenceException,
@@ -62,7 +68,7 @@ from calendar_integration.virtual_models import (
     ResourceAllocationVirtualModel,
 )
 from common.utils.serializer_utils import VirtualModelSerializer
-from organizations.models import Organization
+from organizations.models import Organization, get_active_organization_membership
 from users.models import User
 from users.serializers import UserSerializer
 
@@ -70,6 +76,32 @@ from users.serializers import UserSerializer
 if TYPE_CHECKING:
     from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_service import CalendarService
+
+
+def _localize_times_in_representation(
+    data: dict,
+    instance,
+    tz_name: str | None,
+    fields: tuple[str, ...] = ("start_time", "end_time"),
+) -> dict:
+    """Re-render datetime fields in ``tz_name`` instead of UTC, in place.
+
+    start_time/end_time are stored/computed as UTC-aware instants; Django returns
+    them UTC, so DRF would emit e.g. 12:00:00Z for 09:00 America/Recife. Re-express
+    them in the record's IANA timezone so responses carry the local wall-clock. No-op
+    when the timezone is missing or unknown.
+    """
+    if not tz_name or not isinstance(tz_name, str):
+        return data
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        return data
+    for field in fields:
+        value = getattr(instance, field, None)
+        if value is not None:
+            data[field] = value.astimezone(tz).isoformat()
+    return data
 
 
 class CalendarOwnershipSerializer(VirtualModelSerializer):
@@ -86,6 +118,36 @@ class CalendarOwnershipSerializer(VirtualModelSerializer):
         )
 
 
+class CalendarSyncSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CalendarSync
+        fields = (
+            "id",
+            "status",
+            "start_datetime",
+            "end_datetime",
+            "should_update_events",
+            "trigger_source",
+            "error_message",
+        )
+        read_only_fields = (
+            "id",
+            "status",
+            "trigger_source",
+            "error_message",
+        )
+
+
+class CalendarSyncRequestSerializer(serializers.Serializer):
+    start_datetime = serializers.DateTimeField(required=True)
+    end_datetime = serializers.DateTimeField(required=True)
+    should_update_events = serializers.BooleanField(required=False, default=False)
+
+
+class CalendarImportRequestSerializer(serializers.Serializer):
+    sync_after_import = serializers.BooleanField(required=False, default=True)
+
+
 class CalendarSerializer(VirtualModelSerializer):
     class Meta:
         model = Calendar
@@ -100,6 +162,8 @@ class CalendarSerializer(VirtualModelSerializer):
             "calendar_type",
             "capacity",
             "manage_available_windows",
+            "visibility",
+            "sync_enabled",
         )
         read_only_fields = (
             "email",
@@ -121,12 +185,13 @@ class CalendarSerializer(VirtualModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
-        self.calendar_service.initialize_without_provider(membership.organization)
+        # `organization` is the 2nd param (1st is user_or_token) — pass as keyword.
+        self.calendar_service.initialize_without_provider(organization=membership.organization)
         return self.calendar_service.create_virtual_calendar(
             name=validated_data.get("name"),
             description=validated_data.get("description"),
@@ -152,28 +217,25 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
             self.context["request"].user if self.context and self.context.get("request") else None
         )
 
+        active_membership = (
+            get_active_organization_membership(user) if user and user.is_authenticated else None
+        )
         self.fields["bundle_calendars"] = serializers.PrimaryKeyRelatedField(
             many=True,
             queryset=(
                 Calendar.objects.filter_by_organization(
-                    organization_id=user.organization_membership.organization_id
-                )
-                if user
-                and user.is_authenticated
-                and hasattr(user, "organization_membership")
-                and user.organization_membership
+                    organization_id=active_membership.organization_id
+                ).exclude_inactive()
+                if active_membership
                 else Calendar.original_manager.none()
             ),
         )
         self.fields["primary_calendar"] = serializers.PrimaryKeyRelatedField(
             queryset=(
                 Calendar.objects.filter_by_organization(
-                    organization_id=user.organization_membership.organization_id
-                )
-                if user
-                and user.is_authenticated
-                and hasattr(user, "organization_membership")
-                and user.organization_membership
+                    organization_id=active_membership.organization_id
+                ).exclude_inactive()
+                if active_membership
                 else Calendar.original_manager.none()
             ),
             allow_null=True,
@@ -206,12 +268,13 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
-        self.calendar_service.initialize_without_provider(membership.organization)
+        # `organization` is the 2nd param (1st is user_or_token) — pass as keyword.
+        self.calendar_service.initialize_without_provider(organization=membership.organization)
 
         return self.calendar_service.create_bundle_calendar(
             name=validated_data.get("name"),
@@ -219,6 +282,103 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
             child_calendars=validated_data.get("bundle_calendars"),
             primary_calendar=validated_data.get("primary_calendar"),
         )
+
+
+class CalendarBundleUpdateSerializer(serializers.Serializer):
+    """Serializer for updating a bundle calendar's child calendars and primary calendar."""
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        self.calendar_service = calendar_service
+        super().__init__(*args, **kwargs)
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+
+        active_membership = (
+            get_active_organization_membership(user) if user and user.is_authenticated else None
+        )
+
+        # Build queryset: active calendars + existing children (even if disabled)
+        org_id = active_membership.organization_id if active_membership else None
+
+        if org_id:
+            from django.db.models import Q
+
+            # The bundle being updated is passed as `instance`.
+            bundle = self.instance
+
+            # Fetch existing child IDs
+            existing_child_ids = []
+            if bundle:
+                existing_child_ids = list(
+                    ChildrenCalendarRelationship.objects.filter(
+                        bundle_calendar=bundle,
+                        organization_id=org_id,
+                    ).values_list("child_calendar_fk_id", flat=True)
+                )
+
+            # Build the queryset: (active OR in existing_child_ids) AND org-scoped
+            qs = Calendar.objects.filter_by_organization(organization_id=org_id).filter(
+                ~Q(visibility=CalendarVisibility.INACTIVE) | Q(id__in=existing_child_ids)
+            )
+        else:
+            qs = Calendar.original_manager.none()
+
+        self.fields["bundle_calendars"] = serializers.PrimaryKeyRelatedField(
+            many=True,
+            queryset=qs,
+        )
+        self.fields["primary_calendar"] = serializers.PrimaryKeyRelatedField(
+            queryset=qs,
+            allow_null=True,
+            required=False,
+        )
+
+    def validate_bundle_calendars(self, bundle_calendars):
+        """Require at least two children, mirroring create."""
+        if len(bundle_calendars) < 2:
+            raise serializers.ValidationError("At least two calendars are required in a bundle.")
+        return bundle_calendars
+
+    def validate(self, attrs: dict) -> dict:
+        if self.instance and self.instance.calendar_type != CalendarType.BUNDLE:
+            raise serializers.ValidationError("Calendar is not a bundle.")
+
+        primary_calendar: Calendar | None = attrs.get("primary_calendar")
+        bundle_calendars: list[Calendar] = attrs.get("bundle_calendars", [])
+
+        if primary_calendar and primary_calendar not in bundle_calendars:
+            raise serializers.ValidationError(
+                "primary_calendar must be one of the bundle_calendars."
+            )
+
+        return attrs
+
+    def update(self, instance: Calendar, validated_data: dict) -> Calendar:
+        user = self.context["request"].user
+        membership = get_active_organization_membership(user)
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
+
+        self.calendar_service.initialize_without_provider(organization=membership.organization)
+        try:
+            self.calendar_service.update_bundle_calendar(
+                bundle_calendar=instance,
+                child_calendars=validated_data["bundle_calendars"],
+                primary_calendar=validated_data.get("primary_calendar"),
+            )
+        except (ValueError, CalendarIntegrationError) as e:
+            raise serializers.ValidationError(str(e)) from e
+
+        return instance
 
 
 class EventRecurringExceptionSerializer(serializers.Serializer):
@@ -424,9 +584,9 @@ class ResourceAllocationSerializer(VirtualModelSerializer):
         # add calendar field dynamically to filter by organization_id
         self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                Calendar.objects.filter_by_organization(membership.organization_id).filter(
-                    calendar_type=CalendarType.RESOURCE,
-                )
+                Calendar.objects.filter_by_organization(membership.organization_id)
+                .exclude_inactive()
+                .filter(calendar_type=CalendarType.RESOURCE)
                 if membership
                 else Calendar.original_manager.none()
             ),
@@ -684,14 +844,13 @@ class CalendarEventSerializer(VirtualModelSerializer):
         if organization:
             # Token-based request - use organization from context
             organization_id = organization.id
-        elif (
-            user
-            and user.is_authenticated
-            and hasattr(user, "organization_membership")
-            and user.organization_membership
-        ):
-            # Regular authenticated user request
-            organization_id = user.organization_membership.organization_id
+        else:
+            # Regular authenticated user request — require an active membership
+            active_membership = (
+                get_active_organization_membership(user) if user and user.is_authenticated else None
+            )
+            if active_membership:
+                organization_id = active_membership.organization_id
 
         # Use organization_id to set up querysets
         user_is_authenticated = (user and user.is_authenticated) or bool(token)
@@ -765,13 +924,29 @@ class CalendarEventSerializer(VirtualModelSerializer):
 
         return provider
 
-    def validated_start_time(self, start_time):
+    def validate_start_time(self, start_time):
         if start_time <= datetime.datetime.now(tz=datetime.UTC):
             raise serializers.ValidationError("Start time must be in the future.")
 
         return start_time
 
     def validate(self, attrs):
+        # Incoming datetimes carry wall-clock local to the request ``timezone``
+        # (symmetric with how responses render instants in the record timezone).
+        # DRF coerces naive input to UTC under the server default (TIME_ZONE=UTC),
+        # so reinterpret the wall-clock in ``timezone`` to recover the true instant
+        # before it reaches the service, which treats start_time/end_time as true
+        # instants. Without this, "16:30" + "America/Recife" reaches the service as
+        # 16:30 UTC (13:30 Recife) instead of the intended 19:30 UTC.
+        tz_name = attrs.get("timezone") or (self.instance.timezone if self.instance else None)
+        if tz_name:
+            tz = zoneinfo.ZoneInfo(tz_name)
+            for field in ("start_time", "end_time"):
+                value = attrs.get(field)
+                if value is not None:
+                    wall_clock = value.astimezone(datetime.UTC).replace(tzinfo=None)
+                    attrs[field] = wall_clock.replace(tzinfo=tz).astimezone(datetime.UTC)
+
         calendar = attrs.get("calendar")
 
         # For token-based requests, we can infer the calendar from the token context
@@ -823,8 +998,11 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 pass
             else:
                 # Use stored user or organization from regular authentication
-                if self.user and hasattr(self.user, "organization_membership"):
-                    organization_id = self.user.organization_membership.organization_id
+                _active_membership = (
+                    get_active_organization_membership(self.user) if self.user else None
+                )
+                if _active_membership:
+                    organization_id = _active_membership.organization_id
                 elif self.organization:
                     organization_id = self.organization.id
                 else:
@@ -1101,6 +1279,28 @@ class CalendarEventSerializer(VirtualModelSerializer):
         """
         return obj.is_recurring
 
+    def to_representation(self, instance):
+        """Render start_time/end_time in the event's IANA timezone, not UTC."""
+        data = super().to_representation(instance)
+        return _localize_times_in_representation(
+            data, instance, getattr(instance, "timezone", None)
+        )
+
+
+class CalendarEventTransferSerializer(serializers.Serializer):
+    target_calendar_id = serializers.IntegerField()
+
+    def validate_target_calendar_id(self, value):
+        event = self.context["event"]
+        if value == event.calendar_fk_id:
+            raise serializers.ValidationError("Event is already on the target calendar.")
+        try:
+            return Calendar.objects.filter_by_organization(event.organization_id).get(id=value)
+        except Calendar.DoesNotExist as exc:
+            raise serializers.ValidationError(
+                "target_calendar_id invalid or not in your organization."
+            ) from exc
+
 
 class SerializedParentBlockedTimeTypedDict(TypedDict):
     id: int
@@ -1182,6 +1382,13 @@ class BlockedTimeSerializer(VirtualModelSerializer):
             }
         return None
 
+    def to_representation(self, instance):
+        """Render start_time/end_time in the record's IANA timezone, not UTC."""
+        data = super().to_representation(instance)
+        return _localize_times_in_representation(
+            data, instance, getattr(instance, "timezone", None)
+        )
+
     @inject
     def __init__(
         self,
@@ -1220,6 +1427,7 @@ class BlockedTimeSerializer(VirtualModelSerializer):
                 else Calendar.original_manager.none()
             ),
             allow_null=True,
+            required=False,
         )
 
     def create(self, validated_data: dict):
@@ -1240,15 +1448,26 @@ class BlockedTimeSerializer(VirtualModelSerializer):
                 }
             )
 
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
 
-        calendar = validated_data.pop("calendar")
+        calendar = validated_data.pop("calendar", None)
         organization: Organization = membership.organization
         self.calendar_service.initialize_without_provider(user, organization)
+        if calendar is None:
+            # No calendar specified — fall back to the user's default calendar.
+            calendar = self.calendar_service.get_default_calendar_for_user(user)
+            if calendar is None:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "No calendar specified and you have no default calendar."
+                        ]
+                    }
+                )
 
         # Handle recurrence fields
         recurrence_rule_data = validated_data.pop("recurrence_rule", None)
@@ -1413,6 +1632,13 @@ class AvailableTimeSerializer(VirtualModelSerializer):
             }
         return None
 
+    def to_representation(self, instance):
+        """Render start_time/end_time in the record's IANA timezone, not UTC."""
+        data = super().to_representation(instance)
+        return _localize_times_in_representation(
+            data, instance, getattr(instance, "timezone", None)
+        )
+
     @inject
     def __init__(
         self,
@@ -1451,6 +1677,7 @@ class AvailableTimeSerializer(VirtualModelSerializer):
                 else Calendar.original_manager.none()
             ),
             allow_null=True,
+            required=False,
         )
 
     def create(self, validated_data: dict):
@@ -1471,15 +1698,26 @@ class AvailableTimeSerializer(VirtualModelSerializer):
                 }
             )
 
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
 
-        calendar = validated_data.pop("calendar")
+        calendar = validated_data.pop("calendar", None)
         organization: Organization = membership.organization
         self.calendar_service.initialize_without_provider(user, organization)
+        if calendar is None:
+            # No calendar specified — fall back to the user's default calendar.
+            calendar = self.calendar_service.get_default_calendar_for_user(user)
+            if calendar is None:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "No calendar specified and you have no default calendar."
+                        ]
+                    }
+                )
 
         # Handle recurrence fields
         recurrence_rule_data = validated_data.pop("recurrence_rule", None)
@@ -1560,6 +1798,13 @@ class AvailableTimeWindowSerializer(serializers.Serializer):
     end_time = serializers.DateTimeField()
     can_book_partially = serializers.BooleanField()
 
+    def to_representation(self, instance):
+        """Render start_time/end_time in the window's IANA timezone, not UTC."""
+        data = super().to_representation(instance)
+        return _localize_times_in_representation(
+            data, instance, getattr(instance, "timezone", None)
+        )
+
 
 class UnavailableTimeWindowSerializer(serializers.Serializer):
     id = serializers.IntegerField()  # noqa: A003
@@ -1575,6 +1820,14 @@ class UnavailableTimeWindowSerializer(serializers.Serializer):
 
         blocked_time_data = cast(BlockedTimeData, obj.data)
         return blocked_time_data.reason
+
+    def to_representation(self, instance):
+        """Render start_time/end_time in the underlying record's timezone, not UTC."""
+        data = super().to_representation(instance)
+        # UnavailableTimeWindow has no timezone of its own; take it from the
+        # underlying event/blocked-time payload it wraps.
+        tz_name = getattr(getattr(instance, "data", None), "timezone", None)
+        return _localize_times_in_representation(data, instance, tz_name)
 
 
 class BulkBlockedTimeSerializer(serializers.Serializer):
@@ -1597,7 +1850,9 @@ class BulkBlockedTimeSerializer(serializers.Serializer):
         if not blocked_times_data:
             raise serializers.ValidationError("At least one blocked time must be provided")
 
-        # check all blocked time instances are for the same calendar
+        # `calendar` is optional: when omitted on every item, save() falls back to the
+        # user's default calendar. All items must agree on the calendar (including all
+        # omitting it) — mixing a calendar with omissions is ambiguous and rejected.
         first_blocked_time_calendar = blocked_times_data[0].get("calendar")
         for blocked_time in blocked_times_data[1:]:
             if blocked_time.get("calendar") != first_blocked_time_calendar:
@@ -1615,20 +1870,33 @@ class BulkBlockedTimeSerializer(serializers.Serializer):
             )
 
         user = self.context["request"].user
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
 
-        self.calendar_service.initialize_without_provider(membership.organization)
+        # `organization` is the 2nd param (1st is user_or_token) — must be keyword,
+        # else self.organization stays None and the type guard raises.
+        self.calendar_service.initialize_without_provider(organization=membership.organization)
 
         # Convert to the format expected by bulk_create_manual_blocked_times
         blocked_times_tuples = [
             (bt["start_time"], bt["end_time"], bt["reason"], bt.get("rrule_string"))
             for bt in self.validated_data["blocked_times"]
         ]
-        calendar = self.validated_data["blocked_times"][0]["calendar"]
+        calendar = self.validated_data["blocked_times"][0].get("calendar")
+        if calendar is None:
+            # No calendar specified — fall back to the user's default calendar.
+            calendar = self.calendar_service.get_default_calendar_for_user(user)
+            if calendar is None:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "No calendar specified and you have no default calendar."
+                        ]
+                    }
+                )
 
         blocked_times = self.calendar_service.bulk_create_manual_blocked_times(
             calendar=calendar, blocked_times=blocked_times_tuples
@@ -1636,8 +1904,53 @@ class BulkBlockedTimeSerializer(serializers.Serializer):
         return list(blocked_times)
 
 
-class BulkAvailableTimeSerializer(serializers.Serializer):
-    """Serializer for creating multiple available times."""
+class AvailableTimeOperationSerializer(serializers.Serializer):
+    """A single create/update/delete operation in an available-times batch."""
+
+    action = serializers.ChoiceField(choices=["create", "update", "delete"])
+    id = serializers.IntegerField(
+        required=False, help_text="Target AvailableTime id (required for update/delete)."
+    )
+    start_time = serializers.DateTimeField(required=False)
+    end_time = serializers.DateTimeField(required=False)
+    timezone = serializers.CharField(required=False)
+    rrule_string = serializers.CharField(
+        required=False,
+        allow_null=True,
+        help_text="RRULE string; null clears recurrence. Omit to leave unchanged on update.",
+    )
+
+    def validate(self, attrs):
+        action = attrs["action"]
+
+        if action == "create":
+            if attrs.get("id") is not None:
+                raise serializers.ValidationError("`id` is not allowed for create operations.")
+            missing = [f for f in ("start_time", "end_time", "timezone") if attrs.get(f) is None]
+            if missing:
+                raise serializers.ValidationError(
+                    f"create operations require: {', '.join(missing)}."
+                )
+        else:  # update / delete
+            if attrs.get("id") is None:
+                raise serializers.ValidationError(f"`id` is required for {action} operations.")
+
+        start_time = attrs.get("start_time")
+        end_time = attrs.get("end_time")
+        if start_time and end_time and end_time <= start_time:
+            raise serializers.ValidationError("end_time must be after start_time.")
+
+        return attrs
+
+
+class AvailableTimeBatchSerializer(serializers.Serializer):
+    """Transactional batch of create/update/delete operations on a calendar's available times.
+
+    All operations target a single calendar (resolved from ``calendar`` or the user's
+    default) and run in one transaction — any failure rolls the whole batch back.
+    """
+
+    operations = AvailableTimeOperationSerializer(many=True)
 
     @inject
     def __init__(
@@ -1649,50 +1962,66 @@ class BulkAvailableTimeSerializer(serializers.Serializer):
         super().__init__(*args, **kwargs)
         self.calendar_service = calendar_service
 
-        self.fields["available_times"] = AvailableTimeSerializer(many=True, context=self.context)
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+        membership = (
+            getattr(user, "organization_membership", None)
+            if user and user.is_authenticated
+            else None
+        )
+        self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
+            queryset=(
+                Calendar.objects.filter_by_organization(organization_id=membership.organization_id)
+                if membership
+                else Calendar.original_manager.none()
+            ),
+            allow_null=True,
+            required=False,
+            help_text="Calendar to apply the batch to. Defaults to the user's default calendar.",
+        )
 
-    def validate_available_times(self, available_times_data):
-        """Validate bulk available times data."""
-        if not available_times_data:
-            raise serializers.ValidationError("At least one available time must be provided")
-
-        # check all available time instances are for the same calendar
-        first_available_time_calendar = available_times_data[0].get("calendar")
-        for available_time in available_times_data[1:]:
-            if available_time.get("calendar") != first_available_time_calendar:
-                raise serializers.ValidationError(
-                    "All available times must be for the same calendar"
-                )
-
-        return available_times_data
+    def validate_operations(self, operations):
+        if not operations:
+            raise serializers.ValidationError("At least one operation must be provided.")
+        return operations
 
     def save(self, **kwargs):
-        """Create multiple available times using calendar service."""
         if not self.calendar_service:
             raise CalendarServiceNotInjectedError(
                 "calendar_service is not defined, please configure your DI container correctly"
             )
 
         user = self.context["request"].user
-        membership = getattr(user, "organization_membership", None)
+        membership = get_active_organization_membership(user)
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
-        calendar = self.validated_data["available_times"][0]["calendar"]
 
-        self.calendar_service.initialize_without_provider(membership.organization)
+        self.calendar_service.initialize_without_provider(organization=membership.organization)
 
-        # Convert to the format expected by bulk_create_availability_windows
-        availability_tuples = [
-            (at["start_time"], at["end_time"], at.get("rrule_string"))
-            for at in self.validated_data["available_times"]
-        ]
+        calendar = self.validated_data.get("calendar")
+        if calendar is None:
+            # No calendar specified — fall back to the user's default calendar.
+            calendar = self.calendar_service.get_default_calendar_for_user(user)
+            if calendar is None:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "No calendar specified and you have no default calendar."
+                        ]
+                    }
+                )
 
-        available_times = self.calendar_service.bulk_create_availability_windows(
-            calendar=calendar, availability_windows=availability_tuples
-        )
-        return list(available_times)
+        try:
+            self.calendar_service.batch_modify_available_times(
+                calendar=calendar, operations=self.validated_data["operations"]
+            )
+        except ValueError as e:
+            raise serializers.ValidationError({"non_field_errors": [str(e)]}) from e
+
+        return calendar
 
 
 class BlockedTimeRecurringExceptionSerializer(serializers.Serializer):

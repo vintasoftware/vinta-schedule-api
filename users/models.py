@@ -44,13 +44,18 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
         return self.profile.first_name
 
     def is_organization_admin(self, organization) -> bool:
-        """True iff this user has an admin-role membership in `organization`.
+        """True iff this user has an active admin-role membership in `organization`.
 
         Accepts either an `Organization` instance or an id. Avoids importing
         the organizations app to prevent a circular import.
+
+        An inactive membership (is_active=False) is treated the same as no
+        membership — returns False to deny access.
         """
         membership = getattr(self, "organization_membership", None)
         if membership is None:
+            return False
+        if not getattr(membership, "is_active", False):
             return False
         organization_id = getattr(organization, "id", organization)
         return membership.organization_id == organization_id and getattr(

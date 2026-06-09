@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 from django.core.exceptions import ImproperlyConfigured
 
 import pytest
+from allauth.socialaccount.models import SocialAccount, SocialToken
 
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
@@ -87,18 +88,24 @@ def mock_build():
 
 @pytest.fixture
 def mock_rate_limiters():
-    """Mock rate limiters to avoid Redis dependencies."""
+    """Mock rate limiters to avoid Redis dependencies.
+
+    Specced to ResilientLimiter so the adapter can only call methods that
+    actually exist (e.g. try_acquire) — calling a non-existent method like
+    ``ratelimit`` raises AttributeError here instead of only blowing up in prod.
+    """
+    from common.redis import ResilientLimiter
+
     with (
         patch(
-            "calendar_integration.services.calendar_adapters.google_calendar_adapter.read_quote_limiter"
+            "calendar_integration.services.calendar_adapters.google_calendar_adapter.read_quote_limiter",
+            spec=ResilientLimiter,
         ) as mock_read,
         patch(
-            "calendar_integration.services.calendar_adapters.google_calendar_adapter.write_quote_limiter"
+            "calendar_integration.services.calendar_adapters.google_calendar_adapter.write_quote_limiter",
+            spec=ResilientLimiter,
         ) as mock_write,
     ):
-        mock_read.try_acquire = Mock()
-        mock_read.ratelimit = Mock()
-        mock_write.try_acquire = Mock()
         yield mock_read, mock_write
 
 
@@ -106,6 +113,44 @@ def mock_rate_limiters():
 def adapter(google_credentials, mock_settings, mock_credentials, mock_build, mock_rate_limiters):
     """Create a GoogleCalendarAdapter instance with mocked dependencies."""
     return GoogleCalendarAdapter(google_credentials)
+
+
+class TestGoogleCalendarAdapterTokenRefresh:
+    """Refreshed access tokens are persisted back to the originating SocialToken."""
+
+    @pytest.mark.django_db
+    def test_persist_refreshed_token_updates_socialtoken(self):
+        from users.models import User
+
+        user = User.objects.create_user(email="refresh@example.com", password="pw")  # noqa: S106
+        account = SocialAccount.objects.create(
+            user=user, provider=CalendarProvider.GOOGLE, uid="refresh-uid"
+        )
+        token = SocialToken.objects.create(
+            account=account,
+            token="old_access_token",
+            token_secret="refresh_token_value",
+            expires_at=datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1),
+        )
+
+        creds = Mock()
+        creds.token = "new_access_token"
+        creds.expiry = datetime.datetime(2030, 1, 1, 0, 0, 0)  # naive UTC, as google-auth uses
+
+        GoogleCalendarAdapter._persist_refreshed_token(creds, token.id)
+
+        token.refresh_from_db()
+        assert token.token == "new_access_token"
+        assert token.expires_at.year == 2030
+        assert token.expires_at.tzinfo is not None  # stored tz-aware
+
+    @pytest.mark.django_db
+    def test_persist_refreshed_token_noop_without_id(self):
+        # No social_token_id → no DB write, no error.
+        creds = Mock()
+        creds.token = "x"
+        creds.expiry = None
+        GoogleCalendarAdapter._persist_refreshed_token(creds, None)
 
 
 class TestGoogleCalendarAdapterInitialization:
@@ -317,12 +362,14 @@ class TestAccountCalendarOperations:
             ]
         }
 
-        adapter.client.calendars.return_value.list.return_value.execute.return_value = (
+        adapter.client.calendarList.return_value.list.return_value.execute.return_value = (
             mock_calendars
         )
 
         calendars = list(adapter.get_account_calendars())
 
+        # Must call calendarList().list() — calendars() has no .list() method.
+        adapter.client.calendarList.return_value.list.assert_called_once()
         assert len(calendars) == 3
         assert isinstance(calendars[0], CalendarResourceData)
 
@@ -349,7 +396,7 @@ class TestAccountCalendarOperations:
         assert calendars[2].is_default is False
 
         # Verify API call parameters
-        adapter.client.calendars.return_value.list.assert_called_once_with(
+        adapter.client.calendarList.return_value.list.assert_called_once_with(
             maxResults=250,
             showDeleted=False,
             minAccessRole="reader",
@@ -360,12 +407,14 @@ class TestAccountCalendarOperations:
 
     def test_get_account_calendars_empty_result(self, adapter, mock_rate_limiters):
         """Test get_account_calendars when no calendars exist."""
-        adapter.client.calendars.return_value.list.return_value.execute.return_value = {"items": []}
+        adapter.client.calendarList.return_value.list.return_value.execute.return_value = {
+            "items": []
+        }
 
         calendars = list(adapter.get_account_calendars())
 
         assert len(calendars) == 0
-        adapter.client.calendars.return_value.list.assert_called_once()
+        adapter.client.calendarList.return_value.list.assert_called_once()
         mock_rate_limiters[0].try_acquire.assert_called_once()
 
     def test_get_account_calendars_missing_optional_fields(self, adapter, mock_rate_limiters):
@@ -380,7 +429,7 @@ class TestAccountCalendarOperations:
             ]
         }
 
-        adapter.client.calendars.return_value.list.return_value.execute.return_value = (
+        adapter.client.calendarList.return_value.list.return_value.execute.return_value = (
             mock_calendars
         )
 
@@ -398,7 +447,7 @@ class TestAccountCalendarOperations:
     def test_get_account_calendars_rate_limiting(self, adapter, mock_rate_limiters):
         """Test that rate limiting is properly applied."""
         mock_calendars = {"items": []}
-        adapter.client.calendars.return_value.list.return_value.execute.return_value = (
+        adapter.client.calendarList.return_value.list.return_value.execute.return_value = (
             mock_calendars
         )
 
@@ -421,7 +470,7 @@ class TestAccountCalendarOperations:
         }
         mock_calendars = {"items": [mock_calendar_data]}
 
-        adapter.client.calendars.return_value.list.return_value.execute.return_value = (
+        adapter.client.calendarList.return_value.list.return_value.execute.return_value = (
             mock_calendars
         )
 
@@ -1083,3 +1132,128 @@ class TestErrorHandling:
                 ValueError, match="Invalid or expired Google service account credentials"
             ):
                 GoogleCalendarAdapter.from_service_account_credentials(service_account_credentials)
+
+
+class TestGoogleEventDatetimeParsing:
+    """Real Google RFC 3339 / all-day datetimes must parse (sync regression)."""
+
+    def test_convert_handles_rfc3339_offset(self, adapter):
+        event = {
+            "id": "e1",
+            "summary": "Meeting",
+            "start": {"dateTime": "2026-06-06T15:00:00-03:00", "timeZone": "America/Sao_Paulo"},
+            "end": {"dateTime": "2026-06-06T16:00:00-03:00", "timeZone": "America/Sao_Paulo"},
+        }
+        out = adapter._convert_google_calendar_event_to_event_data(event, "cal")
+        # -03:00 15:00 == 18:00 UTC (aware datetimes compare by instant).
+        assert out.start_time == datetime.datetime(2026, 6, 6, 18, 0, tzinfo=datetime.UTC)
+        assert out.end_time == datetime.datetime(2026, 6, 6, 19, 0, tzinfo=datetime.UTC)
+        assert out.timezone == "America/Sao_Paulo"
+
+    def test_convert_handles_z_suffix(self, adapter):
+        event = {
+            "id": "e2",
+            "summary": "UTC event",
+            "start": {"dateTime": "2026-06-06T15:00:00Z"},
+            "end": {"dateTime": "2026-06-06T16:00:00Z"},
+        }
+        out = adapter._convert_google_calendar_event_to_event_data(event, "cal")
+        assert out.start_time == datetime.datetime(2026, 6, 6, 15, 0, tzinfo=datetime.UTC)
+
+    def test_convert_handles_all_day_event(self, adapter):
+        event = {
+            "id": "e3",
+            "summary": "All day",
+            "start": {"date": "2026-06-06"},
+            "end": {"date": "2026-06-07"},
+        }
+        out = adapter._convert_google_calendar_event_to_event_data(event, "cal")
+        assert out.start_time == datetime.datetime(2026, 6, 6, 0, 0, tzinfo=datetime.UTC)
+        assert out.end_time == datetime.datetime(2026, 6, 7, 0, 0, tzinfo=datetime.UTC)
+
+    def test_convert_handles_missing_summary(self, adapter):
+        event = {
+            "id": "e4",
+            "start": {"dateTime": "2026-06-06T15:00:00Z"},
+            "end": {"dateTime": "2026-06-06T16:00:00Z"},
+        }
+        out = adapter._convert_google_calendar_event_to_event_data(event, "cal")
+        assert out.title == ""
+
+    def test_get_events_generator_runs_end_to_end(self, adapter):
+        """Consume the real get_events generator: it must acquire the limiter,
+        call events().list, and yield converted events (regression: the limiter
+        was called via a non-existent .ratelimit method)."""
+        adapter.client.events.return_value.list.return_value.execute.return_value = {
+            "items": [
+                {
+                    "id": "e1",
+                    "summary": "Real Event",
+                    "start": {"dateTime": "2026-06-06T15:00:00-03:00"},
+                    "end": {"dateTime": "2026-06-06T16:00:00-03:00"},
+                },
+            ],
+            "nextSyncToken": "tok",
+        }
+
+        start = datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 6, 30, tzinfo=datetime.UTC)
+        result = adapter.get_events("cal", False, start, end)
+
+        events = list(result["events"])
+        assert len(events) == 1
+        assert events[0].external_id == "e1"
+        assert events[0].start_time == datetime.datetime(2026, 6, 6, 18, 0, tzinfo=datetime.UTC)
+        adapter.client.events.return_value.list.assert_called_once()
+
+    def test_is_busy_event_classification(self):
+        """Working-location/birthday/free events are non-busy; the rest are busy."""
+        busy = [
+            {"id": "a"},  # no eventType -> default -> busy
+            {"id": "b", "eventType": "default"},
+            {"id": "c", "eventType": "outOfOffice"},
+            {"id": "d", "eventType": "focusTime"},
+        ]
+        non_busy = [
+            {"id": "e", "eventType": "workingLocation"},  # "Home"/"Office"
+            {"id": "f", "eventType": "birthday"},
+            {"id": "g", "transparency": "transparent"},  # explicitly free
+            {"id": "h", "eventType": "workingLocation", "transparency": "transparent"},
+        ]
+        assert all(GoogleCalendarAdapter._is_busy_event(e) for e in busy)
+        assert not any(GoogleCalendarAdapter._is_busy_event(e) for e in non_busy)
+
+    def test_get_events_skips_non_busy_events(self, adapter):
+        """get_events drops working-location/birthday/free markers so they don't
+        block availability; real events still come through."""
+        adapter.client.events.return_value.list.return_value.execute.return_value = {
+            "items": [
+                {
+                    "id": "real",
+                    "summary": "Meeting",
+                    "start": {"dateTime": "2026-06-06T15:00:00Z"},
+                    "end": {"dateTime": "2026-06-06T16:00:00Z"},
+                },
+                {
+                    "id": "home",
+                    "summary": "Home",
+                    "eventType": "workingLocation",
+                    "start": {"date": "2026-06-06"},
+                    "end": {"date": "2026-06-07"},
+                },
+                {
+                    "id": "free",
+                    "summary": "Tentative hold",
+                    "transparency": "transparent",
+                    "start": {"dateTime": "2026-06-06T18:00:00Z"},
+                    "end": {"dateTime": "2026-06-06T19:00:00Z"},
+                },
+            ],
+            "nextSyncToken": "tok",
+        }
+
+        start = datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 6, 30, tzinfo=datetime.UTC)
+        events = list(adapter.get_events("cal", False, start, end)["events"])
+
+        assert [e.external_id for e in events] == ["real"]

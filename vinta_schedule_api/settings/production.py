@@ -73,7 +73,6 @@ BASE_STATIC_URL = f"https://{AWS_STATIC_S3_CUSTOM_DOMAIN}"
 FRONTEND_BUNDLE_DIR = config("FRONTEND_BUNDLE_DIR", default="webpack_bundles")
 
 # Media storage
-USE_MINIO = False
 AWS_MEDIA_BUCKET_NAME = config("AWS_MEDIA_BUCKET_NAME")
 AWS_MEDIA_LOCATION = config("AWS_MEDIA_LOCATION", default="")
 AWS_MEDIA_REGION = config("AWS_MEDIA_REGION", default="us-east-1")

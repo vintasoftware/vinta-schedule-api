@@ -21,11 +21,14 @@ from calendar_integration.constants import (
     CalendarOrganizationResourceImportStatus,
     CalendarProvider,
     CalendarSyncStatus,
+    CalendarSyncTriggerSource,
     CalendarType,
+    CalendarVisibility,
     IncomingWebhookProcessingStatus,
 )
 from calendar_integration.exceptions import (
     InvalidCalendarTokenError,
+    NoAvailableTimeWindowsError,
     ServiceNotAuthenticatedError,
     WebhookIgnoredError,
 )
@@ -55,6 +58,7 @@ from calendar_integration.models import (
     RecurringMixin,
     ResourceAllocation,
 )
+from calendar_integration.querysets import CalendarEventQuerySet
 from calendar_integration.recurrence_utils import OccurrenceValidator, RecurrenceRuleSplitter
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
@@ -98,6 +102,9 @@ class WebhookHealthStatus(TypedDict):
     recent_events_count: int
     failed_events_count: int
     success_rate: float
+
+
+logger = logging.getLogger(__name__)
 
 
 class CalendarService(BaseCalendarService):
@@ -303,11 +310,14 @@ class CalendarService(BaseCalendarService):
 
     @staticmethod
     def get_calendar_adapter_for_account(
-        account: User | GoogleCalendarServiceAccount,
+        account: "User | SocialAccount | GoogleCalendarServiceAccount",
     ) -> tuple[CalendarAdapter, SocialAccount | GoogleCalendarServiceAccount]:
         """
-        Retrieve a calendar adapter for the given social account.
-        :param account: Social account instance or GoogleCalendarServiceAccount instance.
+        Retrieve a calendar adapter for the given account.
+        :param account: A ``User`` (resolves the newest valid token across the
+            user's connected providers), a specific ``SocialAccount`` (resolves
+            that account's token — provider-precise), or a
+            ``GoogleCalendarServiceAccount``.
         :return: CalendarAdapter instance and the account used (SocialAccount or GoogleCalendarServiceAccount).
         """
         if isinstance(account, GoogleCalendarServiceAccount):
@@ -326,22 +336,57 @@ class CalendarService(BaseCalendarService):
                 }
             ), account
 
-        now = datetime.datetime.now(datetime.UTC)
-        token = (
-            SocialToken.objects.select_related("account")
-            .filter(
-                account__user=account,
-                account__provider__in=[CalendarProvider.GOOGLE, CalendarProvider.MICROSOFT],
-                expires_at__gte=now,
-            )
-            .order_by("-id")
-            .first()
+        # Do NOT exclude expired tokens here: an expired access token that still
+        # carries a refresh_token (token_secret) is refreshed by the adapter on
+        # construction. Filtering on expires_at would hide exactly those tokens
+        # (and any with a NULL expiry), producing a false "reauthenticate" error.
+        token_qs = SocialToken.objects.select_related("account").filter(
+            account__provider__in=[CalendarProvider.GOOGLE, CalendarProvider.MICROSOFT],
         )
+        if isinstance(account, SocialAccount):
+            # Provider-precise: the token for exactly this connected account.
+            token_qs = token_qs.filter(account=account)
+        else:
+            # A User: newest token across their connected providers.
+            token_qs = token_qs.filter(account__user=account)
+        token = token_qs.order_by("-id").first()
 
-        if not token:
+        if not token or not token.token:
+            # Diagnostic: dump what tokens DO exist for this account/user so the
+            # docker logs reveal WHY resolution failed (missing token row, empty
+            # token, wrong provider, ...) instead of a bare "reauthenticate".
+            if isinstance(account, SocialAccount):
+                scope = SocialToken.objects.filter(account=account)
+                who = f"social_account id={account.id} provider={account.provider!r}"
+            else:
+                scope = SocialToken.objects.filter(account__user=account)
+                who = f"user id={getattr(account, 'id', None)}"
+            diag = [
+                {
+                    "token_id": t.id,
+                    "provider": t.account.provider,
+                    "has_token": bool(t.token),
+                    "has_refresh": bool(t.token_secret),
+                    "expires_at": t.expires_at.isoformat() if t.expires_at else None,
+                }
+                for t in scope.select_related("account")
+            ]
+            logger.warning(
+                "calendar token resolution failed for %s; all tokens for it = %s",
+                who,
+                diag,
+            )
             raise InvalidCalendarTokenError(
                 "User doesn't have a valid calendar token. Please reauthenticate"
             )
+
+        logger.info(
+            "resolved calendar token id=%s provider=%s has_refresh=%s expires_at=%s",
+            token.id,
+            token.account.provider,
+            bool(token.token_secret),
+            token.expires_at.isoformat() if token.expires_at else None,
+        )
 
         calendar_adapter_cls = CalendarService._get_calendar_adapter_cls_for_provider(
             token.account.provider
@@ -352,20 +397,30 @@ class CalendarService(BaseCalendarService):
                 "token": token.token,
                 "refresh_token": token.token_secret,
                 "account_id": f"social-{token.account_id}",
+                "expiry": token.expires_at,
+                "social_token_id": token.id,
             }
         ), token.account
 
     def authenticate(
         self,
-        account: User | GoogleCalendarServiceAccount,
+        account: "User | SocialAccount | GoogleCalendarServiceAccount",
         organization: Organization,
     ) -> None:
         """
-        Authenticate the service with the provided social account.
-        :param account: Social account instance or GoogleCalendarServiceAccount instance.
+        Authenticate the service with the provided account.
+        :param account: A ``User``, a ``SocialAccount``, or a
+            ``GoogleCalendarServiceAccount``. When a ``SocialAccount`` is given,
+            the owning ``User`` is used for record attribution (e.g.
+            ``CalendarOwnership``).
         :param organization: Calendar organization instance.
         """
-        self.user_or_token = account if isinstance(account, User) else None
+        if isinstance(account, User):
+            self.user_or_token = account
+        elif isinstance(account, SocialAccount):
+            self.user_or_token = account.user
+        else:
+            self.user_or_token = None
         self.organization = organization
         self.calendar_adapter, self.account = self.get_calendar_adapter_for_account(account)
 
@@ -408,13 +463,23 @@ class CalendarService(BaseCalendarService):
             end_time=end_time,
         )
 
-        import_organization_calendar_resources_task.delay(  # type: ignore
-            account_type="google_service_account"
+        # Capture ids by value so the closure is independent of mutable self state.
+        _account_type = (
+            "google_service_account"
             if isinstance(self.account, GoogleCalendarServiceAccount)
-            else "social_account",
-            account_id=self.account.id,
-            organization_id=self.organization.id,
-            import_workflow_state_id=import_workflow_state.id,
+            else "social_account"
+        )
+        _account_id = self.account.id
+        _organization_id = self.organization.id
+        _import_workflow_state_id = import_workflow_state.id
+
+        transaction.on_commit(
+            lambda: import_organization_calendar_resources_task.delay(  # type: ignore
+                account_type=_account_type,
+                account_id=_account_id,
+                organization_id=_organization_id,
+                import_workflow_state_id=_import_workflow_state_id,
+            )
         )
 
     def import_organization_calendar_resources(
@@ -570,30 +635,63 @@ class CalendarService(BaseCalendarService):
             organization_id=self.organization.id,
         )
 
-    @transaction.atomic()
-    def request_calendars_import(self) -> None:
+    def request_calendars_import(self, sync_after_import: bool = True) -> None:
         """
         Import calendars associated with the authenticated account and create them as Calendar
         records.
+
+        :param sync_after_import: When True (default), each imported sync-enabled
+            calendar is also synced. Pass False to only discover/refresh calendar
+            rows without pulling events.
         """
         from calendar_integration.tasks import import_account_calendars_task
 
         if not is_authenticated_calendar_service(self):
             raise
 
-        import_account_calendars_task.delay(  # type: ignore
-            account_type="google_service_account"
+        # Capture ids by value so the closure is independent of mutable self state.
+        _account_type = (
+            "google_service_account"
             if isinstance(self.account, GoogleCalendarServiceAccount)
-            else "social_account",
-            account_id=self.account.id,
-            organization_id=self.organization.id,
+            else "social_account"
+        )
+        _account_id = self.account.id
+        _organization_id = self.organization.id
+        _sync_after_import = sync_after_import
+
+        transaction.on_commit(
+            lambda: import_account_calendars_task.delay(  # type: ignore
+                account_type=_account_type,
+                account_id=_account_id,
+                organization_id=_organization_id,
+                sync_after_import=_sync_after_import,
+            )
         )
 
+    @staticmethod
+    def _sync_enabled_default_for_access_role(access_role: str | None) -> bool:
+        """Decide whether a freshly imported calendar should sync by default.
+
+        Calendars the account owns or can write to (the user's own calendars) sync.
+        Subscribed read-only calendars — holidays, birthdays, shared org-wide
+        calendars — default to disabled: their events typically duplicate events
+        already on the user's own calendars, and they aren't useful for scheduling.
+        Unknown access role (e.g. a provider that doesn't report one) defaults to
+        enabled to preserve prior behavior.
+        """
+        if access_role is None:
+            return True
+        return access_role.lower() in ("owner", "writer")
+
     @transaction.atomic()
-    def import_account_calendars(self):
+    def import_account_calendars(self, sync_after_import: bool = True):
         """
         Import calendars associated with the authenticated account and create them as Calendar
         records.
+
+        :param sync_after_import: When True (default), enqueue an event sync for each
+            imported calendar that has sync enabled. The per-calendar ``sync_enabled``
+            flag still gates whether a sync actually runs.
         """
         if not is_authenticated_calendar_service(self):
             raise
@@ -614,6 +712,21 @@ class CalendarService(BaseCalendarService):
                         "latest_original_payload": calendar_data.original_payload or {},
                     },
                 },
+                # sync_enabled and visibility are seeded only on first import (create), never
+                # on re-import, so a user's later opt-in/out is preserved.
+                create_defaults={
+                    "name": calendar_data.name,
+                    "description": calendar_data.description,
+                    "email": calendar_data.email,
+                    "provider": CalendarProvider(calendar_data.provider),
+                    "meta": {
+                        "latest_original_payload": calendar_data.original_payload or {},
+                    },
+                    "sync_enabled": self._sync_enabled_default_for_access_role(
+                        calendar_data.access_role
+                    ),
+                    "visibility": CalendarVisibility.ACTIVE,
+                },
             )
             CalendarOwnership.objects.update_or_create(
                 organization=self.organization,
@@ -625,12 +738,14 @@ class CalendarService(BaseCalendarService):
             # Grant permissions to calendar owners
             self._grant_calendar_owner_permissions(calendar)
 
-            self.request_calendar_sync(
-                calendar=calendar,
-                start_datetime=datetime.datetime.now(datetime.UTC),
-                end_datetime=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=365),
-                should_update_events=True,
-            )
+            if sync_after_import:
+                self.request_calendar_sync(
+                    calendar=calendar,
+                    start_datetime=datetime.datetime.now(datetime.UTC),
+                    end_datetime=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=365),
+                    should_update_events=True,
+                    trigger_source=CalendarSyncTriggerSource.IMPORT,
+                )
 
     @transaction.atomic()
     def create_virtual_calendar(
@@ -733,6 +848,91 @@ class CalendarService(BaseCalendarService):
 
         # Grant permissions to calendar owners
         self._grant_calendar_owner_permissions(bundle_calendar)
+
+        return bundle_calendar
+
+    @transaction.atomic()
+    def update_bundle_calendar(
+        self,
+        bundle_calendar: Calendar,
+        child_calendars: Iterable[Calendar],
+        primary_calendar: Calendar | None = None,
+    ) -> Calendar:
+        """
+        Reconcile the children and primary designation for an existing bundle calendar.
+
+        Adds `ChildrenCalendarRelationship` rows for newly-added children, removes rows
+        for dropped children, and updates `is_primary` so that exactly one row is primary
+        when `primary_calendar` is provided.
+
+        :param bundle_calendar: The bundle Calendar instance to update.
+        :param child_calendars: Full desired set of child Calendar instances.
+        :param primary_calendar: The child to designate as primary; must be in child_calendars.
+        :return: The (unchanged) bundle_calendar instance after reconciliation.
+        :raises ValueError: If bundle_calendar is not a BUNDLE type, children are cross-org,
+                            or primary_calendar is not in child_calendars.
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        if bundle_calendar.calendar_type != CalendarType.BUNDLE:
+            raise ValueError("Calendar is not a bundle.")
+
+        child_calendars_list = list(child_calendars)
+
+        if primary_calendar and primary_calendar not in child_calendars_list:
+            raise ValueError("Primary calendar must be one of the child calendars.")
+
+        for calendar in child_calendars_list:
+            if calendar.organization_id != self.organization.id:
+                raise ValueError(
+                    "All child calendars must belong to the same organization as the bundle."
+                )
+            if calendar.calendar_type == CalendarType.BUNDLE:
+                raise ValueError(
+                    "Child calendars of a bundle must not be bundle calendars themselves."
+                )
+
+        desired_ids = {cal.id for cal in child_calendars_list}
+
+        existing_relationships = list(
+            ChildrenCalendarRelationship.objects.filter(
+                bundle_calendar=bundle_calendar,
+                organization=self.organization,
+            )
+        )
+        existing_ids = {rel.child_calendar_fk_id for rel in existing_relationships}
+
+        # Remove dropped children
+        for rel in existing_relationships:
+            if rel.child_calendar_fk_id not in desired_ids:
+                rel.delete()
+
+        # Add new children
+        for calendar in child_calendars_list:
+            if calendar.id not in existing_ids:
+                is_primary = primary_calendar is not None and calendar.id == primary_calendar.id
+                ChildrenCalendarRelationship.objects.create(
+                    bundle_calendar=bundle_calendar,
+                    child_calendar=calendar,
+                    organization=self.organization,
+                    is_primary=is_primary,
+                )
+
+        # Reconcile is_primary on remaining + newly-added relationships
+        if primary_calendar is not None:
+            ChildrenCalendarRelationship.objects.filter(
+                bundle_calendar=bundle_calendar,
+                organization=self.organization,
+            ).exclude(
+                child_calendar_fk_id=primary_calendar.id,
+            ).update(is_primary=False)
+
+            ChildrenCalendarRelationship.objects.filter(
+                bundle_calendar=bundle_calendar,
+                organization=self.organization,
+                child_calendar_fk_id=primary_calendar.id,
+            ).update(is_primary=True)
 
         return bundle_calendar
 
@@ -903,18 +1103,32 @@ class CalendarService(BaseCalendarService):
         return self.calendar_adapter
 
     def convert_naive_utc_datetime_to_timezone(self, datetime_obj: datetime.datetime, iana_tz: str):
-        """
-        Convert a naive UTC datetime object to a timezone-aware datetime in the specified IANA timezone.
-        :param datetime_obj: Naive datetime object in UTC.
-        :param iana_tz: IANA timezone string (e.g., "America/New_York").
-        :return: Timezone-aware datetime object in the specified timezone.
+        """Return the naive local wall-clock of an instant in the given IANA timezone.
+
+        Used to populate ``*_tz_unaware`` fields: the model stores the naive local
+        wall-clock paired with the IANA ``timezone``, and the DB-generated
+        ``start_time``/``end_time`` re-derive the true instant from them via
+        ``convert_naive_utc_to_timezone``. Naive inputs are treated as UTC.
+
+        Previously this did ``datetime_obj.replace(tzinfo=target_tz)``, which keeps the
+        wall-clock and swaps the zone — storing the instant instead of the local
+        wall-clock and shifting synced times by the zone offset. ``astimezone`` converts
+        the instant correctly.
+
+        e.g. 12:00Z + "America/Recife" -> 09:00 (naive).
         """
         try:
             target_tz = zoneinfo.ZoneInfo(iana_tz)
         except zoneinfo.ZoneInfoNotFoundError as e:
             raise ValueError(f"Invalid IANA timezone: {iana_tz}") from e
 
-        return datetime_obj.replace(tzinfo=target_tz)
+        if datetime_obj.tzinfo is None:
+            datetime_obj = datetime_obj.replace(tzinfo=datetime.UTC)
+        # Local wall-clock, tagged UTC so it stores cleanly under USE_TZ (matching how
+        # the batch-create path stores tz_unaware). The generated start_time/end_time
+        # re-interpret this wall-clock in `timezone` to recover the true instant.
+        local_wall_clock = datetime_obj.astimezone(target_tz).replace(tzinfo=None)
+        return local_wall_clock.replace(tzinfo=datetime.UTC)
 
     def _serialize_event_data_input(
         self, event: CalendarEvent, event_data: CalendarEventInputData
@@ -1043,7 +1257,7 @@ class CalendarService(BaseCalendarService):
             event_data.end_time,
         )
         if not available_windows:
-            raise ValueError("No available time windows for the event.")
+            raise NoAvailableTimeWindowsError()
 
         external_id = ""
         original_payload: dict = {}
@@ -1120,7 +1334,7 @@ class CalendarService(BaseCalendarService):
             calendar_fk=calendar,
             organization=self.organization,
             title=event_data.title,
-            description=event_data.description,
+            description=event_data.description or "",
             start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
                 event_data.start_time, event_data.timezone
             ),
@@ -1908,6 +2122,7 @@ class CalendarService(BaseCalendarService):
         calendar: Calendar,
         start_date: datetime.datetime,
         end_date: datetime.datetime,
+        optimize_queryset: Callable[[CalendarEventQuerySet], CalendarEventQuerySet] | None = None,
     ) -> list[CalendarEvent]:
         """
         Get all calendar events in a date range with recurring events expanded to instances.
@@ -1924,6 +2139,10 @@ class CalendarService(BaseCalendarService):
         :param calendar: The calendar to get events from
         :param start_date: Start of the date range
         :param end_date: End of the date range
+        :param optimize_queryset: Optional callable (typically a serializer's
+            ``get_optimized_queryset``) applied to the master-event base queryset so its
+            nested relations are prefetched. Generated occurrences reuse their master's
+            prefetch cache, so the whole result serializes without per-event N+1s.
         :return: List of all event instances in the range
         """
         if not is_initialized_or_authenticated_calendar_service(self):
@@ -1954,13 +2173,17 @@ class CalendarService(BaseCalendarService):
             is_recurring_exception=False,  # Exclude exception objects
         )
 
-        # Get recurring master events and generate their instances
+        # Get recurring master events and generate their instances. Apply the
+        # serializer optimization here so generated occurrences inherit prefetched
+        # relations from their master (real events are optimized by the caller).
         recurring_events = base_qs.filter(
             recurrence_rule__isnull=False,  # Recurring only
         ).filter(
             Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start_date),
             start_time__lte=end_date,
         )
+        if optimize_queryset is not None:
+            recurring_events = optimize_queryset(recurring_events)
 
         events: list[CalendarEvent] = list(non_recurring_events)
 
@@ -1968,6 +2191,13 @@ class CalendarService(BaseCalendarService):
             instances = master_event.get_occurrences_in_range(
                 start_date, end_date, include_self=False, include_exceptions=True
             )
+            # Occurrences are in-memory copies of the master (pk=None). Reuse the
+            # master's prefetched relations so each occurrence serializes without
+            # re-querying attendances/resources (occurrences inherit them by design).
+            master_cache = getattr(master_event, "_prefetched_objects_cache", None)
+            if master_cache:
+                for instance in instances:
+                    instance._prefetched_objects_cache = master_cache
             events.extend(instances)
 
         # Sort by start time
@@ -2181,14 +2411,16 @@ class CalendarService(BaseCalendarService):
         start_datetime: datetime.datetime,
         end_datetime: datetime.datetime,
         should_update_events: bool = False,
-    ) -> CalendarSync:
+        trigger_source: CalendarSyncTriggerSource = CalendarSyncTriggerSource.MANUAL,
+    ) -> CalendarSync | None:
         """
         Request a calendar synchronization for a specific date range.
         :param calendar: The calendar to synchronize.
         :param start_datetime: Start date for the event search.
         :param end_datetime: End date for the event search.
         :param should_update_events: Whether to update existing events.
-        :return: Created CalendarSync instance.
+        :param trigger_source: What kicked off this sync (import/manual/webhook/admin).
+        :return: Created CalendarSync instance, or None if the calendar has sync disabled.
         """
         from calendar_integration.tasks import sync_calendar_task
 
@@ -2200,12 +2432,20 @@ class CalendarService(BaseCalendarService):
                 "Calendar adapter is not implemented for the current account provider."
             )
 
+        # Honor the per-calendar opt-out (holidays, birthdays, org-wide calendars, etc.).
+        if not calendar.sync_enabled:
+            logging.getLogger(__name__).info(
+                "Skipping sync for calendar %s: sync_enabled is False.", calendar.id
+            )
+            return None
+
         calendar_sync = CalendarSync.objects.create(
             calendar=calendar,
             organization_id=calendar.organization_id,
             start_datetime=start_datetime,
             end_datetime=end_datetime,
             should_update_events=should_update_events,
+            trigger_source=trigger_source,
         )
         account_type: Literal["social_account", "google_service_account"] = (
             "social_account"
@@ -2216,8 +2456,16 @@ class CalendarService(BaseCalendarService):
         if not self.account or not self.account.id:
             raise NotImplementedError("Account is not set for the current service instance.")
 
-        sync_calendar_task.delay(  # type: ignore
-            account_type, self.account.id, calendar_sync.id, calendar.organization_id
+        # Capture ids by value so the closure is independent of mutable self state.
+        _account_type = account_type
+        _account_id = self.account.id
+        _calendar_sync_id = calendar_sync.id
+        _organization_id = calendar.organization_id
+
+        transaction.on_commit(
+            lambda: sync_calendar_task.delay(  # type: ignore
+                _account_type, _account_id, _calendar_sync_id, _organization_id
+            )
         )
         return calendar_sync
 
@@ -2274,14 +2522,25 @@ class CalendarService(BaseCalendarService):
         events_dict = self.calendar_adapter.get_events(
             calendar.external_id, calendar.is_resource, start_date, end_date, sync_token
         )
-        events = events_dict["events"]
+        # Materialize so we can collect the incoming external ids up front; the
+        # batch is already held fully in memory while building `changes` below.
+        events = list(events_dict["events"])
         next_sync_token = events_dict["next_sync_token"]
+
+        # Match existing rows by the external ids actually being synced, regardless
+        # of the sync window. An event whose stored instant falls outside this
+        # window (boundary/multi-day events, timezone shifts) must still update its
+        # existing row instead of re-inserting it and colliding with the
+        # (calendar_fk_id, external_id) unique constraint.
+        incoming_external_ids = {e.external_id for e in events if e.external_id}
 
         # Prepare existing data mappings
         (
             calendar_events_by_external_id,
             blocked_times_by_external_id,
-        ) = self._get_existing_calendar_data(calendar.id, start_date, end_date)
+        ) = self._get_existing_calendar_data(
+            calendar.id, start_date, end_date, incoming_external_ids
+        )
 
         # Process events and collect changes
         changes = self._process_events_for_sync(
@@ -2318,27 +2577,41 @@ class CalendarService(BaseCalendarService):
             )
 
     def _get_existing_calendar_data(
-        self, calendar_id: int, start_date: datetime.datetime, end_date: datetime.datetime
+        self,
+        calendar_id: int,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        incoming_external_ids: set[str] | None = None,
     ):
-        """Get existing calendar events and blocked times for the date range."""
+        """Get existing calendar events and blocked times to reconcile against.
+
+        Loads rows that are either (a) inside the sync window — needed so the
+        full-sync deletion pass can spot rows that vanished from the provider — or
+        (b) carry one of the ``incoming_external_ids`` being synced now, even if
+        their stored instant sits outside the window. Without (b), an out-of-window
+        event is treated as new and re-inserted, colliding with the
+        ``(calendar_fk_id, external_id)`` unique constraint.
+        """
         if not self.organization:
             return ({}, {})
+
+        window = Q(start_time__gte=start_date, end_time__lte=end_date)
+        if incoming_external_ids:
+            window |= Q(external_id__in=incoming_external_ids)
 
         calendar_events_by_external_id = {
             e.external_id: e
             for e in CalendarEvent.objects.filter(
+                window,
                 calendar_fk_id=calendar_id,
-                start_time__gte=start_date,
-                end_time__lte=end_date,
                 organization_id=self.organization.id,
             )
         }
         blocked_times_by_external_id = {
             e.external_id: e
             for e in BlockedTime.objects.filter(
+                window,
                 calendar_fk_id=calendar_id,
-                start_time__gte=start_date,
-                end_time__lte=end_date,
                 organization_id=self.organization.id,
             )
         }
@@ -2744,6 +3017,34 @@ class CalendarService(BaseCalendarService):
             calendar_fk_id=calendar_id,
         ).delete()
 
+    @staticmethod
+    def _subtract_busy_intervals(
+        window_start: datetime.datetime,
+        window_end: datetime.datetime,
+        busy_intervals: Iterable[tuple[datetime.datetime, datetime.datetime]],
+    ) -> list[tuple[datetime.datetime, datetime.datetime]]:
+        """Return the parts of [window_start, window_end] not covered by any busy interval.
+
+        Busy intervals may be unsorted, overlapping, or extend beyond the window; they
+        are clipped to the window and merged on the fly. A window fully covered by busy
+        time yields an empty list.
+        """
+        clipped = sorted(
+            (max(start, window_start), min(end, window_end))
+            for start, end in busy_intervals
+            if end > window_start and start < window_end
+        )
+
+        free: list[tuple[datetime.datetime, datetime.datetime]] = []
+        cursor = window_start
+        for busy_start, busy_end in clipped:
+            if busy_start > cursor:
+                free.append((cursor, busy_start))
+            cursor = max(cursor, busy_end)
+        if cursor < window_end:
+            free.append((cursor, window_end))
+        return free
+
     def get_unavailable_time_windows_in_range(
         self,
         calendar: Calendar,
@@ -2853,21 +3154,33 @@ class CalendarService(BaseCalendarService):
             raise
 
         if calendar.manage_available_windows:
-            # Replace the current query with:
+            # Declared availability windows (recurring instances expanded).
             available_times = self.get_available_times_expanded(
                 calendar=calendar,
                 start_date=start_datetime,
                 end_date=end_datetime,
             )
 
+            # Net availability = declared windows minus busy (events + blocked times).
+            # Subtract the unavailable windows so callers get true bookable time and
+            # don't have to reconcile two overlapping lists client-side.
+            unavailable_windows = self.get_unavailable_time_windows_in_range(
+                calendar, start_datetime, end_datetime
+            )
+            busy_intervals = [(uw.start_time, uw.end_time) for uw in unavailable_windows]
+
             return [
                 AvailableTimeWindow(
-                    start_time=available_time.start_time,
-                    end_time=available_time.end_time,
+                    start_time=free_start,
+                    end_time=free_end,
                     id=available_time.id,
                     can_book_partially=False,
+                    timezone=available_time.timezone,
                 )
                 for available_time in available_times
+                for free_start, free_end in CalendarService._subtract_busy_intervals(
+                    available_time.start_time, available_time.end_time, busy_intervals
+                )
             ]
 
         unavailable_windows_sorted_by_start_datetime = self.get_unavailable_time_windows_in_range(
@@ -2913,7 +3226,24 @@ class CalendarService(BaseCalendarService):
         ]
 
     @transaction.atomic()
-    @transaction.atomic()
+    def get_default_calendar_for_user(self, user: "User") -> Calendar | None:
+        """Resolve a user's default calendar in the service's organization.
+
+        The default is the active CalendarOwnership flagged ``is_default``, restricted
+        to active calendars. Returns None when the user has no default calendar.
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        ownership = (
+            CalendarOwnership.objects.filter_by_organization(self.organization.id)
+            .filter(user=user, is_default=True, calendar__visibility=CalendarVisibility.ACTIVE)
+            .select_related("calendar")
+            .order_by("id")
+            .first()
+        )
+        return ownership.calendar if ownership else None
+
     def bulk_create_availability_windows(
         self,
         calendar: Calendar,
@@ -2950,6 +3280,81 @@ class CalendarService(BaseCalendarService):
             availability_windows_to_create.append(available_time)
 
         return AvailableTime.objects.bulk_create(availability_windows_to_create)
+
+    @transaction.atomic()
+    def batch_modify_available_times(
+        self,
+        calendar: Calendar,
+        operations: Iterable[dict],
+    ) -> list[AvailableTime]:
+        """Apply a batch of create/update/delete operations to a calendar's available times.
+
+        Row-atomic: each operation acts on a whole AvailableTime row. Runs in a single
+        transaction — any failure rolls the whole batch back. Update/delete operations
+        are scoped to this calendar (and organization); a missing id raises ValueError.
+
+        :param calendar: The calendar whose available times are being modified.
+        :param operations: Iterable of dicts, each with an ``action`` of
+            ``create`` / ``update`` / ``delete`` plus the relevant fields
+            (``id``, ``start_time``, ``end_time``, ``timezone``, ``rrule_string``).
+        :return: The calendar's available times after the batch is applied.
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        if not calendar.manage_available_windows:
+            raise ValueError("This calendar does not manage available windows.")
+
+        scoped = AvailableTime.objects.filter_by_organization(self.organization.id).filter(
+            calendar_fk=calendar
+        )
+
+        for operation in operations:
+            action = operation["action"]
+
+            if action == "create":
+                recurrence_rule = self._create_recurrence_rule_if_needed(
+                    operation.get("rrule_string")
+                )
+                AvailableTime.objects.create(
+                    calendar=calendar,
+                    organization_id=calendar.organization_id,
+                    start_time_tz_unaware=operation["start_time"],
+                    end_time_tz_unaware=operation["end_time"],
+                    timezone=operation["timezone"],
+                    recurrence_rule=recurrence_rule,
+                )
+            elif action == "update":
+                try:
+                    available_time = scoped.get(id=operation["id"])
+                except AvailableTime.DoesNotExist as e:
+                    raise ValueError(
+                        f"Available time {operation['id']} not found in this calendar."
+                    ) from e
+                if "start_time" in operation:
+                    available_time.start_time_tz_unaware = operation["start_time"]
+                if "end_time" in operation:
+                    available_time.end_time_tz_unaware = operation["end_time"]
+                if "timezone" in operation:
+                    available_time.timezone = operation["timezone"]
+                if "rrule_string" in operation:
+                    available_time.recurrence_rule = self._create_recurrence_rule_if_needed(
+                        operation["rrule_string"]
+                    )
+                available_time.save()
+            elif action == "delete":
+                try:
+                    scoped.get(id=operation["id"]).delete()
+                except AvailableTime.DoesNotExist as e:
+                    raise ValueError(
+                        f"Available time {operation['id']} not found in this calendar."
+                    ) from e
+
+        return list(
+            AvailableTime.objects.filter_by_organization(self.organization.id).filter(
+                calendar_fk=calendar
+            )
+        )
 
     @transaction.atomic()
     def bulk_create_manual_blocked_times(
@@ -3040,7 +3445,9 @@ class CalendarService(BaseCalendarService):
             calendars_to_query.extend(bundle_children)
 
         base_qs = (
-            BlockedTime.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
+            BlockedTime.objects.annotate_recurring_occurrences_on_date_range(
+                start_date, end_date, overlap=True
+            )
             .select_related("recurrence_rule")
             .filter(
                 organization_id=calendar.organization_id,
@@ -3049,9 +3456,13 @@ class CalendarService(BaseCalendarService):
             )
         )
 
-        # Get non-recurring times within the date range
+        # Get non-recurring times overlapping the date range. Interval overlap is
+        # start < range_end AND end > range_start — this also catches blocks that
+        # fully contain the range, which a start-or-end-inside filter would drop
+        # (and miss a block covering the whole booking, allowing a double-booking).
         non_recurring_times = base_qs.filter(
-            Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
+            start_time__lt=end_date,
+            end_time__gt=start_date,
             recurrence_rule__isnull=True,  # Non-recurring only
             is_recurring_exception=False,  # Exclude exception objects
         )
@@ -3068,7 +3479,7 @@ class CalendarService(BaseCalendarService):
 
         for master_time in recurring_times:
             instances = master_time.get_occurrences_in_range(
-                start_date, end_date, include_self=False, include_exceptions=True
+                start_date, end_date, include_self=False, include_exceptions=True, overlap=True
             )
             times.extend(instances)
 
@@ -3087,7 +3498,9 @@ class CalendarService(BaseCalendarService):
             raise
 
         base_qs = (
-            AvailableTime.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
+            AvailableTime.objects.annotate_recurring_occurrences_on_date_range(
+                start_date, end_date, overlap=True
+            )
             .select_related("recurrence_rule")
             .filter(
                 organization_id=calendar.organization_id,
@@ -3096,9 +3509,12 @@ class CalendarService(BaseCalendarService):
             )
         )
 
-        # Get non-recurring times within the date range
+        # Get non-recurring times overlapping the date range. Interval overlap is
+        # start < range_end AND end > range_start — this also catches windows that
+        # fully contain the range, which a start-or-end-inside filter would drop.
         non_recurring_times = base_qs.filter(
-            Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
+            start_time__lt=end_date,
+            end_time__gt=start_date,
             recurrence_rule__isnull=True,  # Non-recurring only
             is_recurring_exception=False,  # Exclude exception objects
         )
@@ -3115,7 +3531,7 @@ class CalendarService(BaseCalendarService):
 
         for master_time in recurring_times:
             instances = master_time.get_occurrences_in_range(
-                start_date, end_date, include_self=False, include_exceptions=True
+                start_date, end_date, include_self=False, include_exceptions=True, overlap=True
             )
             times.extend(instances)
 
@@ -3875,6 +4291,7 @@ class CalendarService(BaseCalendarService):
             start_datetime=start_datetime,
             end_datetime=end_datetime,
             should_update_events=True,  # Webhook implies changes, so update existing events
+            trigger_source=CalendarSyncTriggerSource.WEBHOOK,
         )
 
         # Link webhook event to triggered sync

@@ -1,9 +1,11 @@
 import datetime
+import logging
 from typing import Annotated
 
 from django.db import IntegrityError, transaction
 from django.urls import reverse
 
+from allauth.socialaccount.models import SocialAccount
 from allauth.utils import build_absolute_uri
 from dependency_injector.wiring import Provide, inject
 from vintasend.services.notification_service import (
@@ -12,6 +14,12 @@ from vintasend.services.notification_service import (
     NotificationTypes,
 )
 
+from calendar_integration.constants import CalendarSyncTriggerSource
+from calendar_integration.models import (
+    Calendar,
+    CalendarOwnership,
+    GoogleCalendarServiceAccount,
+)
 from calendar_integration.services.calendar_service import CalendarService
 from common.utils.authentication_utils import (
     generate_long_lived_token,
@@ -22,6 +30,7 @@ from organizations.exceptions import (
     DuplicateInvitationError,
     InvalidInvitationTokenError,
     InvitationNotFoundError,
+    NoServiceAccountConfiguredError,
     UserAlreadyHasMembershipError,
 )
 from organizations.models import (
@@ -31,6 +40,9 @@ from organizations.models import (
     OrganizationRole,
 )
 from users.models import User
+
+
+logger = logging.getLogger(__name__)
 
 
 class OrganizationService:
@@ -65,15 +77,126 @@ class OrganizationService:
         )
 
         if should_sync_rooms:
-            self.calendar_service.initialize_without_provider(
-                user_or_token=creator, organization=self.organization
-            )
-            now = datetime.datetime.now(tz=datetime.UTC)
-            self.calendar_service.request_organization_calendar_resources_import(
-                start_time=now,
-                end_time=now + datetime.timedelta(days=365),
-            )
+            # A newly created organization cannot have a service account yet, so
+            # request_rooms_sync will raise NoServiceAccountConfiguredError.  We
+            # catch it here and log a warning instead of crashing — org creation
+            # must always succeed; the admin can trigger the sync later once they
+            # have configured a Google service account via PATCH.
+            try:
+                self.request_rooms_sync(
+                    organization=self.organization,
+                    requested_by=creator,
+                )
+            except NoServiceAccountConfiguredError:
+                logger.warning(
+                    "Skipping rooms sync for new organization %s: no service account configured.",
+                    self.organization.id,
+                )
         return self.organization
+
+    def request_rooms_sync(
+        self,
+        organization: Organization,
+        requested_by: User,
+        start_time: datetime.datetime | None = None,
+        end_time: datetime.datetime | None = None,
+    ) -> None:
+        """Authenticate with the org's Google service account and enqueue a
+        calendar resources import for the given organization.
+
+        Resolves the org-level ``GoogleCalendarServiceAccount`` (the one without
+        a ``calendar`` FK).  If none is configured, raises
+        ``NoServiceAccountConfiguredError`` (a DRF ValidationError / 400) so
+        callers can surface a clean error rather than a 500.
+
+        :param organization: The organization to sync rooms for.
+        :param requested_by: The user (or token) authorizing the sync.
+        :param start_time: Import window start; defaults to now.
+        :param end_time: Import window end; defaults to now + 365 days.
+        :raises NoServiceAccountConfiguredError: When no service account is
+            configured for the organization.
+        """
+        service_account = (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(organization.id)
+            .filter(calendar_fk__isnull=True)
+            .first()
+        )
+        if service_account is None:
+            raise NoServiceAccountConfiguredError()
+
+        self.calendar_service.authenticate(account=service_account, organization=organization)
+        now = datetime.datetime.now(tz=datetime.UTC)
+        self.calendar_service.request_organization_calendar_resources_import(
+            start_time=start_time or now,
+            end_time=end_time or (now + datetime.timedelta(days=365)),
+        )
+
+    def request_all_calendars_sync(
+        self,
+        organization: Organization,
+        requested_by: User,
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+        should_update_events: bool = False,
+    ) -> dict[str, list]:
+        """Enqueue a sync for every active calendar in the organization.
+
+        Each active calendar is synced using its owner's linked provider account
+        (mirroring admin-sync): the default ``CalendarOwnership`` resolves the
+        owner, and the owner's ``SocialAccount`` for the calendar's provider
+        authenticates the sync. Calendars with no owner or no matching linked
+        account are reported under ``skipped`` rather than failing the request.
+
+        :param organization: The organization whose calendars should be synced.
+        :param requested_by: The admin authorizing the sync.
+        :param start_datetime: Sync window start.
+        :param end_datetime: Sync window end.
+        :param should_update_events: Whether to update existing events.
+        :return: ``{"synced": [calendar_id, ...], "skipped": [{"calendar_id", "reason"}, ...]}``.
+        """
+        synced: list[int] = []
+        skipped: list[dict] = []
+
+        calendars = Calendar.objects.filter_by_organization(organization.id).exclude_inactive()
+
+        for calendar in calendars:
+            ownership = (
+                CalendarOwnership.objects.filter_by_organization(organization.id)
+                .filter(calendar=calendar)
+                .order_by("-is_default", "id")
+                .first()
+            )
+            if ownership is None:
+                skipped.append({"calendar_id": calendar.id, "reason": "no owner"})
+                continue
+
+            social_account = SocialAccount.objects.filter(
+                user=ownership.user, provider=calendar.provider
+            ).first()
+            if social_account is None:
+                skipped.append(
+                    {
+                        "calendar_id": calendar.id,
+                        "reason": f"owner has no linked {calendar.provider} account",
+                    }
+                )
+                continue
+
+            self.calendar_service.authenticate(account=social_account, organization=organization)
+            sync = self.calendar_service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                should_update_events=should_update_events,
+                trigger_source=CalendarSyncTriggerSource.ADMIN,
+            )
+            if sync is None:
+                # Calendar has sync disabled (e.g. an imported read-only calendar).
+                skipped.append({"calendar_id": calendar.id, "reason": "sync disabled"})
+                continue
+            synced.append(calendar.id)
+
+        return {"synced": synced, "skipped": skipped}
 
     @transaction.atomic()
     def invite_user_to_organization(
@@ -156,6 +279,10 @@ class OrganizationService:
         :param user: User who is accepting the invitation.
         :return: Created OrganizationMembership instance.
         """
+        # DESIGN: hasattr check intentionally matches BOTH active and inactive memberships.
+        # An inactive membership still has a DB row, so accept_invitation must refuse
+        # re-provisioning here.  The supported un-disable path is admin REACTIVATION
+        # (setting is_active=True); not re-accepting an invitation.
         if hasattr(user, "organization_membership"):
             raise UserAlreadyHasMembershipError()
 
@@ -208,6 +335,10 @@ class OrganizationService:
         :raises UserAlreadyHasMembershipError: When the user already belongs to an
             organization.
         """
+        # DESIGN: hasattr check intentionally matches BOTH active and inactive memberships.
+        # An inactive membership still has a DB row, so provision_tenant_for_user must
+        # refuse re-provisioning here.  The supported un-disable path is admin REACTIVATION
+        # (setting is_active=True); not re-provisioning the user.
         if hasattr(user, "organization_membership"):
             raise UserAlreadyHasMembershipError()
 

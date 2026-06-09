@@ -3,6 +3,7 @@ import zoneinfo
 from datetime import timedelta
 from unittest.mock import MagicMock, Mock, patch
 
+from django.db import transaction
 from django.utils import timezone
 
 import pytest
@@ -11,13 +12,17 @@ from allauth.socialaccount.models import SocialAccount, SocialToken
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncStatus,
+    CalendarSyncTriggerSource,
     CalendarType,
     EventManagementPermissions,
+    RecurrenceFrequency,
 )
 from calendar_integration.exceptions import (
     InvalidCalendarTokenError,
+    NoAvailableTimeWindowsError,
     ServiceNotAuthenticatedError,
 )
+from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import (
     AvailableTime,
     AvailableTimeBulkModification,
@@ -488,6 +493,73 @@ def test_get_calendar_adapter_for_google_social_account(
 
 
 @pytest.mark.django_db
+def test_get_calendar_adapter_accepts_social_account_directly(
+    social_account, social_token, mock_google_adapter
+):
+    """A SocialAccount may be passed directly (the request-import / sync view path).
+
+    Regression: the views authenticate with a SocialAccount, but the resolver
+    used ``account__user=account`` which raised
+    'Cannot query "...": Must be "User" instance.' when given a SocialAccount.
+    """
+    adapter, account = CalendarService.get_calendar_adapter_for_account(social_account)
+
+    assert adapter == mock_google_adapter
+    assert account == social_account
+
+
+@pytest.mark.django_db
+def test_get_calendar_adapter_resolves_expired_token_for_refresh(
+    social_account, mock_google_adapter
+):
+    """An expired access token is still resolved so the adapter can refresh it.
+
+    Regression: the resolver filtered ``expires_at__gte=now``, hiding expired
+    (but refreshable) tokens and raising a false 'reauthenticate' error.
+    """
+    SocialToken.objects.create(
+        account=social_account,
+        token="expired_access_token",
+        token_secret="refresh_token_value",
+        expires_at=datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=2),
+    )
+
+    adapter, account = CalendarService.get_calendar_adapter_for_account(social_account)
+
+    assert adapter == mock_google_adapter
+    assert account == social_account
+
+
+@pytest.mark.django_db
+def test_get_calendar_adapter_resolves_null_expiry_token(social_account, mock_google_adapter):
+    """A token with NULL expires_at is resolved (not excluded by the expiry filter)."""
+    SocialToken.objects.create(
+        account=social_account,
+        token="access_token_no_expiry",
+        token_secret="refresh_token_value",
+        expires_at=None,
+    )
+
+    adapter, account = CalendarService.get_calendar_adapter_for_account(social_account)
+
+    assert adapter == mock_google_adapter
+    assert account == social_account
+
+
+@pytest.mark.django_db
+def test_authenticate_with_social_account_sets_owning_user(
+    social_account, social_token, organization, mock_google_adapter
+):
+    """authenticate(account=<SocialAccount>) resolves the adapter and attributes
+    records to the owning user (user_or_token), so CalendarOwnership.user is set."""
+    service = CalendarService()
+    service.authenticate(account=social_account, organization=organization)
+
+    assert service.account == social_account
+    assert service.user_or_token == social_account.user
+
+
+@pytest.mark.django_db
 def test_get_calendar_adapter_for_microsoft_social_account(
     social_account, social_token, mock_ms_adapter
 ):
@@ -624,6 +696,111 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
 
 
 @pytest.mark.django_db
+def test_import_seeds_sync_enabled_from_access_role(
+    social_account, social_token, mock_google_adapter, organization
+):
+    """Owner/writer calendars import sync-enabled; reader-only ones import disabled."""
+    mock_google_adapter.get_account_calendars.return_value = [
+        CalendarResourceData(
+            external_id="own_cal",
+            name="Mine",
+            description="",
+            email="user@example.com",
+            access_role="owner",
+            provider="google",
+        ),
+        CalendarResourceData(
+            external_id="shared_cal",
+            name="Holidays",
+            description="",
+            email="holidays@example.com",
+            access_role="reader",
+            provider="google",
+        ),
+        CalendarResourceData(
+            external_id="unknown_cal",
+            name="Legacy",
+            description="",
+            email="legacy@example.com",
+            access_role=None,
+            provider="google",
+        ),
+    ]
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=organization)
+    service.import_account_calendars(sync_after_import=False)
+
+    assert Calendar.objects.get(organization=organization, external_id="own_cal").sync_enabled
+    assert not Calendar.objects.get(
+        organization=organization, external_id="shared_cal"
+    ).sync_enabled
+    # Unknown access role preserves prior behavior (enabled).
+    assert Calendar.objects.get(organization=organization, external_id="unknown_cal").sync_enabled
+
+
+@pytest.mark.django_db
+def test_import_preserves_sync_enabled_on_reimport(
+    social_account, social_token, mock_google_adapter, organization
+):
+    """A user's later sync_enabled choice survives a re-import (create-only seed)."""
+    mock_google_adapter.get_account_calendars.return_value = [
+        CalendarResourceData(
+            external_id="shared_cal",
+            name="Holidays",
+            description="",
+            email="holidays@example.com",
+            access_role="reader",
+            provider="google",
+        ),
+    ]
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=organization)
+    service.import_account_calendars(sync_after_import=False)
+
+    cal = Calendar.objects.get(organization=organization, external_id="shared_cal")
+    assert cal.sync_enabled is False
+    # User opts in.
+    cal.sync_enabled = True
+    cal.save(update_fields=["sync_enabled"])
+
+    # Re-import must not reset the opt-in back to the access-role default.
+    service.import_account_calendars(sync_after_import=False)
+    cal.refresh_from_db()
+    assert cal.sync_enabled is True
+
+
+@pytest.mark.django_db
+def test_import_sync_after_import_flag(
+    social_account, social_token, mock_google_adapter, organization
+):
+    """sync_after_import gates whether a per-calendar sync is requested, with IMPORT source."""
+    mock_google_adapter.get_account_calendars.return_value = [
+        CalendarResourceData(
+            external_id="own_cal",
+            name="Mine",
+            description="",
+            email="user@example.com",
+            access_role="owner",
+            provider="google",
+        ),
+    ]
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=organization)
+
+    with patch.object(service, "request_calendar_sync") as mock_sync:
+        service.import_account_calendars(sync_after_import=False)
+        mock_sync.assert_not_called()
+
+    with patch.object(service, "request_calendar_sync") as mock_sync:
+        service.import_account_calendars(sync_after_import=True)
+        mock_sync.assert_called_once()
+        assert mock_sync.call_args.kwargs["trigger_source"] == CalendarSyncTriggerSource.IMPORT
+
+
+@pytest.mark.django_db
 def test_import_account_calendars_updates_existing(
     social_account, social_token, mock_google_adapter, organization
 ):
@@ -703,7 +880,12 @@ def test_import_account_calendars_not_authenticated():
 def test_create_application_calendar(
     social_account, social_token, mock_google_adapter, patch_calendar_create, organization
 ):
-    """Test creating an application calendar."""
+    """Test creating an application calendar.
+
+    request_calendar_sync now enqueues via on_commit.  We patch on_commit to
+    capture the callback, verify it is not fired before commit, then invoke it
+    and assert the task fires with the correct arguments.
+    """
     created_calendar_data = ApplicationCalendarData(
         id=None,
         organization_id=organization.id,
@@ -719,8 +901,23 @@ def test_create_application_calendar(
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=organization)
 
+    captured_callbacks: list = []
     with patch("calendar_integration.tasks.sync_calendar_task.delay") as mock_task:
-        result = service.create_application_calendar("Test Calendar", organization=organization)
+        with patch(
+            "calendar_integration.services.calendar_service.transaction.on_commit",
+            side_effect=captured_callbacks.append,
+        ):
+            result = service.create_application_calendar("Test Calendar", organization=organization)
+            # Task must NOT fire before commit.
+            mock_task.assert_not_called()
+
+        assert len(captured_callbacks) == 1
+        # Simulate commit: invoke the callback inside the patch context so the
+        # delay mock is still active when the lambda calls sync_calendar_task.delay.
+        captured_callbacks[0]()
+
+        # Verify task was called
+        mock_task.assert_called_once()
 
     # Verify database object was created
     calendar = Calendar.objects.get(organization=organization, external_id="new_cal_123")
@@ -731,16 +928,6 @@ def test_create_application_calendar(
     # Verify return value
     assert result.external_id == "new_cal_123"
     assert result.name == "_virtual_Test Calendar"
-
-    # Verify task was called
-    mock_task.assert_called_once()
-
-    # Verify database object was actually created
-    calendar = Calendar.objects.get(organization=organization, external_id="new_cal_123")
-    assert calendar.name == "_virtual_Test Calendar"
-    assert calendar.provider == CalendarProvider.GOOGLE
-    assert result.name == "_virtual_Test Calendar"
-    mock_task.assert_called_once()
 
 
 @pytest.mark.django_db
@@ -3230,19 +3417,40 @@ def test_transfer_event_with_resources(
 
 @pytest.mark.django_db
 def test_request_calendar_sync(social_account, social_token, mock_google_adapter, calendar):
-    """Test requesting a calendar sync."""
+    """Test requesting a calendar sync.
+
+    The task is now enqueued via transaction.on_commit.  We patch on_commit to
+    capture the callback and verify it is NOT invoked before commit, then invoke
+    it manually and assert the task fires with the correct arguments.
+    """
     start_datetime = datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC)
     end_datetime = datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC)
 
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=calendar.organization)
 
+    captured_callbacks: list = []
     with patch("calendar_integration.tasks.sync_calendar_task.delay") as mock_task:
-        result = service.request_calendar_sync(
-            calendar=calendar,
-            start_datetime=start_datetime,
-            end_datetime=end_datetime,
-            should_update_events=True,
+        with patch(
+            "calendar_integration.services.calendar_service.transaction.on_commit",
+            side_effect=captured_callbacks.append,
+        ):
+            result = service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                should_update_events=True,
+            )
+            # Task must NOT fire before commit.
+            mock_task.assert_not_called()
+
+        # One on_commit callback was registered.
+        assert len(captured_callbacks) == 1
+
+        # Simulate commit: invoke the callback.
+        captured_callbacks[0]()
+        mock_task.assert_called_once_with(
+            "social_account", social_account.id, result.id, calendar.organization.id
         )
 
     # Verify CalendarSync was created
@@ -3252,31 +3460,70 @@ def test_request_calendar_sync(social_account, social_token, mock_google_adapter
     assert result.end_datetime == end_datetime
     assert result.should_update_events is True
 
-    # Verify task was called with correct parameters
-    mock_task.assert_called_once_with(
-        "social_account", social_account.id, result.id, calendar.organization.id
-    )
+
+@pytest.mark.django_db
+def test_request_calendar_sync_skipped_when_sync_disabled(
+    social_account, social_token, mock_google_adapter, calendar
+):
+    """A calendar with sync_enabled=False never enqueues a sync nor creates a CalendarSync."""
+    calendar.sync_enabled = False
+    calendar.save(update_fields=["sync_enabled"])
+
+    start_datetime = datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC)
+    end_datetime = datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC)
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+
+    with patch("calendar_integration.tasks.sync_calendar_task.delay") as mock_task:
+        with patch(
+            "calendar_integration.services.calendar_service.transaction.on_commit",
+        ) as mock_on_commit:
+            result = service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                should_update_events=True,
+            )
+
+        mock_on_commit.assert_not_called()
+        mock_task.assert_not_called()
+
+    assert result is None
+    assert not CalendarSync.objects.filter(calendar=calendar).exists()
 
 
 @pytest.mark.django_db
 def test_request_calendar_sync_with_service_account(
     google_service_account, mock_google_adapter, calendar
 ):
-    """Test requesting calendar sync with service account."""
+    """Test requesting calendar sync with service account.
+
+    Verifies the on_commit callback fires the task with the correct account_type.
+    """
     start_datetime = datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC)
     end_datetime = datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC)
 
     service = CalendarService()
     service.authenticate(account=google_service_account, organization=calendar.organization)
 
+    captured_callbacks: list = []
     with patch("calendar_integration.tasks.sync_calendar_task.delay") as mock_task:
-        result = service.request_calendar_sync(
-            calendar=calendar,
-            start_datetime=start_datetime,
-            end_datetime=end_datetime,
-        )
+        with patch(
+            "calendar_integration.services.calendar_service.transaction.on_commit",
+            side_effect=captured_callbacks.append,
+        ):
+            result = service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+            )
+            mock_task.assert_not_called()
 
-    # Verify task was called with correct account type
+        assert len(captured_callbacks) == 1
+        captured_callbacks[0]()
+
+    # Verify task was called with correct account type after commit.
     mock_task.assert_called_once_with(
         "google_service_account",
         google_service_account.id,
@@ -3373,6 +3620,74 @@ def test_execute_calendar_sync(
         calendar=calendar, external_id=sample_event_data.external_id
     )
     assert blocked_times.exists()
+
+
+@pytest.mark.django_db
+def test_resync_with_non_covering_window_is_idempotent(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    sample_event_data,
+    patch_get_calendar,
+):
+    """Re-syncing the same gcal event must update the existing BlockedTime, not
+    attempt to recreate it, even when the second sync's window does not cover the
+    event's stored time.
+
+    Repro for the duplicate-import bug: the existing-data lookup is window-bound,
+    so a second sync whose window excludes the already-stored event treats it as
+    new, hits the (calendar_fk_id, external_id) unique constraint on bulk_create,
+    and the whole sync silently FAILS instead of updating in place.
+    """
+    mock_google_adapter.get_events.return_value = {
+        "events": [sample_event_data],
+        "next_sync_token": "tok",
+    }
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+
+    # First sync: window covers the event (2025-06-22 14:00).
+    sync1 = CalendarSync.objects.create(
+        calendar_fk=calendar,
+        start_datetime=datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC),
+        end_datetime=datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC),
+        should_update_events=True,
+        organization=calendar.organization,
+    )
+    service.sync_events(sync1)
+
+    sync1.refresh_from_db()
+    assert sync1.status == CalendarSyncStatus.SUCCESS
+    assert (
+        BlockedTime.objects.filter(
+            calendar=calendar, external_id=sample_event_data.external_id
+        ).count()
+        == 1
+    )
+
+    # Second sync: window does NOT cover the event's stored time (next day).
+    # gcal still returns the event (mocked), as happens for boundary/multi-day
+    # events or after a timezone shift.
+    sync2 = CalendarSync.objects.create(
+        calendar_fk=calendar,
+        start_datetime=datetime.datetime(2025, 6, 23, 0, 0, tzinfo=datetime.UTC),
+        end_datetime=datetime.datetime(2025, 6, 24, 0, 0, tzinfo=datetime.UTC),
+        should_update_events=True,
+        organization=calendar.organization,
+    )
+    service.sync_events(sync2)
+
+    sync2.refresh_from_db()
+    # Must succeed and leave exactly one BlockedTime — no IntegrityError, no dup.
+    assert sync2.status == CalendarSyncStatus.SUCCESS, sync2.error_message
+    assert (
+        BlockedTime.objects.filter(
+            calendar=calendar, external_id=sample_event_data.external_id
+        ).count()
+        == 1
+    )
 
 
 @pytest.mark.django_db
@@ -4134,8 +4449,10 @@ def test_create_event_no_available_windows(
                 resource_allocations=[],
             )
 
-            # Attempt to create the event should raise ValueError
-            with pytest.raises(ValueError, match="No available time windows for the event"):
+            # Attempt to create the event should raise the domain error
+            with pytest.raises(
+                NoAvailableTimeWindowsError, match="No available time windows for the event"
+            ):
                 service.create_event(calendar.id, event_data)
 
             # Verify the adapter was NOT called
@@ -4535,6 +4852,7 @@ def test_create_event_adapter_failure(
 def test_request_organization_calendar_resources_import(
     social_account, organization, mock_google_adapter
 ):
+    """Verify the import task is enqueued via on_commit, not before commit."""
     with patch.object(
         CalendarService,
         "get_calendar_adapter_for_account",
@@ -4547,8 +4865,118 @@ def test_request_organization_calendar_resources_import(
             service.authenticate(account=social_account.user, organization=organization)
             start = timezone.now()
             end = start + timedelta(days=1)
-            service.request_organization_calendar_resources_import(start, end)
-            mock_task.assert_called_once()
+
+            captured_callbacks: list = []
+            with patch(
+                "calendar_integration.services.calendar_service.transaction.on_commit",
+                side_effect=captured_callbacks.append,
+            ):
+                service.request_organization_calendar_resources_import(start, end)
+                # Task must NOT fire before commit.
+                mock_task.assert_not_called()
+
+            assert len(captured_callbacks) == 1
+            captured_callbacks[0]()
+            import_workflow_state = CalendarOrganizationResourcesImport.objects.get(
+                organization=organization
+            )
+            mock_task.assert_called_once_with(
+                account_type="social_account",
+                account_id=social_account.id,
+                organization_id=organization.id,
+                import_workflow_state_id=import_workflow_state.id,
+            )
+
+
+@pytest.mark.django_db
+def test_request_calendars_import(social_account, social_token, mock_google_adapter, calendar):
+    """Verify the account-calendars import task is enqueued via on_commit, not before commit."""
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+
+    captured_callbacks: list = []
+    with patch("calendar_integration.tasks.import_account_calendars_task.delay") as mock_task:
+        with patch(
+            "calendar_integration.services.calendar_service.transaction.on_commit",
+            side_effect=captured_callbacks.append,
+        ):
+            service.request_calendars_import()
+            # Task must NOT fire before commit.
+            mock_task.assert_not_called()
+
+        assert len(captured_callbacks) == 1
+        captured_callbacks[0]()
+        mock_task.assert_called_once_with(
+            account_type="social_account",
+            account_id=social_account.id,
+            organization_id=calendar.organization.id,
+            sync_after_import=True,
+        )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_request_calendar_sync_task_not_fired_on_rollback(
+    social_account, social_token, mock_google_adapter, calendar
+):
+    """Prove that the sync task is NOT enqueued when the outer transaction rolls back."""
+    start_datetime = datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC)
+    end_datetime = datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC)
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+
+    with patch("calendar_integration.tasks.sync_calendar_task.delay") as mock_task:
+        with transaction.atomic():
+            service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                should_update_events=True,
+            )
+            transaction.set_rollback(True)
+
+        mock_task.assert_not_called()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_request_calendars_import_task_not_fired_on_rollback(
+    social_account, social_token, mock_google_adapter, calendar
+):
+    """Prove that the import-calendars task is NOT enqueued when the outer transaction rolls back."""
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+
+    with patch("calendar_integration.tasks.import_account_calendars_task.delay") as mock_task:
+        with transaction.atomic():
+            service.request_calendars_import()
+            transaction.set_rollback(True)
+
+        mock_task.assert_not_called()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_request_organization_calendar_resources_import_task_not_fired_on_rollback(
+    social_account, organization, mock_google_adapter
+):
+    """Prove that the resources-import task is NOT enqueued when the outer transaction rolls back."""
+    with patch.object(
+        CalendarService,
+        "get_calendar_adapter_for_account",
+        return_value=(mock_google_adapter, social_account),
+    ):
+        service = CalendarService()
+        service.authenticate(account=social_account.user, organization=organization)
+        start = timezone.now()
+        end = start + timedelta(days=1)
+
+        with patch(
+            "calendar_integration.tasks.import_organization_calendar_resources_task.delay"
+        ) as mock_task:
+            with transaction.atomic():
+                service.request_organization_calendar_resources_import(start, end)
+                transaction.set_rollback(True)
+
+            mock_task.assert_not_called()
 
 
 @pytest.mark.django_db
@@ -6309,6 +6737,167 @@ def test_get_available_times_expanded(organization):
     # Note: The actual count depends on the database function implementation
     assert len(expanded_available_times) >= 1  # At least the master
     assert all(at.calendar == calendar for at in expanded_available_times)
+
+
+@pytest.mark.django_db
+def test_get_available_times_expanded_returns_recurring_window_overlapping_narrow_range(
+    organization,
+):
+    """A recurring window whose occurrence STARTS before the query range but overlaps it
+    must be returned (overlap, not start-in-range).
+
+    Reproduces the production 'No available time windows' bug: weekly Friday
+    09:00-17:00 America/Recife (= 12:00-20:00 UTC); a booking at 16:30-17:00 Recife
+    (= 19:30-20:00 UTC) sits 7.5h into the window, so the occurrence starts well
+    before the narrow booking range yet clearly overlaps it.
+    """
+    calendar = Calendar.objects.create(
+        name="Recife",
+        organization=organization,
+        manage_available_windows=True,
+    )
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Weekly Friday 09:00-17:00 America/Recife, anchored on Fri 2024-01-05.
+    service.create_available_time(
+        calendar=calendar,
+        start_time=datetime.datetime(2024, 1, 5, 9, 0),
+        end_time=datetime.datetime(2024, 1, 5, 17, 0),
+        timezone="America/Recife",
+        rrule_string="FREQ=WEEKLY;BYDAY=FR",
+    )
+
+    # Booking 16:30-17:00 Recife on Fri 2026-06-12 == 19:30-20:00 UTC.
+    s = datetime.datetime(2026, 6, 12, 19, 30, tzinfo=datetime.UTC)
+    e = datetime.datetime(2026, 6, 12, 20, 0, tzinfo=datetime.UTC)
+
+    expanded = service.get_available_times_expanded(calendar, s, e)
+
+    assert len(expanded) >= 1
+    occ = expanded[0]
+    assert occ.start_time == datetime.datetime(2026, 6, 12, 12, 0, tzinfo=datetime.UTC)
+    assert occ.end_time == datetime.datetime(2026, 6, 12, 20, 0, tzinfo=datetime.UTC)
+
+
+@pytest.mark.django_db
+def test_get_available_times_expanded_includes_window_containing_range(organization):
+    """A non-recurring window that fully contains the query range must be returned.
+
+    Regression: the non-recurring filter matched only windows whose start OR end
+    fell inside the query range, so a window fully containing a smaller booking
+    range (start before, end after) was dropped and the slot looked unavailable.
+    """
+    calendar = Calendar.objects.create(
+        name="Test Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    service.create_available_time(
+        calendar=calendar,
+        start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+    )
+
+    # Query a 30-min slot fully inside the 09:00-17:00 window.
+    expanded = service.get_available_times_expanded(
+        calendar=calendar,
+        start_date=datetime.datetime(2025, 9, 1, 12, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 1, 12, 30, tzinfo=datetime.UTC),
+    )
+
+    assert len(expanded) == 1
+    assert expanded[0].start_time == datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
+
+
+@pytest.mark.django_db
+def test_get_blocked_times_expanded_returns_recurring_block_overlapping_narrow_range(
+    organization, calendar
+):
+    """A recurring block whose occurrence starts before a narrow query range but overlaps it
+    must be returned (otherwise an overlapping booking slips through as a double-booking)."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # Weekly Friday 12:00-20:00 UTC, anchored Fri 2024-01-05.
+    service.create_blocked_time(
+        calendar=calendar,
+        start_time=datetime.datetime(2024, 1, 5, 12, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2024, 1, 5, 20, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        reason="Busy",
+        rrule_string="FREQ=WEEKLY;BYDAY=FR",
+    )
+
+    s = datetime.datetime(2026, 6, 12, 19, 30, tzinfo=datetime.UTC)
+    e = datetime.datetime(2026, 6, 12, 20, 0, tzinfo=datetime.UTC)
+
+    expanded = service.get_blocked_times_expanded(calendar, s, e)
+
+    assert len(expanded) >= 1
+    assert expanded[0].start_time == datetime.datetime(2026, 6, 12, 12, 0, tzinfo=datetime.UTC)
+    assert expanded[0].end_time == datetime.datetime(2026, 6, 12, 20, 0, tzinfo=datetime.UTC)
+
+
+@pytest.mark.django_db
+def test_event_get_occurrences_in_range_returns_occurrence_overlapping_narrow_range(
+    organization, calendar
+):
+    """A recurring event occurrence that starts before a narrow query range but overlaps it
+    must be returned by the occurrence generator."""
+    event = CalendarEventFactory.create_recurring_event(
+        calendar=calendar,
+        title="Standup",
+        description="",
+        start_time=datetime.datetime(2024, 1, 5, 12, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2024, 1, 5, 20, 0, tzinfo=datetime.UTC),
+        frequency=RecurrenceFrequency.WEEKLY,
+        by_weekday="FR",
+    )
+
+    occurrences = event.get_occurrences_in_range(
+        datetime.datetime(2026, 6, 12, 19, 30, tzinfo=datetime.UTC),
+        datetime.datetime(2026, 6, 12, 20, 0, tzinfo=datetime.UTC),
+        include_self=False,
+        overlap=True,
+    )
+
+    assert len(occurrences) >= 1
+    assert occurrences[0].start_time == datetime.datetime(2026, 6, 12, 12, 0, tzinfo=datetime.UTC)
+    assert occurrences[0].end_time == datetime.datetime(2026, 6, 12, 20, 0, tzinfo=datetime.UTC)
+
+
+@pytest.mark.django_db
+def test_get_blocked_times_expanded_includes_block_containing_range(organization, calendar):
+    """A non-recurring blocked time fully containing the query range must be returned.
+
+    Same overlap bug as the availability path; here a missed block would allow a
+    double-booking inside an existing block.
+    """
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    service.create_blocked_time(
+        calendar=calendar,
+        start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 1, 17, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        reason="All day block",
+    )
+
+    expanded = service.get_blocked_times_expanded(
+        calendar=calendar,
+        start_date=datetime.datetime(2025, 9, 1, 12, 0, tzinfo=datetime.UTC),
+        end_date=datetime.datetime(2025, 9, 1, 12, 30, tzinfo=datetime.UTC),
+    )
+
+    assert len(expanded) == 1
+    assert expanded[0].start_time == datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC)
 
 
 @pytest.mark.django_db
@@ -8312,3 +8901,277 @@ class TestCalendarServicePermissionScenarios:
 
                 assert set(calendar_permissions) == set(DEFAULT_CALENDAR_OWNER_PERMISSIONS)
                 assert set(event_permissions) == set(DEFAULT_ATTENDEE_PERMISSIONS)
+
+
+@pytest.mark.django_db
+def test_get_availability_windows_subtracts_busy_for_managed_calendar(organization):
+    """Managed-calendar availability nets out events/blocked times.
+
+    A declared window 09:00-17:00 with a blocked time 12:00-13:00 inside it must
+    return two free windows (09:00-12:00, 13:00-17:00), not the raw declared window.
+    """
+    calendar = Calendar.objects.create(
+        name="Managed Calendar",
+        external_id="managed-net-1",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.PERSONAL,
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    start = datetime.datetime(2024, 1, 1, 0, 0, tzinfo=datetime.UTC)
+    end = datetime.datetime(2024, 1, 2, 0, 0, tzinfo=datetime.UTC)
+
+    service.create_available_time(
+        calendar=calendar,
+        start_time=datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2024, 1, 1, 17, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+    )
+    service.create_blocked_time(
+        calendar=calendar,
+        reason="busy",
+        start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2024, 1, 1, 13, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+    )
+
+    windows = sorted(
+        service.get_availability_windows_in_range(calendar, start, end),
+        key=lambda w: w.start_time,
+    )
+
+    spans = [(w.start_time, w.end_time) for w in windows]
+    assert spans == [
+        (
+            datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),
+        ),
+        (
+            datetime.datetime(2024, 1, 1, 13, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2024, 1, 1, 17, 0, tzinfo=datetime.UTC),
+        ),
+    ]
+    # Each window carries the declared window's timezone for local rendering.
+    assert all(w.timezone == "UTC" for w in windows)
+
+
+def test_available_time_window_serializer_renders_local_timezone():
+    """The window serializer emits start/end in the window's timezone, not UTC."""
+    from calendar_integration.serializers import AvailableTimeWindowSerializer
+
+    window = AvailableTimeWindow(
+        start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),  # 09:00 Recife
+        end_time=datetime.datetime(2024, 1, 1, 20, 0, tzinfo=datetime.UTC),  # 17:00 Recife
+        id=1,
+        can_book_partially=False,
+        timezone="America/Recife",  # UTC-3, no DST
+    )
+
+    data = AvailableTimeWindowSerializer(window).data
+
+    assert data["start_time"] == "2024-01-01T09:00:00-03:00"
+    assert data["end_time"] == "2024-01-01T17:00:00-03:00"
+
+
+@pytest.mark.django_db
+def test_create_instance_from_occurrence_preserves_instant(organization, db):
+    """Materializing an occurrence keeps the true instant (no tz re-attach shift).
+
+    Regression: create_instance_from_occurrence did `occurrence_start.replace(tzinfo=tz)`,
+    turning the correct 12:00Z (09:00 America/Recife) into 15:00Z. The instant from the
+    recurrence calc must be preserved; only tz_unaware holds the local wall-clock.
+    """
+    calendar = Calendar.objects.create(
+        name="Recife Calendar",
+        external_id="recife-occ",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.PERSONAL,
+        organization=organization,
+        manage_available_windows=True,
+    )
+    master = AvailableTime(
+        calendar=calendar,
+        organization=organization,
+        timezone="America/Recife",  # UTC-3, no DST
+        start_time_tz_unaware=datetime.datetime(2024, 1, 1, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2024, 1, 1, 17, 0),
+    )
+
+    occ_start = datetime.datetime(2024, 1, 8, 12, 0, tzinfo=datetime.UTC)  # 09:00 Recife
+    occ_end = datetime.datetime(2024, 1, 8, 20, 0, tzinfo=datetime.UTC)  # 17:00 Recife
+    instance = master.create_instance_from_occurrence(occ_start, occ_end)
+
+    # Instant preserved (not shifted to 15:00Z).
+    assert instance.start_time == occ_start
+    assert instance.end_time == occ_end
+    # tz_unaware holds the local wall-clock (09:00 / 17:00), naive.
+    assert instance.start_time_tz_unaware == datetime.datetime(2024, 1, 8, 9, 0)
+    assert instance.end_time_tz_unaware == datetime.datetime(2024, 1, 8, 17, 0)
+
+
+@pytest.mark.django_db
+def test_recurring_availability_windows_keep_local_time(organization):
+    """A weekly 09:00-17:00 Recife availability yields 09:00 Recife windows every week.
+
+    Exercises the occurrence-materialization path (weeks beyond the master) end to end.
+    """
+    from zoneinfo import ZoneInfo
+
+    from calendar_integration.serializers import AvailableTimeWindowSerializer
+
+    recife = ZoneInfo("America/Recife")
+    calendar = Calendar.objects.create(
+        name="Recife Calendar",
+        external_id="recife-1",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.PERSONAL,
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    # 09:00 Recife == 12:00Z; weekly.
+    service.create_available_time(
+        calendar=calendar,
+        start_time=datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2024, 1, 1, 17, 0, tzinfo=datetime.UTC),
+        timezone="America/Recife",
+        rrule_string="FREQ=WEEKLY",
+    )
+
+    start = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
+    end = datetime.datetime(2024, 1, 31, tzinfo=datetime.UTC)
+    windows = list(service.get_availability_windows_in_range(calendar, start, end))
+
+    assert len(windows) >= 4  # several weekly occurrences in January
+    for window in windows:
+        # Every occurrence is 09:00-17:00 in Recife, regardless of week.
+        assert window.start_time.astimezone(recife).hour == 9
+        assert window.end_time.astimezone(recife).hour == 17
+        data = AvailableTimeWindowSerializer(window).data
+        assert data["start_time"].endswith("09:00:00-03:00")
+        assert data["end_time"].endswith("17:00:00-03:00")
+
+
+def test_unavailable_time_window_serializer_renders_local_timezone():
+    """Unavailable windows render in the underlying record's timezone, not UTC."""
+    from calendar_integration.serializers import UnavailableTimeWindowSerializer
+    from calendar_integration.services.dataclasses import BlockedTimeData
+
+    window = UnavailableTimeWindow(
+        start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),  # 09:00 Recife
+        end_time=datetime.datetime(2024, 1, 1, 20, 0, tzinfo=datetime.UTC),  # 17:00 Recife
+        reason="blocked_time",
+        id=1,
+        data=BlockedTimeData(
+            id=1,
+            calendar_external_id="cal",
+            start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2024, 1, 1, 20, 0, tzinfo=datetime.UTC),
+            timezone="America/Recife",  # UTC-3, no DST
+            reason="busy",
+            external_id=None,
+            meta={},
+        ),
+    )
+
+    data = UnavailableTimeWindowSerializer(window).data
+
+    assert data["start_time"] == "2024-01-01T09:00:00-03:00"
+    assert data["end_time"] == "2024-01-01T17:00:00-03:00"
+
+
+def test_convert_naive_utc_datetime_to_timezone_returns_local_wall_clock():
+    """The instant becomes the tz's local wall-clock, tagged UTC for clean storage."""
+    service = CalendarService()
+
+    # aware instant 12:00Z -> 09:00 local in Recife (UTC-3), tagged UTC for storage
+    out = service.convert_naive_utc_datetime_to_timezone(
+        datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC), "America/Recife"
+    )
+    assert out == datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC)
+    # the original-offset form of the same instant yields the same wall-clock
+    out_offset = service.convert_naive_utc_datetime_to_timezone(
+        datetime.datetime(2024, 1, 1, 9, 0, tzinfo=zoneinfo.ZoneInfo("America/Recife")),
+        "America/Recife",
+    )
+    assert out_offset == datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC)
+    # naive input is treated as UTC
+    out_naive = service.convert_naive_utc_datetime_to_timezone(
+        datetime.datetime(2024, 1, 1, 12, 0), "America/Recife"
+    )
+    assert out_naive == datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC)
+    # UTC target leaves the wall-clock unchanged
+    out_utc = service.convert_naive_utc_datetime_to_timezone(
+        datetime.datetime(2024, 1, 1, 10, 0, tzinfo=datetime.UTC), "UTC"
+    )
+    assert out_utc == datetime.datetime(2024, 1, 1, 10, 0, tzinfo=datetime.UTC)
+
+
+@pytest.mark.django_db
+def test_sync_new_blocked_time_stores_correct_instant(organization):
+    """A synced external event at 09:00 Recife is stored as the 12:00Z instant.
+
+    Regression: convert_naive_utc_datetime_to_timezone re-tagged the wall-clock,
+    storing tz_unaware as the instant and shifting the generated start_time +3h
+    (BlockedTimes landed 3h later than in the source calendar).
+    """
+    calendar = Calendar.objects.create(
+        name="Recife Calendar",
+        external_id="recife-sync",
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.PERSONAL,
+        organization=organization,
+    )
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    event = CalendarEventAdapterOutputData(
+        calendar_external_id="recife-sync",
+        external_id="ext-1",
+        title="Busy",
+        description="",
+        start_time=datetime.datetime(2024, 1, 1, 9, 0, tzinfo=zoneinfo.ZoneInfo("America/Recife")),
+        end_time=datetime.datetime(2024, 1, 1, 10, 0, tzinfo=zoneinfo.ZoneInfo("America/Recife")),
+        timezone="America/Recife",
+        attendees=[],
+    )
+
+    changes = EventsSyncChanges()
+    service._process_new_event(event, calendar, changes)
+    BlockedTime.objects.bulk_create(changes.blocked_times_to_create)
+
+    blocked = BlockedTime.objects.filter_by_organization(organization.id).get()
+    # 09:00 America/Recife == 12:00Z; must NOT be 15:00Z.
+    assert blocked.start_time == datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC)
+    assert blocked.end_time == datetime.datetime(2024, 1, 1, 13, 0, tzinfo=datetime.UTC)
+    assert blocked.timezone == "America/Recife"
+
+
+def test_subtract_busy_intervals_unit():
+    """_subtract_busy_intervals handles overlap, multiple busy, and full coverage."""
+    ws = datetime.datetime(2024, 1, 1, 9, 0, tzinfo=datetime.UTC)
+    we = datetime.datetime(2024, 1, 1, 17, 0, tzinfo=datetime.UTC)
+
+    def at(h):
+        return datetime.datetime(2024, 1, 1, h, 0, tzinfo=datetime.UTC)
+
+    # no busy -> whole window
+    assert CalendarService._subtract_busy_intervals(ws, we, []) == [(ws, we)]
+    # one busy in the middle -> two pieces
+    assert CalendarService._subtract_busy_intervals(ws, we, [(at(12), at(13))]) == [
+        (ws, at(12)),
+        (at(13), we),
+    ]
+    # overlapping/adjacent busy merge; busy beyond window is clipped
+    assert CalendarService._subtract_busy_intervals(
+        ws, we, [(at(11), at(13)), (at(12), at(14)), (at(16), at(20))]
+    ) == [(ws, at(11)), (at(14), at(16))]
+    # fully covered -> empty
+    assert CalendarService._subtract_busy_intervals(ws, we, [(at(8), at(18))]) == []

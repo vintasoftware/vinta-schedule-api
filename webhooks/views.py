@@ -7,6 +7,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from common.utils.view_utils import ReadOnlyVintaScheduleModelViewSet, VintaScheduleModelViewSet
+from organizations.models import get_active_organization_membership
 from webhooks.constants import WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
 from webhooks.serializers import WebhookConfigurationSerializer, WebhookEventSerializer
@@ -25,9 +26,10 @@ class WebhookConfigurationViewSet(VintaScheduleModelViewSet):
     def get_queryset(self):
         """Filter configurations by current user's organization and exclude deleted ones."""
         user = self.request.user
-        if hasattr(user, "organization_membership"):
+        membership = get_active_organization_membership(user)
+        if membership:
             return self.queryset.filter(
-                organization=user.organization_membership.organization, deleted_at__isnull=True
+                organization=membership.organization, deleted_at__isnull=True
             )
         return WebhookConfiguration.original_manager.none()
 
@@ -66,9 +68,10 @@ class WebhookEventViewSet(ReadOnlyVintaScheduleModelViewSet):
     def get_queryset(self):
         """Filter events by current user's organization."""
         user = self.request.user
-        if hasattr(user, "organization_membership"):
+        membership = get_active_organization_membership(user)
+        if membership:
             return (
-                self.queryset.filter(organization=user.organization_membership.organization)
+                self.queryset.filter(organization=membership.organization)
                 .select_related("configuration", "main_event")
                 .order_by("-created")
             )

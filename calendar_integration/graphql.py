@@ -36,6 +36,7 @@ class CalendarGraphQLType:
     calendar_type: strawberry.auto
     capacity: strawberry.auto
     manage_available_windows: strawberry.auto
+    sync_enabled: strawberry.auto
     created: datetime.datetime
     modified: datetime.datetime
 

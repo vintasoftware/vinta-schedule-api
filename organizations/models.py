@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from django.conf import settings
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
 from django.db import models
@@ -5,6 +9,33 @@ from django.db import models
 from common.fields import TenantSafeForeignKey, TenantSafeOneToOneField
 from common.models import BaseModel
 from organizations.managers import BaseOrganizationModelManager
+
+
+if TYPE_CHECKING:
+    from users.models import User
+
+
+def get_active_organization_membership(
+    user: User | None,
+) -> OrganizationMembership | None:
+    """Return the user's OrganizationMembership only if it is active, else None.
+
+    This is the canonical helper for all tenant-access gates. Call it wherever
+    a view, permission, or serializer needs to resolve an active membership:
+
+        membership = get_active_organization_membership(request.user)
+        if not membership:
+            return <empty queryset / clean denial>
+
+    An inactive membership (is_active=False) is treated identically to a missing
+    membership — no tenant access, no 500. An active membership returns normally.
+    """
+    membership = getattr(user, "organization_membership", None)
+    if membership is None:
+        return None
+    if not membership.is_active:
+        return None
+    return membership
 
 
 class OrganizationTier(BaseModel):
@@ -131,6 +162,18 @@ class OrganizationMembership(BaseModel):
             "Role the user holds in this organization. Admins can manage "
             "organization-scoped resources (e.g. CalendarGroups) regardless of "
             "direct ownership."
+        ),
+    )
+    is_active = models.BooleanField(
+        default=True,
+        db_default=True,
+        db_index=True,
+        help_text=(
+            "Whether this membership is active. Inactive memberships are treated as "
+            "gated: the user still has a row but loses all tenant-scoped access until "
+            "reactivated. Use this to disable a user without deleting their membership "
+            "record (which would lose role/history). Default True keeps every existing "
+            "read unchanged."
         ),
     )
 

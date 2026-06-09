@@ -7,13 +7,15 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from encrypted_fields.fields import EncryptedCharField  # type:ignore
+from encrypted_fields.fields import EncryptedCharField, EncryptedTextField  # type:ignore
 
 from calendar_integration.constants import (
     CalendarOrganizationResourceImportStatus,
     CalendarProvider,
     CalendarSyncStatus,
+    CalendarSyncTriggerSource,
     CalendarType,
+    CalendarVisibility,
     EventManagementPermissions,
     IncomingWebhookProcessingStatus,
     RecurrenceFrequency,
@@ -42,6 +44,24 @@ from users.models import User
 
 if TYPE_CHECKING:
     from django_stubs_ext.db.models.manager import RelatedManager
+
+
+def _normalize_occurrence_instants(
+    occurrence_start_time: datetime.datetime,
+    occurrence_end_time: datetime.datetime,
+) -> tuple[datetime.datetime, datetime.datetime]:
+    """Normalize recurrence-occurrence datetimes to timezone-aware UTC instants.
+
+    The recurrence calc derives occurrences from the model's ``start_time`` (a true
+    UTC instant). Postgres may hand them back naive; treat naive values as UTC so the
+    instant is preserved. Crucially this never re-attaches the local timezone to the
+    wall-clock, which would shift the instant by the zone's offset.
+    """
+    if occurrence_start_time.tzinfo is None:
+        occurrence_start_time = occurrence_start_time.replace(tzinfo=datetime.UTC)
+    if occurrence_end_time.tzinfo is None:
+        occurrence_end_time = occurrence_end_time.replace(tzinfo=datetime.UTC)
+    return occurrence_start_time, occurrence_end_time
 
 
 class Calendar(OrganizationModel):
@@ -88,6 +108,34 @@ class Calendar(OrganizationModel):
         default=False,
         help_text=(
             "If true, this event can be scheduled by external users through public scheduling links."
+        ),
+    )
+    visibility = models.CharField(
+        max_length=20,
+        choices=CalendarVisibility,
+        default=CalendarVisibility.ACTIVE,
+        db_default=CalendarVisibility.ACTIVE,
+        db_index=True,
+        help_text=(
+            "Controls how this calendar appears in queries. "
+            "active: listed and available for booking (default). "
+            "unlisted: hidden from listing/booking queries but still synced for conflict detection; "
+            "survives re-import so user opt-out is preserved. "
+            "inactive: soft-deleted, hidden from all queries and not synced. "
+            "Use DELETE /calendars/{id}/ to transition to inactive instead of hard-deleting."
+        ),
+    )
+    sync_enabled = models.BooleanField(
+        default=True,
+        db_default=True,
+        db_index=True,
+        help_text=(
+            "Whether this calendar's events are pulled from the external provider. Set to "
+            "False to skip syncing calendars that aren't useful for scheduling — holidays, "
+            "birthdays, organization-wide events, etc. When False, no new CalendarSync is "
+            "requested for this calendar (including webhook- and import-triggered syncs); "
+            "previously synced events are left untouched. Default True keeps existing "
+            "calendars syncing as before."
         ),
     )
 
@@ -702,6 +750,7 @@ class RecurringMixin(OrganizationModel):
         include_self=True,
         include_exceptions=True,
         max_occurrences=10000,
+        overlap=False,
     ) -> list[Self]:
         """Get occurrences of this recurring available time in a date range."""
         if not self.is_recurring:
@@ -712,7 +761,7 @@ class RecurringMixin(OrganizationModel):
         else:
             occurrences = (
                 self.__class__.objects.annotate_recurring_occurrences_on_date_range(  # type: ignore
-                    start_date, end_date, max_occurrences
+                    start_date, end_date, max_occurrences, overlap=overlap
                 )
                 .filter(organization_id=self.organization_id, id=self.pk)
                 .values_list("recurring_occurrences", flat=True)
@@ -771,6 +820,7 @@ class RecurringMixin(OrganizationModel):
         include_self=True,
         include_exceptions=True,
         max_occurrences=10000,
+        overlap=False,
     ) -> list[Self]:
         raise NotImplementedError("Subclasses must implement get_occurrences_in_range")
 
@@ -790,7 +840,10 @@ class RecurringMixin(OrganizationModel):
         after_date = after_date or timezone.now()
 
         try:
-            # Add microsecond to ensure we get occurrences strictly after the given date
+            # Add microsecond to ensure we get occurrences strictly after the given date.
+            # overlap=False (default) means start-in-range semantics — only occurrences
+            # whose start_time falls within the search window, so this returns exactly
+            # the next occurrence without including the current in-progress one.
             search_start_date = after_date + datetime.timedelta(microseconds=1)
 
             # Use rule's until date if specified, otherwise use a reasonable future date
@@ -809,6 +862,7 @@ class RecurringMixin(OrganizationModel):
                 include_self=False,
                 include_exceptions=False,
                 max_occurrences=1,
+                overlap=False,
             )
 
             if not future_occurrences:
@@ -1058,6 +1112,7 @@ class CalendarEvent(RecurringMixin):
         include_self=True,
         include_exceptions=True,
         max_occurrences=10000,
+        overlap=False,
     ) -> list[Self]:
         return self._get_occurrences_in_range(
             modified_instance_id_field_name="modified_event_id",
@@ -1066,19 +1121,23 @@ class CalendarEvent(RecurringMixin):
             include_self=include_self,
             include_exceptions=include_exceptions,
             max_occurrences=max_occurrences,
+            overlap=overlap,
         )
 
     def create_instance_from_occurrence(self, occurrence_start_time, occurrence_end_time):
-        tz = zoneinfo.ZoneInfo(self.timezone)  # Validate timezone
+        occurrence_start_time, occurrence_end_time = _normalize_occurrence_instants(
+            occurrence_start_time, occurrence_end_time
+        )
+        tz = zoneinfo.ZoneInfo(self.timezone)
         return self.__class__(
             calendar_fk=self.calendar,
             organization=self.organization,
             title=self.title,
             description=self.description,
-            start_time_tz_unaware=occurrence_start_time,
-            end_time_tz_unaware=occurrence_end_time,
-            start_time=occurrence_start_time.replace(tzinfo=tz),
-            end_time=occurrence_end_time.replace(tzinfo=tz),
+            start_time_tz_unaware=occurrence_start_time.astimezone(tz).replace(tzinfo=None),
+            end_time_tz_unaware=occurrence_end_time.astimezone(tz).replace(tzinfo=None),
+            start_time=occurrence_start_time,
+            end_time=occurrence_end_time,
             timezone=self.timezone,
             recurrence_rule_fk=self.recurrence_rule,
             recurrence_id=occurrence_start_time,
@@ -1243,6 +1302,7 @@ class BlockedTime(RecurringMixin):
         include_self=True,
         include_exceptions=True,
         max_occurrences=10000,
+        overlap=False,
     ) -> list[Self]:
         return self._get_occurrences_in_range(
             modified_instance_id_field_name="modified_blocked_time_id",
@@ -1251,18 +1311,22 @@ class BlockedTime(RecurringMixin):
             include_self=include_self,
             include_exceptions=include_exceptions,
             max_occurrences=max_occurrences,
+            overlap=overlap,
         )
 
     def create_instance_from_occurrence(self, occurrence_start_time, occurrence_end_time):
+        occurrence_start_time, occurrence_end_time = _normalize_occurrence_instants(
+            occurrence_start_time, occurrence_end_time
+        )
         tz = zoneinfo.ZoneInfo(self.timezone)
         return self.__class__(
             calendar_fk=self.calendar,
             organization=self.organization,
             reason=self.reason,
-            start_time_tz_unaware=occurrence_start_time,
-            end_time_tz_unaware=occurrence_end_time,
-            start_time=occurrence_start_time.replace(tzinfo=tz),
-            end_time=occurrence_end_time.replace(tzinfo=tz),
+            start_time_tz_unaware=occurrence_start_time.astimezone(tz).replace(tzinfo=None),
+            end_time_tz_unaware=occurrence_end_time.astimezone(tz).replace(tzinfo=None),
+            start_time=occurrence_start_time,
+            end_time=occurrence_end_time,
             timezone=self.timezone,
             recurrence_rule_fk=self.recurrence_rule,
             recurrence_id=occurrence_start_time,
@@ -1304,6 +1368,7 @@ class AvailableTime(RecurringMixin):
         include_self=True,
         include_exceptions=True,
         max_occurrences=10000,
+        overlap=False,
     ) -> list[Self]:
         return self._get_occurrences_in_range(
             modified_instance_id_field_name="modified_available_time_id",
@@ -1312,17 +1377,21 @@ class AvailableTime(RecurringMixin):
             include_self=include_self,
             include_exceptions=include_exceptions,
             max_occurrences=max_occurrences,
+            overlap=overlap,
         )
 
     def create_instance_from_occurrence(self, occurrence_start_time, occurrence_end_time):
+        occurrence_start_time, occurrence_end_time = _normalize_occurrence_instants(
+            occurrence_start_time, occurrence_end_time
+        )
         tz = zoneinfo.ZoneInfo(self.timezone)
         return self.__class__(
             calendar_fk=self.calendar,
             organization=self.organization,
-            start_time_tz_unaware=occurrence_start_time,
-            end_time_tz_unaware=occurrence_end_time,
-            start_time=occurrence_start_time.replace(tzinfo=tz),
-            end_time=occurrence_end_time.replace(tzinfo=tz),
+            start_time_tz_unaware=occurrence_start_time.astimezone(tz).replace(tzinfo=None),
+            end_time_tz_unaware=occurrence_end_time.astimezone(tz).replace(tzinfo=None),
+            start_time=occurrence_start_time,
+            end_time=occurrence_end_time,
             timezone=self.timezone,
             recurrence_rule_fk=self.recurrence_rule,
             recurrence_id=occurrence_start_time,
@@ -1500,6 +1569,12 @@ class CalendarSync(OrganizationModel):
         choices=CalendarSyncStatus,
         default=CalendarSyncStatus.NOT_STARTED,
     )
+    trigger_source = models.CharField(
+        max_length=20,
+        choices=CalendarSyncTriggerSource,
+        default=CalendarSyncTriggerSource.MANUAL,
+        help_text="What kicked off this sync: import, manual, webhook, or admin.",
+    )
     error_message = models.TextField(blank=True)
 
     objects: CalendarSyncManager = CalendarSyncManager()
@@ -1539,10 +1614,10 @@ class GoogleCalendarServiceAccount(OrganizationModel):
         related_name="google_service_accounts",
     )
     email = models.EmailField()
-    audience = models.CharField(max_length=255)
+    audience = models.CharField(max_length=255, blank=True)
     public_key = models.TextField()
     private_key_id = EncryptedCharField(max_length=255)
-    private_key = EncryptedCharField(max_length=255)
+    private_key = EncryptedTextField()
 
     def __str__(self):
         return f"Service Account for {self.calendar} ({self.email})"

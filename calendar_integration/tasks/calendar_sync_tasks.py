@@ -21,6 +21,7 @@ def import_account_calendars_task(
     account_id: int,
     organization_id: int,
     calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
+    sync_after_import: bool = True,
 ):
     """
     Celery task to import calendars for a given account.
@@ -48,7 +49,7 @@ def import_account_calendars_task(
     if not account:
         return
     calendar_service.authenticate(account=account, organization=organization)
-    calendar_service.import_account_calendars()
+    calendar_service.import_account_calendars(sync_after_import=sync_after_import)
 
 
 @app.task

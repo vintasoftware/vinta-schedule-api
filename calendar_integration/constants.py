@@ -29,6 +29,13 @@ class CalendarSyncStatus(TextChoices):
     NOT_STARTED = "not_started", "Not Started"
 
 
+class CalendarSyncTriggerSource(TextChoices):
+    IMPORT = "import", "Import"
+    MANUAL = "manual", "Manual"
+    WEBHOOK = "webhook", "Webhook"
+    ADMIN = "admin", "Admin"
+
+
 class CalendarOrganizationResourceImportStatus(TextChoices):
     SUCCESS = "success", "Success"
     FAILED = "failed", "Failed"
@@ -60,6 +67,12 @@ class EventManagementPermissions(TextChoices):
     UPDATE_DETAILS = "update_details", "Update Event Details"
     CANCEL = "cancel", "Cancel Event"
     RESCHEDULE = "reschedule", "Reschedule Event"
+
+
+class CalendarVisibility(TextChoices):
+    ACTIVE = "active", "Active"
+    UNLISTED = "unlisted", "Unlisted"
+    INACTIVE = "inactive", "Inactive"
 
 
 class IncomingWebhookProcessingStatus(TextChoices):

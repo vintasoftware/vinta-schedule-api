@@ -555,11 +555,14 @@ paths:
           description: ''
         '204':
           description: No response body
-  /available-times/bulk-create/:
+  /available-times/batch/:
     post:
-      operationId: available_times_bulk_create_create
-      description: Create multiple available times.
-      summary: Create bulk available times
+      operationId: available_times_batch_create
+      description: Apply a list of create/update/delete operations to a single calendar's
+        available times in one transaction (all-or-nothing). The calendar defaults
+        to the user's default calendar when omitted. Returns the calendar's available
+        times after the batch.
+      summary: Batch create/update/delete available times
       parameters:
       - in: query
         name: end_time
@@ -591,29 +594,32 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/BulkAvailableTime'
+              $ref: '#/components/schemas/AvailableTimeBatch'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/BulkAvailableTime'
+              $ref: '#/components/schemas/AvailableTimeBatch'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/BulkAvailableTime'
+              $ref: '#/components/schemas/AvailableTimeBatch'
         required: true
       security:
       - jwtAuth: []
       - cookieAuth: []
       responses:
-        '201':
+        '200':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/PaginatedAvailableTimeList'
           description: ''
-  /available-times/bulk-create{format}:
+  /available-times/batch{format}:
     post:
-      operationId: available_times_bulk_create_formatted_create
-      description: Create multiple available times.
-      summary: Create bulk available times
+      operationId: available_times_batch_formatted_create
+      description: Apply a list of create/update/delete operations to a single calendar's
+        available times in one transaction (all-or-nothing). The calendar defaults
+        to the user's default calendar when omitted. Returns the calendar's available
+        times after the batch.
+      summary: Batch create/update/delete available times
       parameters:
       - in: query
         name: end_time
@@ -652,19 +658,19 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/BulkAvailableTime'
+              $ref: '#/components/schemas/AvailableTimeBatch'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/BulkAvailableTime'
+              $ref: '#/components/schemas/AvailableTimeBatch'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/BulkAvailableTime'
+              $ref: '#/components/schemas/AvailableTimeBatch'
         required: true
       security:
       - jwtAuth: []
       - cookieAuth: []
       responses:
-        '201':
+        '200':
           content:
             application/json:
               schema:
@@ -1862,7 +1868,21 @@ paths:
     get:
       operationId: calendar_list
       description: ViewSet for managing calendars.
+      summary: List calendars
       parameters:
+      - in: query
+        name: include_inactive
+        schema:
+          type: boolean
+        description: When true, include inactive (soft-deleted) calendars (visibility=inactive).
+          Defaults to false.
+      - in: query
+        name: include_unlisted
+        schema:
+          type: boolean
+        description: When true, include unlisted calendars (visibility=unlisted) in
+          the response. Unlisted calendars are hidden from booking queries but still
+          synced. Defaults to false.
       - name: limit
         required: false
         in: query
@@ -1918,6 +1938,7 @@ paths:
     get:
       operationId: calendar_formatted_list
       description: ViewSet for managing calendars.
+      summary: List calendars
       parameters:
       - in: path
         name: format
@@ -1926,6 +1947,19 @@ paths:
           enum:
           - .json
         required: true
+      - in: query
+        name: include_inactive
+        schema:
+          type: boolean
+        description: When true, include inactive (soft-deleted) calendars (visibility=inactive).
+          Defaults to false.
+      - in: query
+        name: include_unlisted
+        schema:
+          type: boolean
+        description: When true, include unlisted calendars (visibility=unlisted) in
+          the response. Unlisted calendars are hidden from booking queries but still
+          synced. Defaults to false.
       - name: limit
         required: false
         in: query
@@ -2606,6 +2640,260 @@ paths:
           description: ''
         '204':
           description: No response body
+  /calendar-events/{id}/transfer/:
+    post:
+      operationId: calendar_events_transfer_create
+      description: Move an event from its current calendar to a target calendar within
+        the same organization. The service authenticates with the SOURCE calendar
+        owner's credentials to read and delete the event from the provider. Admin
+        only.
+      summary: Transfer event to another calendar (admin)
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+  /calendar-events/{id}/transfer{format}:
+    post:
+      operationId: calendar_events_transfer_formatted_create
+      description: Move an event from its current calendar to a target calendar within
+        the same organization. The service authenticates with the SOURCE calendar
+        owner's credentials to read and delete the event from the provider. Admin
+        only.
+      summary: Transfer event to another calendar (admin)
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+  /calendar-events/expanded/:
+    get:
+      operationId: calendar_events_expanded_list
+      description: Get expanded calendar events including materialized recurring instances.
+      summary: Get expanded calendar events
+      parameters:
+      - in: query
+        name: calendar
+        schema:
+          type: number
+        description: Filter by calendar ID
+      - in: query
+        name: calendar_id
+        schema:
+          type: integer
+        description: Calendar ID to get events for
+        required: true
+      - in: query
+        name: end_time
+        schema:
+          type: string
+        description: End datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: end_time_range_after
+        schema:
+          type: string
+          format: date-time
+        description: End time range
+      - in: query
+        name: end_time_range_before
+        schema:
+          type: string
+          format: date-time
+        description: End time range
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+        description: Start datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: start_time_range_after
+        schema:
+          type: string
+          format: date-time
+        description: Start time range
+      - in: query
+        name: start_time_range_before
+        schema:
+          type: string
+          format: date-time
+        description: Start time range
+      - in: query
+        name: title
+        schema:
+          type: string
+        description: Filter by partial title match
+      tags:
+      - calendar-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarEventList'
+          description: ''
+  /calendar-events/expanded{format}:
+    get:
+      operationId: calendar_events_expanded_formatted_list
+      description: Get expanded calendar events including materialized recurring instances.
+      summary: Get expanded calendar events
+      parameters:
+      - in: query
+        name: calendar
+        schema:
+          type: number
+        description: Filter by calendar ID
+      - in: query
+        name: calendar_id
+        schema:
+          type: integer
+        description: Calendar ID to get events for
+        required: true
+      - in: query
+        name: end_time
+        schema:
+          type: string
+        description: End datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: end_time_range_after
+        schema:
+          type: string
+          format: date-time
+        description: End time range
+      - in: query
+        name: end_time_range_before
+        schema:
+          type: string
+          format: date-time
+        description: End time range
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+        description: Start datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: start_time_range_after
+        schema:
+          type: string
+          format: date-time
+        description: Start time range
+      - in: query
+        name: start_time_range_before
+        schema:
+          type: string
+          format: date-time
+        description: Start time range
+      - in: query
+        name: title
+        schema:
+          type: string
+        description: Filter by partial title match
+      tags:
+      - calendar-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarEventList'
+          description: ''
   /calendar-groups/:
     get:
       operationId: calendar_groups_list
@@ -3502,7 +3790,16 @@ paths:
           description: ''
     delete:
       operationId: calendar_destroy
-      description: ViewSet for managing calendars.
+      description: "Disables a calendar by setting visibility=inactive instead of
+        deleting the row. The row persists and is hidden from default list/detail
+        queries. \n\n**Authorization rules (enforced after org-scoping):**\n- BUNDLE
+        calendar: caller must be an org admin. Non-admin members receive 403.\n- Non-bundle
+        calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership)
+        or be an org admin. Non-owner non-admins receive 403.\n\n\n**Bundle semantics:**
+        disabling a bundle sets only the bundle calendar inactive. Child calendars,
+        bundle events, and their representation BlockedTimes/events are deliberately
+        left untouched (event cancellation is out of scope; see plan Phase 11)."
+      summary: Soft-disable a calendar
       parameters:
       - in: path
         name: id
@@ -3627,7 +3924,16 @@ paths:
           description: ''
     delete:
       operationId: calendar_formatted_destroy
-      description: ViewSet for managing calendars.
+      description: "Disables a calendar by setting visibility=inactive instead of
+        deleting the row. The row persists and is hidden from default list/detail
+        queries. \n\n**Authorization rules (enforced after org-scoping):**\n- BUNDLE
+        calendar: caller must be an org admin. Non-admin members receive 403.\n- Non-bundle
+        calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership)
+        or be an org admin. Non-owner non-admins receive 403.\n\n\n**Bundle semantics:**
+        disabling a bundle sets only the bundle calendar inactive. Child calendars,
+        bundle events, and their representation BlockedTimes/events are deliberately
+        left untouched (event cancellation is out of scope; see plan Phase 11)."
+      summary: Soft-disable a calendar
       parameters:
       - in: path
         name: format
@@ -3649,6 +3955,87 @@ paths:
       responses:
         '204':
           description: No response body
+  /calendar/{id}/admin-sync/:
+    post:
+      operationId: calendar_admin_sync_create
+      description: Admin syncs any calendar in the organization over a date range.
+      summary: Admin syncs another user's calendar
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarSync'
+          description: ''
+        '409':
+          description: Sync is disabled for this calendar.
+  /calendar/{id}/admin-sync{format}:
+    post:
+      operationId: calendar_admin_sync_formatted_create
+      description: Admin syncs any calendar in the organization over a date range.
+      summary: Admin syncs another user's calendar
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarSync'
+          description: ''
+        '409':
+          description: Sync is disabled for this calendar.
   /calendar/{id}/available-windows/:
     get:
       operationId: calendar_available_windows_list
@@ -3667,18 +4054,6 @@ paths:
         schema:
           type: string
         required: true
-      - name: limit
-        required: false
-        in: query
-        description: Number of results to return per page.
-        schema:
-          type: integer
-      - name: offset
-        required: false
-        in: query
-        description: The initial index from which to return the results.
-        schema:
-          type: integer
       - in: query
         name: start_datetime
         schema:
@@ -3695,7 +4070,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaginatedAvailableTimeWindowList'
+                type: array
+                items:
+                  $ref: '#/components/schemas/AvailableTimeWindow'
           description: ''
   /calendar/{id}/available-windows{format}:
     get:
@@ -3722,18 +4099,6 @@ paths:
         schema:
           type: string
         required: true
-      - name: limit
-        required: false
-        in: query
-        description: Number of results to return per page.
-        schema:
-          type: integer
-      - name: offset
-        required: false
-        in: query
-        description: The initial index from which to return the results.
-        schema:
-          type: integer
       - in: query
         name: start_datetime
         schema:
@@ -3750,8 +4115,174 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaginatedAvailableTimeWindowList'
+                type: array
+                items:
+                  $ref: '#/components/schemas/AvailableTimeWindow'
           description: ''
+  /calendar/{id}/bundle/:
+    patch:
+      operationId: calendar_bundle_partial_update
+      description: Reconcile the child calendars and primary designation for an existing
+        bundle. Provide the full desired set of bundle_calendars; children not in
+        the list will be removed and new ones will be added. Optionally specify primary_calendar
+        (must be one of bundle_calendars). Admin only. Returns the updated bundle
+        calendar.
+      summary: Update a bundle calendar's children and primary
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+  /calendar/{id}/bundle{format}:
+    patch:
+      operationId: calendar_bundle_formatted_partial_update
+      description: Reconcile the child calendars and primary designation for an existing
+        bundle. Provide the full desired set of bundle_calendars; children not in
+        the list will be removed and new ones will be added. Optionally specify primary_calendar
+        (must be one of bundle_calendars). Admin only. Returns the updated bundle
+        calendar.
+      summary: Update a bundle calendar's children and primary
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+  /calendar/{id}/request-sync/:
+    post:
+      operationId: calendar_request_sync_create
+      description: Request synchronization of an owned calendar over a date range.
+      summary: Request calendar sync
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarSync'
+          description: ''
+        '409':
+          description: Sync is disabled for this calendar.
+  /calendar/{id}/request-sync{format}:
+    post:
+      operationId: calendar_request_sync_formatted_create
+      description: Request synchronization of an owned calendar over a date range.
+      summary: Request calendar sync
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarSync'
+          description: ''
+        '409':
+          description: Sync is disabled for this calendar.
   /calendar/{id}/unavailable-windows/:
     get:
       operationId: calendar_unavailable_windows_list
@@ -3770,18 +4301,6 @@ paths:
         schema:
           type: string
         required: true
-      - name: limit
-        required: false
-        in: query
-        description: Number of results to return per page.
-        schema:
-          type: integer
-      - name: offset
-        required: false
-        in: query
-        description: The initial index from which to return the results.
-        schema:
-          type: integer
       - in: query
         name: start_datetime
         schema:
@@ -3798,7 +4317,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaginatedUnavailableTimeWindowList'
+                type: array
+                items:
+                  $ref: '#/components/schemas/UnavailableTimeWindow'
           description: ''
   /calendar/{id}/unavailable-windows{format}:
     get:
@@ -3825,18 +4346,6 @@ paths:
         schema:
           type: string
         required: true
-      - name: limit
-        required: false
-        in: query
-        description: Number of results to return per page.
-        schema:
-          type: integer
-      - name: offset
-        required: false
-        in: query
-        description: The initial index from which to return the results.
-        schema:
-          type: integer
       - in: query
         name: start_datetime
         schema:
@@ -3853,7 +4362,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaginatedUnavailableTimeWindowList'
+                type: array
+                items:
+                  $ref: '#/components/schemas/UnavailableTimeWindow'
           description: ''
   /calendar/bundle/:
     post:
@@ -3918,6 +4429,128 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Calendar'
+          description: ''
+  /calendar/default/:
+    get:
+      operationId: calendar_default_retrieve
+      description: Returns the authenticated user's default calendar in their organization
+        (the active CalendarOwnership flagged is_default). 404 when the user has no
+        default calendar (e.g. before importing any calendars).
+      summary: Get the caller's default calendar
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+        '404':
+          description: No default calendar for this user
+  /calendar/default{format}:
+    get:
+      operationId: calendar_default_formatted_retrieve
+      description: Returns the authenticated user's default calendar in their organization
+        (the active CalendarOwnership flagged is_default). 404 when the user has no
+        default calendar (e.g. before importing any calendars).
+      summary: Get the caller's default calendar
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+        '404':
+          description: No default calendar for this user
+  /calendar/request-import/:
+    post:
+      operationId: calendar_request_import_create
+      description: Request import of external calendars for the authenticated user.
+      summary: Request calendar import
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+          description: ''
+  /calendar/request-import{format}:
+    post:
+      operationId: calendar_request_import_formatted_create
+      description: Request import of external calendars for the authenticated user.
+      summary: Request calendar import
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
           description: ''
   /invitations/:
     get:
@@ -4178,6 +4811,109 @@ paths:
       responses:
         '204':
           description: No response body
+  /invitations/{id}/resend/:
+    post:
+      operationId: invitations_resend_create
+      description: |-
+        POST /invitations/{id}/resend/ — regenerate token and re-send a pending invitation.
+
+        Guards:
+        - Invitation must not be accepted (accepted_at is None).
+        - User must be an active member of the invitation's organization.
+
+        Returns the re-serialized invitation with the new token_hash and extended expires_at.
+      summary: Resend a pending organization invitation
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - invitations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+        '400':
+          description: Invitation already accepted or service error
+        '403':
+          description: Not an active member
+        '404':
+          description: Invitation not found or cross-org
+  /invitations/{id}/resend{format}:
+    post:
+      operationId: invitations_resend_formatted_create
+      description: |-
+        POST /invitations/{id}/resend/ — regenerate token and re-send a pending invitation.
+
+        Guards:
+        - Invitation must not be accepted (accepted_at is None).
+        - User must be an active member of the invitation's organization.
+
+        Returns the re-serialized invitation with the new token_hash and extended expires_at.
+      summary: Resend a pending organization invitation
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - invitations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+        '400':
+          description: Invitation already accepted or service error
+        '403':
+          description: Not an active member
+        '404':
+          description: Invitation not found or cross-org
   /invitations/accept:
     post:
       operationId: invitations_accept_create
@@ -4206,6 +4942,392 @@ paths:
               schema:
                 $ref: '#/components/schemas/AcceptInvitation'
           description: ''
+  /organization-members/:
+    get:
+      operationId: organization_members_list
+      description: |-
+        A viewset for listing, retrieving, and managing organization members.
+
+        Admin-only endpoint — lists both active and inactive members of the caller's
+        organization, suitable for a datatable view. Non-admin members get 403.
+
+        Actions:
+        - `deactivate`: POST to disable a member (prevent self-deactivation and
+          protect the last active admin).
+        - `reactivate`: POST to re-enable a member.
+      parameters:
+      - in: query
+        name: email
+        schema:
+          type: string
+        description: Filter by partial email match
+      - in: query
+        name: first_name
+        schema:
+          type: string
+        description: Filter by partial first name match
+      - in: query
+        name: last_name
+        schema:
+          type: string
+        description: Filter by partial last name match
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Search by first name, last name, or email (OR)
+      tags:
+      - organization-members
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedOrganizationMembershipList'
+          description: ''
+  /organization-members{format}:
+    get:
+      operationId: organization_members_formatted_list
+      description: |-
+        A viewset for listing, retrieving, and managing organization members.
+
+        Admin-only endpoint — lists both active and inactive members of the caller's
+        organization, suitable for a datatable view. Non-admin members get 403.
+
+        Actions:
+        - `deactivate`: POST to disable a member (prevent self-deactivation and
+          protect the last active admin).
+        - `reactivate`: POST to re-enable a member.
+      parameters:
+      - in: query
+        name: email
+        schema:
+          type: string
+        description: Filter by partial email match
+      - in: query
+        name: first_name
+        schema:
+          type: string
+        description: Filter by partial first name match
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: query
+        name: last_name
+        schema:
+          type: string
+        description: Filter by partial last name match
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Search by first name, last name, or email (OR)
+      tags:
+      - organization-members
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedOrganizationMembershipList'
+          description: ''
+  /organization-members/{id}/:
+    get:
+      operationId: organization_members_retrieve
+      description: |-
+        A viewset for listing, retrieving, and managing organization members.
+
+        Admin-only endpoint — lists both active and inactive members of the caller's
+        organization, suitable for a datatable view. Non-admin members get 403.
+
+        Actions:
+        - `deactivate`: POST to disable a member (prevent self-deactivation and
+          protect the last active admin).
+        - `reactivate`: POST to re-enable a member.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+  /organization-members/{id}{format}:
+    get:
+      operationId: organization_members_formatted_retrieve
+      description: |-
+        A viewset for listing, retrieving, and managing organization members.
+
+        Admin-only endpoint — lists both active and inactive members of the caller's
+        organization, suitable for a datatable view. Non-admin members get 403.
+
+        Actions:
+        - `deactivate`: POST to disable a member (prevent self-deactivation and
+          protect the last active admin).
+        - `reactivate`: POST to re-enable a member.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+  /organization-members/{id}/deactivate/:
+    post:
+      operationId: organization_members_deactivate_create
+      description: |-
+        Deactivate a member (set is_active=False).
+
+        Guards:
+        - Cannot deactivate own membership (self-lockout prevention).
+        - Cannot deactivate the last active admin (org lockout prevention).
+
+        Idempotency: deactivating an already-inactive member is a no-op success.
+      summary: Deactivate an organization member
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '400':
+          description: Cannot deactivate self or last active admin
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
+  /organization-members/{id}/deactivate{format}:
+    post:
+      operationId: organization_members_deactivate_formatted_create
+      description: |-
+        Deactivate a member (set is_active=False).
+
+        Guards:
+        - Cannot deactivate own membership (self-lockout prevention).
+        - Cannot deactivate the last active admin (org lockout prevention).
+
+        Idempotency: deactivating an already-inactive member is a no-op success.
+      summary: Deactivate an organization member
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '400':
+          description: Cannot deactivate self or last active admin
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
+  /organization-members/{id}/reactivate/:
+    post:
+      operationId: organization_members_reactivate_create
+      description: |-
+        Reactivate a member (set is_active=True).
+
+        No guards — re-enabling is always safe.
+
+        Idempotency: reactivating an already-active member is a no-op success.
+      summary: Reactivate an organization member
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
+  /organization-members/{id}/reactivate{format}:
+    post:
+      operationId: organization_members_reactivate_formatted_create
+      description: |-
+        Reactivate a member (set is_active=True).
+
+        No guards — re-enabling is always safe.
+
+        Idempotency: reactivating an already-active member is a no-op success.
+      summary: Reactivate an organization member
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
   /organizations/:
     post:
       operationId: organizations_create
@@ -4294,7 +5416,21 @@ paths:
           description: ''
     put:
       operationId: organizations_update
-      description: A viewset for managing organizations.
+      description: |-
+        Override update to:
+
+        1. Upsert the org's ``GoogleCalendarServiceAccount`` when ``google_service_account``
+           is present in the request body (create-or-update, one per org, calendar FK=None).
+        2. Trigger rooms sync when ``should_sync_rooms`` flips False→True — but only when a
+           service account is configured (either already stored or just provided in this PATCH).
+           If the flag is being enabled and no service account is configured (neither stored
+           nor in the request), return **400** so the admin knows to configure first.
+
+        Uses select_for_update to lock the row during snapshot + write, serializing
+        concurrent PATCHes and preventing double-fire of the sync on False→True transition.
+
+        The creds check is performed BEFORE any write so that unrelated field changes (e.g.
+        renaming the org) are NOT persisted when the 400 is returned.
       parameters:
       - in: path
         name: id
@@ -4405,7 +5541,21 @@ paths:
           description: ''
     put:
       operationId: organizations_formatted_update
-      description: A viewset for managing organizations.
+      description: |-
+        Override update to:
+
+        1. Upsert the org's ``GoogleCalendarServiceAccount`` when ``google_service_account``
+           is present in the request body (create-or-update, one per org, calendar FK=None).
+        2. Trigger rooms sync when ``should_sync_rooms`` flips False→True — but only when a
+           service account is configured (either already stored or just provided in this PATCH).
+           If the flag is being enabled and no service account is configured (neither stored
+           nor in the request), return **400** so the admin knows to configure first.
+
+        Uses select_for_update to lock the row during snapshot + write, serializing
+        concurrent PATCHes and preventing double-fire of the sync on False→True transition.
+
+        The creds check is performed BEFORE any write so that unrelated field changes (e.g.
+        renaming the org) are NOT persisted when the 400 is returned.
       parameters:
       - in: path
         name: format
@@ -4506,6 +5656,212 @@ paths:
       responses:
         '204':
           description: No response body
+  /organizations/{id}/sync-calendars/:
+    post:
+      operationId: organizations_sync_calendars_create
+      description: |-
+        POST /organizations/{id}/sync-calendars/ — enqueue a sync of all calendars.
+
+        Each active calendar in the organization is synced using its owner's
+        linked account. Calendars without an owner or a linked provider account
+        are reported under ``skipped`` rather than failing the whole request.
+
+        Body (``CalendarSyncRequestSerializer``): ``start_datetime``,
+        ``end_datetime`` (required ISO 8601) and ``should_update_events``.
+        Returns HTTP 202 with ``{"synced": [...], "skipped": [...]}``.
+      summary: Trigger a sync of every calendar in the organization
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          description: 'Sync enqueued. Body: {synced: [calendar_id, ...], skipped:
+            [{calendar_id, reason}, ...]}.'
+        '400':
+          description: Invalid sync window
+        '403':
+          description: Not an admin
+        '404':
+          description: Organization not found
+  /organizations/{id}/sync-calendars{format}:
+    post:
+      operationId: organizations_sync_calendars_formatted_create
+      description: |-
+        POST /organizations/{id}/sync-calendars/ — enqueue a sync of all calendars.
+
+        Each active calendar in the organization is synced using its owner's
+        linked account. Calendars without an owner or a linked provider account
+        are reported under ``skipped`` rather than failing the whole request.
+
+        Body (``CalendarSyncRequestSerializer``): ``start_datetime``,
+        ``end_datetime`` (required ISO 8601) and ``should_update_events``.
+        Returns HTTP 202 with ``{"synced": [...], "skipped": [...]}``.
+      summary: Trigger a sync of every calendar in the organization
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          description: 'Sync enqueued. Body: {synced: [calendar_id, ...], skipped:
+            [{calendar_id, reason}, ...]}.'
+        '400':
+          description: Invalid sync window
+        '403':
+          description: Not an admin
+        '404':
+          description: Organization not found
+  /organizations/{id}/sync-rooms/:
+    post:
+      operationId: organizations_sync_rooms_create
+      description: |-
+        POST /organizations/{id}/sync-rooms/ — enqueue a calendar resources import.
+
+        Optional body fields:
+        - ``start_time``: ISO 8601 datetime for the import window start.
+        - ``end_time``: ISO 8601 datetime for the import window end.
+
+        Defaults (when omitted): ``start_time=now``, ``end_time=now+365d``.
+        Returns HTTP 202 on success.
+      summary: Trigger a rooms/resources import for the organization
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Organization'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+          description: ''
+        '400':
+          description: Invalid datetime format
+        '403':
+          description: Not an admin
+        '404':
+          description: Organization not found
+  /organizations/{id}/sync-rooms{format}:
+    post:
+      operationId: organizations_sync_rooms_formatted_create
+      description: |-
+        POST /organizations/{id}/sync-rooms/ — enqueue a calendar resources import.
+
+        Optional body fields:
+        - ``start_time``: ISO 8601 datetime for the import window start.
+        - ``end_time``: ISO 8601 datetime for the import window end.
+
+        Defaults (when omitted): ``start_time=now``, ``end_time=now+365d``.
+        Returns HTTP 202 on success.
+      summary: Trigger a rooms/resources import for the organization
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Organization'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+          description: ''
+        '400':
+          description: Invalid datetime format
+        '403':
+          description: Not an admin
+        '404':
+          description: Organization not found
   /organizations/current/:
     get:
       operationId: organizations_current_retrieve
@@ -4891,6 +6247,616 @@ paths:
               schema:
                 $ref: '#/components/schemas/Profile'
           description: ''
+  /profile/{user}/profile-picture-upload-params/:
+    post:
+      operationId: profile_profile_picture_upload_params_create
+      description: Returns the parameters needed to upload a profile picture directly
+        to S3. Only works for your own profile.
+      summary: Get S3 upload params for profile picture
+      parameters:
+      - in: path
+        name: user
+        schema:
+          type: string
+        description: User ID. Use 'me' to refer to the currently authenticated user.
+        required: true
+      tags:
+      - profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfilePictureUploadParams'
+          description: ''
+  /profile/{user}/profile-picture-upload-params{format}:
+    post:
+      operationId: profile_profile_picture_upload_params_formatted_create
+      description: Returns the parameters needed to upload a profile picture directly
+        to S3. Only works for your own profile.
+      summary: Get S3 upload params for profile picture
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: user
+        schema:
+          type: string
+        description: User ID. Use 'me' to refer to the currently authenticated user.
+        required: true
+      tags:
+      - profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfilePictureUploadParams'
+          description: ''
+  /public-api-tokens/:
+    get:
+      operationId: public_api_tokens_list
+      description: |-
+        Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
+
+        Phase 12: create only.  Phase 13: list + retrieve.
+        List / retrieve / revoke / edit-grants are supported phases.
+
+        ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
+        organisation, persists the requested ``ResourceAccess`` rows, and returns the
+        plaintext token **once**.  The token is never recoverable after this response.
+
+        ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
+        ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - public-api-tokens
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSystemUserTokenList'
+          description: ''
+    post:
+      operationId: public_api_tokens_create
+      description: |-
+        Create a SystemUser and ResourceAccess rows; return the plaintext token once.
+
+        Returns HTTP 201 on success.  The response body includes ``id``,
+        ``integration_name``, ``is_active``, ``available_resources``, and a
+        write-once ``token`` field — never ``long_lived_token_hash``.
+
+        HTTP 400 is returned for:
+        - Invalid or unknown ``available_resources`` values.
+        - Empty ``available_resources`` list.
+        - Duplicate ``integration_name`` (unique constraint).
+
+        HTTP 403 is returned for non-admin callers; HTTP 401 for unauthenticated.
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserTokenResponse'
+          description: ''
+  /public-api-tokens{format}:
+    get:
+      operationId: public_api_tokens_formatted_list
+      description: |-
+        Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
+
+        Phase 12: create only.  Phase 13: list + retrieve.
+        List / retrieve / revoke / edit-grants are supported phases.
+
+        ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
+        organisation, persists the requested ``ResourceAccess`` rows, and returns the
+        plaintext token **once**.  The token is never recoverable after this response.
+
+        ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
+        ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - public-api-tokens
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSystemUserTokenList'
+          description: ''
+    post:
+      operationId: public_api_tokens_formatted_create
+      description: |-
+        Create a SystemUser and ResourceAccess rows; return the plaintext token once.
+
+        Returns HTTP 201 on success.  The response body includes ``id``,
+        ``integration_name``, ``is_active``, ``available_resources``, and a
+        write-once ``token`` field — never ``long_lived_token_hash``.
+
+        HTTP 400 is returned for:
+        - Invalid or unknown ``available_resources`` values.
+        - Empty ``available_resources`` list.
+        - Duplicate ``integration_name`` (unique constraint).
+
+        HTTP 403 is returned for non-admin callers; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserTokenResponse'
+          description: ''
+  /public-api-tokens/{id}/:
+    get:
+      operationId: public_api_tokens_retrieve
+      description: |-
+        Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
+
+        Phase 12: create only.  Phase 13: list + retrieve.
+        List / retrieve / revoke / edit-grants are supported phases.
+
+        ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
+        organisation, persists the requested ``ResourceAccess`` rows, and returns the
+        plaintext token **once**.  The token is never recoverable after this response.
+
+        ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
+        ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+    put:
+      operationId: public_api_tokens_update
+      description: |-
+        Update a token's resource grants via PUT (full replacement).
+
+        Accepts ``available_resources`` (a non-empty list of valid resource values).
+        Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        ``integration_name`` and ``token`` are never mutated; if sent in the body,
+        they are silently ignored.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 400 is returned for invalid resource values or empty list.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+    patch:
+      operationId: public_api_tokens_partial_update
+      description: |-
+        Update a token's resource grants via PATCH (full replacement).
+
+        PATCH and PUT behave identically for this endpoint: both require the full
+        ``available_resources`` list and replace grants completely.
+
+        Accepts ``available_resources`` (a non-empty list of valid resource values).
+        Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        ``integration_name`` and ``token`` are never mutated; if sent in the body,
+        they are silently ignored.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 400 is returned for invalid resource values or empty list.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+  /public-api-tokens/{id}{format}:
+    get:
+      operationId: public_api_tokens_formatted_retrieve
+      description: |-
+        Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
+
+        Phase 12: create only.  Phase 13: list + retrieve.
+        List / retrieve / revoke / edit-grants are supported phases.
+
+        ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
+        organisation, persists the requested ``ResourceAccess`` rows, and returns the
+        plaintext token **once**.  The token is never recoverable after this response.
+
+        ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
+        ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+    put:
+      operationId: public_api_tokens_formatted_update
+      description: |-
+        Update a token's resource grants via PUT (full replacement).
+
+        Accepts ``available_resources`` (a non-empty list of valid resource values).
+        Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        ``integration_name`` and ``token`` are never mutated; if sent in the body,
+        they are silently ignored.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 400 is returned for invalid resource values or empty list.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+    patch:
+      operationId: public_api_tokens_formatted_partial_update
+      description: |-
+        Update a token's resource grants via PATCH (full replacement).
+
+        PATCH and PUT behave identically for this endpoint: both require the full
+        ``available_resources`` list and replace grants completely.
+
+        Accepts ``available_resources`` (a non-empty list of valid resource values).
+        Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        ``integration_name`` and ``token`` are never mutated; if sent in the body,
+        they are silently ignored.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 400 is returned for invalid resource values or empty list.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+  /public-api-tokens/{id}/revoke/:
+    post:
+      operationId: public_api_tokens_revoke_create
+      description: |-
+        Revoke a public-API token by setting its SystemUser.is_active to False.
+
+        The token will no longer authenticate requests via check_system_user_token.
+        This is idempotent: revoking an already-revoked token is a 200 no-op.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+  /public-api-tokens/{id}/revoke{format}:
+    post:
+      operationId: public_api_tokens_revoke_formatted_create
+      description: |-
+        Revoke a public-API token by setting its SystemUser.is_active to False.
+
+        The token will no longer authenticate requests via check_system_user_token.
+        This is idempotent: revoking an already-revoked token is a 200 no-op.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
   /public/organizations/{organization_id}/events/:
     get:
       operationId: public_organizations_events_list
@@ -5072,6 +7038,455 @@ paths:
         required: true
       tags:
       - public
+      responses:
+        '204':
+          description: No response body
+  /service-accounts/:
+    get:
+      operationId: service_accounts_list
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedServiceAccountReadList'
+          description: ''
+    post:
+      operationId: service_accounts_create
+      description: |-
+        Create the org-level service account (one per organization).
+
+        HTTP 201 with the secret-free representation. HTTP 400 if an org-level
+        account already exists (rotate via PUT/PATCH or DELETE first) or the
+        payload is invalid.
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+  /service-accounts{format}:
+    get:
+      operationId: service_accounts_formatted_list
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedServiceAccountReadList'
+          description: ''
+    post:
+      operationId: service_accounts_formatted_create
+      description: |-
+        Create the org-level service account (one per organization).
+
+        HTTP 201 with the secret-free representation. HTTP 400 if an org-level
+        account already exists (rotate via PUT/PATCH or DELETE first) or the
+        payload is invalid.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+  /service-accounts/{id}/:
+    get:
+      operationId: service_accounts_retrieve
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+    put:
+      operationId: service_accounts_update
+      description: |-
+        Rotate/update the org-level service account.
+
+        PUT requires all writable fields; PATCH updates the provided subset
+        (secrets are retained when omitted). Returns HTTP 200 with the
+        secret-free representation.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+    patch:
+      operationId: service_accounts_partial_update
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountWrite'
+          description: ''
+    delete:
+      operationId: service_accounts_destroy
+      description: Delete the org-level service account. HTTP 204.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /service-accounts/{id}{format}:
+    get:
+      operationId: service_accounts_formatted_retrieve
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+    put:
+      operationId: service_accounts_formatted_update
+      description: |-
+        Rotate/update the org-level service account.
+
+        PUT requires all writable fields; PATCH updates the provided subset
+        (secrets are retained when omitted). Returns HTTP 200 with the
+        secret-free representation.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+    patch:
+      operationId: service_accounts_formatted_partial_update
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountWrite'
+          description: ''
+    delete:
+      operationId: service_accounts_formatted_destroy
+      description: Delete the org-level service account. HTTP 204.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -5671,6 +8086,56 @@ components:
           type: string
       required:
       - token
+    ActionEnum:
+      enum:
+      - create
+      - update
+      - delete
+      type: string
+      description: |-
+        * `create` - create
+        * `update` - update
+        * `delete` - delete
+    AvailableResourcesEnum:
+      enum:
+      - calendar_event
+      - calendar
+      - recurrence_rule
+      - external_attendee
+      - external_attendance
+      - attendance
+      - user
+      - resource_allocation
+      - event_recurring_exception
+      - blocked_time
+      - blocked_time_recurring_exception
+      - available_time
+      - available_time_recurring_exception
+      - availability_windows
+      - unavailable_windows
+      - organization
+      - calendar_group
+      - system_user
+      type: string
+      description: |-
+        * `calendar_event` - Calendar Event
+        * `calendar` - Calendar
+        * `recurrence_rule` - Recurrence Rule
+        * `external_attendee` - External Attendee
+        * `external_attendance` - External Attendance
+        * `attendance` - Attendance
+        * `user` - User
+        * `resource_allocation` - Resource Allocation
+        * `event_recurring_exception` - Event Recurring Exception
+        * `blocked_time` - Blocked Time
+        * `blocked_time_recurring_exception` - Blocked Time Recurring Exception
+        * `available_time` - Available Time
+        * `available_time_recurring_exception` - Available Time Recurring Exception
+        * `availability_windows` - Availability Windows
+        * `unavailable_windows` - Unavailable Windows
+        * `organization` - Organization
+        * `calendar_group` - Calendar Group
+        * `system_user` - System User
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.
@@ -5732,7 +8197,6 @@ components:
           type: integer
           nullable: true
       required:
-      - calendar
       - created
       - end_time
       - id
@@ -5743,6 +8207,25 @@ components:
       - recurrence_id
       - start_time
       - timezone
+    AvailableTimeBatch:
+      type: object
+      description: |-
+        Transactional batch of create/update/delete operations on a calendar's available times.
+
+        All operations target a single calendar (resolved from ``calendar`` or the user's
+        default) and run in one transaction — any failure rolls the whole batch back.
+      properties:
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableTimeOperation'
+        calendar:
+          type: integer
+          nullable: true
+          description: Calendar to apply the batch to. Defaults to the user's default
+            calendar.
+      required:
+      - operations
     AvailableTimeBulkModification:
       type: object
       properties:
@@ -5769,6 +8252,30 @@ components:
           default: false
       required:
       - modification_start_date
+    AvailableTimeOperation:
+      type: object
+      description: A single create/update/delete operation in an available-times batch.
+      properties:
+        action:
+          $ref: '#/components/schemas/ActionEnum'
+        id:
+          type: integer
+          description: Target AvailableTime id (required for update/delete).
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        rrule_string:
+          type: string
+          nullable: true
+          description: RRULE string; null clears recurrence. Omit to leave unchanged
+            on update.
+      required:
+      - action
     AvailableTimeRecurringException:
       type: object
       description: Serializer for creating recurring available time exceptions.
@@ -5940,7 +8447,6 @@ components:
           type: integer
           nullable: true
       required:
-      - calendar
       - created
       - end_time
       - external_id
@@ -6021,16 +8527,6 @@ components:
       required:
       - end_time
       - start_time
-    BulkAvailableTime:
-      type: object
-      description: Serializer for creating multiple available times.
-      properties:
-        available_times:
-          type: array
-          items:
-            $ref: '#/components/schemas/AvailableTime'
-      required:
-      - available_times
     BulkBlockedTime:
       type: object
       description: Serializer for creating multiple blocked times.
@@ -6085,6 +8581,23 @@ components:
           description: If true, this calendar can manage its own available time windows.
             If not, it will use the available time windows of the external calendar
             it's attached to.
+        visibility:
+          allOf:
+          - $ref: '#/components/schemas/VisibilityEnum'
+          description: |-
+            Controls how this calendar appears in queries. active: listed and available for booking (default). unlisted: hidden from listing/booking queries but still synced for conflict detection; survives re-import so user opt-out is preserved. inactive: soft-deleted, hidden from all queries and not synced. Use DELETE /calendars/{id}/ to transition to inactive instead of hard-deleting.
+
+            * `active` - Active
+            * `unlisted` - Unlisted
+            * `inactive` - Inactive
+        sync_enabled:
+          type: boolean
+          description: Whether this calendar's events are pulled from the external
+            provider. Set to False to skip syncing calendars that aren't useful for
+            scheduling — holidays, birthdays, organization-wide events, etc. When
+            False, no new CalendarSync is requested for this calendar (including webhook-
+            and import-triggered syncs); previously synced events are left untouched.
+            Default True keeps existing calendars syncing as before.
       required:
       - calendar_type
       - capacity
@@ -6211,6 +8724,13 @@ components:
       - start_time
       - timezone
       - title
+    CalendarEventTransfer:
+      type: object
+      properties:
+        target_calendar_id:
+          type: integer
+      required:
+      - target_calendar_id
     CalendarGroup:
       type: object
       properties:
@@ -6365,6 +8885,73 @@ components:
       required:
       - available_calendar_ids
       - slot_id
+    CalendarSync:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/CalendarSyncStatusEnum'
+          readOnly: true
+        start_datetime:
+          type: string
+          format: date-time
+        end_datetime:
+          type: string
+          format: date-time
+        should_update_events:
+          type: boolean
+        trigger_source:
+          allOf:
+          - $ref: '#/components/schemas/TriggerSourceEnum'
+          readOnly: true
+          description: |-
+            What kicked off this sync: import, manual, webhook, or admin.
+
+            * `import` - Import
+            * `manual` - Manual
+            * `webhook` - Webhook
+            * `admin` - Admin
+        error_message:
+          type: string
+          readOnly: true
+      required:
+      - end_datetime
+      - error_message
+      - id
+      - should_update_events
+      - start_datetime
+      - status
+      - trigger_source
+    CalendarSyncRequest:
+      type: object
+      properties:
+        start_datetime:
+          type: string
+          format: date-time
+        end_datetime:
+          type: string
+          format: date-time
+        should_update_events:
+          type: boolean
+          default: false
+      required:
+      - end_datetime
+      - start_datetime
+    CalendarSyncStatusEnum:
+      enum:
+      - success
+      - failed
+      - in_progress
+      - not_started
+      type: string
+      description: |-
+        * `success` - Success
+        * `failed` - Failed
+        * `in_progress` - In Progress
+        * `not_started` - Not Started
     CalendarTypeEnum:
       enum:
       - personal
@@ -6583,6 +9170,15 @@ components:
         * `YEARLY` - Yearly
     Organization:
       type: object
+      description: |-
+        Serializer for Organization instances.
+
+        The ``google_service_account`` field supports both reading and writing:
+        - **Write**: accepts ``email``, ``audience``, ``public_key``,
+          ``private_key_id`` (write-only), and ``private_key`` (write-only).
+          Omitting the field on PATCH leaves existing credentials unchanged.
+        - **Read**: returns ``email``, ``audience``, and ``configured: true/false``.
+          Secret fields are never returned.
       properties:
         id:
           type: integer
@@ -6593,6 +9189,13 @@ components:
         should_sync_rooms:
           type: boolean
           description: Whether to sync rooms for this organization.
+        google_service_account:
+          type: object
+          additionalProperties: {}
+          nullable: true
+          description: Return read-only service account info (no secrets), or None
+            if unconfigured.
+          readOnly: true
         created:
           type: string
           format: date-time
@@ -6603,6 +9206,7 @@ components:
           readOnly: true
       required:
       - created
+      - google_service_account
       - id
       - modified
       - name
@@ -6655,6 +9259,51 @@ components:
       - invited_by
       - modified
       - organization
+    OrganizationMembership:
+      type: object
+      description: |-
+        Read-only serializer for listing and retrieving organization members.
+
+        Exposes membership role, active status, and flattened user information
+        (email, first_name, last_name) for the admin datatable.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        role:
+          allOf:
+          - $ref: '#/components/schemas/RoleEnum'
+          readOnly: true
+          description: |-
+            Role the user holds in this organization. Admins can manage organization-scoped resources (e.g. CalendarGroups) regardless of direct ownership.
+
+            * `member` - Member
+            * `admin` - Admin
+        is_active:
+          type: boolean
+          readOnly: true
+          description: 'Whether this membership is active. Inactive memberships are
+            treated as gated: the user still has a row but loses all tenant-scoped
+            access until reactivated. Use this to disable a user without deleting
+            their membership record (which would lose role/history). Default True
+            keeps every existing read unchanged.'
+        user_email:
+          type: string
+          format: email
+          readOnly: true
+        user_first_name:
+          type: string
+          readOnly: true
+        user_last_name:
+          type: string
+          readOnly: true
+      required:
+      - id
+      - is_active
+      - role
+      - user_email
+      - user_first_name
+      - user_last_name
     PaginatedAvailableTimeList:
       type: object
       required:
@@ -6678,29 +9327,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AvailableTime'
-    PaginatedAvailableTimeWindowList:
-      type: object
-      required:
-      - count
-      - results
-      properties:
-        count:
-          type: integer
-          example: 123
-        next:
-          type: string
-          nullable: true
-          format: uri
-          example: http://api.example.org/accounts/?offset=400&limit=100
-        previous:
-          type: string
-          nullable: true
-          format: uri
-          example: http://api.example.org/accounts/?offset=200&limit=100
-        results:
-          type: array
-          items:
-            $ref: '#/components/schemas/AvailableTimeWindow'
     PaginatedBlockedTimeList:
       type: object
       required:
@@ -6862,7 +9488,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OrganizationInvitation'
-    PaginatedUnavailableTimeWindowList:
+    PaginatedOrganizationMembershipList:
       type: object
       required:
       - count
@@ -6884,7 +9510,53 @@ components:
         results:
           type: array
           items:
-            $ref: '#/components/schemas/UnavailableTimeWindow'
+            $ref: '#/components/schemas/OrganizationMembership'
+    PaginatedServiceAccountReadList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceAccountRead'
+    PaginatedSystemUserTokenList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SystemUserToken'
     PaginatedWebhookConfigurationList:
       type: object
       required:
@@ -7157,6 +9829,35 @@ components:
           description: If true, this calendar can manage its own available time windows.
             If not, it will use the available time windows of the external calendar
             it's attached to.
+        visibility:
+          allOf:
+          - $ref: '#/components/schemas/VisibilityEnum'
+          description: |-
+            Controls how this calendar appears in queries. active: listed and available for booking (default). unlisted: hidden from listing/booking queries but still synced for conflict detection; survives re-import so user opt-out is preserved. inactive: soft-deleted, hidden from all queries and not synced. Use DELETE /calendars/{id}/ to transition to inactive instead of hard-deleting.
+
+            * `active` - Active
+            * `unlisted` - Unlisted
+            * `inactive` - Inactive
+        sync_enabled:
+          type: boolean
+          description: Whether this calendar's events are pulled from the external
+            provider. Set to False to skip syncing calendars that aren't useful for
+            scheduling — holidays, birthdays, organization-wide events, etc. When
+            False, no new CalendarSync is requested for this calendar (including webhook-
+            and import-triggered syncs); previously synced events are left untouched.
+            Default True keeps existing calendars syncing as before.
+    PatchedCalendarBundleUpdate:
+      type: object
+      description: Serializer for updating a bundle calendar's child calendars and
+        primary calendar.
+      properties:
+        bundle_calendars:
+          type: array
+          items:
+            type: integer
+        primary_calendar:
+          type: integer
+          nullable: true
     PatchedCalendarEvent:
       type: object
       properties:
@@ -7268,6 +9969,15 @@ components:
           readOnly: true
     PatchedOrganization:
       type: object
+      description: |-
+        Serializer for Organization instances.
+
+        The ``google_service_account`` field supports both reading and writing:
+        - **Write**: accepts ``email``, ``audience``, ``public_key``,
+          ``private_key_id`` (write-only), and ``private_key`` (write-only).
+          Omitting the field on PATCH leaves existing credentials unchanged.
+        - **Read**: returns ``email``, ``audience``, and ``configured: true/false``.
+          Secret fields are never returned.
       properties:
         id:
           type: integer
@@ -7278,6 +9988,13 @@ components:
         should_sync_rooms:
           type: boolean
           description: Whether to sync rooms for this organization.
+        google_service_account:
+          type: object
+          additionalProperties: {}
+          nullable: true
+          description: Return read-only service account info (no secrets), or None
+            if unconfigured.
+          readOnly: true
         created:
           type: string
           format: date-time
@@ -7300,8 +10017,46 @@ components:
           maxLength: 255
         profile_picture:
           type: string
-          format: uri
           nullable: true
+          maxLength: 255
+    PatchedServiceAccountWrite:
+      type: object
+      description: |-
+        Write serializer for creating/rotating the org-level service account.
+
+        ``private_key`` and ``private_key_id`` are write-only and are never echoed
+        back in any response (reads go through ``ServiceAccountReadSerializer``).
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        audience:
+          type: string
+          maxLength: 255
+        public_key:
+          type: string
+        private_key_id:
+          type: string
+          writeOnly: true
+          maxLength: 255
+        private_key:
+          type: string
+          writeOnly: true
+    PatchedSystemUserTokenUpdate:
+      type: object
+      description: |-
+        Input serializer for updating a public-API token's resource grants (Phase 15).
+
+        Accepts ``available_resources`` (a non-empty list of valid ``PublicAPIResources`` values)
+        only.  ``integration_name`` and ``token`` are never accepted or changed.
+        The view reconciles ResourceAccess rows: adds rows for newly-granted resources,
+        removes rows for dropped resources.
+      properties:
+        available_resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableResourcesEnum'
     PatchedWebhookConfiguration:
       type: object
       properties:
@@ -7329,10 +10084,54 @@ components:
           maxLength: 255
         profile_picture:
           type: string
-          format: uri
           nullable: true
+          maxLength: 255
       required:
       - id
+    ProfilePictureUploadParams:
+      type: object
+      properties:
+        object_key:
+          type: string
+        access_key_id:
+          type: string
+          nullable: true
+        session_token:
+          type: string
+          nullable: true
+        region:
+          type: string
+        bucket:
+          type: string
+        endpoint:
+          type: string
+        acl:
+          type: string
+        allow_existence_optimization:
+          type: boolean
+      required:
+      - access_key_id
+      - acl
+      - allow_existence_optimization
+      - bucket
+      - endpoint
+      - object_key
+      - region
+      - session_token
+    ProfilePictureUploadParamsRequest:
+      type: object
+      properties:
+        file_name:
+          type: string
+        file_type:
+          type: string
+        file_size:
+          type: integer
+          minimum: 1
+      required:
+      - file_name
+      - file_size
+      - file_type
     ProviderEnum:
       enum:
       - internal
@@ -7487,6 +10286,190 @@ components:
       description: |-
         * `member` - Member
         * `admin` - Admin
+    ServiceAccountRead:
+      type: object
+      description: |-
+        Read serializer for the org-level Google Calendar service account (CRUD surface).
+
+        Exposes only non-secret fields plus a ``configured`` flag. ``public_key``,
+        ``private_key`` and ``private_key_id`` are never returned.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        email:
+          type: string
+          format: email
+          readOnly: true
+        audience:
+          type: string
+          readOnly: true
+        configured:
+          type: boolean
+          description: A persisted row is, by definition, configured.
+          readOnly: true
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - audience
+      - configured
+      - created
+      - email
+      - id
+      - modified
+    ServiceAccountWrite:
+      type: object
+      description: |-
+        Write serializer for creating/rotating the org-level service account.
+
+        ``private_key`` and ``private_key_id`` are write-only and are never echoed
+        back in any response (reads go through ``ServiceAccountReadSerializer``).
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        audience:
+          type: string
+          maxLength: 255
+        public_key:
+          type: string
+        private_key_id:
+          type: string
+          writeOnly: true
+          maxLength: 255
+        private_key:
+          type: string
+          writeOnly: true
+      required:
+      - email
+      - private_key
+      - private_key_id
+      - public_key
+    SystemUserToken:
+      type: object
+      description: |-
+        Read-only serializer for listing and retrieving public-API tokens.
+
+        Exposes ``id``, ``integration_name``, ``is_active``, and ``available_resources``
+        (list of resource_name strings from the related ``ResourceAccess`` rows).
+        Never exposes ``long_lived_token_hash`` or ``token``.
+
+        Optimized for list queries: uses prefetched ``available_resources`` from
+        the viewset's ``get_queryset`` to avoid N+1 queries.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        integration_name:
+          type: string
+          readOnly: true
+        is_active:
+          type: boolean
+          readOnly: true
+          description: Indicates if the user is active.
+        available_resources:
+          type: array
+          items:
+            type: string
+          description: Return a list of resource_name values from the prefetched ResourceAccess
+            rows.
+          readOnly: true
+      required:
+      - available_resources
+      - id
+      - integration_name
+      - is_active
+    SystemUserTokenCreate:
+      type: object
+      description: |-
+        Input serializer for creating a new public-API token (SystemUser + ResourceAccess rows).
+
+        Accepts ``integration_name`` and ``available_resources`` (a non-empty list of valid
+        ``PublicAPIResources`` values).  ``create()`` provisions the ``SystemUser`` via the
+        injected auth service and bulk-creates the ``ResourceAccess`` grants, attaching the
+        write-once plaintext ``token`` to the returned instance.  Never stores or exposes
+        ``long_lived_token_hash``.
+      properties:
+        integration_name:
+          type: string
+          maxLength: 150
+        available_resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableResourcesEnum'
+      required:
+      - available_resources
+      - integration_name
+    SystemUserTokenResponse:
+      type: object
+      description: |-
+        Read serializer for the created SystemUser.
+
+        Includes the write-once ``token`` field (sourced from the view) and
+        ``available_resources`` (derived from the related ``ResourceAccess`` rows).
+        Never exposes ``long_lived_token_hash``.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        integration_name:
+          type: string
+          readOnly: true
+        is_active:
+          type: boolean
+          readOnly: true
+          description: Indicates if the user is active.
+        available_resources:
+          type: array
+          items:
+            type: string
+          description: Return a list of resource_name values from the related ResourceAccess
+            rows.
+          readOnly: true
+        token:
+          type: string
+          readOnly: true
+      required:
+      - available_resources
+      - id
+      - integration_name
+      - is_active
+      - token
+    SystemUserTokenUpdate:
+      type: object
+      description: |-
+        Input serializer for updating a public-API token's resource grants (Phase 15).
+
+        Accepts ``available_resources`` (a non-empty list of valid ``PublicAPIResources`` values)
+        only.  ``integration_name`` and ``token`` are never accepted or changed.
+        The view reconciles ResourceAccess rows: adds rows for newly-granted resources,
+        removes rows for dropped resources.
+      properties:
+        available_resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableResourcesEnum'
+      required:
+      - available_resources
+    TriggerSourceEnum:
+      enum:
+      - import
+      - manual
+      - webhook
+      - admin
+      type: string
+      description: |-
+        * `import` - Import
+        * `manual` - Manual
+        * `webhook` - Webhook
+        * `admin` - Admin
     UnavailableTimeWindow:
       type: object
       properties:
@@ -7563,6 +10546,16 @@ components:
       - modified
       - phone_number
       - profile
+    VisibilityEnum:
+      enum:
+      - active
+      - unlisted
+      - inactive
+      type: string
+      description: |-
+        * `active` - Active
+        * `unlisted` - Unlisted
+        * `inactive` - Inactive
     WebhookConfiguration:
       type: object
       properties:

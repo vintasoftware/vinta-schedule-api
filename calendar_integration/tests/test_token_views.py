@@ -180,7 +180,7 @@ class TestTokenCalendarEventViewSetIntegration:
         event_data = {
             "title": "New Test Event",
             "description": "Test description",
-            "start_time": timezone.now().isoformat(),
+            "start_time": (timezone.now() + timedelta(hours=1)).isoformat(),
             "end_time": (timezone.now() + timedelta(hours=2)).isoformat(),
             "timezone": "UTC",
             "calendar": calendar.id,
@@ -226,8 +226,8 @@ class TestTokenCalendarEventViewSetIntegration:
         event_data = {
             "title": "External Scheduled Event",
             "description": "Scheduled by external attendee",
-            "start_time": timezone.now().isoformat(),
-            "end_time": (timezone.now() + timedelta(hours=1)).isoformat(),
+            "start_time": (timezone.now() + timedelta(hours=1)).isoformat(),
+            "end_time": (timezone.now() + timedelta(hours=2)).isoformat(),
             "timezone": "UTC",
             "calendar": calendar.id,
             "attendances": [],
@@ -646,8 +646,8 @@ class TestTokenCalendarEventViewSetIntegration:
 
         event_data = {
             "title": "Should Not Be Created",
-            "start_time": timezone.now().isoformat(),
-            "end_time": (timezone.now() + timedelta(hours=1)).isoformat(),
+            "start_time": (timezone.now() + timedelta(hours=1)).isoformat(),
+            "end_time": (timezone.now() + timedelta(hours=2)).isoformat(),
             "timezone": "UTC",
             "calendar": calendar.id,
             "attendances": [],

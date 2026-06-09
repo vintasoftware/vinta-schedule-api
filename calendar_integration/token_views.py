@@ -145,7 +145,10 @@ class TokenCalendarEventViewSet(TokenAuthenticationMixin, NoListVintaScheduleMod
         """
         organization_id = self.kwargs.get("organization_id")
         if organization_id:
-            return CalendarEvent.objects.filter_by_organization(organization_id)
+            # `super().get_queryset()` runs the VirtualModel optimization so the
+            # nested attendances/resource relations are prefetched — without it
+            # CalendarEventSerializer trips the query budget on retrieve.
+            return super().get_queryset().filter_by_organization(organization_id)
         return CalendarEvent.objects.none()
 
     def create(self, request, *args, **kwargs):

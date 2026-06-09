@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from django.db import models
 
 from common.models import BaseModel
@@ -24,6 +26,7 @@ class SystemUser(BaseModel):
         help_text="Hash of the the system user's access token.",
     )
     is_active = models.BooleanField(default=True, help_text="Indicates if the user is active.")
+    deleted_at = models.DateTimeField(null=True, blank=True, default=None, db_index=True)
 
 
 class ResourceAccess(BaseModel):
@@ -38,3 +41,11 @@ class ResourceAccess(BaseModel):
         on_delete=models.CASCADE,
     )
     resource_name = models.CharField(max_length=150, choices=PublicAPIResources, db_index=True)
+
+    class Meta:
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=["system_user", "resource_name"],
+                name="uniq_resourceaccess_systemuser_resource",
+            ),
+        ]

@@ -6,6 +6,13 @@ class DuplicateInvitationError(ValidationError):
     default_code = "duplicate_invitation"
 
 
+class NoServiceAccountConfiguredError(ValidationError):
+    default_detail = (
+        "Configure a Google service account for this organization before syncing rooms."
+    )
+    default_code = "no_service_account_configured"
+
+
 class InvalidInvitationTokenError(ValidationError):
     default_detail = "Invalid or expired token"
     default_code = "invalid_invitation_token"

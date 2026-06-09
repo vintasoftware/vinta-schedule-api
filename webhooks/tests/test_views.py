@@ -301,6 +301,50 @@ class TestWebhookConfigurationViewSet:
 
 
 @pytest.mark.django_db
+class TestInactiveMemberWebhookAccess:
+    """Inactive members must be denied on webhook write + object paths."""
+
+    def test_create_webhook_configuration_inactive_member_denied(self, auth_client, user):
+        """POST webhook-configuration by inactive member must be rejected.
+
+        With is_active=False the serializer's get_active_organization_membership()
+        returns None, so the create path raises a ValidationError → 400.  The
+        key contract: the webhook is NOT created for the inactive user's org.
+        """
+        org = WebhookTestFactory.create_organization(name="Inactive Org")
+        baker.make(OrganizationMembership, user=user, organization=org, is_active=False)
+
+        url = reverse("api:WebhookConfigurations-list")
+        data = {
+            "event_type": WebhookEventType.CALENDAR_EVENT_CREATED,
+            "url": "https://example.com/webhook",
+            "headers": {},
+        }
+        response = auth_client.post(url, data, format="json")
+
+        # Serializer guard raises ValidationError → 400
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        # Nothing created
+        assert not WebhookConfiguration.objects.filter(organization=org).exists()
+
+    def test_create_webhook_configuration_active_member_succeeds(self, auth_client, user):
+        """Sanity: an active member can still create webhook configurations."""
+        org = WebhookTestFactory.create_organization(name="Active Org")
+        baker.make(OrganizationMembership, user=user, organization=org, is_active=True)
+
+        url = reverse("api:WebhookConfigurations-list")
+        data = {
+            "event_type": WebhookEventType.CALENDAR_EVENT_CREATED,
+            "url": "https://example.com/webhook-active",
+            "headers": {},
+        }
+        response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert WebhookConfiguration.objects.filter(organization=org).exists()
+
+
+@pytest.mark.django_db
 class TestWebhookEventViewSet:
     """Test suite for WebhookEventViewSet."""
 

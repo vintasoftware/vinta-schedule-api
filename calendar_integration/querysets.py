@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q, Subquery
 
-from calendar_integration.constants import CalendarSyncStatus, CalendarType
+from calendar_integration.constants import CalendarSyncStatus, CalendarType, CalendarVisibility
 from calendar_integration.database_functions import (
     GetAvailableTimeOccurrencesJSON,
     GetAvailableTimeOccurrencesWithBulkModificationsJSON,
@@ -127,6 +127,14 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
     """
     Custom QuerySet for Calendar model to handle specific queries.
     """
+
+    def exclude_inactive(self):
+        """Exclude soft-deleted calendars (visibility=inactive). Includes active and unlisted."""
+        return self.exclude(visibility=CalendarVisibility.INACTIVE)
+
+    def only_listed(self):
+        """Return only calendars visible in booking/public queries (visibility=active)."""
+        return self.filter(visibility=CalendarVisibility.ACTIVE)
 
     def filter_by_is_virtual(self, is_virtual=True):
         """
@@ -317,7 +325,7 @@ class CalendarEventQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
     """
 
     def annotate_recurring_occurrences_on_date_range(
-        self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000
+        self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000, overlap=False
     ):
         """
         Annotated an Array aggregating all occurrences of a recurring event within the specified date range.
@@ -325,7 +333,9 @@ class CalendarEventQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
         Each occurrence will be a JSON containing the start_datetime and the end_datetime in UTC.
         """
         return self.annotate(
-            recurring_occurrences=GetEventOccurrencesJSON("id", start, end, max_occurrences)
+            recurring_occurrences=GetEventOccurrencesJSON(
+                "id", start, end, max_occurrences, overlap=overlap
+            )
         )
 
     def annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
@@ -369,7 +379,7 @@ class BlockedTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin)
     """
 
     def annotate_recurring_occurrences_on_date_range(
-        self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000
+        self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000, overlap=False
     ):
         """
         Annotated an Array aggregating all occurrences of a recurring blocked time within the specified date range.
@@ -377,7 +387,9 @@ class BlockedTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin)
         Each occurrence will be a JSON containing the start_datetime and the end_datetime in UTC.
         """
         return self.annotate(
-            recurring_occurrences=GetBlockedTimeOccurrencesJSON("id", start, end, max_occurrences)
+            recurring_occurrences=GetBlockedTimeOccurrencesJSON(
+                "id", start, end, max_occurrences, overlap=overlap
+            )
         )
 
     def annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
@@ -488,7 +500,7 @@ class AvailableTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
     """
 
     def annotate_recurring_occurrences_on_date_range(
-        self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000
+        self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000, overlap=False
     ):
         """
         Annotated an Array aggregating all occurrences of a recurring available time within the specified date range.
@@ -496,7 +508,9 @@ class AvailableTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
         Each occurrence will be a JSON containing the start_datetime and the end_datetime in UTC.
         """
         return self.annotate(
-            recurring_occurrences=GetAvailableTimeOccurrencesJSON("id", start, end, max_occurrences)
+            recurring_occurrences=GetAvailableTimeOccurrencesJSON(
+                "id", start, end, max_occurrences, overlap=overlap
+            )
         )
 
     def annotate_recurring_occurrences_with_bulk_modifications_on_date_range(

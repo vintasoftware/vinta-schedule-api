@@ -29,3 +29,4 @@ class PublicAPIResources(TextChoices):
     UNAVAILABLE_WINDOWS = "unavailable_windows", "Unavailable Windows"
     ORGANIZATION = "organization", "Organization"
     CALENDAR_GROUP = "calendar_group", "Calendar Group"
+    SYSTEM_USER = "system_user", "System User"

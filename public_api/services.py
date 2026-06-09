@@ -22,7 +22,7 @@ class PublicAPIAuthService:
             raise SystemUser.DoesNotExist(f"Invalid system_user_id: {system_user_id!r}") from e
         system_user = SystemUser.objects.get(id=system_user_id_int)
 
-        if not system_user.is_active:
+        if not system_user.is_active or system_user.deleted_at is not None:
             return system_user, False
 
         return system_user, verify_long_lived_token(token, system_user.long_lived_token_hash)
