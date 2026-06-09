@@ -21,19 +21,62 @@ infrastructure/
   terragrunt.hcl                       # root: Scalr backend + AWS provider
   modules/s3-cloudfront/               # the reusable module
   environments/
+    staging/
+      env.hcl                          # region + environment slug
+      storage/terragrunt.hcl           # staging storage stack
     production/
       env.hcl                          # region + environment slug
-      storage/terragrunt.hcl           # production storage stack
+      storage/terragrunt.hcl           # production storage stack (not applied yet)
 ```
+
+> Only **staging** is applied for now. The production env files exist but are
+> left unapplied until production goes live.
 
 ## One-time Scalr setup
 
 1. Create a Scalr **environment** (the value for `SCALR_ENVIRONMENT`).
-2. Create a workspace named `vinta-schedule-environments-production-storage`
-   (matches the auto-derived name in `terragrunt.hcl`), backend type **CLI/Terragrunt**.
-3. Add AWS credentials to the workspace (shell vars `AWS_ACCESS_KEY_ID` /
-   `AWS_SECRET_ACCESS_KEY` for an admin/deployer principal, **not** the app
-   user this stack creates).
+2. Create a workspace per stack, named to match the auto-derived name in
+   `terragrunt.hcl` (`<project>-<path-with-slashes-as-dashes>`):
+   - staging → `vinta-schedule-environments-staging-storage`
+   - production → `vinta-schedule-environments-production-storage`
+
+   Backend type **CLI / Terragrunt**.
+3. Configure variables (next section).
+
+## Variables to configure in Scalr
+
+The module inputs (`project_name`, `environment`, `aws_region`,
+`cors_allowed_origins`, ...) come from the Terragrunt `inputs` block and are
+injected as `TF_VAR_*` — so there are **no Terraform variables to set in
+Scalr**. Scalr only needs **AWS credentials**, set as **shell (environment)
+variables** on the workspace (or environment):
+
+| Variable | Value | Sensitive |
+|---|---|---|
+| `AWS_ACCESS_KEY_ID` | deployer access key | yes |
+| `AWS_SECRET_ACCESS_KEY` | deployer secret | yes |
+| `AWS_DEFAULT_REGION` | `us-east-1` (optional; provider already sets region) | no |
+
+- The **deployer** is an admin/CI IAM principal — **not** the app IAM user this
+  stack creates. Its policy must allow `s3:*`, `cloudfront:*`, and the `iam:`
+  actions to create a user + access key + inline policy
+  (`CreateUser`, `CreateAccessKey`, `PutUserPolicy`, plus their Get/Delete/List
+  counterparts).
+- **Preferred over static keys:** attach a Scalr **Provider Configuration** for
+  AWS (OIDC / role delegation) to the environment — no long-lived keys stored.
+
+Two non-workspace settings authenticate Terragrunt to Scalr itself (set in your
+shell / CI, never committed):
+
+| Setting | How |
+|---|---|
+| `SCALR_TOKEN` | `terraform login <SCALR_HOSTNAME>`, or a CI env var |
+| `SCALR_HOSTNAME` / `SCALR_ENVIRONMENT` | shell env vars, read by `terragrunt.hcl` |
+
+**Execution mode matters:**
+- **Remote** (runs execute inside Scalr) → the AWS shell vars MUST live in Scalr.
+- **CLI / local** (`terragrunt apply` on your machine; Scalr stores state only) →
+  AWS creds come from your local shell; set nothing AWS-related in Scalr.
 
 ## Run
 
@@ -42,7 +85,7 @@ export SCALR_HOSTNAME=example.scalr.io
 export SCALR_ENVIRONMENT=<your-scalr-environment>
 terraform login "$SCALR_HOSTNAME"        # stores the API token
 
-cd infrastructure/environments/production/storage
+cd infrastructure/environments/staging/storage
 terragrunt init
 terragrunt plan
 terragrunt apply
