@@ -11,7 +11,12 @@ from allauth.socialaccount.models import SocialAccount, SocialToken
 from model_bakery import baker
 from rest_framework import status
 
-from calendar_integration.constants import CalendarProvider, CalendarType, RecurrenceFrequency
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarType,
+    CalendarVisibility,
+    RecurrenceFrequency,
+)
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -2085,7 +2090,7 @@ class TestCalendarViewSet:
         assert response.data["description"] == "Updated description"
 
     def test_delete_calendar_soft_disables(self, auth_client, calendar, user):
-        """DELETE /calendar/{id}/ sets is_active=False — row persists, not hard-deleted."""
+        """DELETE /calendar/{id}/ sets visibility=inactive — row persists, not hard-deleted."""
         # Create calendar ownership so user can access the calendar
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
 
@@ -2094,9 +2099,9 @@ class TestCalendarViewSet:
 
         assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
 
-        # Row must still exist with is_active=False
+        # Row must still exist with visibility=inactive
         calendar.refresh_from_db()
-        assert calendar.is_active is False
+        assert calendar.visibility == CalendarVisibility.INACTIVE
 
     def test_delete_calendar_hidden_from_default_list(self, auth_client, calendar, user):
         """After soft-disable, default GET /calendar/ list excludes the disabled calendar."""
@@ -2133,8 +2138,8 @@ class TestCalendarViewSet:
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
 
         # Soft-disable
-        calendar.is_active = False
-        calendar.save(update_fields=["is_active"])
+        calendar.visibility = CalendarVisibility.INACTIVE
+        calendar.save(update_fields=["visibility"])
 
         detail_url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
         response = auth_client.get(detail_url)
@@ -2147,14 +2152,14 @@ class TestCalendarViewSet:
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
 
         # Soft-disable
-        calendar.is_active = False
-        calendar.save(update_fields=["is_active"])
+        calendar.visibility = CalendarVisibility.INACTIVE
+        calendar.save(update_fields=["visibility"])
 
         detail_url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
         response = auth_client.get(detail_url, {"include_inactive": "true"})
         assert_response_status_code(response, status.HTTP_200_OK)
         assert response.data["id"] == calendar.id
-        assert response.data["is_active"] is False
+        assert response.data["visibility"] == CalendarVisibility.INACTIVE
 
     def test_delete_calendar_idempotent(self, auth_client, calendar, user):
         """Soft-disabling an already-inactive calendar returns 404 (calendar already hidden)."""
@@ -2170,8 +2175,8 @@ class TestCalendarViewSet:
         response = auth_client.delete(url)
         assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
 
-    def test_create_calendar_is_active_defaults_true(self, auth_client, organization, user):
-        """Creating a calendar defaults is_active=True; it appears in the default list."""
+    def test_create_calendar_visibility_defaults_active(self, auth_client, organization, user):
+        """Creating a calendar defaults visibility=active; it appears in the default list."""
         from di_core.containers import container
 
         mock_calendar_service = Mock()
@@ -2193,7 +2198,7 @@ class TestCalendarViewSet:
             response = auth_client.post(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_201_CREATED)
-        assert response.data["is_active"] is True
+        assert response.data["visibility"] == CalendarVisibility.ACTIVE
 
         # Calendar should appear in default list
         list_url = reverse("api:Calendars-list")
@@ -2344,10 +2349,10 @@ class TestCalendarViewSet:
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
     def test_create_bundle_with_disabled_calendar_rejected(self, auth_client, organization, user):
-        """Phase 19: disabled calendars cannot be used as bundle children or primary.
+        """Phase 19: inactive calendars cannot be used as bundle children or primary.
 
         CalendarBundleCreateSerializer filters bundle_calendars + primary_calendar
-        querysets to is_active=True, so passing a disabled calendar id should
+        querysets to exclude inactive, so passing an inactive calendar id should
         result in a 400 (invalid PK).
         """
         active_calendar = CalendarIntegrationTestFactory.create_calendar(
@@ -2360,8 +2365,8 @@ class TestCalendarViewSet:
             provider=CalendarProvider.INTERNAL,
             calendar_type=CalendarType.PERSONAL,
         )
-        disabled_calendar.is_active = False
-        disabled_calendar.save(update_fields=["is_active"])
+        disabled_calendar.visibility = CalendarVisibility.INACTIVE
+        disabled_calendar.save(update_fields=["visibility"])
 
         url = reverse("api:Calendars-bundle")
 
@@ -3036,8 +3041,8 @@ class TestCalendarViewSet:
         )
 
         # Disable the calendar
-        calendar.is_active = False
-        calendar.save(update_fields=["is_active"])
+        calendar.visibility = CalendarVisibility.INACTIVE
+        calendar.save(update_fields=["visibility"])
 
         # Create mock calendar service
         mock_calendar_service = Mock()
@@ -5160,7 +5165,7 @@ class TestCalendarBundleUpdateAction:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
     def test_update_bundle_disabled_child_calendar_400(self, organization):
-        """Providing an is_active=False calendar as a child is rejected → 400."""
+        """Providing an inactive calendar as a child is rejected → 400."""
         bundle, child1, _child2 = self._make_bundle(organization)
         _, admin_client = self._make_admin(organization)
 
@@ -5168,8 +5173,8 @@ class TestCalendarBundleUpdateAction:
             organization=organization,
             calendar_type=CalendarType.PERSONAL,
         )
-        disabled.is_active = False
-        disabled.save(update_fields=["is_active"])
+        disabled.visibility = CalendarVisibility.INACTIVE
+        disabled.save(update_fields=["visibility"])
 
         url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
         data = {"bundle_calendars": [child1.id, disabled.id]}
@@ -5226,7 +5231,7 @@ class TestCalendarBundleUpdateAction:
 
     def test_bundle_update_keeps_existing_disabled_child(self, organization):
         """
-        Bundle has child A (active) + child B; disable B (is_active=False) directly;
+        Bundle has child A (active) + child B; disable B (visibility=inactive) directly;
         admin PATCHes the bundle resending [A, B] (+ valid primary among them) → 200,
         B remains a child, reconciliation succeeds.
         Proves the trap is gone.
@@ -5235,8 +5240,8 @@ class TestCalendarBundleUpdateAction:
         _, admin_client = self._make_admin(organization)
 
         # Disable child_disabled
-        child_disabled.is_active = False
-        child_disabled.save(update_fields=["is_active"])
+        child_disabled.visibility = CalendarVisibility.INACTIVE
+        child_disabled.save(update_fields=["visibility"])
 
         # Admin PATCHes with both children
         url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
@@ -5280,8 +5285,8 @@ class TestCalendarBundleUpdateAction:
             name="Disabled New",
             calendar_type=CalendarType.PERSONAL,
         )
-        disabled_new.is_active = False
-        disabled_new.save(update_fields=["is_active"])
+        disabled_new.visibility = CalendarVisibility.INACTIVE
+        disabled_new.save(update_fields=["visibility"])
 
         # Try to add it as a child
         url = reverse("api:Calendars-bundle-update", kwargs={"pk": bundle.id})
@@ -5385,7 +5390,7 @@ class TestCalendarDisableGating:
     # --- BUNDLE disable tests ---
 
     def test_bundle_disable_by_admin_204(self, organization):
-        """Org admin DELETEs a bundle → 204, bundle.is_active=False."""
+        """Org admin DELETEs a bundle → 204, bundle.visibility=inactive."""
         bundle, _child1, _child2 = self._make_bundle(organization)
         _, admin_client = self._make_admin(organization)
 
@@ -5394,7 +5399,7 @@ class TestCalendarDisableGating:
 
         assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
         bundle.refresh_from_db()
-        assert bundle.is_active is False
+        assert bundle.visibility == CalendarVisibility.INACTIVE
 
     def test_bundle_disable_hidden_from_default_list(self, organization):
         """After admin disables a bundle, it no longer appears in the default list."""
@@ -5411,7 +5416,7 @@ class TestCalendarDisableGating:
         assert bundle.id not in ids
 
     def test_bundle_disable_child_calendars_remain_active(self, organization):
-        """Disabling a bundle must NOT affect child calendars — they stay is_active=True."""
+        """Disabling a bundle must NOT affect child calendars — they stay visibility=active."""
         bundle, child1, child2 = self._make_bundle(organization)
         _, admin_client = self._make_admin(organization)
 
@@ -5420,8 +5425,8 @@ class TestCalendarDisableGating:
 
         child1.refresh_from_db()
         child2.refresh_from_db()
-        assert child1.is_active is True
-        assert child2.is_active is True
+        assert child1.visibility == CalendarVisibility.ACTIVE
+        assert child2.visibility == CalendarVisibility.ACTIVE
 
     def test_bundle_disable_events_and_representations_preserved(self, organization):
         """Disabling a bundle must NOT delete bundle events or representation BlockedTimes."""
@@ -5480,7 +5485,7 @@ class TestCalendarDisableGating:
 
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
         bundle.refresh_from_db()
-        assert bundle.is_active is True
+        assert bundle.visibility == CalendarVisibility.ACTIVE
 
     # --- Non-bundle (personal) calendar disable tests ---
 
@@ -5508,7 +5513,7 @@ class TestCalendarDisableGating:
 
         assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
         personal.refresh_from_db()
-        assert personal.is_active is False
+        assert personal.visibility == CalendarVisibility.INACTIVE
 
     def test_personal_calendar_disable_by_non_owner_non_admin_403(self, organization):
         """Non-owner, non-admin member cannot disable another user's calendar → 403."""
@@ -5531,7 +5536,7 @@ class TestCalendarDisableGating:
 
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
         personal.refresh_from_db()
-        assert personal.is_active is True
+        assert personal.visibility == CalendarVisibility.ACTIVE
 
     def test_personal_calendar_disable_by_admin_not_owner_204(self, organization):
         """Org admin who does NOT own the calendar can still disable it → 204."""
@@ -5547,7 +5552,7 @@ class TestCalendarDisableGating:
 
         assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
         personal.refresh_from_db()
-        assert personal.is_active is False
+        assert personal.visibility == CalendarVisibility.INACTIVE
 
     # --- Cross-org and anon edge cases ---
 
@@ -5563,7 +5568,7 @@ class TestCalendarDisableGating:
 
         assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
         other_calendar.refresh_from_db()
-        assert other_calendar.is_active is True
+        assert other_calendar.visibility == CalendarVisibility.ACTIVE
 
     def test_disable_calendar_anonymous_401(self, anonymous_client, organization):
         """Unauthenticated request → 401."""
@@ -5599,8 +5604,8 @@ class TestCalendarDefaultAction:
         assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
 
     def test_inactive_default_calendar_returns_404(self, auth_client, user, calendar):
-        calendar.is_active = False
-        calendar.save(update_fields=["is_active"])
+        calendar.visibility = CalendarVisibility.INACTIVE
+        calendar.save(update_fields=["visibility"])
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
 
         url = reverse("api:Calendars-default")

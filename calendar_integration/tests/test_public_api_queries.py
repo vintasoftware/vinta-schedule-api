@@ -6,6 +6,7 @@ import pytest
 from graphql import GraphQLError
 from model_bakery import baker
 
+from calendar_integration.constants import CalendarVisibility
 from public_api.queries import QueryDependencies, get_query_dependencies
 
 
@@ -425,7 +426,7 @@ class TestCalendarQueries:
     def test_calendars_query_excludes_disabled_calendars(
         self, mock_request, mock_dependencies
     ) -> None:
-        """Phase 19: public GraphQL calendars query must exclude is_active=False calendars."""
+        """Phase 19: public GraphQL calendars query must exclude non-active calendars."""
         from calendar_integration.models import Calendar
         from public_api.queries import Query
 
@@ -434,14 +435,20 @@ class TestCalendarQueries:
         active_calendar: Calendar = baker.make(
             "calendar_integration.Calendar",
             organization=organization,
-            is_active=True,
+            visibility=CalendarVisibility.ACTIVE,
             external_id="ext-active-1",
         )
         baker.make(
             "calendar_integration.Calendar",
             organization=organization,
-            is_active=False,
+            visibility=CalendarVisibility.INACTIVE,
             external_id="ext-disabled-1",
+        )
+        baker.make(
+            "calendar_integration.Calendar",
+            organization=organization,
+            visibility=CalendarVisibility.UNLISTED,
+            external_id="ext-unlisted-1",
         )
 
         mock_info = Mock()
@@ -455,4 +462,6 @@ class TestCalendarQueries:
 
         result_ids = [cal.id for cal in result]
         assert active_calendar.id in result_ids, "Active calendar must be returned"
-        assert all(cal.is_active for cal in result), "All returned calendars must be active"
+        assert all(cal.visibility == CalendarVisibility.ACTIVE for cal in result), (
+            "Only active calendars must be returned; unlisted and inactive excluded"
+        )

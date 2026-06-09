@@ -157,7 +157,7 @@ class OrganizationService:
         synced: list[int] = []
         skipped: list[dict] = []
 
-        calendars = Calendar.objects.filter_by_organization(organization.id).filter(is_active=True)
+        calendars = Calendar.objects.filter_by_organization(organization.id).exclude_inactive()
 
         for calendar in calendars:
             ownership = (

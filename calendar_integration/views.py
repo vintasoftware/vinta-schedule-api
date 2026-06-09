@@ -16,6 +16,7 @@ from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncTriggerSource,
     CalendarType,
+    CalendarVisibility,
 )
 from calendar_integration.exceptions import (
     CalendarGroupError,
@@ -96,8 +97,9 @@ class CalendarViewSet(VintaScheduleModelViewSet):
     def get_queryset(self):
         """Filter calendars by user's accessible calendar organizations.
 
-        By default only active calendars (is_active=True) are returned.  Pass
-        ?include_inactive=true to also see disabled calendars.
+        By default inactive calendars (visibility=inactive) are excluded. Both active and
+        unlisted calendars are returned so users can manage their unlisted calendars.
+        Pass ?include_inactive=true to also see inactive (soft-deleted) calendars.
         """
         user = self.request.user
         if not user.is_authenticated:
@@ -112,7 +114,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
 
         include_inactive = self.request.query_params.get("include_inactive", "").lower() == "true"
         if not include_inactive:
-            qs = qs.filter(is_active=True)
+            qs = qs.exclude_inactive()
 
         # Sync-enabled calendars first; stable tiebreak by id.
         return qs.order_by("-sync_enabled", "id")
@@ -142,7 +144,9 @@ class CalendarViewSet(VintaScheduleModelViewSet):
 
         ownership = (
             CalendarOwnership.objects.filter_by_organization(membership.organization_id)
-            .filter(user=request.user, is_default=True, calendar__is_active=True)
+            .filter(
+                user=request.user, is_default=True, calendar__visibility=CalendarVisibility.ACTIVE
+            )
             .select_related("calendar")
             .order_by("id")
             .first()
@@ -156,7 +160,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
     @extend_schema(
         summary="Soft-disable a calendar",
         description=(
-            "Disables a calendar by setting is_active=False instead of deleting the row. "
+            "Disables a calendar by setting visibility=inactive instead of deleting the row. "
             "The row persists and is hidden from default list/detail queries. "
             "\n\n"
             "**Authorization rules (enforced after org-scoping):**\n"
@@ -171,7 +175,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         responses={204: None},
     )
     def destroy(self, request, *args, **kwargs):
-        """Soft-disable the calendar (set is_active=False) instead of hard-deleting.
+        """Soft-disable the calendar (set visibility=inactive) instead of hard-deleting.
 
         Applies object-type-aware permission gating:
         - BUNDLE: admin-only (bundles are management resources).
@@ -200,8 +204,8 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                     "You must own this calendar or be an org admin to disable it."
                 )
 
-        calendar.is_active = False
-        calendar.save(update_fields=["is_active"])
+        calendar.visibility = CalendarVisibility.INACTIVE
+        calendar.save(update_fields=["visibility"])
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(request=CalendarBundleCreateSerializer())

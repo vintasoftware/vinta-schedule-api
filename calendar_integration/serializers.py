@@ -10,7 +10,7 @@ from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
-from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.constants import CalendarProvider, CalendarType, CalendarVisibility
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarIntegrationError,
@@ -162,7 +162,7 @@ class CalendarSerializer(VirtualModelSerializer):
             "calendar_type",
             "capacity",
             "manage_available_windows",
-            "is_active",
+            "visibility",
             "sync_enabled",
         )
         read_only_fields = (
@@ -171,7 +171,6 @@ class CalendarSerializer(VirtualModelSerializer):
             "provider",
             "calendar_type",
             "capacity",
-            "is_active",
         )
 
     @inject
@@ -226,7 +225,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
             queryset=(
                 Calendar.objects.filter_by_organization(
                     organization_id=active_membership.organization_id
-                ).filter(is_active=True)
+                ).exclude_inactive()
                 if active_membership
                 else Calendar.original_manager.none()
             ),
@@ -235,7 +234,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
             queryset=(
                 Calendar.objects.filter_by_organization(
                     organization_id=active_membership.organization_id
-                ).filter(is_active=True)
+                ).exclude_inactive()
                 if active_membership
                 else Calendar.original_manager.none()
             ),
@@ -326,7 +325,7 @@ class CalendarBundleUpdateSerializer(serializers.Serializer):
 
             # Build the queryset: (active OR in existing_child_ids) AND org-scoped
             qs = Calendar.objects.filter_by_organization(organization_id=org_id).filter(
-                Q(is_active=True) | Q(id__in=existing_child_ids)
+                ~Q(visibility=CalendarVisibility.INACTIVE) | Q(id__in=existing_child_ids)
             )
         else:
             qs = Calendar.original_manager.none()
@@ -585,10 +584,9 @@ class ResourceAllocationSerializer(VirtualModelSerializer):
         # add calendar field dynamically to filter by organization_id
         self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                Calendar.objects.filter_by_organization(membership.organization_id).filter(
-                    calendar_type=CalendarType.RESOURCE,
-                    is_active=True,
-                )
+                Calendar.objects.filter_by_organization(membership.organization_id)
+                .exclude_inactive()
+                .filter(calendar_type=CalendarType.RESOURCE)
                 if membership
                 else Calendar.original_manager.none()
             ),

@@ -69,6 +69,12 @@ class EventManagementPermissions(TextChoices):
     RESCHEDULE = "reschedule", "Reschedule Event"
 
 
+class CalendarVisibility(TextChoices):
+    ACTIVE = "active", "Active"
+    UNLISTED = "unlisted", "Unlisted"
+    INACTIVE = "inactive", "Inactive"
+
+
 class IncomingWebhookProcessingStatus(TextChoices):
     PENDING = "pending", "Pending"
     PROCESSED = "processed", "Processed"

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q, Subquery
 
-from calendar_integration.constants import CalendarSyncStatus, CalendarType
+from calendar_integration.constants import CalendarSyncStatus, CalendarType, CalendarVisibility
 from calendar_integration.database_functions import (
     GetAvailableTimeOccurrencesJSON,
     GetAvailableTimeOccurrencesWithBulkModificationsJSON,
@@ -127,6 +127,14 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
     """
     Custom QuerySet for Calendar model to handle specific queries.
     """
+
+    def exclude_inactive(self):
+        """Exclude soft-deleted calendars (visibility=inactive). Includes active and unlisted."""
+        return self.exclude(visibility=CalendarVisibility.INACTIVE)
+
+    def only_listed(self):
+        """Return only calendars visible in booking/public queries (visibility=active)."""
+        return self.filter(visibility=CalendarVisibility.ACTIVE)
 
     def filter_by_is_virtual(self, is_virtual=True):
         """

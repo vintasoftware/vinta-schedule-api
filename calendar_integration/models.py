@@ -15,6 +15,7 @@ from calendar_integration.constants import (
     CalendarSyncStatus,
     CalendarSyncTriggerSource,
     CalendarType,
+    CalendarVisibility,
     EventManagementPermissions,
     IncomingWebhookProcessingStatus,
     RecurrenceFrequency,
@@ -109,15 +110,19 @@ class Calendar(OrganizationModel):
             "If true, this event can be scheduled by external users through public scheduling links."
         ),
     )
-    is_active = models.BooleanField(
-        default=True,
-        db_default=True,
+    visibility = models.CharField(
+        max_length=20,
+        choices=CalendarVisibility,
+        default=CalendarVisibility.ACTIVE,
+        db_default=CalendarVisibility.ACTIVE,
         db_index=True,
         help_text=(
-            "Whether this calendar is active. Inactive calendars are hidden from default "
-            "list/detail queries. Use DELETE /calendar/{id}/ to soft-disable (sets this to False) "
-            "instead of deleting the row. Opt-in to see disabled calendars via "
-            "?include_inactive=true. Default True keeps every existing read unchanged."
+            "Controls how this calendar appears in queries. "
+            "active: listed and available for booking (default). "
+            "unlisted: hidden from listing/booking queries but still synced for conflict detection; "
+            "survives re-import so user opt-out is preserved. "
+            "inactive: soft-deleted, hidden from all queries and not synced. "
+            "Use DELETE /calendars/{id}/ to transition to inactive instead of hard-deleting."
         ),
     )
     sync_enabled = models.BooleanField(

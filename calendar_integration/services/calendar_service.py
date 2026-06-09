@@ -23,6 +23,7 @@ from calendar_integration.constants import (
     CalendarSyncStatus,
     CalendarSyncTriggerSource,
     CalendarType,
+    CalendarVisibility,
     IncomingWebhookProcessingStatus,
 )
 from calendar_integration.exceptions import (
@@ -711,8 +712,8 @@ class CalendarService(BaseCalendarService):
                         "latest_original_payload": calendar_data.original_payload or {},
                     },
                 },
-                # sync_enabled is seeded only on first import (create), never on
-                # re-import, so a user's later opt-in/out is preserved.
+                # sync_enabled and visibility are seeded only on first import (create), never
+                # on re-import, so a user's later opt-in/out is preserved.
                 create_defaults={
                     "name": calendar_data.name,
                     "description": calendar_data.description,
@@ -724,6 +725,7 @@ class CalendarService(BaseCalendarService):
                     "sync_enabled": self._sync_enabled_default_for_access_role(
                         calendar_data.access_role
                     ),
+                    "visibility": CalendarVisibility.ACTIVE,
                 },
             )
             CalendarOwnership.objects.update_or_create(
@@ -3235,7 +3237,7 @@ class CalendarService(BaseCalendarService):
 
         ownership = (
             CalendarOwnership.objects.filter_by_organization(self.organization.id)
-            .filter(user=user, is_default=True, calendar__is_active=True)
+            .filter(user=user, is_default=True, calendar__visibility=CalendarVisibility.ACTIVE)
             .select_related("calendar")
             .order_by("id")
             .first()
