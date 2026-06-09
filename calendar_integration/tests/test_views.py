@@ -1,7 +1,7 @@
 import datetime
 import json
 import uuid
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
