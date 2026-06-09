@@ -6219,6 +6219,87 @@ paths:
               schema:
                 $ref: '#/components/schemas/Profile'
           description: ''
+  /profile/{user}/profile-picture-upload-params/:
+    post:
+      operationId: profile_profile_picture_upload_params_create
+      description: Returns the parameters needed to upload a profile picture directly
+        to S3. Only works for your own profile.
+      summary: Get S3 upload params for profile picture
+      parameters:
+      - in: path
+        name: user
+        schema:
+          type: string
+        description: User ID. Use 'me' to refer to the currently authenticated user.
+        required: true
+      tags:
+      - profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfilePictureUploadParams'
+          description: ''
+  /profile/{user}/profile-picture-upload-params{format}:
+    post:
+      operationId: profile_profile_picture_upload_params_formatted_create
+      description: Returns the parameters needed to upload a profile picture directly
+        to S3. Only works for your own profile.
+      summary: Get S3 upload params for profile picture
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: user
+        schema:
+          type: string
+        description: User ID. Use 'me' to refer to the currently authenticated user.
+        required: true
+      tags:
+      - profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfilePictureUploadParams'
+          description: ''
   /public-api-tokens/:
     get:
       operationId: public_api_tokens_list
@@ -9905,8 +9986,8 @@ components:
           maxLength: 255
         profile_picture:
           type: string
-          format: uri
           nullable: true
+          maxLength: 255
     PatchedServiceAccountWrite:
       type: object
       description: |-
@@ -9972,10 +10053,54 @@ components:
           maxLength: 255
         profile_picture:
           type: string
-          format: uri
           nullable: true
+          maxLength: 255
       required:
       - id
+    ProfilePictureUploadParams:
+      type: object
+      properties:
+        object_key:
+          type: string
+        access_key_id:
+          type: string
+          nullable: true
+        session_token:
+          type: string
+          nullable: true
+        region:
+          type: string
+        bucket:
+          type: string
+        endpoint:
+          type: string
+        acl:
+          type: string
+        allow_existence_optimization:
+          type: boolean
+      required:
+      - access_key_id
+      - acl
+      - allow_existence_optimization
+      - bucket
+      - endpoint
+      - object_key
+      - region
+      - session_token
+    ProfilePictureUploadParamsRequest:
+      type: object
+      properties:
+        file_name:
+          type: string
+        file_type:
+          type: string
+        file_size:
+          type: integer
+          minimum: 1
+      required:
+      - file_name
+      - file_size
+      - file_type
     ProviderEnum:
       enum:
       - internal

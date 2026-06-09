@@ -17,13 +17,21 @@ def get_signed_url(value):
     )
 
     if not isinstance(value, str):
-        return value.url
+        # FieldFile from ORM — extract stored key so endpoint replacement applies
+        if not value:
+            return None
+        value = value.name
+        if not value:
+            return None
 
     if value.startswith(settings.S3DIRECT_ENDPOINT):
         s3_base_url = f"{settings.S3DIRECT_ENDPOINT}/{settings.AWS_MEDIA_BUCKET_NAME}/"
         s3_key = value.split(s3_base_url)[-1]
     elif value.startswith(settings.MEDIA_URL):
         s3_key = value.split(settings.MEDIA_URL)[-1]
+    elif "://" not in value:
+        # Bare S3 key (e.g. "uploads/profile_pictures/file.jpg")
+        s3_key = value
     else:
         url_parts = urlsplit(value)
         # url_parts.path starts with a slash
@@ -35,7 +43,13 @@ def get_signed_url(value):
         else:
             # the first element is an empty string
             s3_key = "/" + "/".join(url_path_parts[1:])
-    return MediaStorage().url(name=s3_key, expire=7200)
+
+    url = MediaStorage().url(name=s3_key, expire=7200)
+    internal = getattr(settings, "AWS_MEDIA_S3_ENDPOINT_URL", None)
+    external = getattr(settings, "S3DIRECT_ENDPOINT", None)
+    if internal and external and internal != external:
+        url = url.replace(internal, external, 1)
+    return url
 
 
 def adjust_s3_media_url(data):

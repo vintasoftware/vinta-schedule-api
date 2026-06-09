@@ -13,13 +13,6 @@ STATIC_URL = "/static/"
 MEDIA_ROOT = base_dir_join("mediafiles")
 MEDIA_URL = "/media/"
 
-# Backward compatibility with MinIO (deprecated)
-MINIO_ACCESS_KEY = config("MINIO_ROOT_USER", default="test")
-MINIO_SECRET_KEY = config("MINIO_ROOT_PASSWORD", default="test")
-MINIO_BUCKET_NAME = config("MINIO_BUCKET_NAME", default="vinta_schedule")
-MINIO_ENDPOINT = config("MINIO_ENDPOINT", default="http://floci:4566")
-
-# Floci S3 configuration (preferred)
 FLOCI_ENDPOINT = config("FLOCI_ENDPOINT", default="http://floci:4566")
 AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID", default="test")
 AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY", default="test")

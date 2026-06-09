@@ -12,7 +12,6 @@ STATIC_URL = "/static/"
 
 MEDIA_ROOT = base_dir_join("mediafiles")
 
-USE_MINIO = False
 AWS_MEDIA_LOCATION = ""
 AWS_MEDIA_S3_CUSTOM_DOMAIN = "media-test.vinta_schedule.com.br"
 S3DIRECT_ENDPOINT = "https://s3.us-east-1.amazonaws.com"

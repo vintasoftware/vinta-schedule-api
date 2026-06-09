@@ -1,10 +1,22 @@
+from unittest.mock import patch
+
 from django.urls import reverse
 
 import pytest
 from rest_framework import status
+from s3direct.utils import AWSCredentials
 
 from users.factories import UserFactory
 from users.fixtures import *  # noqa: F401
+
+
+S3_TEST_SETTINGS = {
+    "AWS_STORAGE_BUCKET_NAME": "test-bucket",
+    "AWS_S3_REGION_NAME": "us-east-1",
+    "AWS_S3_ENDPOINT_URL": "https://s3.us-east-1.amazonaws.com",
+    "AWS_ACCESS_KEY_ID": "test-access-key",
+    "AWS_SECRET_ACCESS_KEY": "test-secret-key",
+}
 
 
 @pytest.mark.django_db
@@ -108,3 +120,83 @@ class TestProfileViewSet:
         response = auth_client.patch(url, data, format="json")
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+@pytest.mark.django_db
+class TestProfilePictureUploadParams:
+    """Test suite for the profile_picture_upload_params action."""
+
+    def _url(self, pk):
+        return reverse("api:Profile-profile-picture-upload-params", kwargs={"pk": pk})
+
+    def _valid_payload(self):
+        return {"file_name": "avatar.jpg", "file_type": "image/jpeg", "file_size": 1024}
+
+    @patch("users.views.get_aws_credentials")
+    def test_success_me(self, mock_creds, auth_client, settings):
+        mock_creds.return_value = AWSCredentials(
+            token=None, secret_key="secret", access_key="AKIATEST"
+        )
+        for k, v in S3_TEST_SETTINGS.items():
+            setattr(settings, k, v)
+
+        response = auth_client.post(self._url("me"), self._valid_payload(), format="json")
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.data
+        assert "object_key" in data
+        assert data["object_key"].startswith("uploads/profile_pictures/")
+        assert data["access_key_id"] == "AKIATEST"
+        assert data["region"] == "us-east-1"
+        assert data["bucket"] == "test-bucket"
+        assert data["endpoint"] == "https://s3.us-east-1.amazonaws.com"
+        assert data["acl"] == "private"
+
+    @patch("users.views.get_aws_credentials")
+    def test_success_by_pk(self, mock_creds, auth_client, user, settings):
+        mock_creds.return_value = AWSCredentials(
+            token=None, secret_key="secret", access_key="AKIATEST"
+        )
+        for k, v in S3_TEST_SETTINGS.items():
+            setattr(settings, k, v)
+
+        url = self._url(user.profile.pk)
+        response = auth_client.post(url, self._valid_payload(), format="json")
+
+        assert response.status_code == status.HTTP_200_OK
+
+    def test_failure_unauthenticated(self, anonymous_client, settings):
+        for k, v in S3_TEST_SETTINGS.items():
+            setattr(settings, k, v)
+
+        response = anonymous_client.post(self._url("me"), self._valid_payload(), format="json")
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+    @patch("users.views.get_aws_credentials")
+    def test_failure_other_user_profile(self, mock_creds, auth_client, settings):
+        mock_creds.return_value = AWSCredentials(
+            token=None, secret_key="secret", access_key="AKIATEST"
+        )
+        for k, v in S3_TEST_SETTINGS.items():
+            setattr(settings, k, v)
+        other_user = UserFactory().create_user(email="otheruser2@example.com")
+
+        response = auth_client.post(
+            self._url(other_user.profile.pk), self._valid_payload(), format="json"
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    @patch("users.views.get_aws_credentials")
+    def test_failure_missing_file_name(self, mock_creds, auth_client, settings):
+        mock_creds.return_value = AWSCredentials(
+            token=None, secret_key="secret", access_key="AKIATEST"
+        )
+        for k, v in S3_TEST_SETTINGS.items():
+            setattr(settings, k, v)
+
+        payload = {"file_type": "image/jpeg", "file_size": 1024}
+        response = auth_client.post(self._url("me"), payload, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST

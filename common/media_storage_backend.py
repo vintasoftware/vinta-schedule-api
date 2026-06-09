@@ -9,7 +9,5 @@ class MediaStorage(S3Boto3Storage):
 
     if getattr(settings, "USE_FLOCI", False):
         endpoint_url = getattr(settings, "FLOCI_ENDPOINT", "")
-    elif getattr(settings, "USE_MINIO", False):
-        endpoint_url = getattr(settings, "MINIO_ENDPOINT", "")
     else:
         custom_domain = getattr(settings, "AWS_MEDIA_S3_CUSTOM_DOMAIN", "")

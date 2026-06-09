@@ -6,6 +6,23 @@ from .models import Profile, User
 from .virtual_models import ProfileVirtualModel, UserVirtualModel
 
 
+class ProfilePictureUploadParamsRequestSerializer(serializers.Serializer):
+    file_name = serializers.CharField()
+    file_type = serializers.CharField()
+    file_size = serializers.IntegerField(min_value=1)
+
+
+class ProfilePictureUploadParamsSerializer(serializers.Serializer):
+    object_key = serializers.CharField()
+    access_key_id = serializers.CharField(allow_null=True)
+    session_token = serializers.CharField(allow_null=True)
+    region = serializers.CharField()
+    bucket = serializers.CharField()
+    endpoint = serializers.CharField()
+    acl = serializers.CharField()
+    allow_existence_optimization = serializers.BooleanField()
+
+
 class ProfileBasicSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(source="user_id", read_only=True)  # noqa: A003
 
