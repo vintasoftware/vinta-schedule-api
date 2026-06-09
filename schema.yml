@@ -1868,7 +1868,21 @@ paths:
     get:
       operationId: calendar_list
       description: ViewSet for managing calendars.
+      summary: List calendars
       parameters:
+      - in: query
+        name: include_inactive
+        schema:
+          type: boolean
+        description: When true, include inactive (soft-deleted) calendars (visibility=inactive).
+          Defaults to false.
+      - in: query
+        name: include_unlisted
+        schema:
+          type: boolean
+        description: When true, include unlisted calendars (visibility=unlisted) in
+          the response. Unlisted calendars are hidden from booking queries but still
+          synced. Defaults to false.
       - name: limit
         required: false
         in: query
@@ -1924,6 +1938,7 @@ paths:
     get:
       operationId: calendar_formatted_list
       description: ViewSet for managing calendars.
+      summary: List calendars
       parameters:
       - in: path
         name: format
@@ -1932,6 +1947,19 @@ paths:
           enum:
           - .json
         required: true
+      - in: query
+        name: include_inactive
+        schema:
+          type: boolean
+        description: When true, include inactive (soft-deleted) calendars (visibility=inactive).
+          Defaults to false.
+      - in: query
+        name: include_unlisted
+        schema:
+          type: boolean
+        description: When true, include unlisted calendars (visibility=unlisted) in
+          the response. Unlisted calendars are hidden from booking queries but still
+          synced. Defaults to false.
       - name: limit
         required: false
         in: query

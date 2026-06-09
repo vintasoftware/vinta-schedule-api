@@ -2,11 +2,17 @@ import datetime
 from collections.abc import Callable
 from typing import Annotated
 
+from django.db.models import Case, IntegerField, Value, When
 from django.http import Http404
 
 from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
-from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
+from drf_spectacular.utils import (
+    OpenApiParameter,
+    OpenApiResponse,
+    extend_schema,
+    extend_schema_view,
+)
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
@@ -85,6 +91,34 @@ def _parse_bool(value, *, default: bool = True) -> bool:
     return bool(value)
 
 
+@extend_schema_view(
+    list=extend_schema(
+        summary="List calendars",
+        parameters=[
+            OpenApiParameter(
+                name="include_unlisted",
+                type=bool,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "When true, include unlisted calendars (visibility=unlisted) in the response. "
+                    "Unlisted calendars are hidden from booking queries but still synced. "
+                    "Defaults to false."
+                ),
+            ),
+            OpenApiParameter(
+                name="include_inactive",
+                type=bool,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "When true, include inactive (soft-deleted) calendars (visibility=inactive). "
+                    "Defaults to false."
+                ),
+            ),
+        ],
+    ),
+)
 class CalendarViewSet(VintaScheduleModelViewSet):
     """
     ViewSet for managing calendars.
@@ -97,9 +131,10 @@ class CalendarViewSet(VintaScheduleModelViewSet):
     def get_queryset(self):
         """Filter calendars by user's accessible calendar organizations.
 
-        By default inactive calendars (visibility=inactive) are excluded. Both active and
-        unlisted calendars are returned so users can manage their unlisted calendars.
-        Pass ?include_inactive=true to also see inactive (soft-deleted) calendars.
+        By default only active calendars are returned. Pass:
+          ?include_unlisted=true  to also include unlisted calendars.
+          ?include_inactive=true  to also include inactive (soft-deleted) calendars.
+        Both flags can be combined.
         """
         user = self.request.user
         if not user.is_authenticated:
@@ -112,12 +147,28 @@ class CalendarViewSet(VintaScheduleModelViewSet):
 
         qs = super().get_queryset().filter_by_organization(membership.organization_id)
 
-        include_inactive = self.request.query_params.get("include_inactive", "").lower() == "true"
-        if not include_inactive:
-            qs = qs.exclude_inactive()
+        params = self.request.query_params
+        include_unlisted = params.get("include_unlisted", "").lower() == "true"
+        include_inactive = params.get("include_inactive", "").lower() == "true"
 
-        # Sync-enabled calendars first; stable tiebreak by id.
-        return qs.order_by("-sync_enabled", "id")
+        if not include_inactive and not include_unlisted:
+            qs = qs.filter(visibility=CalendarVisibility.ACTIVE)
+        elif not include_inactive:
+            qs = qs.exclude(visibility=CalendarVisibility.INACTIVE)
+        elif not include_unlisted:
+            qs = qs.exclude(visibility=CalendarVisibility.UNLISTED)
+
+        # active first, unlisted second, inactive last; sync-enabled before non-sync within each; stable tiebreak by id.
+        visibility_order = Case(
+            When(visibility=CalendarVisibility.ACTIVE, then=Value(0)),
+            When(visibility=CalendarVisibility.UNLISTED, then=Value(1)),
+            When(visibility=CalendarVisibility.INACTIVE, then=Value(2)),
+            default=Value(3),
+            output_field=IntegerField(),
+        )
+        return qs.annotate(visibility_order=visibility_order).order_by(
+            "visibility_order", "-sync_enabled", "id"
+        )
 
     @extend_schema(
         summary="Get the caller's default calendar",

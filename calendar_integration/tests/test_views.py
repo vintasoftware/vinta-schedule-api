@@ -2133,6 +2133,32 @@ class TestCalendarViewSet:
         ids = [c["id"] for c in response.data["results"]]
         assert calendar.id in ids
 
+    def test_unlisted_calendar_hidden_from_default_list(self, auth_client, organization, user):
+        """Unlisted calendar is excluded from default GET /calendar/ list."""
+        unlisted = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, unlisted)
+        unlisted.visibility = CalendarVisibility.UNLISTED
+        unlisted.save(update_fields=["visibility"])
+
+        list_url = reverse("api:Calendars-list")
+        response = auth_client.get(list_url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert unlisted.id not in ids
+
+    def test_include_unlisted_shows_unlisted_calendar(self, auth_client, organization, user):
+        """GET /calendar/?include_unlisted=true surfaces unlisted calendars."""
+        unlisted = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, unlisted)
+        unlisted.visibility = CalendarVisibility.UNLISTED
+        unlisted.save(update_fields=["visibility"])
+
+        list_url = reverse("api:Calendars-list")
+        response = auth_client.get(list_url, {"include_unlisted": "true"})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert unlisted.id in ids
+
     def test_retrieve_disabled_calendar_returns_404_by_default(self, auth_client, calendar, user):
         """Retrieve of a disabled calendar via the default queryset → 404."""
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
