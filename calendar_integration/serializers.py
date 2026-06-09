@@ -947,7 +947,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 value = attrs.get(field)
                 if value is not None:
                     wall_clock = value.astimezone(datetime.UTC).replace(tzinfo=None)
-                    attrs[field] = wall_clock.replace(tzinfo=tz)
+                    attrs[field] = wall_clock.replace(tzinfo=tz).astimezone(datetime.UTC)
 
         calendar = attrs.get("calendar")
 

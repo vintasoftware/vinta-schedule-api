@@ -382,12 +382,8 @@ class GoogleCalendarAdapter(CalendarAdapter):
             external_id=created_event["id"],
             title=created_event["summary"],
             description=created_event.get("description", ""),
-            start_time=datetime.datetime.strptime(
-                created_event["start"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=datetime.UTC),
-            end_time=datetime.datetime.strptime(
-                created_event["end"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=datetime.UTC),
+            start_time=self._parse_google_datetime(created_event["start"]),
+            end_time=self._parse_google_datetime(created_event["end"]),
             timezone=created_event.get("start", {}).get("timeZone"),
             original_payload=created_event,
             recurrence_rule=recurrence_rule,
@@ -579,12 +575,8 @@ class GoogleCalendarAdapter(CalendarAdapter):
             external_id=updated_event["id"],
             title=updated_event["summary"],
             description=updated_event.get("description", ""),
-            start_time=datetime.datetime.strptime(
-                updated_event["start"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=datetime.UTC),
-            end_time=datetime.datetime.strptime(
-                updated_event["end"]["dateTime"], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=datetime.UTC),
+            start_time=self._parse_google_datetime(updated_event["start"]),
+            end_time=self._parse_google_datetime(updated_event["end"]),
             timezone=updated_event.get("start", {}).get("timeZone"),
             original_payload=updated_event,
             recurrence_rule=recurrence_rule,

@@ -1332,7 +1332,7 @@ class CalendarService(BaseCalendarService):
             calendar_fk=calendar,
             organization=self.organization,
             title=event_data.title,
-            description=event_data.description,
+            description=event_data.description or "",
             start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
                 event_data.start_time, event_data.timezone
             ),
