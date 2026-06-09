@@ -147,16 +147,26 @@ class CalendarViewSet(VintaScheduleModelViewSet):
 
         qs = super().get_queryset().filter_by_organization(membership.organization_id)
 
-        params = self.request.query_params
-        include_unlisted = params.get("include_unlisted", "").lower() == "true"
-        include_inactive = params.get("include_inactive", "").lower() == "true"
+        # For list, apply visibility filters driven by query params.
+        # For all other actions (retrieve, update, destroy, custom actions) only exclude
+        # inactive so unlisted calendars remain directly addressable by id.
+        if self.action == "list":
+            params = self.request.query_params
+            include_unlisted = params.get("include_unlisted", "").lower() == "true"
+            include_inactive = params.get("include_inactive", "").lower() == "true"
 
-        if not include_inactive and not include_unlisted:
-            qs = qs.filter(visibility=CalendarVisibility.ACTIVE)
-        elif not include_inactive:
-            qs = qs.exclude(visibility=CalendarVisibility.INACTIVE)
-        elif not include_unlisted:
-            qs = qs.exclude(visibility=CalendarVisibility.UNLISTED)
+            if not include_inactive and not include_unlisted:
+                qs = qs.filter(visibility=CalendarVisibility.ACTIVE)
+            elif not include_inactive:
+                qs = qs.exclude(visibility=CalendarVisibility.INACTIVE)
+            elif not include_unlisted:
+                qs = qs.exclude(visibility=CalendarVisibility.UNLISTED)
+        else:
+            include_inactive = (
+                self.request.query_params.get("include_inactive", "").lower() == "true"
+            )
+            if not include_inactive:
+                qs = qs.exclude_inactive()
 
         # active first, unlisted second, inactive last; sync-enabled before non-sync within each; stable tiebreak by id.
         visibility_order = Case(
