@@ -1,15 +1,24 @@
-from rest_framework import serializers
+from typing import Annotated
 
+from django.db import IntegrityError, transaction
+
+from dependency_injector.wiring import Provide, inject
+from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
+
+from organizations.models import get_active_organization_membership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
+from public_api.services import PublicAPIAuthService
 
 
 class SystemUserTokenCreateSerializer(serializers.Serializer):
     """Input serializer for creating a new public-API token (SystemUser + ResourceAccess rows).
 
     Accepts ``integration_name`` and ``available_resources`` (a non-empty list of valid
-    ``PublicAPIResources`` values).  On a successful create the view adds a write-once
-    ``token`` field to the response data; this serializer never stores or exposes
+    ``PublicAPIResources`` values).  ``create()`` provisions the ``SystemUser`` via the
+    injected auth service and bulk-creates the ``ResourceAccess`` grants, attaching the
+    write-once plaintext ``token`` to the returned instance.  Never stores or exposes
     ``long_lived_token_hash``.
     """
 
@@ -19,6 +28,53 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
         required=True,
         allow_empty=False,
     )
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        public_api_auth_service: Annotated[
+            "PublicAPIAuthService | None", Provide["public_api_auth_service"]
+        ] = None,
+        **kwargs,
+    ) -> None:
+        self.public_api_auth_service = public_api_auth_service
+        super().__init__(*args, **kwargs)
+
+    def create(self, validated_data: dict) -> SystemUser:
+        request = self.context["request"]
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            # IsOrganizationAdmin already guards this; defensive fallback.
+            raise PermissionDenied("No active organisation membership.")
+
+        integration_name: str = validated_data["integration_name"]
+        available_resources: list[str] = validated_data["available_resources"]
+
+        try:
+            with transaction.atomic():
+                system_user, plaintext_token = self.public_api_auth_service.create_system_user(
+                    integration_name=integration_name,
+                    organization=membership.organization,
+                )
+                ResourceAccess.objects.bulk_create(
+                    [
+                        ResourceAccess(system_user=system_user, resource_name=resource_name)
+                        for resource_name in available_resources
+                    ]
+                )
+        except IntegrityError as e:
+            raise serializers.ValidationError(
+                {
+                    "integration_name": [
+                        f"A token with integration_name '{integration_name}' already exists."
+                    ]
+                }
+            ) from e
+
+        # Expose the plaintext token once via a pseudo-attribute for the response serializer.
+        system_user.token = plaintext_token  # type: ignore[attr-defined]
+        return system_user
 
 
 class SystemUserTokenResponseSerializer(serializers.ModelSerializer):
