@@ -1,6 +1,6 @@
 from django_filters import rest_framework as filters
 
-from organizations.models import OrganizationInvitation
+from organizations.models import OrganizationInvitation, OrganizationMembership
 
 
 class OrganizationInvitationFilterSet(filters.FilterSet):
@@ -51,3 +51,38 @@ class OrganizationInvitationFilterSet(filters.FilterSet):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+
+class OrganizationMembershipFilterSet(filters.FilterSet):
+    first_name = filters.CharFilter(
+        field_name="user__profile__first_name",
+        lookup_expr="icontains",
+        label="Filter by partial first name match",
+    )
+    last_name = filters.CharFilter(
+        field_name="user__profile__last_name",
+        lookup_expr="icontains",
+        label="Filter by partial last name match",
+    )
+    email = filters.CharFilter(
+        field_name="user__email",
+        lookup_expr="icontains",
+        label="Filter by partial email match",
+    )
+    search = filters.CharFilter(
+        method="filter_search",
+        label="Search by first name, last name, or email (OR)",
+    )
+
+    class Meta:
+        model = OrganizationMembership
+        fields = ("first_name", "last_name", "email", "search")
+
+    def filter_search(self, queryset, name, value):
+        from django.db.models import Q
+
+        return queryset.filter(
+            Q(user__profile__first_name__icontains=value)
+            | Q(user__profile__last_name__icontains=value)
+            | Q(user__email__icontains=value)
+        )

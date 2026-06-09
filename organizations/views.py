@@ -28,7 +28,10 @@ from organizations.exceptions import (
     NoServiceAccountConfiguredError,
     UserAlreadyHasMembershipError,
 )
-from organizations.filtersets import OrganizationInvitationFilterSet
+from organizations.filtersets import (
+    OrganizationInvitationFilterSet,
+    OrganizationMembershipFilterSet,
+)
 from organizations.models import (
     Organization,
     OrganizationInvitation,
@@ -539,6 +542,7 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     queryset = OrganizationMembership.objects.select_related("user", "user__profile")
     serializer_class = OrganizationMembershipSerializer
     permission_classes = (IsOrganizationAdmin,)
+    filterset_class = OrganizationMembershipFilterSet
 
     def get_queryset(self):
         """Org-scoped queryset: return members of the caller's organization only."""

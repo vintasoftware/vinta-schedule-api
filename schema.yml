@@ -4928,6 +4928,21 @@ paths:
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
       parameters:
+      - in: query
+        name: email
+        schema:
+          type: string
+        description: Filter by partial email match
+      - in: query
+        name: first_name
+        schema:
+          type: string
+        description: Filter by partial first name match
+      - in: query
+        name: last_name
+        schema:
+          type: string
+        description: Filter by partial last name match
       - name: limit
         required: false
         in: query
@@ -4940,6 +4955,11 @@ paths:
         description: The initial index from which to return the results.
         schema:
           type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Search by first name, last name, or email (OR)
       tags:
       - organization-members
       security:
@@ -4966,6 +4986,16 @@ paths:
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
       parameters:
+      - in: query
+        name: email
+        schema:
+          type: string
+        description: Filter by partial email match
+      - in: query
+        name: first_name
+        schema:
+          type: string
+        description: Filter by partial first name match
       - in: path
         name: format
         schema:
@@ -4973,6 +5003,11 @@ paths:
           enum:
           - .json
         required: true
+      - in: query
+        name: last_name
+        schema:
+          type: string
+        description: Filter by partial last name match
       - name: limit
         required: false
         in: query
@@ -4985,6 +5020,11 @@ paths:
         description: The initial index from which to return the results.
         schema:
           type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Search by first name, last name, or email (OR)
       tags:
       - organization-members
       security:

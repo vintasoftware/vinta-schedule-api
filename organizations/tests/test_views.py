@@ -1950,6 +1950,154 @@ class TestOrganizationMembershipViewSet:
         result = response.json()
         assert result["organization"]["id"] == organization.id
 
+    def _setup_admin_org(self, user):
+        organization = OrganizationTestFactory.create_organization(name="Search Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        return organization
+
+    def _make_member(self, organization, first_name, last_name, email):
+        from users.factories import UserFactory
+
+        member_user = UserFactory().create_user(email=email)
+        member_user.profile.first_name = first_name
+        member_user.profile.last_name = last_name
+        member_user.profile.save()
+        return baker.make(
+            OrganizationMembership,
+            user=member_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+    def test_filter_by_first_name(self, auth_client, user):
+        organization = self._setup_admin_org(user)
+        self._make_member(organization, "Alice", "Smith", "alice@example.com")
+        self._make_member(organization, "Bob", "Jones", "bob@example.com")
+
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url, {"first_name": "ali"})
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        assert len(results) == 1
+        assert results[0]["user_first_name"] == "Alice"
+
+    def test_filter_by_last_name(self, auth_client, user):
+        organization = self._setup_admin_org(user)
+        self._make_member(organization, "Alice", "Smith", "alice@example.com")
+        self._make_member(organization, "Bob", "Jones", "bob@example.com")
+
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url, {"last_name": "jon"})
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        assert len(results) == 1
+        assert results[0]["user_last_name"] == "Jones"
+
+    def test_filter_by_email(self, auth_client, user):
+        organization = self._setup_admin_org(user)
+        self._make_member(organization, "Alice", "Smith", "alice@example.com")
+        self._make_member(organization, "Bob", "Jones", "bob@example.com")
+
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url, {"email": "bob@"})
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        assert len(results) == 1
+        assert results[0]["user_email"] == "bob@example.com"
+
+    def test_search_matches_first_name(self, auth_client, user):
+        organization = self._setup_admin_org(user)
+        self._make_member(organization, "Alice", "Smith", "alice@example.com")
+        self._make_member(organization, "Bob", "Jones", "bob@example.com")
+
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url, {"search": "ALICE"})
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        assert len(results) == 1
+        assert results[0]["user_first_name"] == "Alice"
+
+    def test_search_matches_last_name(self, auth_client, user):
+        organization = self._setup_admin_org(user)
+        self._make_member(organization, "Alice", "Smith", "alice@example.com")
+        self._make_member(organization, "Bob", "Jones", "bob@example.com")
+
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url, {"search": "SMITH"})
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        assert len(results) == 1
+        assert results[0]["user_last_name"] == "Smith"
+
+    def test_search_matches_email(self, auth_client, user):
+        organization = self._setup_admin_org(user)
+        self._make_member(organization, "Alice", "Smith", "alice@example.com")
+        self._make_member(organization, "Bob", "Jones", "bob@example.com")
+
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url, {"search": "BOB@EXAMPLE"})
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        assert len(results) == 1
+        assert results[0]["user_email"] == "bob@example.com"
+
+    def test_search_or_across_fields(self, auth_client, user):
+        """search=<term> matches any member whose first name, last name, OR email contains term."""
+        organization = self._setup_admin_org(user)
+        self._make_member(organization, "Alice", "Smith", "alice@example.com")
+        self._make_member(organization, "Bob", "Smith", "bob@example.com")
+        self._make_member(organization, "Carol", "Jones", "carol@example.com")
+
+        url = reverse("api:OrganizationMembers-list")
+        # "smith" matches Alice and Bob by last name
+        response = auth_client.get(url, {"search": "smith"})
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        assert len(results) == 2
+        last_names = {r["user_last_name"] for r in results}
+        assert last_names == {"Smith"}
+
+    def test_search_no_match_returns_empty(self, auth_client, user):
+        organization = self._setup_admin_org(user)
+        self._make_member(organization, "Alice", "Smith", "alice@example.com")
+
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url, {"search": "zzznomatch"})
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json()["results"] == []
+
+    def test_filters_scoped_to_own_org(self, auth_client, user):
+        """search must not leak members from other organizations."""
+        org1 = self._setup_admin_org(user)
+        self._make_member(org1, "Alice", "Smith", "alice@example.com")
+
+        org2 = OrganizationTestFactory.create_organization(name="Other Org")
+        self._make_member(org2, "Alice", "Other", "alice2@other.com")
+
+        url = reverse("api:OrganizationMembers-list")
+        response = auth_client.get(url, {"search": "Alice"})
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        # Only the Alice from org1 should appear (email alice@example.com)
+        assert len(results) == 1
+        assert results[0]["user_email"] == "alice@example.com"
+
 
 @pytest.mark.django_db
 class TestSyncRoomsAction:
