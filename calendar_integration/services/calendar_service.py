@@ -21,6 +21,7 @@ from calendar_integration.constants import (
     CalendarOrganizationResourceImportStatus,
     CalendarProvider,
     CalendarSyncStatus,
+    CalendarSyncTriggerSource,
     CalendarType,
     IncomingWebhookProcessingStatus,
 )
@@ -632,10 +633,14 @@ class CalendarService(BaseCalendarService):
             organization_id=self.organization.id,
         )
 
-    def request_calendars_import(self) -> None:
+    def request_calendars_import(self, sync_after_import: bool = True) -> None:
         """
         Import calendars associated with the authenticated account and create them as Calendar
         records.
+
+        :param sync_after_import: When True (default), each imported sync-enabled
+            calendar is also synced. Pass False to only discover/refresh calendar
+            rows without pulling events.
         """
         from calendar_integration.tasks import import_account_calendars_task
 
@@ -650,20 +655,41 @@ class CalendarService(BaseCalendarService):
         )
         _account_id = self.account.id
         _organization_id = self.organization.id
+        _sync_after_import = sync_after_import
 
         transaction.on_commit(
             lambda: import_account_calendars_task.delay(  # type: ignore
                 account_type=_account_type,
                 account_id=_account_id,
                 organization_id=_organization_id,
+                sync_after_import=_sync_after_import,
             )
         )
 
+    @staticmethod
+    def _sync_enabled_default_for_access_role(access_role: str | None) -> bool:
+        """Decide whether a freshly imported calendar should sync by default.
+
+        Calendars the account owns or can write to (the user's own calendars) sync.
+        Subscribed read-only calendars — holidays, birthdays, shared org-wide
+        calendars — default to disabled: their events typically duplicate events
+        already on the user's own calendars, and they aren't useful for scheduling.
+        Unknown access role (e.g. a provider that doesn't report one) defaults to
+        enabled to preserve prior behavior.
+        """
+        if access_role is None:
+            return True
+        return access_role.lower() in ("owner", "writer")
+
     @transaction.atomic()
-    def import_account_calendars(self):
+    def import_account_calendars(self, sync_after_import: bool = True):
         """
         Import calendars associated with the authenticated account and create them as Calendar
         records.
+
+        :param sync_after_import: When True (default), enqueue an event sync for each
+            imported calendar that has sync enabled. The per-calendar ``sync_enabled``
+            flag still gates whether a sync actually runs.
         """
         if not is_authenticated_calendar_service(self):
             raise
@@ -684,6 +710,20 @@ class CalendarService(BaseCalendarService):
                         "latest_original_payload": calendar_data.original_payload or {},
                     },
                 },
+                # sync_enabled is seeded only on first import (create), never on
+                # re-import, so a user's later opt-in/out is preserved.
+                create_defaults={
+                    "name": calendar_data.name,
+                    "description": calendar_data.description,
+                    "email": calendar_data.email,
+                    "provider": CalendarProvider(calendar_data.provider),
+                    "meta": {
+                        "latest_original_payload": calendar_data.original_payload or {},
+                    },
+                    "sync_enabled": self._sync_enabled_default_for_access_role(
+                        calendar_data.access_role
+                    ),
+                },
             )
             CalendarOwnership.objects.update_or_create(
                 organization=self.organization,
@@ -695,12 +735,14 @@ class CalendarService(BaseCalendarService):
             # Grant permissions to calendar owners
             self._grant_calendar_owner_permissions(calendar)
 
-            self.request_calendar_sync(
-                calendar=calendar,
-                start_datetime=datetime.datetime.now(datetime.UTC),
-                end_datetime=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=365),
-                should_update_events=True,
-            )
+            if sync_after_import:
+                self.request_calendar_sync(
+                    calendar=calendar,
+                    start_datetime=datetime.datetime.now(datetime.UTC),
+                    end_datetime=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=365),
+                    should_update_events=True,
+                    trigger_source=CalendarSyncTriggerSource.IMPORT,
+                )
 
     @transaction.atomic()
     def create_virtual_calendar(
@@ -2366,14 +2408,16 @@ class CalendarService(BaseCalendarService):
         start_datetime: datetime.datetime,
         end_datetime: datetime.datetime,
         should_update_events: bool = False,
-    ) -> CalendarSync:
+        trigger_source: CalendarSyncTriggerSource = CalendarSyncTriggerSource.MANUAL,
+    ) -> CalendarSync | None:
         """
         Request a calendar synchronization for a specific date range.
         :param calendar: The calendar to synchronize.
         :param start_datetime: Start date for the event search.
         :param end_datetime: End date for the event search.
         :param should_update_events: Whether to update existing events.
-        :return: Created CalendarSync instance.
+        :param trigger_source: What kicked off this sync (import/manual/webhook/admin).
+        :return: Created CalendarSync instance, or None if the calendar has sync disabled.
         """
         from calendar_integration.tasks import sync_calendar_task
 
@@ -2385,12 +2429,20 @@ class CalendarService(BaseCalendarService):
                 "Calendar adapter is not implemented for the current account provider."
             )
 
+        # Honor the per-calendar opt-out (holidays, birthdays, org-wide calendars, etc.).
+        if not calendar.sync_enabled:
+            logging.getLogger(__name__).info(
+                "Skipping sync for calendar %s: sync_enabled is False.", calendar.id
+            )
+            return None
+
         calendar_sync = CalendarSync.objects.create(
             calendar=calendar,
             organization_id=calendar.organization_id,
             start_datetime=start_datetime,
             end_datetime=end_datetime,
             should_update_events=should_update_events,
+            trigger_source=trigger_source,
         )
         account_type: Literal["social_account", "google_service_account"] = (
             "social_account"
@@ -2467,14 +2519,25 @@ class CalendarService(BaseCalendarService):
         events_dict = self.calendar_adapter.get_events(
             calendar.external_id, calendar.is_resource, start_date, end_date, sync_token
         )
-        events = events_dict["events"]
+        # Materialize so we can collect the incoming external ids up front; the
+        # batch is already held fully in memory while building `changes` below.
+        events = list(events_dict["events"])
         next_sync_token = events_dict["next_sync_token"]
+
+        # Match existing rows by the external ids actually being synced, regardless
+        # of the sync window. An event whose stored instant falls outside this
+        # window (boundary/multi-day events, timezone shifts) must still update its
+        # existing row instead of re-inserting it and colliding with the
+        # (calendar_fk_id, external_id) unique constraint.
+        incoming_external_ids = {e.external_id for e in events if e.external_id}
 
         # Prepare existing data mappings
         (
             calendar_events_by_external_id,
             blocked_times_by_external_id,
-        ) = self._get_existing_calendar_data(calendar.id, start_date, end_date)
+        ) = self._get_existing_calendar_data(
+            calendar.id, start_date, end_date, incoming_external_ids
+        )
 
         # Process events and collect changes
         changes = self._process_events_for_sync(
@@ -2511,27 +2574,41 @@ class CalendarService(BaseCalendarService):
             )
 
     def _get_existing_calendar_data(
-        self, calendar_id: int, start_date: datetime.datetime, end_date: datetime.datetime
+        self,
+        calendar_id: int,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        incoming_external_ids: set[str] | None = None,
     ):
-        """Get existing calendar events and blocked times for the date range."""
+        """Get existing calendar events and blocked times to reconcile against.
+
+        Loads rows that are either (a) inside the sync window — needed so the
+        full-sync deletion pass can spot rows that vanished from the provider — or
+        (b) carry one of the ``incoming_external_ids`` being synced now, even if
+        their stored instant sits outside the window. Without (b), an out-of-window
+        event is treated as new and re-inserted, colliding with the
+        ``(calendar_fk_id, external_id)`` unique constraint.
+        """
         if not self.organization:
             return ({}, {})
+
+        window = Q(start_time__gte=start_date, end_time__lte=end_date)
+        if incoming_external_ids:
+            window |= Q(external_id__in=incoming_external_ids)
 
         calendar_events_by_external_id = {
             e.external_id: e
             for e in CalendarEvent.objects.filter(
+                window,
                 calendar_fk_id=calendar_id,
-                start_time__gte=start_date,
-                end_time__lte=end_date,
                 organization_id=self.organization.id,
             )
         }
         blocked_times_by_external_id = {
             e.external_id: e
             for e in BlockedTime.objects.filter(
+                window,
                 calendar_fk_id=calendar_id,
-                start_time__gte=start_date,
-                end_time__lte=end_date,
                 organization_id=self.organization.id,
             )
         }
@@ -4200,6 +4277,7 @@ class CalendarService(BaseCalendarService):
             start_datetime=start_datetime,
             end_datetime=end_datetime,
             should_update_events=True,  # Webhook implies changes, so update existing events
+            trigger_source=CalendarSyncTriggerSource.WEBHOOK,
         )
 
         # Link webhook event to triggered sync

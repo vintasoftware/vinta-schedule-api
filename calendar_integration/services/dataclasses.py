@@ -118,6 +118,10 @@ class CalendarResourceData:
     capacity: int | None = None
     original_payload: dict | None = None
     is_default: bool = False
+    # Provider access role for the authenticated account on this calendar.
+    # Google: "owner" | "writer" | "reader" | "freeBusyReader". Used to decide
+    # whether a freshly imported calendar should sync by default (own vs subscribed).
+    access_role: str | None = None
 
 
 @dataclass

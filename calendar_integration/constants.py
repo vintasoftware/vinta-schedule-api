@@ -29,6 +29,13 @@ class CalendarSyncStatus(TextChoices):
     NOT_STARTED = "not_started", "Not Started"
 
 
+class CalendarSyncTriggerSource(TextChoices):
+    IMPORT = "import", "Import"
+    MANUAL = "manual", "Manual"
+    WEBHOOK = "webhook", "Webhook"
+    ADMIN = "admin", "Admin"
+
+
 class CalendarOrganizationResourceImportStatus(TextChoices):
     SUCCESS = "success", "Success"
     FAILED = "failed", "Failed"

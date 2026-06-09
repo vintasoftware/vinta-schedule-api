@@ -7,7 +7,11 @@ import pytest
 from allauth.socialaccount.models import SocialAccount
 from model_bakery import baker
 
-from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarSyncTriggerSource,
+    CalendarType,
+)
 from calendar_integration.models import Calendar, CalendarOwnership
 from organizations.exceptions import (
     InvalidInvitationTokenError,
@@ -859,7 +863,9 @@ class TestRequestAllCalendarsSync:
     def mock_calendar_service(self):
         mock_service = Mock()
         mock_service.authenticate.return_value = None
-        mock_service.request_calendar_sync.return_value = None
+        # A non-None return means the sync was enqueued; None now signals the
+        # calendar has sync disabled and is reported under "skipped".
+        mock_service.request_calendar_sync.return_value = Mock()
         return mock_service
 
     @pytest.fixture
@@ -917,6 +923,7 @@ class TestRequestAllCalendarsSync:
             start_datetime=start,
             end_datetime=end,
             should_update_events=True,
+            trigger_source=CalendarSyncTriggerSource.ADMIN,
         )
 
     def test_skips_calendar_without_owner(self, organization_service, mock_calendar_service):

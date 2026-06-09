@@ -13,6 +13,7 @@ from calendar_integration.constants import (
     CalendarOrganizationResourceImportStatus,
     CalendarProvider,
     CalendarSyncStatus,
+    CalendarSyncTriggerSource,
     CalendarType,
     EventManagementPermissions,
     IncomingWebhookProcessingStatus,
@@ -117,6 +118,19 @@ class Calendar(OrganizationModel):
             "list/detail queries. Use DELETE /calendar/{id}/ to soft-disable (sets this to False) "
             "instead of deleting the row. Opt-in to see disabled calendars via "
             "?include_inactive=true. Default True keeps every existing read unchanged."
+        ),
+    )
+    sync_enabled = models.BooleanField(
+        default=True,
+        db_default=True,
+        db_index=True,
+        help_text=(
+            "Whether this calendar's events are pulled from the external provider. Set to "
+            "False to skip syncing calendars that aren't useful for scheduling — holidays, "
+            "birthdays, organization-wide events, etc. When False, no new CalendarSync is "
+            "requested for this calendar (including webhook- and import-triggered syncs); "
+            "previously synced events are left untouched. Default True keeps existing "
+            "calendars syncing as before."
         ),
     )
 
@@ -819,7 +833,7 @@ class RecurringMixin(OrganizationModel):
         after_date = after_date or timezone.now()
 
         try:
-            # Add microsecond to ensure we get occurrences strictly after the given date
+            # Add microsecond to ensure we get occurrences strictly after the given date.
             search_start_date = after_date + datetime.timedelta(microseconds=1)
 
             # Use rule's until date if specified, otherwise use a reasonable future date
@@ -1537,6 +1551,12 @@ class CalendarSync(OrganizationModel):
         max_length=50,
         choices=CalendarSyncStatus,
         default=CalendarSyncStatus.NOT_STARTED,
+    )
+    trigger_source = models.CharField(
+        max_length=20,
+        choices=CalendarSyncTriggerSource,
+        default=CalendarSyncTriggerSource.MANUAL,
+        help_text="What kicked off this sync: import, manual, webhook, or admin.",
     )
     error_message = models.TextField(blank=True)
 

@@ -12,7 +12,11 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
 
-from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarSyncTriggerSource,
+    CalendarType,
+)
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarIntegrationError,
@@ -69,6 +73,17 @@ from organizations.models import get_active_organization_membership
 from organizations.permissions import IsOrganizationAdmin
 
 
+def _parse_bool(value, *, default: bool = True) -> bool:
+    """Coerce a JSON/query value to bool, tolerating string forms ("true"/"false")."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
 class CalendarViewSet(VintaScheduleModelViewSet):
     """
     ViewSet for managing calendars.
@@ -99,7 +114,8 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         if not include_inactive:
             qs = qs.filter(is_active=True)
 
-        return qs
+        # Sync-enabled calendars first; stable tiebreak by id.
+        return qs.order_by("-sync_enabled", "id")
 
     @extend_schema(
         summary="Get the caller's default calendar",
@@ -295,6 +311,11 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         # Import each account independently. A failure on one account (e.g. an
         # expired token with no refresh_token) must not abort the others — it is
         # reported under ``skipped`` so the caller knows which account to fix.
+        # Whether to also sync events right after importing. Defaults to True to
+        # preserve existing behavior; callers can pass false to only refresh the
+        # calendar list without pulling events.
+        sync_after_import = _parse_bool(request.data.get("sync_after_import", True))
+
         imported: list[int] = []
         skipped: list[dict] = []
         for social_account in social_accounts:
@@ -304,7 +325,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                     account=social_account,
                     organization=membership.organization,
                 )
-                fresh_service.request_calendars_import()
+                fresh_service.request_calendars_import(sync_after_import=sync_after_import)
                 imported.append(social_account.id)
             except (ValueError, CalendarIntegrationError) as e:
                 skipped.append({"account_id": social_account.id, "reason": str(e)})
@@ -337,7 +358,10 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         summary="Request calendar sync",
         description="Request synchronization of an owned calendar over a date range.",
         request=CalendarSyncRequestSerializer,
-        responses={202: CalendarSyncSerializer()},
+        responses={
+            202: CalendarSyncSerializer(),
+            409: OpenApiResponse(description="Sync is disabled for this calendar."),
+        },
     )
     @action(
         methods=["post"],
@@ -408,6 +432,12 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                 should_update_events=should_update_events,
             )
 
+            if calendar_sync is None:
+                return Response(
+                    {"detail": "Sync is disabled for this calendar (sync_enabled is False)."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
             serializer = CalendarSyncSerializer(calendar_sync)
             return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
         except (ValueError, CalendarIntegrationError, NotImplementedError) as e:
@@ -417,7 +447,10 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         summary="Admin syncs another user's calendar",
         description="Admin syncs any calendar in the organization over a date range.",
         request=CalendarSyncRequestSerializer,
-        responses={202: CalendarSyncSerializer()},
+        responses={
+            202: CalendarSyncSerializer(),
+            409: OpenApiResponse(description="Sync is disabled for this calendar."),
+        },
     )
     @action(
         methods=["post"],
@@ -497,7 +530,14 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
                 should_update_events=should_update_events,
+                trigger_source=CalendarSyncTriggerSource.ADMIN,
             )
+
+            if calendar_sync is None:
+                return Response(
+                    {"detail": "Sync is disabled for this calendar (sync_enabled is False)."},
+                    status=status.HTTP_409_CONFLICT,
+                )
 
             serializer = CalendarSyncSerializer(calendar_sync)
             return Response(serializer.data, status=status.HTTP_202_ACCEPTED)

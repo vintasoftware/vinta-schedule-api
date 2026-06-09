@@ -127,11 +127,13 @@ class CalendarSyncSerializer(serializers.ModelSerializer):
             "start_datetime",
             "end_datetime",
             "should_update_events",
+            "trigger_source",
             "error_message",
         )
         read_only_fields = (
             "id",
             "status",
+            "trigger_source",
             "error_message",
         )
 
@@ -161,6 +163,7 @@ class CalendarSerializer(VirtualModelSerializer):
             "capacity",
             "manage_available_windows",
             "is_active",
+            "sync_enabled",
         )
         read_only_fields = (
             "email",
@@ -923,7 +926,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
 
         return provider
 
-    def validated_start_time(self, start_time):
+    def validate_start_time(self, start_time):
         if start_time <= datetime.datetime.now(tz=datetime.UTC):
             raise serializers.ValidationError("Start time must be in the future.")
 

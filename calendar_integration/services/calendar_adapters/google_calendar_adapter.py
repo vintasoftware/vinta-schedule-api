@@ -287,6 +287,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
                 description=c.get("description", ""),
                 email=c.get("email", ""),
                 is_default=c.get("primary", False),
+                access_role=c.get("accessRole"),
                 provider=self.provider,
                 original_payload=c,
             )
@@ -329,15 +330,11 @@ class GoogleCalendarAdapter(CalendarAdapter):
             "description": event_data.description,
             "start": {
                 "dateTime": event_data.start_time.isoformat(),
-                "timeZone": event_data.start_time.tzinfo.tzname
-                if event_data.start_time.tzinfo
-                else "UTC",
+                "timeZone": event_data.timezone,
             },
             "end": {
                 "dateTime": event_data.end_time.isoformat(),
-                "timeZone": event_data.end_time.tzinfo.tzname
-                if event_data.end_time.tzinfo
-                else "UTC",
+                "timeZone": event_data.timezone,
             },
             "attendees": [
                 {
@@ -550,15 +547,11 @@ class GoogleCalendarAdapter(CalendarAdapter):
             "description": event_data.description,
             "start": {
                 "dateTime": event_data.start_time.isoformat(),
-                "timeZone": event_data.start_time.tzinfo.tzname
-                if event_data.start_time.tzinfo
-                else "UTC",
+                "timeZone": event_data.timezone,
             },
             "end": {
                 "dateTime": event_data.end_time.isoformat(),
-                "timeZone": event_data.end_time.tzinfo.tzname
-                if event_data.end_time.tzinfo
-                else "UTC",
+                "timeZone": event_data.timezone,
             },
         }
 

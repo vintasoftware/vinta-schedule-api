@@ -14,6 +14,7 @@ from vintasend.services.notification_service import (
     NotificationTypes,
 )
 
+from calendar_integration.constants import CalendarSyncTriggerSource
 from calendar_integration.models import (
     Calendar,
     CalendarOwnership,
@@ -182,12 +183,17 @@ class OrganizationService:
                 continue
 
             self.calendar_service.authenticate(account=social_account, organization=organization)
-            self.calendar_service.request_calendar_sync(
+            sync = self.calendar_service.request_calendar_sync(
                 calendar=calendar,
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
                 should_update_events=should_update_events,
+                trigger_source=CalendarSyncTriggerSource.ADMIN,
             )
+            if sync is None:
+                # Calendar has sync disabled (e.g. an imported read-only calendar).
+                skipped.append({"calendar_id": calendar.id, "reason": "sync disabled"})
+                continue
             synced.append(calendar.id)
 
         return {"synced": synced, "skipped": skipped}

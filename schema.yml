@@ -3962,6 +3962,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/CalendarSync'
           description: ''
+        '409':
+          description: Sync is disabled for this calendar.
   /calendar/{id}/admin-sync{format}:
     post:
       operationId: calendar_admin_sync_formatted_create
@@ -4004,6 +4006,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/CalendarSync'
           description: ''
+        '409':
+          description: Sync is disabled for this calendar.
   /calendar/{id}/available-windows/:
     get:
       operationId: calendar_available_windows_list
@@ -4205,6 +4209,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/CalendarSync'
           description: ''
+        '409':
+          description: Sync is disabled for this calendar.
   /calendar/{id}/request-sync{format}:
     post:
       operationId: calendar_request_sync_formatted_create
@@ -4247,6 +4253,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/CalendarSync'
           description: ''
+        '409':
+          description: Sync is disabled for this calendar.
   /calendar/{id}/unavailable-windows/:
     get:
       operationId: calendar_unavailable_windows_list
@@ -8430,6 +8438,14 @@ components:
             (sets this to False) instead of deleting the row. Opt-in to see disabled
             calendars via ?include_inactive=true. Default True keeps every existing
             read unchanged.
+        sync_enabled:
+          type: boolean
+          description: Whether this calendar's events are pulled from the external
+            provider. Set to False to skip syncing calendars that aren't useful for
+            scheduling — holidays, birthdays, organization-wide events, etc. When
+            False, no new CalendarSync is requested for this calendar (including webhook-
+            and import-triggered syncs); previously synced events are left untouched.
+            Default True keeps existing calendars syncing as before.
       required:
       - calendar_type
       - capacity
@@ -8736,6 +8752,17 @@ components:
           format: date-time
         should_update_events:
           type: boolean
+        trigger_source:
+          allOf:
+          - $ref: '#/components/schemas/TriggerSourceEnum'
+          readOnly: true
+          description: |-
+            What kicked off this sync: import, manual, webhook, or admin.
+
+            * `import` - Import
+            * `manual` - Manual
+            * `webhook` - Webhook
+            * `admin` - Admin
         error_message:
           type: string
           readOnly: true
@@ -8746,6 +8773,7 @@ components:
       - should_update_events
       - start_datetime
       - status
+      - trigger_source
     CalendarSyncRequest:
       type: object
       properties:
@@ -9658,6 +9686,14 @@ components:
             (sets this to False) instead of deleting the row. Opt-in to see disabled
             calendars via ?include_inactive=true. Default True keeps every existing
             read unchanged.
+        sync_enabled:
+          type: boolean
+          description: Whether this calendar's events are pulled from the external
+            provider. Set to False to skip syncing calendars that aren't useful for
+            scheduling — holidays, birthdays, organization-wide events, etc. When
+            False, no new CalendarSync is requested for this calendar (including webhook-
+            and import-triggered syncs); previously synced events are left untouched.
+            Default True keeps existing calendars syncing as before.
     PatchedCalendarBundleUpdate:
       type: object
       description: Serializer for updating a bundle calendar's child calendars and
@@ -10226,6 +10262,18 @@ components:
             $ref: '#/components/schemas/AvailableResourcesEnum'
       required:
       - available_resources
+    TriggerSourceEnum:
+      enum:
+      - import
+      - manual
+      - webhook
+      - admin
+      type: string
+      description: |-
+        * `import` - Import
+        * `manual` - Manual
+        * `webhook` - Webhook
+        * `admin` - Admin
     UnavailableTimeWindow:
       type: object
       properties:
