@@ -433,6 +433,89 @@ class TestCalendarEventViewSet:
         mock_calendar_service.authenticate.assert_called_once()
         mock_calendar_service.create_event.assert_called_once()
 
+    def test_create_event_localizes_input_to_request_timezone(
+        self, auth_client, calendar, user, social_account
+    ):
+        """Naive input wall-clock must be interpreted in the request ``timezone``.
+
+        Regression: DRF coerces naive datetimes to UTC under the server default
+        (TIME_ZONE=UTC), so "16:30" + "America/Recife" was reaching the service as
+        16:30 UTC (13:30 Recife) instead of the intended 19:30 UTC. The service
+        treats start_time/end_time as true instants, so the shift corrupted both the
+        availability lookup and storage.
+        """
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+
+        created_event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Recife Event",
+            description="",
+            start_time_tz_unaware=datetime.datetime(2026, 6, 12, 16, 30),
+            end_time_tz_unaware=datetime.datetime(2026, 6, 12, 17, 0),
+            timezone="America/Recife",
+            external_id="recife_external_id",
+        )
+        mock_calendar_service.create_event.return_value = created_event
+
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
+
+        url = reverse("api:CalendarEvents-list")
+        data = {
+            "organization": calendar.organization.id,
+            "calendar": calendar.id,
+            "title": "Recife Event",
+            "start_time": "2026-06-12T16:30:00",
+            "end_time": "2026-06-12T17:00:00",
+            "timezone": "America/Recife",
+            "resource_allocations": [],
+            "attendances": [],
+            "external_attendances": [],
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+            assert_response_status_code(response, status.HTTP_201_CREATED)
+
+        event_data = mock_calendar_service.create_event.call_args.kwargs["event_data"]
+        # 16:30 Recife (UTC-3) == 19:30 UTC.
+        assert event_data.start_time == datetime.datetime(2026, 6, 12, 19, 30, tzinfo=datetime.UTC)
+        assert event_data.end_time == datetime.datetime(2026, 6, 12, 20, 0, tzinfo=datetime.UTC)
+
+    def test_create_event_out_of_window_returns_400(
+        self, auth_client, calendar, user, social_account
+    ):
+        """A booking with no available window must be a 400, not a 500."""
+        from calendar_integration.exceptions import NoAvailableTimeWindowsError
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        mock_calendar_service.create_event.side_effect = NoAvailableTimeWindowsError()
+
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
+
+        url = reverse("api:CalendarEvents-list")
+        data = {
+            "organization": calendar.organization.id,
+            "calendar": calendar.id,
+            "title": "Out of window",
+            "start_time": "2026-06-12T16:30:00",
+            "end_time": "2026-06-12T17:00:00",
+            "timezone": "America/Recife",
+            "resource_allocations": [],
+            "attendances": [],
+            "external_attendances": [],
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "No available time windows" in json.dumps(response.data)
+
     def test_create_calendar_event_validation_errors(self, auth_client, calendar):
         """Test creating calendar event with validation errors"""
         url = reverse("api:CalendarEvents-list")

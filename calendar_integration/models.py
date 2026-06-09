@@ -745,6 +745,7 @@ class RecurringMixin(OrganizationModel):
         include_self=True,
         include_exceptions=True,
         max_occurrences=10000,
+        overlap=False,
     ) -> list[Self]:
         """Get occurrences of this recurring available time in a date range."""
         if not self.is_recurring:
@@ -755,7 +756,7 @@ class RecurringMixin(OrganizationModel):
         else:
             occurrences = (
                 self.__class__.objects.annotate_recurring_occurrences_on_date_range(  # type: ignore
-                    start_date, end_date, max_occurrences
+                    start_date, end_date, max_occurrences, overlap=overlap
                 )
                 .filter(organization_id=self.organization_id, id=self.pk)
                 .values_list("recurring_occurrences", flat=True)
@@ -814,6 +815,7 @@ class RecurringMixin(OrganizationModel):
         include_self=True,
         include_exceptions=True,
         max_occurrences=10000,
+        overlap=False,
     ) -> list[Self]:
         raise NotImplementedError("Subclasses must implement get_occurrences_in_range")
 
@@ -834,6 +836,9 @@ class RecurringMixin(OrganizationModel):
 
         try:
             # Add microsecond to ensure we get occurrences strictly after the given date.
+            # overlap=False (default) means start-in-range semantics — only occurrences
+            # whose start_time falls within the search window, so this returns exactly
+            # the next occurrence without including the current in-progress one.
             search_start_date = after_date + datetime.timedelta(microseconds=1)
 
             # Use rule's until date if specified, otherwise use a reasonable future date
@@ -852,6 +857,7 @@ class RecurringMixin(OrganizationModel):
                 include_self=False,
                 include_exceptions=False,
                 max_occurrences=1,
+                overlap=False,
             )
 
             if not future_occurrences:
@@ -1101,6 +1107,7 @@ class CalendarEvent(RecurringMixin):
         include_self=True,
         include_exceptions=True,
         max_occurrences=10000,
+        overlap=False,
     ) -> list[Self]:
         return self._get_occurrences_in_range(
             modified_instance_id_field_name="modified_event_id",
@@ -1109,6 +1116,7 @@ class CalendarEvent(RecurringMixin):
             include_self=include_self,
             include_exceptions=include_exceptions,
             max_occurrences=max_occurrences,
+            overlap=overlap,
         )
 
     def create_instance_from_occurrence(self, occurrence_start_time, occurrence_end_time):
@@ -1289,6 +1297,7 @@ class BlockedTime(RecurringMixin):
         include_self=True,
         include_exceptions=True,
         max_occurrences=10000,
+        overlap=False,
     ) -> list[Self]:
         return self._get_occurrences_in_range(
             modified_instance_id_field_name="modified_blocked_time_id",
@@ -1297,6 +1306,7 @@ class BlockedTime(RecurringMixin):
             include_self=include_self,
             include_exceptions=include_exceptions,
             max_occurrences=max_occurrences,
+            overlap=overlap,
         )
 
     def create_instance_from_occurrence(self, occurrence_start_time, occurrence_end_time):
@@ -1353,6 +1363,7 @@ class AvailableTime(RecurringMixin):
         include_self=True,
         include_exceptions=True,
         max_occurrences=10000,
+        overlap=False,
     ) -> list[Self]:
         return self._get_occurrences_in_range(
             modified_instance_id_field_name="modified_available_time_id",
@@ -1361,6 +1372,7 @@ class AvailableTime(RecurringMixin):
             include_self=include_self,
             include_exceptions=include_exceptions,
             max_occurrences=max_occurrences,
+            overlap=overlap,
         )
 
     def create_instance_from_occurrence(self, occurrence_start_time, occurrence_end_time):

@@ -27,6 +27,7 @@ from calendar_integration.constants import (
 )
 from calendar_integration.exceptions import (
     InvalidCalendarTokenError,
+    NoAvailableTimeWindowsError,
     ServiceNotAuthenticatedError,
     WebhookIgnoredError,
 )
@@ -1254,7 +1255,7 @@ class CalendarService(BaseCalendarService):
             event_data.end_time,
         )
         if not available_windows:
-            raise ValueError("No available time windows for the event.")
+            raise NoAvailableTimeWindowsError()
 
         external_id = ""
         original_payload: dict = {}
@@ -3442,7 +3443,9 @@ class CalendarService(BaseCalendarService):
             calendars_to_query.extend(bundle_children)
 
         base_qs = (
-            BlockedTime.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
+            BlockedTime.objects.annotate_recurring_occurrences_on_date_range(
+                start_date, end_date, overlap=True
+            )
             .select_related("recurrence_rule")
             .filter(
                 organization_id=calendar.organization_id,
@@ -3451,9 +3454,13 @@ class CalendarService(BaseCalendarService):
             )
         )
 
-        # Get non-recurring times within the date range
+        # Get non-recurring times overlapping the date range. Interval overlap is
+        # start < range_end AND end > range_start — this also catches blocks that
+        # fully contain the range, which a start-or-end-inside filter would drop
+        # (and miss a block covering the whole booking, allowing a double-booking).
         non_recurring_times = base_qs.filter(
-            Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
+            start_time__lt=end_date,
+            end_time__gt=start_date,
             recurrence_rule__isnull=True,  # Non-recurring only
             is_recurring_exception=False,  # Exclude exception objects
         )
@@ -3470,7 +3477,7 @@ class CalendarService(BaseCalendarService):
 
         for master_time in recurring_times:
             instances = master_time.get_occurrences_in_range(
-                start_date, end_date, include_self=False, include_exceptions=True
+                start_date, end_date, include_self=False, include_exceptions=True, overlap=True
             )
             times.extend(instances)
 
@@ -3489,7 +3496,9 @@ class CalendarService(BaseCalendarService):
             raise
 
         base_qs = (
-            AvailableTime.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
+            AvailableTime.objects.annotate_recurring_occurrences_on_date_range(
+                start_date, end_date, overlap=True
+            )
             .select_related("recurrence_rule")
             .filter(
                 organization_id=calendar.organization_id,
@@ -3498,9 +3507,12 @@ class CalendarService(BaseCalendarService):
             )
         )
 
-        # Get non-recurring times within the date range
+        # Get non-recurring times overlapping the date range. Interval overlap is
+        # start < range_end AND end > range_start — this also catches windows that
+        # fully contain the range, which a start-or-end-inside filter would drop.
         non_recurring_times = base_qs.filter(
-            Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
+            start_time__lt=end_date,
+            end_time__gt=start_date,
             recurrence_rule__isnull=True,  # Non-recurring only
             is_recurring_exception=False,  # Exclude exception objects
         )
@@ -3517,7 +3529,7 @@ class CalendarService(BaseCalendarService):
 
         for master_time in recurring_times:
             instances = master_time.get_occurrences_in_range(
-                start_date, end_date, include_self=False, include_exceptions=True
+                start_date, end_date, include_self=False, include_exceptions=True, overlap=True
             )
             times.extend(instances)
 

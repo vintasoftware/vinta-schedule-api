@@ -25,14 +25,18 @@ class RecurringManagerMixin:
         raise NotImplementedError("Concrete managers must implement get_queryset")
 
     def annotate_recurring_occurrences_on_date_range(
-        self, start_date: datetime.datetime, end_date: datetime.datetime, max_occurrences=10000
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        max_occurrences=10000,
+        overlap=False,
     ):
         """
         Annotate objects with their recurring occurrences in the date range.
         Delegates to the queryset implementation.
         """
         return self.get_queryset().annotate_recurring_occurrences_on_date_range(
-            start_date, end_date, max_occurrences
+            start_date, end_date, max_occurrences, overlap=overlap
         )
 
     def annotate_recurring_occurrences_with_bulk_modifications_on_date_range(

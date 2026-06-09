@@ -730,6 +730,20 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
             return CalendarEvent.original_manager.none()
         return super().get_queryset().filter_by_organization(membership.organization_id)
 
+    def perform_create(self, serializer):
+        # Surface domain errors (e.g. no available time window, invalid timezone)
+        # as a 400 instead of leaking a 500 from the service layer.
+        try:
+            super().perform_create(serializer)
+        except (ValueError, CalendarIntegrationError) as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+    def perform_update(self, serializer):
+        try:
+            super().perform_update(serializer)
+        except (ValueError, CalendarIntegrationError) as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
     @extend_schema(
         summary="Delete calendar event",
         description="Delete a calendar event.",

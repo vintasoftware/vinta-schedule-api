@@ -933,6 +933,22 @@ class CalendarEventSerializer(VirtualModelSerializer):
         return start_time
 
     def validate(self, attrs):
+        # Incoming datetimes carry wall-clock local to the request ``timezone``
+        # (symmetric with how responses render instants in the record timezone).
+        # DRF coerces naive input to UTC under the server default (TIME_ZONE=UTC),
+        # so reinterpret the wall-clock in ``timezone`` to recover the true instant
+        # before it reaches the service, which treats start_time/end_time as true
+        # instants. Without this, "16:30" + "America/Recife" reaches the service as
+        # 16:30 UTC (13:30 Recife) instead of the intended 19:30 UTC.
+        tz_name = attrs.get("timezone") or (self.instance.timezone if self.instance else None)
+        if tz_name:
+            tz = zoneinfo.ZoneInfo(tz_name)
+            for field in ("start_time", "end_time"):
+                value = attrs.get(field)
+                if value is not None:
+                    wall_clock = value.astimezone(datetime.UTC).replace(tzinfo=None)
+                    attrs[field] = wall_clock.replace(tzinfo=tz)
+
         calendar = attrs.get("calendar")
 
         # For token-based requests, we can infer the calendar from the token context
