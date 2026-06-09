@@ -8115,6 +8115,7 @@ components:
       - unavailable_windows
       - organization
       - calendar_group
+      - system_user
       type: string
       description: |-
         * `calendar_event` - Calendar Event
@@ -8134,6 +8135,7 @@ components:
         * `unavailable_windows` - Unavailable Windows
         * `organization` - Organization
         * `calendar_group` - Calendar Group
+        * `system_user` - System User
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.

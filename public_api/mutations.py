@@ -1,12 +1,15 @@
 from dataclasses import dataclass
 from typing import Annotated, cast
 
+from django.utils import timezone
+
 import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
 from calendar_integration.mutations import CalendarGroupMutations
 from public_api.models import SystemUser
+from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 from public_api.services import PublicAPIAuthService
 
 
@@ -37,6 +40,17 @@ class AuthPayload:
     token_valid: bool
 
 
+@strawberry.input
+class DeleteSystemUserInput:
+    system_user_id: int
+
+
+@strawberry.type
+class DeleteSystemUserResult:
+    success: bool
+    error_message: str | None = None
+
+
 @strawberry.type
 class Mutation(CalendarGroupMutations):
     @strawberry.mutation
@@ -57,3 +71,33 @@ class Mutation(CalendarGroupMutations):
             raise GraphQLError("Invalid credentials")
 
         return AuthPayload(token_valid=True)  # type: ignore
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def delete_system_user(
+        self,
+        info: strawberry.Info,
+        input: DeleteSystemUserInput,  # noqa: A002
+    ) -> DeleteSystemUserResult:
+        org = info.context.request.public_api_organization
+        if not org:
+            return DeleteSystemUserResult(success=False, error_message="Organization not found")
+
+        try:
+            system_user = SystemUser.objects.get(
+                id=input.system_user_id,
+                organization=org,
+                deleted_at__isnull=True,
+            )
+        except SystemUser.DoesNotExist:
+            return DeleteSystemUserResult(success=False, error_message="System user not found")
+
+        if system_user.is_active:
+            return DeleteSystemUserResult(
+                success=False,
+                error_message="System user must be inactive before deletion",
+            )
+
+        system_user.deleted_at = timezone.now()
+        system_user.save(update_fields=["deleted_at"])
+
+        return DeleteSystemUserResult(success=True)

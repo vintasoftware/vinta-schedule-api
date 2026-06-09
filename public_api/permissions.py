@@ -39,6 +39,7 @@ class OrganizationResourceAccess(BasePermission):
         "calendarGroupAvailability": PublicAPIResources.CALENDAR_GROUP,
         "calendarGroupBookableSlots": PublicAPIResources.CALENDAR_GROUP,
         "calendarGroupEvents": PublicAPIResources.CALENDAR_GROUP,
+        "deleteSystemUser": PublicAPIResources.SYSTEM_USER,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore

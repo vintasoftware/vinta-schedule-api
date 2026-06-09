@@ -53,7 +53,8 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
         membership = get_active_organization_membership(user)
         if membership:
             return SystemUser.objects.filter(
-                organization_id=membership.organization_id
+                organization_id=membership.organization_id,
+                deleted_at__isnull=True,
             ).prefetch_related("available_resources")
         return SystemUser.objects.none()
 

@@ -26,6 +26,7 @@ class SystemUser(BaseModel):
         help_text="Hash of the the system user's access token.",
     )
     is_active = models.BooleanField(default=True, help_text="Indicates if the user is active.")
+    deleted_at = models.DateTimeField(null=True, blank=True, default=None, db_index=True)
 
 
 class ResourceAccess(BaseModel):
