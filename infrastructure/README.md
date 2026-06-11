@@ -42,7 +42,11 @@ infrastructure/
    - production → `VintaScheduleProduction`
 
    Backend type **CLI / Terragrunt**.
-3. Configure variables (next section).
+3. Set each workspace's **Working Directory** to the stack folder (the one with
+   a `terragrunt.hcl`), NOT the env folder (which only holds `env.hcl`):
+   - staging → `infrastructure/environments/staging/storage`
+   - production → `infrastructure/environments/production/storage`
+4. Configure variables (next section).
 
 ## Variables to configure in Scalr
 
