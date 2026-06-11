@@ -151,8 +151,8 @@ The `aws-storage` env var group in `render.yaml` has these as `sync: false`
 ```bash
 terragrunt output media_bucket_name        # -> AWS_MEDIA_BUCKET_NAME
 terragrunt output static_bucket_name       # -> AWS_STATIC_BUCKET_NAME
-terragrunt output media_cloudfront_domain  # -> AWS_MEDIA_S3_CUSTOM_DOMAIN
-terragrunt output static_cloudfront_domain # -> AWS_STATIC_S3_CUSTOM_DOMAIN
+terragrunt output media_custom_domain      # -> AWS_MEDIA_S3_CUSTOM_DOMAIN
+terragrunt output static_custom_domain     # -> AWS_STATIC_S3_CUSTOM_DOMAIN
 terragrunt output cloudfront_key_id        # -> AWS_CLOUDFRONT_KEY_ID
 terragrunt output aws_access_key_id        # -> AWS_ACCESS_KEY_ID
 

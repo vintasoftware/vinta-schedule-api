@@ -7,7 +7,7 @@ locals {
 }
 
 terraform {
-  source = "${get_repo_root()}/infrastructure/modules/s3-cloudfront"
+  source = "${dirname(find_in_parent_folders("terragrunt.hcl"))}/modules/s3-cloudfront"
 }
 
 inputs = {
