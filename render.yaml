@@ -129,17 +129,17 @@ envVarGroups:
       - key: FRONTEND_BASE_URL
         value: 'https://schedule-staging.vintasoftware.com'
       - key: SENTRY_DSN
-        value: apikey
+        sync: false
       - key: DEFAULT_BCC_EMAILS
         value: 'hugo@vinta.com.br'
   - name: integrations-credentials
     envVars:
       - key: SMTP_HOST
-        value: apikey
+        sync: false
       - key: SMTP_USERNAME
-        value: apikey
+        sync: false
       - key: SMTP_PASSWORD
-        value: apikey
+        sync: false
       # Google OAuth / Calendar integration. Set real values in the dashboard.
       - key: GOOGLE_CLIENT_ID
         sync: false
