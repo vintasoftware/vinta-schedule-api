@@ -113,7 +113,7 @@ aws iam put-role-policy --role-name "$DNS_ROLE" --policy-name route53-records \
     \"Version\":\"2012-10-17\",
     \"Statement\":[
       {\"Effect\":\"Allow\",
-      \"Action\":[\"route53:ChangeResourceRecordSets\",\"route53:ListResourceRecordSets\",\"route53:GetHostedZone\"],
+      \"Action\":[\"route53:ChangeResourceRecordSets\",\"route53:ListResourceRecordSets\",\"route53:GetHostedZone\",\"route53:ListTagsForResource\"],
       \"Resource\":\"arn:aws:route53:::hostedzone/${ZONE_ID}\"},
       {\"Effect\":\"Allow\",
       \"Action\":[\"route53:ListHostedZones\",\"route53:ListHostedZonesByName\",\"route53:GetChange\"],

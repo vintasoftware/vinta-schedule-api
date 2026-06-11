@@ -230,6 +230,27 @@ resource "aws_cloudfront_distribution" "static" {
   }
 }
 
+# CAA: authorize Amazon (ACM) to issue certs for these hostnames. The parent
+# zone's CAA blocks Amazon by default; a CAA at the exact host is the closest
+# match and takes precedence (RFC 8659) without changing apex policy.
+resource "aws_route53_record" "static_caa" {
+  provider = aws.dns
+  zone_id  = data.aws_route53_zone.this.zone_id
+  name     = var.static_domain
+  type     = "CAA"
+  ttl      = 300
+  records  = ["0 issue \"amazon.com\""]
+}
+
+resource "aws_route53_record" "media_caa" {
+  provider = aws.dns
+  zone_id  = data.aws_route53_zone.this.zone_id
+  name     = var.media_domain
+  type     = "CAA"
+  ttl      = 300
+  records  = ["0 issue \"amazon.com\""]
+}
+
 # DNS: point each custom domain at its CloudFront distribution (A + AAAA aliases).
 resource "aws_route53_record" "static" {
   provider = aws.dns
