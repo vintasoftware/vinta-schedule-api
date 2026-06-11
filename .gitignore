@@ -54,3 +54,9 @@ tmp_email/
 
 # Vinta AI workflows PR context (durable, not committed)
 .vinta-ai-workflows/prs-context/
+
+# Terraform / Terragrunt
+.terragrunt-cache/
+.terraform/
+*.tfstate
+*.tfstate.*

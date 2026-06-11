@@ -18,7 +18,7 @@ Cloud/Enterprise-compatible `remote` backend.
 
 ```
 infrastructure/
-  terragrunt.hcl                       # root: Scalr backend + AWS provider
+  root.hcl                             # root config: Scalr backend + AWS provider
   modules/s3-cloudfront/               # the reusable module
   environments/
     staging/
@@ -76,7 +76,7 @@ shell / CI, never committed):
 | Setting | How |
 |---|---|
 | `SCALR_TOKEN` | `terraform login <SCALR_HOSTNAME>`, or a CI env var |
-| `SCALR_HOSTNAME` / `SCALR_ENVIRONMENT` | shell env vars, read by `terragrunt.hcl` |
+| `SCALR_HOSTNAME` / `SCALR_ENVIRONMENT` | shell env vars, read by `root.hcl` |
 
 **Execution mode matters:**
 - **Remote** (runs execute inside Scalr) → the AWS shell vars MUST live in Scalr.
@@ -135,6 +135,11 @@ aws iam put-user-policy --user-name "vinta-schedule-${ENV}-deployer" \
 3. Set `dns_role_arn` in each `environments/<env>/env.hcl` to that role's ARN.
 
 ## Run
+
+> **Terraform version:** the Scalr `remote` backend only accepts Terraform
+> `<= 1.5.99` (1.6+ is BSL and rejected). Use **1.5.7** locally — pinned in
+> `infrastructure/.terraform-version`. With tfenv: `tfenv install 1.5.7`. Newer
+> Terraform fails `init` with "Please downgrade Terraform to <= 1.5.99".
 
 ```bash
 export SCALR_HOSTNAME=example.scalr.io

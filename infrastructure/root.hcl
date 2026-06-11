@@ -19,22 +19,24 @@ locals {
   env = read_terragrunt_config(find_in_parent_folders("env.hcl"))
 }
 
-remote_state {
-  backend = "remote"
+# The `remote` backend needs `workspaces` as a BLOCK, not an argument —
+# terragrunt's remote_state renders it as `workspaces = {}`, which Terraform
+# rejects. Generate the backend directly so the block syntax is correct.
+generate "backend" {
+  path      = "backend.tf"
+  if_exists = "overwrite"
+  contents  = <<-EOF
+    terraform {
+      backend "remote" {
+        hostname     = "${local.scalr_hostname}"
+        organization = "${local.scalr_environment}"
 
-  generate = {
-    path      = "backend.tf"
-    if_exists = "overwrite"
-  }
-
-  config = {
-    hostname     = local.scalr_hostname
-    organization = local.scalr_environment
-
-    workspaces = {
-      name = local.env.locals.scalr_workspace
+        workspaces {
+          name = "${local.env.locals.scalr_workspace}"
+        }
+      }
     }
-  }
+  EOF
 }
 
 # Inject the AWS provider into every stack so child terragrunt.hcl files don't repeat it.

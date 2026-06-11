@@ -1,5 +1,5 @@
 include "root" {
-  path = find_in_parent_folders("terragrunt.hcl")
+  path = find_in_parent_folders("root.hcl")
 }
 
 locals {
@@ -7,7 +7,7 @@ locals {
 }
 
 terraform {
-  source = "${dirname(find_in_parent_folders("terragrunt.hcl"))}/modules/s3-cloudfront"
+  source = "${dirname(find_in_parent_folders("root.hcl"))}/modules/s3-cloudfront"
 }
 
 inputs = {
