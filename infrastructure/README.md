@@ -98,8 +98,8 @@ Set up once:
 
    ```bash
 DNS_ROLE=vinta-schedule-dns-deployer
-DEPLOY_ACCOUNT_ID=310361226925
-ZONE_ID=Z2BH7RSHN2OFNV
+DEPLOY_ACCOUNT_ID=261390480437   # account with the buckets/CloudFront + deployer
+ZONE_ID=Z2BH7RSHN2OFNV           # vintasoftware.com zone, in DNS account 310361226925
 
 aws iam create-role --role-name "$DNS_ROLE" \
   --assume-role-policy-document "{
@@ -129,7 +129,7 @@ aws iam put-user-policy --user-name "vinta-schedule-${ENV}-deployer" \
   --policy-document "{
     \"Version\":\"2012-10-17\",
     \"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"sts:AssumeRole\",
-      \"Resource\":\"arn:aws:iam::<DNS_ACCOUNT_ID>:role/vinta-schedule-dns-deployer\"}]}"
+      \"Resource\":\"arn:aws:iam::310361226925:role/vinta-schedule-dns-deployer\"}]}"
    ```
 
 3. Set `dns_role_arn` in each `environments/<env>/env.hcl` to that role's ARN.
