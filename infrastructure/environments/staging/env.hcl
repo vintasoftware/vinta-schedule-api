@@ -11,5 +11,5 @@ locals {
   route53_zone_name = "vintasoftware.com"
 
   # Role in the DNS account that Terraform assumes to write Route 53 records.
-  dns_role_arn = "arn:aws:iam::SET_ME_DNS_ACCOUNT_ID:role/vinta-schedule-dns-deployer"
+  dns_role_arn = "arn:aws:iam::310361226925:role/vinta-schedule-dns-deployer"
 }
