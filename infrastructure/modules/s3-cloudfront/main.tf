@@ -10,6 +10,53 @@ data "aws_cloudfront_cache_policy" "optimized" {
 }
 
 ########################################
+# Custom domains: ACM cert (DNS-validated) + Route 53
+#
+# CloudFront only accepts ACM certs from us-east-1 — the provider must be
+# us-east-1 (env.hcl sets aws_region = "us-east-1").
+########################################
+
+data "aws_route53_zone" "this" {
+  provider     = aws.dns
+  name         = var.route53_zone_name
+  private_zone = false
+}
+
+# One cert covering both the static and media hostnames.
+resource "aws_acm_certificate" "cdn" {
+  domain_name               = var.static_domain
+  subject_alternative_names = [var.media_domain]
+  validation_method         = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_route53_record" "cert_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.cdn.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      type   = dvo.resource_record_type
+      record = dvo.resource_record_value
+    }
+  }
+
+  provider        = aws.dns
+  zone_id         = data.aws_route53_zone.this.zone_id
+  name            = each.value.name
+  type            = each.value.type
+  records         = [each.value.record]
+  ttl             = 60
+  allow_overwrite = true
+}
+
+resource "aws_acm_certificate_validation" "cdn" {
+  certificate_arn         = aws_acm_certificate.cdn.arn
+  validation_record_fqdns = [for r in aws_route53_record.cert_validation : r.fqdn]
+}
+
+########################################
 # S3 buckets
 ########################################
 
@@ -116,6 +163,7 @@ resource "aws_cloudfront_distribution" "media" {
   comment         = "${local.name_prefix} media (signed)"
   price_class     = var.price_class
   is_ipv6_enabled = true
+  aliases         = [var.media_domain]
 
   origin {
     domain_name              = aws_s3_bucket.media.bucket_regional_domain_name
@@ -140,7 +188,9 @@ resource "aws_cloudfront_distribution" "media" {
   }
 
   viewer_certificate {
-    cloudfront_default_certificate = true
+    acm_certificate_arn      = aws_acm_certificate_validation.cdn.certificate_arn
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
   }
 }
 
@@ -150,6 +200,7 @@ resource "aws_cloudfront_distribution" "static" {
   comment         = "${local.name_prefix} static"
   price_class     = var.price_class
   is_ipv6_enabled = true
+  aliases         = [var.static_domain]
 
   origin {
     domain_name              = aws_s3_bucket.static.bucket_regional_domain_name
@@ -173,7 +224,58 @@ resource "aws_cloudfront_distribution" "static" {
   }
 
   viewer_certificate {
-    cloudfront_default_certificate = true
+    acm_certificate_arn      = aws_acm_certificate_validation.cdn.certificate_arn
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
+  }
+}
+
+# DNS: point each custom domain at its CloudFront distribution (A + AAAA aliases).
+resource "aws_route53_record" "static" {
+  provider = aws.dns
+  zone_id  = data.aws_route53_zone.this.zone_id
+  name     = var.static_domain
+  type     = "A"
+  alias {
+    name                   = aws_cloudfront_distribution.static.domain_name
+    zone_id                = aws_cloudfront_distribution.static.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "static_aaaa" {
+  provider = aws.dns
+  zone_id  = data.aws_route53_zone.this.zone_id
+  name     = var.static_domain
+  type     = "AAAA"
+  alias {
+    name                   = aws_cloudfront_distribution.static.domain_name
+    zone_id                = aws_cloudfront_distribution.static.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "media" {
+  provider = aws.dns
+  zone_id  = data.aws_route53_zone.this.zone_id
+  name     = var.media_domain
+  type     = "A"
+  alias {
+    name                   = aws_cloudfront_distribution.media.domain_name
+    zone_id                = aws_cloudfront_distribution.media.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "media_aaaa" {
+  provider = aws.dns
+  zone_id  = data.aws_route53_zone.this.zone_id
+  name     = var.media_domain
+  type     = "AAAA"
+  alias {
+    name                   = aws_cloudfront_distribution.media.domain_name
+    zone_id                = aws_cloudfront_distribution.media.hosted_zone_id
+    evaluate_target_health = false
   }
 }
 

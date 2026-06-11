@@ -122,12 +122,12 @@ envVarGroups:
       - key: ALLOWED_HOSTS
         value: '*'
       - key: SITE_DOMAIN
-        value: 'https://staging.schedule.vinta.com.br'
+        value: 'https://schedule-staging.vintasoftware.com'
       - key: API_DOMAIN
-        value: 'https://vinta-schedule-api-staging.onrender.com'
+        value: 'https://api.schedule-staging.vintasoftware.com'
       # Staging frontend base; account/email flows link here (settings/staging.py).
       - key: FRONTEND_BASE_URL
-        value: 'https://staging.schedule.vinta.com.br'
+        value: 'https://schedule-staging.vintasoftware.com'
       - key: SENTRY_DSN
         value: apikey
       - key: DEFAULT_BCC_EMAILS

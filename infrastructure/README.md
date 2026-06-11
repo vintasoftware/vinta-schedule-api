@@ -35,10 +35,11 @@ infrastructure/
 ## One-time Scalr setup
 
 1. Create a Scalr **environment** (the value for `SCALR_ENVIRONMENT`).
-2. Create a workspace per stack, named to match the auto-derived name in
-   `terragrunt.hcl` (`<project>-<path-with-slashes-as-dashes>`):
-   - staging → `vinta-schedule-environments-staging-storage`
-   - production → `vinta-schedule-environments-production-storage`
+2. Create one Scalr workspace per environment. The name is read from each
+   `environments/<env>/env.hcl` (`scalr_workspace`), so it matches whatever you
+   named it in Scalr — current values:
+   - staging → `VintaScheduleStaging`
+   - production → `VintaScheduleProduction`
 
    Backend type **CLI / Terragrunt**.
 3. Configure variables (next section).
@@ -77,6 +78,57 @@ shell / CI, never committed):
 - **Remote** (runs execute inside Scalr) → the AWS shell vars MUST live in Scalr.
 - **CLI / local** (`terragrunt apply` on your machine; Scalr stores state only) →
   AWS creds come from your local shell; set nothing AWS-related in Scalr.
+
+## Cross-account DNS (Route 53)
+
+`vintasoftware.com` lives in a **different AWS account** than the buckets /
+CloudFront. The ACM cert + CloudFront are created in the deploy account; the
+Route 53 records (ACM validation + the alias records) are written via an
+**aliased `aws.dns` provider that assumes a role in the DNS account**
+(`dns_role_arn` in each `env.hcl`).
+
+Set up once:
+
+1. **In the DNS account**, create the role Terraform assumes (replace
+   `DEPLOY_ACCOUNT_ID` and `ZONE_ID`):
+
+   ```bash
+DNS_ROLE=vinta-schedule-dns-deployer
+DEPLOY_ACCOUNT_ID=310361226925
+ZONE_ID=Z2BH7RSHN2OFNV
+
+aws iam create-role --role-name "$DNS_ROLE" \
+  --assume-role-policy-document "{
+    \"Version\":\"2012-10-17\",
+    \"Statement\":[{\"Effect\":\"Allow\",
+      \"Principal\":{\"AWS\":\"arn:aws:iam::${DEPLOY_ACCOUNT_ID}:root\"},
+      \"Action\":\"sts:AssumeRole\"}]}"
+
+aws iam put-role-policy --role-name "$DNS_ROLE" --policy-name route53-records \
+  --policy-document "{
+    \"Version\":\"2012-10-17\",
+    \"Statement\":[
+      {\"Effect\":\"Allow\",
+      \"Action\":[\"route53:ChangeResourceRecordSets\",\"route53:ListResourceRecordSets\",\"route53:GetHostedZone\"],
+      \"Resource\":\"arn:aws:route53:::hostedzone/${ZONE_ID}\"},
+      {\"Effect\":\"Allow\",
+      \"Action\":[\"route53:ListHostedZones\",\"route53:ListHostedZonesByName\",\"route53:GetChange\"],
+      \"Resource\":\"*\"}]}"
+   ```
+
+2. **Allow each deployer to assume it** (run with deploy-account creds, per env):
+
+   ```bash
+ENV=staging   # then repeat with ENV=production
+aws iam put-user-policy --user-name "vinta-schedule-${ENV}-deployer" \
+  --policy-name assume-dns-role \
+  --policy-document "{
+    \"Version\":\"2012-10-17\",
+    \"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"sts:AssumeRole\",
+      \"Resource\":\"arn:aws:iam::<DNS_ACCOUNT_ID>:role/vinta-schedule-dns-deployer\"}]}"
+   ```
+
+3. Set `dns_role_arn` in each `environments/<env>/env.hcl` to that role's ARN.
 
 ## Run
 

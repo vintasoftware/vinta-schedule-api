@@ -26,6 +26,21 @@ variable "price_class" {
   default     = "PriceClass_100"
 }
 
+variable "static_domain" {
+  description = "Custom domain for the static CloudFront distribution (e.g. static.schedule.vintasoftware.com)."
+  type        = string
+}
+
+variable "media_domain" {
+  description = "Custom domain for the media CloudFront distribution (e.g. media.schedule.vintasoftware.com)."
+  type        = string
+}
+
+variable "route53_zone_name" {
+  description = "Route 53 hosted zone the custom domains live under (e.g. vintasoftware.com). No trailing dot."
+  type        = string
+}
+
 variable "cors_allowed_origins" {
   description = "Origins allowed to upload directly to the media bucket (django-s3direct)."
   type        = list(string)

@@ -15,8 +15,13 @@ inputs = {
   environment  = local.env.locals.environment
   aws_region   = local.env.locals.aws_region
 
+  dns_role_arn      = local.env.locals.dns_role_arn
+  route53_zone_name = local.env.locals.route53_zone_name
+  static_domain     = "static.schedule-staging.vintasoftware.com"
+  media_domain      = "media.schedule-staging.vintasoftware.com"
+
   # Adjust to the real staging frontend before going live.
   cors_allowed_origins = [
-    "https://staging.schedule.vinta.com.br",
+    "https://schedule-staging.vintasoftware.com",
   ]
 }

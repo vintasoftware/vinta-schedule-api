@@ -174,11 +174,11 @@ LOGGING = {
 sentry_sdk.init(dsn=SENTRY_DSN, integrations=[DjangoIntegration()], release=COMMIT_SHA)
 
 HEADLESS_FRONTEND_URLS = {
-    "account_confirm_email": "https://schedule.vinta.com.br/verify-email/{key}",
-    "account_reset_password": "https://schedule.vinta.com.br/password-reset",
-    "account_reset_password_from_key": "https://schedule.vinta.com.br/password-reset/{key}",
-    "account_signup": "https://schedule.vinta.com.br/signup",
-    "socialaccount_login_error": "https://schedule.vinta.com.br/social-login-error",
+    "account_confirm_email": "https://schedule.vintasoftware.com/verify-email/{key}",
+    "account_reset_password": "https://schedule.vintasoftware.com/password-reset",
+    "account_reset_password_from_key": "https://schedule.vintasoftware.com/password-reset/{key}",
+    "account_signup": "https://schedule.vintasoftware.com/signup",
+    "socialaccount_login_error": "https://schedule.vintasoftware.com/social-login-error",
 }
 ACCOUNT_DEFAULT_HTTP_PROTOCOL = "https"
 

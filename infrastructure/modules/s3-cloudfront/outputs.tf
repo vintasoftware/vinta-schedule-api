@@ -10,13 +10,23 @@ output "static_bucket_name" {
   value       = aws_s3_bucket.static.bucket
 }
 
-output "media_cloudfront_domain" {
+output "media_custom_domain" {
   description = "AWS_MEDIA_S3_CUSTOM_DOMAIN"
+  value       = var.media_domain
+}
+
+output "static_custom_domain" {
+  description = "AWS_STATIC_S3_CUSTOM_DOMAIN"
+  value       = var.static_domain
+}
+
+output "media_cloudfront_distribution_domain" {
+  description = "Underlying *.cloudfront.net domain for the media distribution (debug/DNS)."
   value       = aws_cloudfront_distribution.media.domain_name
 }
 
-output "static_cloudfront_domain" {
-  description = "AWS_STATIC_S3_CUSTOM_DOMAIN"
+output "static_cloudfront_distribution_domain" {
+  description = "Underlying *.cloudfront.net domain for the static distribution (debug/DNS)."
   value       = aws_cloudfront_distribution.static.domain_name
 }
 

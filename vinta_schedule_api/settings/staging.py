@@ -8,7 +8,7 @@ from .production import *
 SECURE_HSTS_PRELOAD = False
 
 FRONTEND_BASE_URL = config(
-    "FRONTEND_BASE_URL", default="https://staging.schedule.vinta.com.br"
+    "FRONTEND_BASE_URL", default="https://schedule-staging.vintasoftware.com"
 ).rstrip("/")
 
 HEADLESS_FRONTEND_URLS = {
