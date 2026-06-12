@@ -3,7 +3,6 @@ from typing import TYPE_CHECKING
 from django.conf import settings
 from django.contrib.auth import get_user_model
 
-from twilio.rest import Client
 from vintasend.app_settings import NotificationSettings
 from vintasend.constants import NotificationTypes
 from vintasend.exceptions import NotificationSendError
@@ -11,6 +10,7 @@ from vintasend.services.dataclasses import Notification, OneOffNotification
 from vintasend.services.notification_adapters.base import BaseNotificationAdapter
 from vintasend.services.notification_backends.base import BaseNotificationBackend
 
+from common.twilio import get_twilio_client
 from vintasend_django_sms_template_renderer.services.notification_template_renderers.base_sms_template_renderer import (
     BaseTemplatedSMSRenderer,
 )
@@ -74,7 +74,7 @@ class TwilioSMSNotificationAdapter[B: BaseNotificationBackend, T: BaseTemplatedS
 
         template = self.template_renderer.render(notification, context_with_base_url)
 
-        client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+        client = get_twilio_client()
 
         client.messages.create(
             body=template.body,

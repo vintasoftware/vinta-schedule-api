@@ -145,9 +145,15 @@ envVarGroups:
         sync: false
       - key: GOOGLE_CLIENT_SECRET
         sync: false
-      # Twilio SMS (vintasend). Required by settings/base.py — boot fails if unset.
+      # Twilio SMS (vintasend). ACCOUNT_SID + NUMBER required — boot fails if unset.
       - key: TWILIO_ACCOUNT_SID
         sync: false
+      # Preferred: API Key auth. Set both. Falls back to TWILIO_AUTH_TOKEN if unset.
+      - key: TWILIO_API_KEY_SID
+        sync: false
+      - key: TWILIO_API_KEY_SECRET
+        sync: false
+      # Legacy auth-token auth (not recommended). Used only if API key vars unset.
       - key: TWILIO_AUTH_TOKEN
         sync: false
       - key: TWILIO_NUMBER

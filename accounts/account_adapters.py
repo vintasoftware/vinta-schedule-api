@@ -13,11 +13,11 @@ from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.socialaccount.models import SocialLogin
 from allauth.utils import build_absolute_uri
 from dependency_injector.wiring import Provide, inject
-from twilio.rest import Client
 from vintasend.constants import NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 
+from common.twilio import get_twilio_client
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.services import OrganizationService
 from users.models import Profile, User
@@ -427,7 +427,7 @@ class AccountAdapter(DefaultAccountAdapter):
             logger.warning("No phone number provided for sending unknown account SMS.")
             return
 
-        client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+        client = get_twilio_client()
 
         client.messages.create(
             body="Your phone number is not associated with any account.",
@@ -445,7 +445,7 @@ class AccountAdapter(DefaultAccountAdapter):
             logger.warning("No phone number provided for sending account-already-exists SMS.")
             return
 
-        client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+        client = get_twilio_client()
 
         client.messages.create(
             body="An account already exists for this phone number.",

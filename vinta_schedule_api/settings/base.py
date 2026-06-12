@@ -489,7 +489,10 @@ MERCADOPAGO_ACCESS_TOKEN = config("MERCADOPAGO_ACCESS_TOKEN", default="")
 SALT_KEY = config("SALT_KEY")
 
 TWILIO_ACCOUNT_SID = config("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = config("TWILIO_AUTH_TOKEN")
+# Prefer API Key auth (recommended). Legacy auth token kept for backward compat.
+TWILIO_API_KEY_SID = config("TWILIO_API_KEY_SID", default="")
+TWILIO_API_KEY_SECRET = config("TWILIO_API_KEY_SECRET", default="")
+TWILIO_AUTH_TOKEN = config("TWILIO_AUTH_TOKEN", default="")
 TWILIO_NUMBER = config("TWILIO_NUMBER")
 TWILIO_DEFAULT_BROADCAST_NUMBERS: list[str] = config(
     "TWILIO_DEFAULT_BROADCAST_NUMBERS", default=[], cast=Csv()
