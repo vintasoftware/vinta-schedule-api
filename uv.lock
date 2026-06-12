@@ -2284,9 +2284,9 @@ requires-dist = [
     { name = "strawberry-graphql", specifier = ">=0.316.0,<0.317.0" },
     { name = "strawberry-graphql-django", specifier = ">=0.86.0,<0.87.0" },
     { name = "twilio", specifier = ">=9.6.5,<10" },
-    { name = "vintasend", specifier = ">=1.1.1,<2" },
-    { name = "vintasend-celery", specifier = ">=1.0.1,<2" },
-    { name = "vintasend-django", specifier = ">=1.1.1,<2" },
+    { name = "vintasend", specifier = ">=1.1.3,<2" },
+    { name = "vintasend-celery", specifier = ">=1.1.3,<2" },
+    { name = "vintasend-django", specifier = ">=1.1.3,<2" },
     { name = "whitenoise", specifier = ">=6.9.0,<7" },
 ]
 
@@ -2310,43 +2310,43 @@ dev = [
 
 [[package]]
 name = "vintasend"
-version = "1.1.1"
+version = "1.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "packaging" },
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/60/14/7ce1ef561f69ee470b71c2782ca6a2132212cbb6e96c421cce5b73267a25/vintasend-1.1.1.tar.gz", hash = "sha256:9fef7b0c20eef5cef5ee9acc7c2cf0eed50f111b89bbfc4585c01ca3dc490f7b", size = 38715, upload-time = "2026-06-03T05:34:27.025Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/35/bf5ece75d2937cd30642d61e6703de4a92ac684124db760b73a6bb6f0983/vintasend-1.1.3.tar.gz", hash = "sha256:de4fb95e2c1934cba011b956a2db3bb6a8c05bd6a3c0afc54042c28cdc1a1d88", size = 39831, upload-time = "2026-06-12T22:37:13.723Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2a/4b/beda8876c57f45141477c7d022f9d388e686a69faad2a0980684cf0d8beb/vintasend-1.1.1-py3-none-any.whl", hash = "sha256:cf30eea730bc327104d85c3dcbd59607e686528ab9ad059a1d8c7a1edc76098b", size = 49075, upload-time = "2026-06-03T05:34:25.82Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/e8/1badf283dbe07058a7ae570d7f35a147f3a4fb56110141238b56dd0efda2/vintasend-1.1.3-py3-none-any.whl", hash = "sha256:2addb8e2a13cb07cb88f2d6d686a8932827b123e922b7dfc2749d63021f0dc52", size = 50717, upload-time = "2026-06-12T22:37:12.723Z" },
 ]
 
 [[package]]
 name = "vintasend-celery"
-version = "1.0.1"
+version = "1.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "celery" },
     { name = "vintasend" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/32/10/892d44f32d7406a23767569361d0d578b73b68bb889ee703f096149cf6e7/vintasend_celery-1.0.1.tar.gz", hash = "sha256:274dfd46fe72d6ae07ec9e4c247fe784f5717b2aaca3909b32c0d265cdc8c78b", size = 9298, upload-time = "2025-09-17T03:21:45.075Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/17/ae/37d931f1f9b60052768c9d398b1c87a8928a306495891354af423e43ccb9/vintasend_celery-1.1.3.tar.gz", hash = "sha256:d9aa2e9cfcbf36e62e3618f559f865bf3d53379a0ae420cb0a887338e174ae57", size = 9284, upload-time = "2026-06-12T22:39:27.448Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d9/e9/82747d320e31974b31a10a30e91511a4865891d28964674eb3eafee6469a/vintasend_celery-1.0.1-py3-none-any.whl", hash = "sha256:3eef7d8b288766265fafc5cecf0ab2595cab1283a68b31ee702e99c5ee3c07ba", size = 10863, upload-time = "2025-09-17T03:21:44.335Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/5a/78d641b8cc60c394229542b11688ec2a250bbebd3e67e7fab5028712b166/vintasend_celery-1.1.3-py3-none-any.whl", hash = "sha256:24cef4bafc63dc26c8e90b4b4742be68a5c660a1c640e65003fd166d599bba60", size = 10819, upload-time = "2026-06-12T22:39:26.502Z" },
 ]
 
 [[package]]
 name = "vintasend-django"
-version = "1.1.1"
+version = "1.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django" },
     { name = "django-model-utils" },
     { name = "vintasend" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/22/e1/fa6be33b6b72b9b0ba950ce089e9d75f6d731a67c48e071b9af6fb49fc52/vintasend_django-1.1.1.tar.gz", hash = "sha256:ade918a027c5ee7fcea0a326e05e07e0c484975344bef2da82b8b23c2a239c69", size = 16362, upload-time = "2026-06-03T05:42:17.539Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3f/7e/f1495c345340aba2e245127e4cf622681e99c2c26a1f17be3c621063d653/vintasend_django-1.1.3.tar.gz", hash = "sha256:d45deda832f6cf9e15d507402cb81d9e217a1fcd1d3c6f2859aafea67c24c0b3", size = 16365, upload-time = "2026-06-12T22:39:15.696Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a5/4f/d03a25854003906730079324784e742ea48559ffacf0c78f498b629b5cac/vintasend_django-1.1.1-py3-none-any.whl", hash = "sha256:a19d274f8efe36e227bb76540e03662ce6a376a5e91f384a177244811be64a28", size = 23668, upload-time = "2026-06-03T05:42:16.589Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/56/b1c5011cd45e10fea8e100fca983b26b2619e9fd99726e72a1cade7ab4c9/vintasend_django-1.1.3-py3-none-any.whl", hash = "sha256:8aef18d36c29facfbf5552d9559ecb5eaabd930f7c84f3448f87a48c1684e1bf", size = 23668, upload-time = "2026-06-12T22:39:14.711Z" },
 ]
 
 [[package]]
