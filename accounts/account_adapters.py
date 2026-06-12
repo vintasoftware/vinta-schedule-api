@@ -465,4 +465,6 @@ class HeadlessAdapter(DefaultHeadlessAdapter):
         """
         from allauth.socialaccount.adapter import get_adapter
 
-        return get_adapter().serialize_instance(user)
+        data = get_adapter().serialize_instance(user)
+        data["has_usable_password"] = user.has_usable_password()
+        return data
