@@ -451,6 +451,10 @@ class TestCalendarEventViewSet:
         """
         from di_core.containers import container
 
+        # Anchor to a future date so the "start time must be in the future"
+        # validator can't flake when CI runs late in the wall-clock day.
+        event_date = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=2)).date()
+
         mock_calendar_service = Mock()
         mock_calendar_service.authenticate.return_value = None
 
@@ -458,8 +462,8 @@ class TestCalendarEventViewSet:
             calendar=calendar,
             title="Recife Event",
             description="",
-            start_time_tz_unaware=datetime.datetime(2026, 6, 12, 16, 30),
-            end_time_tz_unaware=datetime.datetime(2026, 6, 12, 17, 0),
+            start_time_tz_unaware=datetime.datetime.combine(event_date, datetime.time(16, 30)),
+            end_time_tz_unaware=datetime.datetime.combine(event_date, datetime.time(17, 0)),
             timezone="America/Recife",
             external_id="recife_external_id",
         )
@@ -472,8 +476,8 @@ class TestCalendarEventViewSet:
             "organization": calendar.organization.id,
             "calendar": calendar.id,
             "title": "Recife Event",
-            "start_time": "2026-06-12T16:30:00",
-            "end_time": "2026-06-12T17:00:00",
+            "start_time": f"{event_date.isoformat()}T16:30:00",
+            "end_time": f"{event_date.isoformat()}T17:00:00",
             "timezone": "America/Recife",
             "resource_allocations": [],
             "attendances": [],
@@ -486,8 +490,12 @@ class TestCalendarEventViewSet:
 
         event_data = mock_calendar_service.create_event.call_args.kwargs["event_data"]
         # 16:30 Recife (UTC-3) == 19:30 UTC.
-        assert event_data.start_time == datetime.datetime(2026, 6, 12, 19, 30, tzinfo=datetime.UTC)
-        assert event_data.end_time == datetime.datetime(2026, 6, 12, 20, 0, tzinfo=datetime.UTC)
+        assert event_data.start_time == datetime.datetime.combine(
+            event_date, datetime.time(19, 30), tzinfo=datetime.UTC
+        )
+        assert event_data.end_time == datetime.datetime.combine(
+            event_date, datetime.time(20, 0), tzinfo=datetime.UTC
+        )
 
     def test_create_event_out_of_window_returns_400(
         self, auth_client, calendar, user, social_account
@@ -502,13 +510,17 @@ class TestCalendarEventViewSet:
 
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
 
+        # Future date so the start-time validator can't reject before the
+        # service (the actual code under test) is reached.
+        event_date = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=2)).date()
+
         url = reverse("api:CalendarEvents-list")
         data = {
             "organization": calendar.organization.id,
             "calendar": calendar.id,
             "title": "Out of window",
-            "start_time": "2026-06-12T16:30:00",
-            "end_time": "2026-06-12T17:00:00",
+            "start_time": f"{event_date.isoformat()}T16:30:00",
+            "end_time": f"{event_date.isoformat()}T17:00:00",
             "timezone": "America/Recife",
             "resource_allocations": [],
             "attendances": [],
