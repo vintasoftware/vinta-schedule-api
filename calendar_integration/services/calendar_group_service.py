@@ -99,10 +99,25 @@ class CalendarGroupService:
         slots = list(slots)
 
         seen_slot_names: set[str] = set()
+        calendar_to_slot_name: dict[int, str] = {}
         for slot_data in slots:
             if slot_data.name in seen_slot_names:
                 raise CalendarGroupValidationError(f"Duplicate slot name: {slot_data.name!r}.")
             seen_slot_names.add(slot_data.name)
+
+            # A calendar may belong to at most one slot per group. Availability and
+            # bookable-slot computation count each slot's pool independently, so an
+            # overlapping calendar would be double-counted and the group reported
+            # bookable when no valid disjoint assignment exists.
+            for cid in slot_data.calendar_ids:
+                other_slot = calendar_to_slot_name.get(cid)
+                if other_slot is not None and other_slot != slot_data.name:
+                    raise CalendarGroupValidationError(
+                        f"Calendar {cid} appears in multiple slots "
+                        f"({other_slot!r} and {slot_data.name!r}). A calendar may "
+                        f"belong to at most one slot per group."
+                    )
+                calendar_to_slot_name[cid] = slot_data.name
 
             if not slot_data.calendar_ids:
                 raise CalendarGroupValidationError(
@@ -349,6 +364,7 @@ class CalendarGroupService:
                 CalendarGroupSlotAvailability(
                     slot_id=s.id,
                     available_calendar_ids=sorted(slot_pool_by_id[s.id] & available_ids),
+                    required_count=s.required_count,
                 )
                 for s in slots
             ]

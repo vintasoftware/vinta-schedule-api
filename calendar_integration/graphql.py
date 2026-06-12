@@ -361,6 +361,12 @@ class CalendarGroupSlotAvailabilityGraphQLType:
 
     slot_id: int
     available_calendar_ids: list[int]
+    required_count: int
+
+    @strawberry.field
+    def is_bookable(self) -> bool:
+        """True when enough calendars are free to satisfy the slot's required_count."""
+        return len(self.available_calendar_ids) >= self.required_count
 
 
 @strawberry.type

@@ -1781,6 +1781,7 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
                     {
                         "slot_id": s.slot_id,
                         "available_calendar_ids": s.available_calendar_ids,
+                        "required_count": s.required_count,
                     }
                     for s in r.slots
                 ],

@@ -2686,6 +2686,11 @@ class CalendarGroupEventCreateSerializer(serializers.Serializer):
 class CalendarGroupSlotAvailabilitySerializer(serializers.Serializer):
     slot_id = serializers.IntegerField()
     available_calendar_ids = serializers.ListField(child=serializers.IntegerField())
+    required_count = serializers.IntegerField()
+    is_bookable = serializers.SerializerMethodField()
+
+    def get_is_bookable(self, obj) -> bool:
+        return len(obj["available_calendar_ids"]) >= obj["required_count"]
 
 
 class CalendarGroupRangeAvailabilitySerializer(serializers.Serializer):

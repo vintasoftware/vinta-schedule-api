@@ -316,10 +316,11 @@ class CalendarGroupSlotAvailability:
 
     slot_id: int
     available_calendar_ids: list[int]
+    required_count: int = 1
 
     @property
     def is_satisfied_for_required_count(self) -> bool:
-        return len(self.available_calendar_ids) > 0
+        return len(self.available_calendar_ids) >= self.required_count
 
 
 @dataclass

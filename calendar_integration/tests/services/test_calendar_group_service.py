@@ -18,7 +18,6 @@ from calendar_integration.models import (
     CalendarEvent,
     CalendarEventGroupSelection,
     CalendarGroup,
-    CalendarGroupSlotMembership,
     CalendarOwnership,
 )
 from calendar_integration.services.calendar_group_service import CalendarGroupService
@@ -226,7 +225,10 @@ def test_create_group_rejects_required_count_zero(service, managed_calendars):
 
 
 @pytest.mark.django_db
-def test_create_group_allows_calendar_shared_across_slots(service, managed_calendars):
+def test_create_group_rejects_calendar_shared_across_slots(service, managed_calendars):
+    # A calendar in two slots would be double-counted by the independent per-slot
+    # availability computation, reporting the group bookable when no valid disjoint
+    # assignment exists. Overlap is therefore forbidden.
     shared = managed_calendars["phys_a"]
     data = CalendarGroupInputData(
         name="Shared",
@@ -235,14 +237,8 @@ def test_create_group_allows_calendar_shared_across_slots(service, managed_calen
             CalendarGroupSlotInputData(name="B", calendar_ids=[shared.id]),
         ],
     )
-    group = service.create_group(data)
-    assert group.slots.count() == 2
-    assert (
-        CalendarGroupSlotMembership.objects.filter_by_organization(service.organization.id)
-        .filter(calendar_fk=shared)
-        .count()
-        == 2
-    )
+    with pytest.raises(CalendarGroupValidationError, match="at most one slot"):
+        service.create_group(data)
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +598,81 @@ def test_find_bookable_slots_empty_when_any_slot_unsatisfied(
         slot_step=timedelta(minutes=15),
     )
     assert proposals == []
+
+
+@pytest.mark.django_db
+def test_check_group_availability_required_count_above_one(service, base_input, managed_calendars):
+    # Physicians slot needs TWO calendars. Availability must only be satisfied
+    # when at least two of its pool are free, not just one.
+    base_input.slots[0].required_count = 2
+    group = service.create_group(base_input)
+
+    now = timezone.now().replace(microsecond=0)
+    only_one = (now + timedelta(hours=1), now + timedelta(hours=2))
+    both = (now + timedelta(hours=3), now + timedelta(hours=4))
+
+    # only_one: a single physician free -> slot under-supplied.
+    _make_available_time(managed_calendars["phys_a"], only_one[0], only_one[1])
+    # both: two physicians free -> slot satisfied.
+    _make_available_time(managed_calendars["phys_a"], both[0], both[1])
+    _make_available_time(managed_calendars["phys_b"], both[0], both[1])
+
+    result = service.check_group_availability(group.id, [only_one, both])
+    by_slot_name = {s.id: s.name for s in group.slots.all()}
+
+    range1 = {by_slot_name[s.slot_id]: s for s in result[0].slots}
+    phys1 = range1["Physicians"]
+    assert phys1.required_count == 2
+    assert phys1.available_calendar_ids == [managed_calendars["phys_a"].id]
+    assert not phys1.is_satisfied_for_required_count
+
+    range2 = {by_slot_name[s.slot_id]: s for s in result[1].slots}
+    phys2 = range2["Physicians"]
+    assert set(phys2.available_calendar_ids) == {
+        managed_calendars["phys_a"].id,
+        managed_calendars["phys_b"].id,
+    }
+    assert phys2.is_satisfied_for_required_count
+
+
+@pytest.mark.django_db
+def test_find_bookable_slots_respects_required_count_above_one(
+    service, base_input, managed_calendars
+):
+    # Physicians slot needs two calendars; a window with only one free physician
+    # must not be proposed even though the rooms slot is satisfied.
+    base_input.slots[0].required_count = 2
+    group = service.create_group(base_input)
+
+    now = timezone.now().replace(microsecond=0)
+    window_start = now + timedelta(hours=1)
+    good_start = window_start + timedelta(minutes=15)
+    good_end = good_start + timedelta(minutes=30)
+
+    # Rooms slot satisfied throughout; only one physician free -> no proposals.
+    _make_available_time(managed_calendars["room_1"], good_start, good_end)
+    _make_available_time(managed_calendars["phys_a"], good_start, good_end)
+
+    proposals = service.find_bookable_slots(
+        group_id=group.id,
+        search_window_start=window_start,
+        search_window_end=window_start + timedelta(hours=1),
+        duration=timedelta(minutes=30),
+        slot_step=timedelta(minutes=15),
+    )
+    assert proposals == []
+
+    # Second physician becomes free for the same window -> slot satisfied.
+    _make_available_time(managed_calendars["phys_b"], good_start, good_end)
+
+    proposals = service.find_bookable_slots(
+        group_id=group.id,
+        search_window_start=window_start,
+        search_window_end=window_start + timedelta(hours=1),
+        duration=timedelta(minutes=30),
+        slot_step=timedelta(minutes=15),
+    )
+    assert [(p.start_time, p.end_time) for p in proposals] == [(good_start, good_end)]
 
 
 # ---------------------------------------------------------------------------

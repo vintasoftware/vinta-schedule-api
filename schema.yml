@@ -8882,8 +8882,15 @@ components:
           type: array
           items:
             type: integer
+        required_count:
+          type: integer
+        is_bookable:
+          type: boolean
+          readOnly: true
       required:
       - available_calendar_ids
+      - is_bookable
+      - required_count
       - slot_id
     CalendarSync:
       type: object
