@@ -13,7 +13,6 @@ from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_sche
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
-from rest_framework.mixins import ListModelMixin
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -51,7 +50,7 @@ def _parse_positive_int(value: str, param_name: str, default: int) -> int:
 
 
 @extend_schema(tags=["Notifications"])
-class NotificationViewSet(ListModelMixin, GenericViewSet):
+class NotificationViewSet(GenericViewSet):
     """
     ViewSet for user-scoped in-app notifications.
 
@@ -59,8 +58,7 @@ class NotificationViewSet(ListModelMixin, GenericViewSet):
     - GET /notifications/unread/  — list only unread (status=SENT) notifications
       for the authenticated user, using the native vintasend get_in_app_unread.
 
-    Phase 2 will wire up GET /notifications/ (list all) via the inherited
-    ListModelMixin + get_queryset.
+    Phase 2 will wire up GET /notifications/ (list all) via get_queryset.
 
     Authentication: IsAuthenticated (JWT or session).
     Scope: request.user — no org context.
@@ -137,15 +135,20 @@ class NotificationViewSet(ListModelMixin, GenericViewSet):
             param_name="page",
             default=_DEFAULT_PAGE,
         )
-        page_size = _parse_positive_int(
-            request.query_params.get("page_size", ""),
-            param_name="page_size",
-            default=_DEFAULT_PAGE_SIZE,
+        page_size = min(
+            _parse_positive_int(
+                request.query_params.get("page_size", ""),
+                param_name="page_size",
+                default=_DEFAULT_PAGE_SIZE,
+            ),
+            _MAX_PAGE_SIZE,
         )
 
         # request.user is guaranteed to be authenticated here (IsAuthenticated guard),
-        # so user.id is always a non-None int. The cast satisfies mypy's Optional[int] type.
-        user_id: int = request.user.id  # type: ignore[assignment]
+        # so user.id is always a non-None int.
+        user_id = request.user.id
+        if user_id is None:
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
         notifications = list(self.notification_service.get_in_app_unread(user_id, page, page_size))
 
         serializer = self.get_serializer(notifications, many=True)
