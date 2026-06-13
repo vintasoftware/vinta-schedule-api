@@ -16,16 +16,21 @@
 - `worktree_branch`: plan/google-sa-rooms-sync
 - `worktree_summary`: .vinta-ai-workflows/worktrees/plan-google-sa-rooms-sync.yaml
 
+## PR
+- #64 — https://github.com/vintasoftware/vinta-schedule-api/pull/64 (one PR for whole plan; base `main`)
+
 ## Completed phases
-_None yet._
+### Phase 1 — Rename `audience` → `admin_email` (model/API/service) ✅
+- Status: DONE. Agent: migration-author. Model used: haiku (plan tier: Tier 1). Fixer: haiku. Reviewer: sonnet.
+- Commit: `032e1af feat(calendar,organizations): rename service account audience field to admin_email`
+- What: renamed the field across model + migration 0018 (RenameField + AlterField, `max_length=255` kept → catalog-only, no narrowing) + both Google SA serializers + the two `ServiceAccount` ModelSerializers + org PATCH view + adapter `GoogleServiceAccountCredentialsTypedDict` + `calendar_service` credentials dict + all fixtures/assertions. Read serializer field → `EmailField` (correct `format: email`). No auth behaviour change. `public_key` retained.
+- Outer gate: ruff clean, makemigrations --check clean, check --deploy (5 pre-existing warnings), `pytest -n auto` 1550 passed. Pre-existing unrelated failure: `accounts/...test_send_unknown_account_sms_success` (broken on `main`, mocks removed `get_twilio_client`).
+- Deferred should-fixes (→ Phase 2, where the code is deleted): (a) `from_service_account_credentials` feeds `admin_email` into the legacy JWT `aud`; (b) `test_generate_jwt` assertion is structural not behavioural. Both methods/tests are removed in Phase 2 per the plan — fixing in P1 would be churn.
 
 ## Current phase
-Phase 1 — Rename `audience` → `admin_email` (model/API/service). NOT STARTED.
-
-Agent type: migration-author (introduces a RenameField migration). Suggested tier: Tier 1 (haiku).
+Phase 2 — Replace broken JWT auth with `google.oauth2.service_account.Credentials` + DWD. Tier 3 (sonnet). Agent: implementer.
 
 ## Remaining phases
-- Phase 1 — Rename `audience` → `admin_email` in model, API, service layer. Tier 1. Skill: add-migration.
 - Phase 2 — Replace broken JWT auth with `google.oauth2.service_account.Credentials` + DWD. Tier 3.
 - Phase 3 — Use Admin SDK to list Workspace resource calendars. Tier 3.
 
