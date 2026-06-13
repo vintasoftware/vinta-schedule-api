@@ -27,8 +27,16 @@
 - **Key fact for later phases**: `send()` does NOT persist a rendered body — vintasend stores the raw `context_used` dict; read paths must re-render `body_template` against `context_used`.
 - **Gates**: notifications scoped 9 passed; full suite 1559 passed + 1 pre-existing unrelated SMS failure.
 
+### Phase 1 — List unread endpoint ✅
+- **Model used**: claude-sonnet-4-6 (plan tier: 2, straddled to 3 for passthrough pagination)
+- **Commits**: `7e46c79` serializer, `9460822` unread endpoint, `b018fcc` drop premature list route (BLOCKER fix), `73be793` body-content + page_size-clamp tests
+- **Review**: Layer-3, 1 BLOCKER (ListModelMixin shipped an unfiltered `GET /notifications/` route — leaked PENDING/FAILED/CANCELLED; fixed → `GenericViewSet` only) + 2 should-fixes (page_size clamp to 100; assert rendered body content) + 1 nit, all applied.
+- **Summary**: `GET /notifications/unread/` via native `get_in_app_unread`, user-scoped, IsAuthenticated. Plain `NotificationSerializer` (works for dataclass + ORM model); `body` re-rendered at read time; `created`/`modified` None for dataclasses. Passthrough envelope `{results, page, page_size}`, page_size clamped to 100. Routes wired in `vinta_schedule_api/urls.py`; `schema.yml` regenerated.
+- **Key facts for later phases**: `NotificationSerializer` reusable for Phase 2's ORM list. `get_queryset` already returns `Notification.objects.filter(user=request.user, notification_type=IN_APP).order_by("-created")` — Phase 2 adds `ListModelMixin` + `status__in=[SENT, READ]`. Tests auth via `APIClient().force_authenticate(user=user)`.
+- **Gates**: notifications scoped 42 passed; full suite 1592 passed + 1 pre-existing unrelated SMS failure.
+
 ## Current phase
-- Phase 1 — List unread endpoint (Tier 2) — NEXT
+- Phase 2 — List all endpoint (Tier 2) — NEXT
 
 ## Remaining phases
 - Phase 2 — List all endpoint (Tier 2)
