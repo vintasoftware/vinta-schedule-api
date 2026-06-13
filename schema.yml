@@ -5005,6 +5005,95 @@ paths:
             url|null, previous: url|null, results: [...]}'
         '401':
           description: Unauthenticated
+  /notifications/{id}/mark-read/:
+    post:
+      operationId: notifications_mark_read_create
+      description: Marks a single in-app notification as read for the authenticated
+        user. Ownership is enforced via the scoped queryset — only the owner can mark
+        their own notifications. Calling this endpoint on an already-READ notification
+        is idempotent (returns 200).
+      summary: Mark a notification as read
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Notifications
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Notification'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+          description: Notification marked as read. Returns the updated notification.
+        '401':
+          description: Unauthenticated
+        '404':
+          description: Notification not found or not owned by the authenticated user
+  /notifications/{id}/mark-read{format}:
+    post:
+      operationId: notifications_mark_read_formatted_create
+      description: Marks a single in-app notification as read for the authenticated
+        user. Ownership is enforced via the scoped queryset — only the owner can mark
+        their own notifications. Calling this endpoint on an already-READ notification
+        is idempotent (returns 200).
+      summary: Mark a notification as read
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Notifications
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Notification'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+          description: Notification marked as read. Returns the updated notification.
+        '401':
+          description: Unauthenticated
+        '404':
+          description: Notification not found or not owned by the authenticated user
   /notifications/unread/:
     get:
       operationId: notifications_unread_retrieve
@@ -9315,6 +9404,70 @@ components:
         * `WEEKLY` - Weekly
         * `MONTHLY` - Monthly
         * `YEARLY` - Yearly
+    Notification:
+      type: object
+      description: |-
+        Read-only serializer for in-app notification objects.
+
+        Works for both vintasend Notification dataclasses (Phase 1 — returned by
+        get_in_app_unread) and vintasend_django model instances (Phase 2 — ORM rows).
+
+        Fields:
+        - id, title, notification_type, status: present on both dataclass and model.
+        - body: rendered at read time via body_template + best-available context.
+        - created, modified: model-only; None for dataclass instances.
+      properties:
+        id:
+          type: string
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        notification_type:
+          type: string
+          readOnly: true
+        status:
+          type: string
+          readOnly: true
+        body:
+          type: string
+          description: |-
+            Render the body template with the best-available context.
+
+            Priority:
+            1. context_used — the context that was recorded at send time (on model rows,
+               set by the backend when the notification was processed).
+            2. context_kwargs — the original kwargs passed at creation time.
+            3. Empty dict — render the template with no context (graceful degradation).
+
+            Returns an empty string on rendering failure so the response always serialises.
+          readOnly: true
+        created:
+          type: string
+          nullable: true
+          description: |-
+            Return the creation timestamp as ISO 8601 string, or None for dataclasses.
+
+            The vintasend Notification dataclass has no `created` attribute; only the
+            vintasend_django ORM model does.
+          readOnly: true
+        modified:
+          type: string
+          nullable: true
+          description: |-
+            Return the last-modified timestamp as ISO 8601 string, or None for dataclasses.
+
+            The vintasend Notification dataclass has no `modified` attribute; only the
+            vintasend_django ORM model does.
+          readOnly: true
+      required:
+      - body
+      - created
+      - id
+      - modified
+      - notification_type
+      - status
+      - title
     Organization:
       type: object
       description: |-

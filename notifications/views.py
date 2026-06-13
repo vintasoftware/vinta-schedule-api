@@ -205,3 +205,52 @@ class NotificationViewSet(ListModelMixin, GenericViewSet):
             },
             status=status.HTTP_200_OK,
         )
+
+    @extend_schema(
+        summary="Mark a notification as read",
+        description=(
+            "Marks a single in-app notification as read for the authenticated user. "
+            "Ownership is enforced via the scoped queryset — only the owner can mark "
+            "their own notifications. Calling this endpoint on an already-READ "
+            "notification is idempotent (returns 200)."
+        ),
+        responses={
+            200: OpenApiResponse(
+                description="Notification marked as read. Returns the updated notification.",
+                response=NotificationSerializer,
+            ),
+            401: OpenApiResponse(description="Unauthenticated"),
+            404: OpenApiResponse(
+                description="Notification not found or not owned by the authenticated user"
+            ),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="mark-read")
+    def mark_read(self, request: Request, pk: str | None = None) -> Response:
+        """POST /notifications/{id}/mark-read/ — mark a notification as read.
+
+        Fetches the notification scoped to the current user (404 if not found or not
+        owned), then calls the native mark_read service method. If the notification
+        is already READ, returns 200 idempotently without calling mark_read (which
+        would raise NotificationUpdateError).
+
+        Returns the serialized updated notification.
+        """
+        # get_object() uses get_queryset(), which filters by user, notification_type,
+        # and status (SENT/READ). This automatically enforces ownership + 404 for
+        # non-existent, wrong-user, or wrong-status notifications (e.g., PENDING_SEND).
+        notification = self.get_object()
+
+        # Idempotency: if already READ, return 200 without calling mark_read
+        # (native method would raise NotificationUpdateError).
+        if notification.status == NotificationStatus.READ.value:
+            serializer = self.get_serializer(notification)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # Status is SENT — call mark_read to transition to READ
+        self.notification_service.mark_read(notification.pk)
+
+        # Re-fetch the notification from the DB so created/modified are current
+        notification = self.get_object()
+        serializer = self.get_serializer(notification)
+        return Response(serializer.data, status=status.HTTP_200_OK)
