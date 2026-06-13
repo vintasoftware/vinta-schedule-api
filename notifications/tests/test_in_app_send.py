@@ -122,3 +122,29 @@ class TestInAppNotificationSend:
             "DI container notification_service is missing the IN_APP adapter; "
             "get_in_app_unread would raise NotificationError"
         )
+
+    def test_di_get_in_app_unread_returns_sent_notification(self, di_container, user) -> None:
+        """
+        End-to-end guard: get_in_app_unread through the real DI container must return a
+        notification created via the same service.
+
+        This test fails if the DI container's notification_backend is reverted to the buggy
+        DjangoDbNotificationBackend (which serialises the enum as "NotificationTypes.IN_APP"
+        instead of "IN_APP", causing the ORM filter to return no rows).
+        """
+        notification_service = di_container.notification_service()
+
+        notification_service.create_notification(
+            user_id=user.id,
+            notification_type=NotificationTypes.IN_APP.value,
+            title="DI container unread guard",
+            body_template="notifications/in_app/example.body.txt",
+            context_name="in_app_generic_context",
+            context_kwargs=NotificationContextDict({"message": "DI guard message"}),
+        )
+
+        unread = list(notification_service.get_in_app_unread(user.id))
+
+        assert len(unread) >= 1
+        assert unread[0].notification_type == NotificationTypes.IN_APP.value
+        assert unread[0].status == NotificationStatus.SENT.value
