@@ -76,11 +76,24 @@
   - Phase 4 (`AvailabilityService`) replaces the host's `get_availability_windows_in_range` (declared on both `EventServiceHost` and `BundleServiceHost`). Same seam-swap pattern.
   - Phase 7 cleanup list now includes: drop redundant facade-level `@transaction.atomic()` on the 1-line bundle + event delegations (harmless nested savepoints today); revisit whether the `InitializedOrAuthenticatedCalendarService` protocol should keep declaring `_get_primary_calendar`/`_collect_bundle_attendees`/serialize helpers (facade keeps thin delegations for them only to satisfy the protocol).
 
+### Phase 4 — Extract AvailabilityService ✅
+- **Status**: complete, PR open
+- **Model**: claude-opus-4-7 (Tier 4) — implemented across 3 sessions (2 died on API socket errors mid-extraction; finished by sonnet finishing agents)
+- **Branch**: `plan/calendar-service-refactor/phase-4` (base `…/phase-3`)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/75 (published, 3 inline comments)
+- **Files**: `calendar_integration/services/availability_service.py` (new, ~1095 lines), `calendar_integration/services/calendar_service.py` (edited, −668 lines → facade now 2557 lines), `calendar_integration/tests/services/test_availability_service.py` (new, 11 tests)
+- **Summary**: Moved 17 availability/blocked/available methods + interval-math privates into `AvailabilityService`. Same host-seam pattern (`AvailabilityServiceHost`, reads events via `host.get_calendar_events_expanded`). Facade keeps 2 private delegations: `_subtract_busy_intervals` (`@staticmethod` — test calls it unbound) + `_remove_available_time_windows_that_overlap...` (instance). `get_availability_windows_in_range` host method routes to the service.
+- **Review**: Layer-3 0 blockers / 0 should-fix. Interval math + all 8 recurring methods diffed byte-identical; no infinite loop; perf guardrail (no added queries in loops) held; tenancy preserved.
+- **Gate**: full suite 1619 passed, 0 failed. mypy 138 (0 new — 3 attr-defined fixed via `InitializedOrAuthenticatedCalendarService` cast; 7 remaining verbatim from facade).
+- **Carry-forward notes**:
+  - Facade is now ~2557 lines (was 4726). Remaining on it: auth/init, adapter resolution, calendar CRUD (create_application/virtual_calendar), org-resource import, the sync state machine (Phase 5), webhooks (Phase 6), + the thin private delegations.
+  - Phase 7 cleanup list += export `AvailabilityService` from `services/__init__.py`; the `_remove_...` cast-style note.
+  - NOTE: long opus agents are hitting ~45min API socket timeouts — for Phase 5 (sync, the most coupled), consider checkpointing or expect to finish via a follow-up agent if it dies mid-extraction. The pattern: dead agents leave correct partial work on disk (uncommitted); verify via the suite, then a small finishing agent completes tests+commit.
+
 ## Current Phase
-- Phase 4 — Extract `AvailabilityService` (next).
+- Phase 5 — Extract `CalendarSyncService` (next).
 
 ## Remaining Phases
-- Phase 4 — Extract `AvailabilityService` (Tier 4)
 - Phase 5 — Extract `CalendarSyncService` (Tier 4)
 - Phase 6 — Extract `CalendarWebhookService` (Tier 3)
 - Phase 7 — Shrink the facade and finalize wiring (Tier 2)
