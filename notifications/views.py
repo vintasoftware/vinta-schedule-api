@@ -19,6 +19,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
 from vintasend.constants import NotificationStatus, NotificationTypes
+from vintasend.exceptions import NotificationUpdateError
 from vintasend.services.notification_service import NotificationService
 from vintasend_django.models import Notification
 
@@ -247,8 +248,14 @@ class NotificationViewSet(ListModelMixin, GenericViewSet):
             serializer = self.get_serializer(notification)
             return Response(serializer.data, status=status.HTTP_200_OK)
 
-        # Status is SENT — call mark_read to transition to READ
-        self.notification_service.mark_read(notification.pk)
+        # Status is SENT — call mark_read to transition to READ.
+        # A concurrent request may win the race and mark it READ first; in that
+        # case mark_read raises NotificationUpdateError (0-row update).  Treat
+        # that as idempotent success — the row is already READ.
+        try:
+            self.notification_service.mark_read(notification.pk)
+        except NotificationUpdateError:
+            pass
 
         # Re-fetch the notification from the DB so created/modified are current
         notification = self.get_object()

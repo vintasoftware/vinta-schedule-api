@@ -10,10 +10,13 @@ Covers:
 - After marking as read, notification disappears from /notifications/unread/.
 """
 
+from unittest.mock import patch
+
 import pytest
 from rest_framework import status
 from rest_framework.test import APIClient
 from vintasend.constants import NotificationStatus, NotificationTypes
+from vintasend.exceptions import NotificationUpdateError
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 from vintasend_django.models import Notification
@@ -344,3 +347,39 @@ class TestMarkReadRemovesFromUnreadList:
         assert list_data["count"] == 1
         assert int(list_data["results"][0]["id"]) == notification.id
         assert list_data["results"][0]["status"] == NotificationStatus.READ.value
+
+
+@pytest.mark.django_db
+class TestMarkReadConcurrentRace:
+    def test_concurrent_mark_read_raises_update_error_returns_200(self, user) -> None:
+        """Lost-race concurrent request: mark_read raises NotificationUpdateError → 200, not 500.
+
+        Simulates a concurrent request that arrives while the notification is still
+        SENT (passes the status check) but loses the DB race (another request already
+        marked it READ).  The service raises NotificationUpdateError for the loser.
+        The view must catch this and return 200 idempotently.
+        """
+        service = _build_notification_service()
+        notification = _send_in_app(service, user.id, "concurrent message")
+        assert notification.status == NotificationStatus.SENT.value
+
+        # Simulate a concurrent winner: mark the row READ in the DB directly so
+        # that the re-fetch after the except branch returns the READ state.
+        Notification.objects.filter(pk=notification.pk).update(status=NotificationStatus.READ.value)
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        # Patch mark_read to raise NotificationUpdateError, mimicking a 0-row update
+        # (the concurrent winner already transitioned status to READ).
+        with patch.object(
+            NotificationService,
+            "mark_read",
+            side_effect=NotificationUpdateError("concurrent update lost race"),
+        ):
+            response = client.post(f"/notifications/{notification.id}/mark-read/")
+
+        # The lost-race error must collapse into an idempotent 200, not a 500.
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["status"] == NotificationStatus.READ.value
