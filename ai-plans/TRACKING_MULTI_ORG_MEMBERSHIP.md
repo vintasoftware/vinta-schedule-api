@@ -36,11 +36,21 @@
 - **Review:** Layer-3 caught 1 BLOCKER — post-create `del` stash dropped to header-blind fallback → multi-org create-under-B 500'd; fixed by re-resolving after `perform_create` with a fail-before/pass-after regression test. Tests upgraded to exercise real tenant data through `CalendarViewSet`; malformed-header guard added.
 - **Gate:** ruff/format/mypy(baseline)/makemigrations/check --deploy green; `pytest -n auto` 1570 passed (1 sanctioned pre-existing twilio failure — being fixed on main, stack rebased).
 
+### Phase 2b — No-header multi-org → 400 ✅
+- **Model used:** claude-sonnet-4-6 (plan tier 2; used sonnet) · agent: implementer
+- **Branch:** plan/multi-org-membership/phase-2b · **base:** plan/multi-org-membership/phase-2a
+- **PR:** https://github.com/vintasoftware/vinta-schedule-api/pull/70 (published, 3 inline comments)
+- **Summary:** absent-header + 2+ active memberships → 400 `X-Organization-Id header required`. Added `active_org_resolution_optional` opt-out (Phase 3 mine uses it). Malformed header unified to absent-header semantics (multi-org → 400, single → resolve) — safer than the old silent first-org fallback.
+- **Review:** Layer-3 caught a malformed-header edge (silent first-org pick for multi-org) → unified to 400, removed dead fallback, added multi-org-malformed test.
+- **Gate:** full suite green — `pytest -n auto` 1578 passed, 0 failures.
+
+## Stack note
+2026-06-13: rebased base/phase-1/phase-2a onto origin/main (twilio fix `3286b69`); force-pushed; PR bases intact. No sanctioned failures remain — full suite must be 100% green.
+
 ## Current phase
-Phase 2b — No-header multi-org → 400 (Tier 2 · haiku · implementer).
+Phase 2c — Non-member org → 403 (Tier 2 · sonnet · implementer).
 
 ## Remaining phases
-- Phase 2b — No-header multi-org → 400
 - Phase 2c — Non-member org → 403
 - Phase 3 — List my orgs endpoint
 - Phase 4 — Multi-org invitation accept
