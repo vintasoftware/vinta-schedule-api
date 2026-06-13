@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Annotated
 
 from django.conf import settings
+from django.db import transaction
 from django.urls import reverse
 
 from allauth.account.adapter import DefaultAccountAdapter
@@ -19,6 +20,7 @@ from vintasend.services.notification_service import NotificationService
 
 from common.twilio import get_twilio_client
 from organizations.exceptions import UserAlreadyHasMembershipError
+from organizations.models import get_active_organization_membership
 from organizations.services import OrganizationService
 from users.models import Profile, User
 
@@ -98,7 +100,46 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         # UserAlreadyHasMembershipError is treated as a no-op so that a social
         # re-login for a user who is already a member does not raise.
         self._provision_org_membership(user)
+        self._request_calendar_import(user, sociallogin)
         return user
+
+    def _request_calendar_import(self, user: User, sociallogin: SocialLogin) -> None:
+        """Trigger an import of the user's external calendars on social signup.
+
+        No service account is required: a user's own calendars import through
+        their OAuth social-account token (account_type="social_account"). The
+        GoogleCalendarServiceAccount path is only for org-wide room/resource
+        imports.
+
+        Only Google/Microsoft accounts carry calendars; other providers are
+        ignored. The import is org-scoped, so it requires an active membership —
+        when the user is still gated (no membership, e.g. an uninvited social
+        signup) the import is skipped here and runs later when they hit the
+        request-import endpoint after provisioning.
+        """
+        from calendar_integration.constants import CalendarProvider
+        from calendar_integration.tasks import import_account_calendars_task
+
+        account = getattr(sociallogin, "account", None)
+        if account is None or account.provider not in (
+            CalendarProvider.GOOGLE,
+            CalendarProvider.MICROSOFT,
+        ):
+            return
+
+        membership = get_active_organization_membership(user)
+        if membership is None:
+            return
+
+        account_id = account.id
+        organization_id = membership.organization_id
+        transaction.on_commit(
+            lambda: import_account_calendars_task.delay(
+                account_type="social_account",
+                account_id=account_id,
+                organization_id=organization_id,
+            )
+        )
 
     def _provision_org_membership(self, user: User) -> None:
         """Attempt to auto-join the user to an inviting organisation.

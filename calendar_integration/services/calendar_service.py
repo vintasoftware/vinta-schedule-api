@@ -535,7 +535,7 @@ class CalendarService(BaseCalendarService):
         resources = self.calendar_adapter.get_available_calendar_resources(start_time, end_time)
         for resource in resources:
             self.request_calendar_sync(
-                calendar=Calendar.objects.get_or_create(
+                calendar=Calendar.objects.update_or_create(
                     external_id=resource.external_id,
                     organization=self.organization,
                     defaults={
@@ -702,7 +702,6 @@ class CalendarService(BaseCalendarService):
             calendar, _ = Calendar.objects.update_or_create(
                 external_id=calendar_data.external_id,
                 organization=self.organization,
-                calendar_type=CalendarType.PERSONAL,
                 defaults={
                     "name": calendar_data.name,
                     "description": calendar_data.description,
@@ -712,8 +711,11 @@ class CalendarService(BaseCalendarService):
                         "latest_original_payload": calendar_data.original_payload or {},
                     },
                 },
-                # sync_enabled and visibility are seeded only on first import (create), never
-                # on re-import, so a user's later opt-in/out is preserved.
+                # calendar_type, sync_enabled and visibility are seeded only on first import
+                # (create), never on re-import. calendar_type must stay out of the lookup so
+                # that resource calendars returned by the provider's calendarList (rooms visible
+                # to the user) don't collide with the unique (external_id, provider, org)
+                # constraint — and don't accidentally get re-typed as PERSONAL.
                 create_defaults={
                     "name": calendar_data.name,
                     "description": calendar_data.description,
@@ -722,12 +724,24 @@ class CalendarService(BaseCalendarService):
                     "meta": {
                         "latest_original_payload": calendar_data.original_payload or {},
                     },
+                    "calendar_type": CalendarType.PERSONAL,
                     "sync_enabled": self._sync_enabled_default_for_access_role(
                         calendar_data.access_role
                     ),
                     "visibility": CalendarVisibility.ACTIVE,
+                    # Imported calendars manage their own availability windows by
+                    # default. Seeded on create only (create_defaults), so a later
+                    # user toggle via PATCH /calendars/{id}/ is never clobbered on
+                    # re-import.
+                    "manage_available_windows": True,
                 },
             )
+
+            # Resource calendars are owned and synced via the rooms-sync path; skip
+            # personal ownership and sync for them here.
+            if calendar.calendar_type == CalendarType.RESOURCE:
+                continue
+
             CalendarOwnership.objects.update_or_create(
                 organization=self.organization,
                 calendar=calendar,
