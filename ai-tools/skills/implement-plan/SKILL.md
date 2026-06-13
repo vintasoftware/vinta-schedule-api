@@ -316,6 +316,11 @@ Three layers, all required, in order. The orchestrator never edits — every iss
 5. **No-secrets scan**: `git diff` for `password|secret|token|api_key|AKIA|BEGIN [A-Z]+ KEY`.
 6. **Dependency license scan**: `git diff package.json pyproject.toml ...` (project-relevant manifests) — for every added dep look up its SPDX license (`npm view <pkg> license`, PyPI metadata, repo `LICENSE`). A license in `policies.dependency_licenses.forbidden_spdx` and not in `allowed_overrides` is a BLOCKER (when `block`) or a SHOULD-FIX (when `warn`). A missing / `UNKNOWN` / undeclared license is **always a BLOCKER** regardless of enforcement mode — there is no override to silently bless undisclosed terms.
 7. **No AI co-author trailer**: `git log -<n>..HEAD --format=%B | grep -i 'Co-Authored-By'` — any AI trailer is a BLOCKER.
+8. **Stray main-checkout writes (only when `run_options.use_worktree = true`)**: a subagent is told to work inside the worktree, but a buggy agent can resolve an absolute path back to the **main checkout** and silently edit files there (worktrees have independent working trees, so those edits never reach the phase commit — they sit as uncommitted thrash in the main checkout, and the "missing" edits read as a silent fixer/implementer failure). After **every** implementer **and** fixer subagent returns, run `git -C <main-checkout-path> status --short | grep -vE '^\?\?'` (tracked modifications only). Any output is a BLOCKER for this phase:
+   - Diff the stray files (`git -C <main> diff -- <path>`) to recover intent.
+   - If the edit belongs in the worktree, re-dispatch the fixer/implementer with an explicit instruction to write to the worktree path (the change is missing from the phase commit until it does).
+   - Once recovered (or confirmed superseded by the correctly-committed worktree version), discard the stray edits with `git -C <main> restore -- <path>` so the main checkout returns clean. Never leave the main checkout dirty between phases — a later phase's Layer 1 can't tell new thrash from old.
+   `<main-checkout-path>` is the repo root the skill was invoked from (NOT `run_options.worktree_path`).
 
 #### Layer 2 — Plan compliance walkthrough
 
@@ -559,7 +564,7 @@ After all executable phases complete:
 - [ ] Subagent spawned, report received.
 - [ ] Inner loop green: scoped lint + new tests individually + scoped suite.
 - [ ] **Outer gate green:** `uv run python manage.py check --deploy` AND `uv run pytest -n auto` both passed.
-- [ ] Layer 1 review: full diff read; no scope creep; no secrets; outer gate confirmed; no AI co-author trailer.
+- [ ] Layer 1 review: full diff read; no scope creep; no secrets; outer gate confirmed; no AI co-author trailer; **when `use_worktree = true`: main checkout has no stray tracked modifications** (`git -C <main> status --short | grep -vE '^\?\?'` empty) after every implementer AND fixer subagent.
 - [ ] Layer 2 review: every "Changes" ticked; every "Tests" materialized; acceptance line satisfiable; conventions, reusable skills, e2e + screenshot compliance (if applicable), flag wiring all checked.
 - [ ] Layer 3 review: adversarial review run; BLOCKERs fixed; SHOULD-FIX either fixed or noted.
 - [ ] After any fix-up: Layers 1 + 2 + outer gate re-run.
