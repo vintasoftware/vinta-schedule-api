@@ -1,17 +1,24 @@
-"""Integration tests for active-org resolution (Phase 2a).
+"""Integration tests for active-org resolution (Phase 2a + 2b).
 
 Verifies that the ``TenantScopedViewMixin`` resolver correctly resolves the
 active organization from the ``X-Organization-Id`` header and stashes the result
 so ``get_active_organization_membership`` reads it.
 
 Use-case 2: active org selected via header.
+Use-case 3: header-absent multi-org request is rejected with 400.
 
-Phase 2b / 2c rejections (400 for missing header + multi-org users, 403 for
-non-member org header) are *not* tested here — those behaviours are added in
-Phases 2b and 2c.  The current tests verify only the happy-path rows:
+Phase 2a covers the happy-path rows:
 
 * Header present + caller is active member → resolve to that org.
 * Header absent + exactly one active membership → resolve to it (unchanged).
+
+Phase 2b adds the multi-org-no-header rejection:
+
+* Header absent + 2+ active memberships → **400** ``X-Organization-Id header required.``
+* The 0-membership (gated) and single-membership rows are unchanged.
+* A view setting ``active_org_resolution_optional = True`` is exempt from the 400.
+
+Phase 2c (non-member org header → 403) is *not* tested here.
 """
 
 from django.contrib.auth import get_user_model
@@ -19,8 +26,11 @@ from django.urls import reverse
 
 import pytest
 from rest_framework import status
-from rest_framework.test import APIClient
+from rest_framework.exceptions import ValidationError
+from rest_framework.request import Request
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
+from common.utils.view_utils import TenantScopedViewMixin
 from organizations.models import (
     Organization,
     OrganizationMembership,
@@ -426,23 +436,200 @@ class TestCalendarViewSetOrgScoping:
 
 @pytest.mark.django_db
 class TestMalformedOrgIdHeader:
-    """A non-integer X-Organization-Id header falls back gracefully, not 500."""
+    """A non-integer X-Organization-Id header is treated as an absent header.
 
-    def test_non_integer_header_does_not_500(
+    Same rules as a missing header: single membership → resolve (200), multi-org
+    → 400, gated → gated. A garbage header must never silently pick an org for a
+    multi-org caller.
+    """
+
+    def test_single_membership_non_integer_header_resolves(
         self,
         user: User,  # type: ignore[valid-type]
         org_a: Organization,
     ) -> None:
-        """A header value like 'abc' should not raise ValueError / return 500."""
+        """One active membership + 'abc' header → 200 (treated as absent, resolves)."""
         _make_membership(user, org_a)
         client = _auth_client_for(user)
         url = reverse("api:Organizations-current")
 
-        # "abc" cannot be coerced to int; the resolver must fall back gracefully.
+        # "abc" cannot be coerced to int; the resolver treats it as an absent
+        # header and resolves the single membership.
         response = client.get(url, HTTP_X_ORGANIZATION_ID="abc")
 
-        # The exact status depends on the fallback path (200 with single-membership
-        # fallback is fine; anything but 500 satisfies the requirement).
-        assert response.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR, (
-            f"Malformed header caused 500: {response.content!r}"
+        assert response.status_code == status.HTTP_200_OK, (
+            f"Malformed header with single membership should resolve to 200; "
+            f"got {response.status_code}: {response.content!r}"
         )
+
+    def test_multi_org_non_integer_header_returns_400(
+        self,
+        two_org_user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+        org_b: Organization,
+    ) -> None:
+        """Two active memberships + 'abc' header → 400 (same as absent header).
+
+        The malformed header is treated as absent, so a multi-org caller hits the
+        ambiguity 400 rather than silently resolving to the first org.
+        """
+        client = _auth_client_for(two_org_user)
+        url = reverse("api:Calendars-list")
+
+        response = client.get(url, HTTP_X_ORGANIZATION_ID="abc")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST, response.content
+        assert response.json() == {"detail": _MISSING_HEADER_DETAIL}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b — Tests: multi-org caller with no header is rejected with 400
+# ---------------------------------------------------------------------------
+# Use-case 3: a user with 2+ active memberships who omits X-Organization-Id must
+# get a clear 400, never an ambiguous implicit org. We exercise a real
+# tenant-scoped viewset (CalendarViewSet list) so the 400 is asserted end-to-end
+# through TenantScopedViewMixin.initial().
+# ---------------------------------------------------------------------------
+
+#: The exact body the resolver returns for the multi-org-no-header case.
+_MISSING_HEADER_DETAIL = "X-Organization-Id header required."
+
+
+@pytest.mark.django_db
+class TestMultiOrgNoHeaderRejected:
+    """A multi-org caller that omits the header is rejected with 400."""
+
+    def test_two_memberships_no_header_returns_400(
+        self,
+        two_org_user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+        org_b: Organization,
+    ) -> None:
+        """GET /calendar/ with two active memberships and NO header → 400 with detail."""
+        client = _auth_client_for(two_org_user)
+        url = reverse("api:Calendars-list")
+
+        response = client.get(url)
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST, response.content
+        assert response.json() == {"detail": _MISSING_HEADER_DETAIL}
+
+    def test_single_membership_no_header_still_resolves(
+        self,
+        user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+    ) -> None:
+        """Exactly one active membership + no header → 200 (no regression, not 400)."""
+        _make_membership(user, org_a)
+        client = _auth_client_for(user)
+        url = reverse("api:Calendars-list")
+
+        response = client.get(url)
+
+        assert response.status_code == status.HTTP_200_OK, response.content
+
+    def test_gated_user_no_header_is_not_400(
+        self,
+        user: User,  # type: ignore[valid-type]
+    ) -> None:
+        """Zero active memberships + no header → gated, never 400 (onboarding unchanged).
+
+        A gated user resolves to no active org, so the org-scoped list yields an
+        empty page; the resolver must not raise the multi-org 400.
+        """
+        client = _auth_client_for(user)
+        url = reverse("api:Calendars-list")
+
+        response = client.get(url)
+
+        assert response.status_code != status.HTTP_400_BAD_REQUEST, response.content
+        # Gated → no active org → empty result set, never the multi-org rejection.
+        assert response.status_code == status.HTTP_200_OK, response.content
+        assert response.json()["results"] == []
+
+    def test_two_memberships_with_valid_header_still_resolves(
+        self,
+        two_org_user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+        org_b: Organization,
+    ) -> None:
+        """Two memberships + a valid header → 200 (no regression)."""
+        client = _auth_client_for(two_org_user)
+        url = reverse("api:Calendars-list")
+
+        response = client.get(url, HTTP_X_ORGANIZATION_ID=str(org_a.pk))
+
+        assert response.status_code == status.HTTP_200_OK, response.content
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b — Tests: active_org_resolution_optional opt-out
+# ---------------------------------------------------------------------------
+# A concrete view may set ``active_org_resolution_optional = True`` (Phase 3's
+# GET /organizations/mine/ and onboarding flows) so that a multi-org caller with
+# no header is NOT rejected — the resolver falls through to gated (None) instead.
+#
+# We assert the opt-out by driving the mixin's resolver directly with a throwaway
+# view, since no shipped view sets the attribute in this phase.
+# ---------------------------------------------------------------------------
+
+
+class _OptOutView(TenantScopedViewMixin):
+    """Throwaway view that opts out of the multi-org-no-header 400."""
+
+    active_org_resolution_optional = True
+
+
+class _StrictView(TenantScopedViewMixin):
+    """Throwaway view that keeps the default (strict) multi-org-no-header 400."""
+
+    active_org_resolution_optional = False
+
+
+def _drf_request_for(user: User) -> Request:  # type: ignore[valid-type]
+    """Build a DRF Request authenticated as *user* with no X-Organization-Id header."""
+    factory = APIRequestFactory()
+    django_request = factory.get("/anything/")
+    force_authenticate(django_request, user=user)
+    drf_request = Request(django_request)
+    # force_authenticate stamps the wsgi request; mirror it on the DRF request so
+    # the resolver's getattr(request, "user", None) sees the authenticated user.
+    drf_request.user = user
+    return drf_request
+
+
+@pytest.mark.django_db
+class TestActiveOrgResolutionOptionalOptOut:
+    """A view with active_org_resolution_optional = True is exempt from the 400."""
+
+    def test_opt_out_view_does_not_raise_for_multi_org_no_header(
+        self,
+        two_org_user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+        org_b: Organization,
+    ) -> None:
+        """active_org_resolution_optional = True → no 400; resolves to gated (None)."""
+        view = _OptOutView()
+        request = _drf_request_for(two_org_user)
+
+        # Must not raise ValidationError.
+        view._resolve_active_organization(request)  # type: ignore[attr-defined]
+
+        assert request.organization_membership is None  # type: ignore[attr-defined]
+        assert request.organization is None  # type: ignore[attr-defined]
+
+    def test_strict_view_raises_for_multi_org_no_header(
+        self,
+        two_org_user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+        org_b: Organization,
+    ) -> None:
+        """The default (strict) view raises ValidationError for the same input.
+
+        Confirms the opt-out is what suppresses the 400, not some other difference.
+        """
+        view = _StrictView()
+        request = _drf_request_for(two_org_user)
+
+        with pytest.raises(ValidationError):
+            view._resolve_active_organization(request)  # type: ignore[attr-defined]

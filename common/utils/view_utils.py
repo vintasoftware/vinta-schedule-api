@@ -7,6 +7,7 @@ from django.shortcuts import get_object_or_404
 
 import django_virtual_models as v
 from rest_framework import generics, mixins, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet, ViewSetMixin
@@ -37,24 +38,44 @@ class TenantScopedViewMixin:
       reads this stash so all ~60 existing call sites are header-aware without
       change.
 
-    Resolution table (Phase 2a implements the happy-path rows; stubs for 2b/2c are noted):
+    Resolution table (Phase 2b implements the multi-org-no-header 400; 2c stubbed):
 
     +-----------------------+---------------------------------+------------------------------------------+
-    | Memberships (active)  | Header                          | Result (Phase 2a)                        |
+    | Memberships (active)  | Header                          | Result                                   |
     +-----------------------+---------------------------------+------------------------------------------+
     | 0                     | any                             | gated (membership = None)                |
     | 1                     | absent                          | resolve to that membership               |
     | 1                     | present, matches                | resolve to it                            |
     | 2+                    | present, matches member         | resolve to named org                     |
-    | 2+                    | absent                          | fallback to first [Phase 2b → 400]       |
+    | 2+                    | absent                          | **400** (X-Organization-Id required)     |
     | any                   | present, non-member org         | fallback to first [Phase 2c → 403]       |
-    | any                   | present, non-integer            | fallback to first (malformed, not 500)   |
+    | any                   | present, non-integer            | treated as absent header                 |
+    |                       |                                 | (1 → resolve · 2+ → 400 · 0 → gated)     |
     +-----------------------+---------------------------------+------------------------------------------+
+
+    The ``2+ / absent`` row raises ``rest_framework.exceptions.ValidationError``
+    (rendered as **400** with body ``{"detail": "X-Organization-Id header
+    required."}``) so a multi-org caller can never resolve to an ambiguous,
+    implicit organization.
+
+    **Opt-out:** a concrete view that must serve multi-org callers *without* the
+    header (e.g. the org-discovery ``GET /organizations/mine/`` endpoint and the
+    onboarding/gated flows) sets the class attribute
+    ``active_org_resolution_optional = True``.  When set, the ``2+ / absent`` case
+    does **not** raise — the active org simply resolves to ``None`` (left gated)
+    so the view can list the caller's memberships.  Defaults to ``False``; no
+    existing view sets it (Phase 3 wires it onto the ``mine`` endpoint).
 
     Unauthenticated requests pass through untouched (the mixin sets ``None`` on
     all three attributes so downstream code doesn't KeyError); DRF's own
     authentication / permission stack returns 401 before any business logic runs.
     """
+
+    #: When ``True``, a multi-org caller that omits ``X-Organization-Id`` is *not*
+    #: rejected with a 400 — the active org resolves to ``None`` instead.  Concrete
+    #: views that must function without the header (org discovery, onboarding) opt
+    #: in.  See the class docstring's resolution table for the affected row.
+    active_org_resolution_optional: bool = False
 
     def initial(self, request: Request, *args: Any, **kwargs: Any) -> None:
         """Run DRF initialisation, then resolve and stash the active org."""
@@ -82,27 +103,20 @@ class TenantScopedViewMixin:
             if org_id_header:
                 # Validate that the header value is a valid integer before using it
                 # in a DB lookup. A non-coercible value (e.g. "abc") is treated as
-                # "no match" and falls through to the existing fallback, rather than
-                # raising a ValueError / 500 from the ORM.
+                # an absent header rather than raising a ValueError / 500 from the
+                # ORM. We intentionally apply the *same* rules as a missing header
+                # (single → resolve, multi-org → 400, gated → gated) so a garbage
+                # header can never silently pick an org for a multi-org caller.
                 try:
                     int(org_id_header)
                 except (TypeError, ValueError):
-                    # Malformed header — treat as if no match was found.
-                    resolved_membership = (
-                        user.organization_memberships.filter(  # type: ignore[union-attr]
-                            is_active=True,
-                        )
-                        .select_related("organization")
-                        .order_by("created")
-                        .first()
-                    )
                     logger.debug(
                         "X-Organization-Id header '%s' is not a valid integer for "
-                        "user %s; falling back to single-membership resolution.",
+                        "user %s; treating it as an absent header.",
                         org_id_header,
                         user.pk,  # type: ignore[union-attr]
                     )
-                    # Skip the matching-lookup block below.
+                    # Fall through to the absent-header branch below.
                     org_id_header = None
 
             if org_id_header:
@@ -140,8 +154,9 @@ class TenantScopedViewMixin:
                     )
             else:
                 # Header absent: resolve to the single active membership when there
-                # is exactly one; otherwise use the first (stable ordering).
-                # Phase 2b will reject multi-org users who omit the header with 400.
+                # is exactly one. A multi-org caller who omits the header is
+                # rejected with 400 (unless the view opts out via
+                # ``active_org_resolution_optional``); zero memberships → gated.
                 active_memberships = list(
                     user.organization_memberships.filter(  # type: ignore[union-attr]
                         is_active=True,
@@ -153,14 +168,17 @@ class TenantScopedViewMixin:
                     # Single-membership happy path: identical to today's behaviour.
                     resolved_membership = active_memberships[0]
                 elif len(active_memberships) > 1:
-                    # Phase 2b will raise ValidationError (400) here for multi-org
-                    # users who omit the header. For now fall back to returning the
-                    # first membership so nothing regresses.
-                    resolved_membership = active_memberships[0]
+                    # Multi-org caller with no header: the active org is ambiguous.
+                    # Reject with 400 so we never silently pick one — unless the
+                    # concrete view opted out (org discovery / onboarding), in which
+                    # case resolution falls through to gated (None).
+                    if not getattr(self, "active_org_resolution_optional", False):
+                        raise ValidationError(
+                            {"detail": "X-Organization-Id header required."},
+                        )
                     logger.debug(
-                        "User %s has multiple active memberships and no X-Organization-Id header; "
-                        "falling back to first membership. "
-                        "(Phase 2b will reject this with 400.)",
+                        "User %s has multiple active memberships and no X-Organization-Id "
+                        "header; view opted out of the 400 — resolving to gated (None).",
                         user.pk,  # type: ignore[union-attr]
                     )
                 # else: zero memberships → gated; resolved_membership stays None.
