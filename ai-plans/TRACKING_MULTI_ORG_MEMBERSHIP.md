@@ -59,11 +59,19 @@
 - **For Phase 5 (create-additional-org):** the post-`perform_create` re-resolve in `CreateModelMixin.create` can call `_resolve_active_organization`, which can now raise 400/403 AFTER the write commits. Unreachable today (initial() rejects first), but once multi-org create is reachable, add a test that a create cannot 400/403 post-write (or guard the re-resolve to not raise after commit).
 - **Plan doc nit:** plan text says header is a `uuid`; org PK is integer BigAutoField. Cosmetic; fix opportunistically.
 
+### Phase 3 — List my orgs endpoint ✅
+- **Model used:** claude-sonnet-4-6 · agent: implementer
+- **Branch:** plan/multi-org-membership/phase-3 · **base:** plan/multi-org-membership/phase-2c
+- **PR:** https://github.com/vintasoftware/vinta-schedule-api/pull/73 (published, 3 inline comments)
+- **Summary:** `GET /organizations/mine/` bare-array list of active memberships ({org id,name}, role), gated → `200 []`. Per-action opt-out `active_org_optional_actions=("mine",)` (only mine waives header). New `OrganizationMembership.objects.active_for_user`. `pagination_class=None` + schema regen.
+- **Review:** Layer-3 caught a BLOCKER — spectacular inferred a paginated envelope vs the bare-list runtime; fixed with `pagination_class=None` + schema regen + bare-array test. Added opt-out isolation test (current still 400). Inline query → manager method.
+- **Gate:** full suite green — `pytest -n auto` 1594 passed, 0 failures.
+
 ## Current phase
-Phase 3 — List my orgs endpoint (Tier 2 · haiku · implementer).
+Phase 4 — Multi-org invitation accept (Tier 3 · sonnet · migration-author).
 
 ## Remaining phases
-- Phase 3 — List my orgs endpoint (GET /organizations/mine/)
+- Phase 4 — Multi-org invitation accept
 - Phase 3 — List my orgs endpoint
 - Phase 4 — Multi-org invitation accept
 - Phase 5 — Create additional org
