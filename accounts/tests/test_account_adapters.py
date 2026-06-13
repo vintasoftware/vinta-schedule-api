@@ -326,9 +326,8 @@ class TestAccountAdapter:
             )
 
     def test_send_unknown_account_sms_success(self, adapter):
-        with patch("accounts.account_adapters.get_twilio_client") as mock_client:
-            adapter.send_unknown_account_sms("+123456789")
-            mock_client.return_value.messages.create.assert_called_once()
+        adapter.send_unknown_account_sms("+123456789")
+        adapter.notification_service.create_one_off_notification.assert_called_once()
 
     def test_send_unknown_account_sms_no_phone(self, adapter):
         with patch("accounts.account_adapters.logger.warning") as log_warn:
