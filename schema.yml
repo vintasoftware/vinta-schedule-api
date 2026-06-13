@@ -9181,10 +9181,10 @@ components:
         Serializer for Organization instances.
 
         The ``google_service_account`` field supports both reading and writing:
-        - **Write**: accepts ``email``, ``audience``, ``public_key``,
+        - **Write**: accepts ``email``, ``admin_email``, ``public_key``,
           ``private_key_id`` (write-only), and ``private_key`` (write-only).
           Omitting the field on PATCH leaves existing credentials unchanged.
-        - **Read**: returns ``email``, ``audience``, and ``configured: true/false``.
+        - **Read**: returns ``email``, ``admin_email``, and ``configured: true/false``.
           Secret fields are never returned.
       properties:
         id:
@@ -9980,10 +9980,10 @@ components:
         Serializer for Organization instances.
 
         The ``google_service_account`` field supports both reading and writing:
-        - **Write**: accepts ``email``, ``audience``, ``public_key``,
+        - **Write**: accepts ``email``, ``admin_email``, ``public_key``,
           ``private_key_id`` (write-only), and ``private_key`` (write-only).
           Omitting the field on PATCH leaves existing credentials unchanged.
-        - **Read**: returns ``email``, ``audience``, and ``configured: true/false``.
+        - **Read**: returns ``email``, ``admin_email``, and ``configured: true/false``.
           Secret fields are never returned.
       properties:
         id:
@@ -10038,8 +10038,12 @@ components:
           type: string
           format: email
           maxLength: 254
-        audience:
+        admin_email:
           type: string
+          format: email
+          description: Google Workspace super-admin email used as the DWD impersonation
+            subject. The service account must have domain-wide delegation granted
+            for the Admin SDK and Calendar API scopes in the Google Admin Console.
           maxLength: 255
         public_key:
           type: string
@@ -10308,9 +10312,13 @@ components:
           type: string
           format: email
           readOnly: true
-        audience:
+        admin_email:
           type: string
+          format: email
           readOnly: true
+          description: Google Workspace super-admin email used as the DWD impersonation
+            subject. The service account must have domain-wide delegation granted
+            for the Admin SDK and Calendar API scopes in the Google Admin Console.
         configured:
           type: boolean
           description: A persisted row is, by definition, configured.
@@ -10324,7 +10332,7 @@ components:
           format: date-time
           readOnly: true
       required:
-      - audience
+      - admin_email
       - configured
       - created
       - email
@@ -10342,8 +10350,12 @@ components:
           type: string
           format: email
           maxLength: 254
-        audience:
+        admin_email:
           type: string
+          format: email
+          description: Google Workspace super-admin email used as the DWD impersonation
+            subject. The service account must have domain-wide delegation granted
+            for the Admin SDK and Calendar API scopes in the Google Admin Console.
           maxLength: 255
         public_key:
           type: string

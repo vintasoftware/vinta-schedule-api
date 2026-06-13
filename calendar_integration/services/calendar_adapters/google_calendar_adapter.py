@@ -66,7 +66,7 @@ class GoogleCredentialTypedDict(TypedDict):
 class GoogleServiceAccountCredentialsTypedDict(TypedDict):
     account_id: str
     email: str
-    audience: str
+    admin_email: str
     public_key: str
     private_key_id: str
     private_key: str
@@ -230,7 +230,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
             service_account_private_key_id=service_account_credentials["private_key_id"],
             service_account_private_key=service_account_credentials["private_key"],
             service_account_email=service_account_credentials["email"],
-            audience=service_account_credentials["audience"],
+            audience=service_account_credentials["admin_email"],
         )
         credentials = Credentials(
             token=jwt_token,

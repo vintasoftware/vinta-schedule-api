@@ -38,7 +38,7 @@ def service_account_credentials():
     return GoogleServiceAccountCredentialsTypedDict(
         account_id="service_123",
         email="test@service-account.com",
-        audience="https://oauth2.googleapis.com/token",
+        admin_email="admin@example.com",
         public_key="mock_public_key",
         private_key_id="mock_key_id",
         private_key="mock_private_key",
@@ -253,7 +253,7 @@ class TestServiceAccountCredentials:
             service_account_private_key_id=service_account_credentials["private_key_id"],
             service_account_private_key=service_account_credentials["private_key"],
             service_account_email=service_account_credentials["email"],
-            audience=service_account_credentials["audience"],
+            audience=service_account_credentials["admin_email"],
         )
 
         assert jwt_token == "mock_jwt_token"
