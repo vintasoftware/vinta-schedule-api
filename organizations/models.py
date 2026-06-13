@@ -15,6 +15,12 @@ if TYPE_CHECKING:
     from users.models import User
 
 
+# Sentinel distinguishes "not resolved yet" (off-DRF path) from ``None``
+# (resolved-to-gated / resolved-to-no-membership). Must be module-level so
+# the same object identity is checked everywhere.
+_UNSET: object = object()
+
+
 def get_active_organization_membership(
     user: User | None,
 ) -> OrganizationMembership | None:
@@ -27,19 +33,30 @@ def get_active_organization_membership(
         if not membership:
             return <empty queryset / clean denial>
 
-    Phase 1 implementation: returns the user's single active membership via a
-    manager query. Phase 2a will layer the ``_active_membership`` stash so
-    header-driven resolution is picked up here automatically.
+    On the DRF request path (Phase 2a+), ``TenantScopedViewMixin.initial()``
+    resolves the active membership from the ``X-Organization-Id`` header and
+    stashes it on ``user._active_membership``. This helper reads the stash so
+    the ~60 existing call sites are automatically header-aware without change.
+
+    Off the DRF request path (management commands, Celery tasks, tests that
+    bypass views), ``_active_membership`` is absent and the helper falls back
+    to the single-membership query so those callers keep working.
 
     A user with no active memberships returns None (gated). An inactive
     membership (is_active=False) is treated identically to no membership.
     """
     if user is None:
         return None
-    # Stable ordering: once later phases allow multiple active memberships, an
-    # accidental two-active-row state must resolve deterministically. Multi-active
-    # resolution becomes header-driven in Phase 2a, so this ordering is only a
-    # deterministic fallback.
+
+    stashed = getattr(user, "_active_membership", _UNSET)
+    if stashed is not _UNSET:
+        # DRF request path: the resolver has already run; trust its result
+        # (may be an OrganizationMembership or None for gated users).
+        return stashed  # type: ignore[return-value]
+
+    # Off-request path (management commands, Celery tasks, direct test calls):
+    # fall back to the single active membership query. Stable ordering ensures
+    # determinism if a user somehow ends up with two active memberships here.
     return user.organization_memberships.filter(is_active=True).order_by("created").first()  # type: ignore[union-attr]
 
 
