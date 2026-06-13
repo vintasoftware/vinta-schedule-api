@@ -68,8 +68,7 @@ class TestDjangoInAppNotificationAdapterSend:
     ) -> None:
         context = NotificationContextDict({"message": "Test message"})
 
-        # Should not raise; send() returns None (mypy verified: "only ever returns None")
-        adapter.send(notification, context)
+        assert adapter.send(notification, context) is None
 
     def test_send_raises_on_render_failure(
         self,

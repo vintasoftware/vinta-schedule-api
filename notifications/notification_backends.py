@@ -11,12 +11,10 @@ This module provides a corrected subclass used in the DI container and tests.
 """
 
 import uuid
-from collections.abc import Iterable
 
 from django.db.models import QuerySet
 
 from vintasend.constants import NotificationStatus, NotificationTypes
-from vintasend.services.dataclasses import Notification
 from vintasend_django.models import Notification as NotificationModel
 from vintasend_django.services.notification_backends.django_db_notification_backend import (
     DjangoDbNotificationBackend,
@@ -40,17 +38,3 @@ class FixedDjangoDbNotificationBackend(DjangoDbNotificationBackend):
             status=NotificationStatus.SENT.value,
             notification_type=NotificationTypes.IN_APP.value,
         ).order_by("created")
-
-    def filter_in_app_unread_notifications(
-        self,
-        user_id: int | str | uuid.UUID,
-        page: int = 1,
-        page_size: int = 10,
-    ) -> Iterable[Notification]:
-        return self._serialize_user_notification_queryset(
-            self._paginate_queryset(
-                self._get_all_in_app_unread_notifications_queryset(user_id),
-                page,
-                page_size,
-            )
-        )
