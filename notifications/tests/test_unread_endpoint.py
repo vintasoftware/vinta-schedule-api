@@ -174,6 +174,26 @@ class TestUnreadEndpointContent:
             "modified",
         }
 
+    def test_body_renders_template_against_context(self, user) -> None:
+        """The body field contains the rendered body_template output with the stored context.
+
+        Sends a notification with message='hello from template' and asserts that exact
+        string appears in results[0]['body'], proving end-to-end template rendering via
+        notifications/in_app/example.body.txt which renders {{ message }}.
+        """
+        known_message = "hello from template"
+        service = _build_notification_service()
+        _send_in_app(service, user.id, message=known_message)
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get(UNREAD_URL)
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert len(data["results"]) == 1
+        assert known_message in data["results"][0]["body"]
+
 
 @pytest.mark.django_db
 class TestUnreadEndpointPagination:
@@ -281,3 +301,13 @@ class TestUnreadEndpointValidation:
         client.force_authenticate(user=user)
         response = client.get(UNREAD_URL, {"page": -1})
         assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_page_size_clamped_to_max(self, user) -> None:
+        """page_size above the maximum is silently clamped to 100 (not a 400)."""
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get(UNREAD_URL, {"page_size": 100000})
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["page_size"] == 100
