@@ -44,11 +44,29 @@
   - `RecurrenceManager` is stateless + never imports `CalendarService` — Phase 2 (`CalendarEventService`) and Phase 4 (`AvailabilityService`) will delegate to it for their recurrence methods, passing the context.
   - Bare-`raise` defensive lines in the guard blocks are verbatim-preserved dead code (guard raises internally first) — leave until Phase 7 if ever.
 
+### Phase 2 — Extract CalendarEventService ✅
+- **Status**: complete, PR open
+- **Model**: claude-opus-4-7 (plan tier: Tier 4) + fixer (claude-sonnet-4-6, mypy narrowing)
+- **Branch**: `plan/calendar-service-refactor/phase-2` (base `…/phase-1`)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/72 (published, 4 inline comments)
+- **Files**: `calendar_integration/services/calendar_event_service.py` (new, ~1410 lines), `calendar_integration/services/calendar_service.py` (edited, −1000 lines), `calendar_integration/tests/services/test_calendar_event_service.py` (new)
+- **Summary**: Moved 11 event methods (single + recurring CRUD, transfer, expansion reads, event recurrence exception/bulk-mod) into `CalendarEventService`. Facade delegates via `self._get_event_service()`. Bodies byte-for-byte; `@transaction.atomic()` moved with create/update/delete.
+- **Key design — host seam**: service reaches not-yet-extracted collaborators via an `EventServiceHost` Protocol (facade passed as `host=self`): bundle fan-out (Phase 3), `get_availability_windows_in_range` (Phase 4), shared write-adapter/permission helpers. Chosen over a frozen snapshot because existing tests patch these on the facade instance + mutate account/adapter post-auth. `_get_event_service()` rebuilds a context snapshot per call (cheap dataclass, NO re-auth/adapter rebuild → perf guardrail holds); shares `_calendar_cache` + `RecurrenceManager` by reference.
+- **Review**: Layer-3 0 blockers (bodies byte-identical, atomic preserved, transfer_event host-routing == original call graph, snapshot parity confirmed). Fixer fixed a ~30-error mypy `union-attr` regression by narrowing a bare `context = cast(...)` local through the TypeGuards (runtime-identical; file mypy 50→20, remainder pre-existing).
+- **Gate**: full suite 1579 passed, 0 failed (after rebase onto main's SMS fix).
+- **Carry-forward notes (CRITICAL for Phase 3/4)**:
+  - Phase 3 (`CalendarBundleService`) must be supplied to the event service in place of the host's `_create_bundle_event`/`_update_bundle_event`/`_delete_bundle_event` methods — the seam is the `EventServiceHost` protocol; update `_get_event_service()` wiring + the host methods, do NOT change `CalendarEventService` call sites.
+  - Phase 4 (`AvailabilityService`) similarly replaces the host's `get_availability_windows_in_range`.
+  - Bundle helpers `_create_bundle_event`/`_update_bundle_event`/`_delete_bundle_event` still live on the facade — these are what Phase 3 extracts.
+  - The mypy-narrowing pattern (`context = cast("BaseCalendarService", self._context)` then guard) is the standard for sub-service methods reading context fields — reuse it in Phases 3-6.
+
+## Rebase log
+- 2026-06-13: rebased the whole stack (`wt`→`phase-0`→`phase-1`→`phase-2`) onto `origin/main` (3286b69) after the twilio/SMS-adapter test fix landed on main (commit "fix(account-adapter): update SMS notification method to use notification service"). Conflict-free. Force-pushed `wt`/`phase-0`/`phase-1`; PRs #65/#68 auto-updated. The previously-noted "1 pre-existing failure" is now resolved on main — full suite is 0 failures from Phase 2 onward.
+
 ## Current Phase
-- Phase 2 — Extract `CalendarEventService` (next).
+- Phase 3 — Extract `CalendarBundleService` (next).
 
 ## Remaining Phases
-- Phase 2 — Extract `CalendarEventService` (Tier 4)
 - Phase 3 — Extract `CalendarBundleService` (Tier 3)
 - Phase 4 — Extract `AvailabilityService` (Tier 4)
 - Phase 5 — Extract `CalendarSyncService` (Tier 4)
