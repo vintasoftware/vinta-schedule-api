@@ -1,30 +1,23 @@
 import datetime
-import json
 import logging
 from collections.abc import Callable, Iterable
-from typing import Annotated, TypedDict
+from typing import Annotated
 
-from django.conf import settings
 from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
-from django.urls import reverse
 
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from dependency_injector.wiring import Provide, inject
 
 from calendar_integration.constants import (
     CalendarProvider,
-    CalendarSyncStatus,
     CalendarSyncTriggerSource,
     CalendarType,
     CalendarVisibility,
-    IncomingWebhookProcessingStatus,
 )
 from calendar_integration.exceptions import (
     InvalidCalendarTokenError,
-    ServiceNotAuthenticatedError,
-    WebhookIgnoredError,
 )
 from calendar_integration.models import (
     AvailableTime,
@@ -76,6 +69,10 @@ from calendar_integration.services.calendar_service_utils import (
 )
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from calendar_integration.services.calendar_sync_service import CalendarSyncService
+from calendar_integration.services.calendar_webhook_service import (
+    CalendarWebhookService,
+    WebhookHealthStatus,
+)
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     AvailableTimeWindow,
@@ -101,16 +98,6 @@ from calendar_integration.services.type_guards import (
 from organizations.models import Organization
 from public_api.models import SystemUser
 from users.models import User
-
-
-class WebhookHealthStatus(TypedDict):
-    total_subscriptions: int
-    active_subscriptions: int
-    expired_subscriptions: int
-    expiring_soon_subscriptions: int
-    recent_events_count: int
-    failed_events_count: int
-    success_rate: float
 
 
 logger = logging.getLogger(__name__)
@@ -442,6 +429,22 @@ class CalendarService(BaseCalendarService):
         mutation.
         """
         return CalendarSyncService(
+            context=self._build_context_snapshot(),
+            calendar_cache=self._calendar_cache,
+            host=self,
+        )
+
+    def _get_webhook_service(self) -> CalendarWebhookService:
+        """Return the webhook sub-service bound to the facade's current auth context.
+
+        The webhook service shares the facade-owned calendar cache and routes
+        sync triggering (Phase 5 seam), adapter-class lookup, write-adapter resolution,
+        and external-id calendar lookup back through the facade (``host=self``). The
+        context is rebuilt from the live facade attributes each call (a cheap dataclass
+        construction — no network / adapter rebuild), so it never goes stale across
+        re-authentication or direct attribute mutation.
+        """
+        return CalendarWebhookService(
             context=self._build_context_snapshot(),
             calendar_cache=self._calendar_cache,
             host=self,
@@ -1500,7 +1503,7 @@ class CalendarService(BaseCalendarService):
             modification_rrule_string=modification_rrule_string,
         )
 
-    # Webhook-related methods
+    # Webhook-related methods — delegated to CalendarWebhookService
 
     def request_webhook_triggered_sync(
         self,
@@ -1508,71 +1511,19 @@ class CalendarService(BaseCalendarService):
         webhook_event: CalendarWebhookEvent,
         sync_window_hours: int = 24,
     ) -> CalendarSync | None:
+        """Request calendar sync triggered by webhook notification.
+
+        Delegates to :class:`CalendarWebhookService`. Also a ``WebhookServiceHost``
+        seam: ``CalendarWebhookService.process_webhook_notification`` calls this
+        through the host so that ``@patch.object(CalendarService,
+        "request_webhook_triggered_sync")`` in the existing test suite intercepts
+        the call before it reaches the sub-service.
         """
-        Request calendar sync triggered by webhook notification.
-        Reuses existing request_calendar_sync with webhook-specific optimizations.
-
-        Args:
-            external_calendar_id: External calendar ID from webhook
-            webhook_event: The webhook event that triggered this sync
-            sync_window_hours: Hours around current time to sync
-
-        Returns:
-            CalendarSync instance if sync was triggered, None if skipped
-        """
-        logger = logging.getLogger(__name__)
-        now = datetime.datetime.now(tz=datetime.UTC)
-
-        if not is_initialized_or_authenticated_calendar_service(self):
-            raise ValueError("Calendar service not properly initialized")
-
-        # Find calendar by external ID
-        try:
-            calendar = Calendar.objects.get(
-                organization_id=self.organization.id,
-                external_id=external_calendar_id,
-                provider=webhook_event.provider,
-            )
-        except Calendar.DoesNotExist:
-            logger.warning("Calendar not found for external_id: %s", external_calendar_id)
-            return None
-
-        # Check for recent syncs to prevent excessive syncing (deduplication)
-        recent_sync = CalendarSync.objects.filter(
-            calendar=calendar,
-            created__gte=now - datetime.timedelta(minutes=5),
-            status__in=[CalendarSyncStatus.IN_PROGRESS, CalendarSyncStatus.SUCCESS],
-        ).first()
-
-        if recent_sync:
-            logger.info(
-                "Skipping sync for calendar %s, recent sync exists: %s", calendar.id, recent_sync.id
-            )
-            webhook_event.calendar_sync = recent_sync
-            webhook_event.processing_status = IncomingWebhookProcessingStatus.PROCESSED
-            webhook_event.save()
-            return recent_sync
-
-        # Define sync window around current time
-        now = now
-        start_datetime = now - datetime.timedelta(hours=sync_window_hours // 2)
-        end_datetime = now + datetime.timedelta(hours=sync_window_hours // 2)
-
-        # Use existing request_calendar_sync method
-        calendar_sync = self.request_calendar_sync(
-            calendar=calendar,
-            start_datetime=start_datetime,
-            end_datetime=end_datetime,
-            should_update_events=True,  # Webhook implies changes, so update existing events
-            trigger_source=CalendarSyncTriggerSource.WEBHOOK,
+        return self._get_webhook_service().request_webhook_triggered_sync(
+            external_calendar_id=external_calendar_id,
+            webhook_event=webhook_event,
+            sync_window_hours=sync_window_hours,
         )
-
-        # Link webhook event to triggered sync
-        webhook_event.calendar_sync = calendar_sync
-        webhook_event.processing_status = IncomingWebhookProcessingStatus.PROCESSED
-        webhook_event.save()
-
-        return calendar_sync
 
     def create_calendar_webhook_subscription(
         self,
@@ -1580,107 +1531,12 @@ class CalendarService(BaseCalendarService):
         callback_url: str | None = None,
         expiration_hours: int = 24,
     ) -> CalendarWebhookSubscription:
-        """
-        Create webhook subscription using existing adapter methods.
-        Works for both Google and Microsoft calendars.
-
-        Args:
-            calendar: Calendar to create subscription for
-            callback_url: URL to receive webhook notifications (optional, will generate if not provided)
-            expiration_hours: Hours until subscription expires
-
-        Returns:
-            CalendarWebhookSubscription instance
-
-        Raises:
-            ValueError: If calendar service not authenticated or provider not supported
-        """
-        if not is_authenticated_calendar_service(self):
-            raise ValueError("Calendar service not authenticated")
-
-        if not self.calendar_adapter:
-            raise ValueError("Calendar adapter not available")
-
-        # Generate callback URL if not provided
-        if not callback_url:
-            if calendar.provider == CalendarProvider.GOOGLE:
-                callback_url = reverse(
-                    "calendar_integration:google_webhook",
-                    kwargs={"organization_id": calendar.organization_id},
-                )
-            elif calendar.provider == CalendarProvider.MICROSOFT:
-                callback_url = reverse(
-                    "calendar_integration:microsoft_webhook",
-                    kwargs={"organization_id": calendar.organization_id},
-                )
-            else:
-                raise ValueError(
-                    f"Webhook subscriptions not supported for provider: {calendar.provider}"
-                )
-
-            # Convert to absolute URL if needed
-            # In production, you might want to configure the domain via settings
-            if callback_url.startswith("/"):
-                domain = getattr(settings, "WEBHOOK_DOMAIN", "https://your-domain.com")
-                callback_url = f"{domain.rstrip('/')}{callback_url}"
-
-        # Use adapter-specific subscription creation
-        if calendar.provider == CalendarProvider.GOOGLE:
-            subscription_data = self.calendar_adapter.create_webhook_subscription_with_tracking(
-                resource_id=calendar.external_id,
-                callback_url=callback_url,
-                tracking_params={"ttl_seconds": expiration_hours * 3600},
-            )
-        elif calendar.provider == CalendarProvider.MICROSOFT:
-            subscription_data = self.calendar_adapter.create_webhook_subscription_with_tracking(
-                resource_id=calendar.external_id,
-                callback_url=callback_url,
-                tracking_params={"expiration_hours": expiration_hours},
-            )
-        else:
-            raise ValueError(
-                f"Webhook subscriptions not supported for provider: {calendar.provider}"
-            )
-
-        # Calculate expiration datetime
-        expiration_timestamp = subscription_data.get("expiration")
-        expires_at = None
-        if expiration_timestamp is not None:
-            try:
-                if calendar.provider == CalendarProvider.GOOGLE:
-                    # Google returns expiration as milliseconds since epoch
-                    expires_at = datetime.datetime.fromtimestamp(
-                        int(expiration_timestamp) / 1000, tz=datetime.UTC
-                    )
-                elif calendar.provider == CalendarProvider.MICROSOFT:
-                    # Microsoft returns expiration as ISO 8601 string
-                    expires_at = datetime.datetime.fromisoformat(
-                        expiration_timestamp.replace("Z", "+00:00")
-                    )
-            except (ValueError, TypeError):
-                # Log or handle malformed expiration value gracefully
-                expires_at = None
-                # Log or handle malformed expiration value gracefully
-                expires_at = None
-
-        # Create tracking record
-        webhook_subscription = CalendarWebhookSubscription.objects.create(
+        """Create webhook subscription. Delegates to :class:`CalendarWebhookService`."""
+        return self._get_webhook_service().create_calendar_webhook_subscription(
             calendar=calendar,
-            organization_id=calendar.organization_id,
-            provider=calendar.provider,
-            external_subscription_id=subscription_data.get("subscription_id")
-            or subscription_data.get("channel_id"),
-            external_resource_id=subscription_data.get("resource_id", ""),
             callback_url=callback_url,
-            channel_id=subscription_data.get("channel_id", ""),
-            resource_uri=subscription_data.get("resource_uri", ""),
-            verification_token=subscription_data.get("client_state")
-            or subscription_data.get("channel_token")
-            or "",
-            expires_at=expires_at,
+            expiration_hours=expiration_hours,
         )
-
-        return webhook_subscription
 
     def process_webhook_notification(
         self,
@@ -1690,111 +1546,29 @@ class CalendarService(BaseCalendarService):
         payload: dict | str | None = None,
         validation_token: str | None = None,
     ) -> CalendarWebhookEvent | None:
-        """
-        Process incoming webhook notification using adapter validation.
-        Returns CalendarWebhookEvent for notification
-
-        Args:
-            provider: Calendar provider (google, microsoft)
-            headers: HTTP headers from webhook request
-            payload: Webhook payload data
-            validation_token: Validation token for subscription setup
-
-        Returns:
-            CalendarWebhookEvent for notifications
-
-        Raises:
-            ValueError: If validation fails or provider not supported
-        """
-        logger = logging.getLogger(__name__)
-
-        if not is_initialized_or_authenticated_calendar_service(self):
-            # For webhook processing, we can proceed with limited functionality
-            logger.warning(
-                "Webhook received but calendar service not authenticated, webhook event recorded for later processing"
-            )
-
-        # Try to get calendar and adapter, but don't fail if not authenticated
-        calendar = None
-        calendar_adapter = None
-
-        try:
-            calendar = self._get_calendar_by_external_id(calendar_external_id)
-            calendar_adapter = self._get_write_adapter_for_calendar(calendar)
-        except (ServiceNotAuthenticatedError, Calendar.DoesNotExist):
-            # Calendar not found or not authenticated - we'll still record the webhook event
-            pass
-
-        # Handle provider-specific validation/parsing
-        # Use static validation if we don't have an authenticated adapter
-        if calendar_adapter:
-            parsed_data = calendar_adapter.validate_webhook_notification(
-                headers, json.dumps(payload) if payload else ""
-            )
-        else:
-            # Use static validation method
-            calendar_adapter_cls = self._get_calendar_adapter_cls_for_provider(
-                CalendarProvider(provider)
-            )
-            parsed_data = calendar_adapter_cls.validate_webhook_notification_static(
-                headers, json.dumps(payload) if payload else ""
-            )
-
-        if not self.organization:
-            raise ValueError("Organization context not set on calendar service")
-
-        # Create webhook event record
-        webhook_event = CalendarWebhookEvent.objects.create(
-            organization_id=self.organization.id,
+        """Process incoming webhook notification. Delegates to :class:`CalendarWebhookService`."""
+        return self._get_webhook_service().process_webhook_notification(
             provider=provider,
-            event_type=parsed_data.get("event_type", "unknown"),
-            external_calendar_id=parsed_data.get("calendar_id", ""),
-            external_event_id=parsed_data.get("event_id", ""),
-            raw_payload=payload if isinstance(payload, dict) else {"raw": str(payload or "")},
+            calendar_external_id=calendar_external_id,
             headers=headers,
+            payload=payload,
+            validation_token=validation_token,
         )
-
-        # Trigger calendar sync only if service is authenticated
-        # For webhook processing, we record the event even if sync can't be triggered immediately
-        try:
-            if is_authenticated_calendar_service(self, raise_error=False):
-                calendar_sync = self.request_webhook_triggered_sync(
-                    external_calendar_id=parsed_data["calendar_id"], webhook_event=webhook_event
-                )
-
-                if calendar_sync:
-                    logger.info(
-                        "Webhook triggered sync %s for calendar %s",
-                        calendar_sync.id,
-                        parsed_data["calendar_id"],
-                    )
-                    return webhook_event
-                else:
-                    webhook_event.processing_status = IncomingWebhookProcessingStatus.IGNORED
-                    webhook_event.save()
-            else:
-                # Service not authenticated - just record the webhook event for later processing
-                logger.warning(
-                    "Webhook received but calendar service not authenticated, webhook event recorded for later processing"
-                )
-                webhook_event.processing_status = IncomingWebhookProcessingStatus.PENDING
-                webhook_event.save()
-
-        except Exception as e:
-            webhook_event.processing_status = IncomingWebhookProcessingStatus.FAILED
-            webhook_event.save()
-            logger.exception("Failed to process webhook: %s", e)
-            # Don't re-raise the exception - webhook event is recorded
-
-        return webhook_event
 
     def handle_webhook(
         self, provider: CalendarProvider, request: HttpRequest
     ) -> CalendarWebhookEvent | None:
-        """
-        Handle Google Calendar webhook processing with organization context.
+        """Handle calendar webhook processing with organization context.
+
+        Extracts the organization from the HTTP request and writes it to
+        ``self.organization`` so that :meth:`_build_context_snapshot` picks it
+        up when the webhook sub-service calls back through the host
+        (``request_webhook_triggered_sync`` → ``request_calendar_sync``).
+        The header parsing and notification dispatching are delegated to
+        :class:`CalendarWebhookService`.
 
         Args:
+            provider: Calendar provider enum
             request: HttpRequest object containing webhook data
 
         Returns:
@@ -1804,7 +1578,6 @@ class CalendarService(BaseCalendarService):
             ValueError: If webhook validation fails or organization not found
             Exception: If processing fails
         """
-
         if not request.resolver_match:
             raise ValueError("Invalid request object")
 
@@ -1819,167 +1592,27 @@ class CalendarService(BaseCalendarService):
         except Organization.DoesNotExist as exc:
             raise ValueError(f"Organization not found: {organization_id}") from exc
 
-        calendar_adapter_cls = self._get_calendar_adapter_cls_for_provider(provider)
-
-        headers = calendar_adapter_cls.parse_webhook_headers(request.headers)
-        calendar_external_id = (
-            calendar_adapter_cls.extract_calendar_external_id_from_webhook_request(request)
-        )
-
-        # Set organization context on the service
+        # Set organization context on the facade so that _build_context_snapshot()
+        # includes it in any subsequent sub-service constructions (e.g. the
+        # request_webhook_triggered_sync callback through the host seam).
         self.organization = organization
 
-        # Process the webhook notification
-        try:
-            return self.process_webhook_notification(
-                provider=provider,
-                calendar_external_id=calendar_external_id,
-                headers=headers,
-            )
-        except WebhookIgnoredError:
-            return None
+        return self._get_webhook_service().handle_webhook(provider, request)
 
     def list_webhook_subscriptions(self) -> QuerySet[CalendarWebhookSubscription]:
-        """List all active webhook subscriptions for the organization.
-
-        Returns:
-            QuerySet of CalendarWebhookSubscription objects for the organization
-
-        Raises:
-            ValueError: If organization is not set
-        """
-        if not self.organization:
-            raise ValueError("Organization must be set")
-
-        return CalendarWebhookSubscription.objects.filter(
-            organization=self.organization, is_active=True
-        ).select_related("calendar")
+        """List active webhook subscriptions. Delegates to :class:`CalendarWebhookService`."""
+        return self._get_webhook_service().list_webhook_subscriptions()
 
     def delete_webhook_subscription(self, subscription_id: int) -> bool:
-        """Delete a webhook subscription from provider and database.
-
-        Args:
-            subscription_id: ID of the subscription to delete
-
-        Returns:
-            True if successfully deleted, False if subscription not found
-
-        Raises:
-            ValueError: If organization is not set or subscription not found
-        """
-        if not self.organization:
-            raise ValueError("Organization must be set")
-
-        try:
-            subscription = CalendarWebhookSubscription.objects.get(
-                id=subscription_id, organization=self.organization
-            )
-        except CalendarWebhookSubscription.DoesNotExist:
-            return False
-
-        # TODO: Add provider-specific subscription deletion when implementing
-        # Google Calendar and Microsoft Graph subscription deletion APIs
-        # For now, just mark as inactive
-        subscription.is_active = False
-        subscription.save(update_fields=["is_active", "modified"])
-
-        return True
+        """Delete a webhook subscription. Delegates to :class:`CalendarWebhookService`."""
+        return self._get_webhook_service().delete_webhook_subscription(subscription_id)
 
     def refresh_webhook_subscription(
         self, subscription_id: int
     ) -> CalendarWebhookSubscription | None:
-        """Refresh/renew a webhook subscription with the provider.
-
-        Args:
-            subscription_id: ID of the subscription to refresh
-
-        Returns:
-            Updated CalendarWebhookSubscription if successful, None if not found
-
-        Raises:
-            ValueError: If organization is not set
-        """
-        if not self.organization:
-            raise ValueError("Organization must be set")
-
-        try:
-            subscription = CalendarWebhookSubscription.objects.get(
-                id=subscription_id, organization=self.organization, is_active=True
-            )
-        except CalendarWebhookSubscription.DoesNotExist:
-            return None
-
-        # TODO: Implement provider-specific subscription renewal
-        # For now, extend expiration by default duration based on provider
-        now = datetime.datetime.now(tz=datetime.UTC)
-        if subscription.provider == CalendarProvider.GOOGLE:
-            # Google allows max 7 days (604800 seconds)
-            new_expiration = now + datetime.timedelta(days=7)
-        elif subscription.provider == CalendarProvider.MICROSOFT:
-            # Microsoft allows max ~70 hours (4230 minutes)
-            new_expiration = now + datetime.timedelta(minutes=4230)
-        else:
-            # Default to 1 day for other providers
-            new_expiration = now + datetime.timedelta(days=1)
-
-        subscription.expires_at = new_expiration
-        subscription.save(update_fields=["expires_at", "modified"])
-
-        return subscription
+        """Refresh a webhook subscription. Delegates to :class:`CalendarWebhookService`."""
+        return self._get_webhook_service().refresh_webhook_subscription(subscription_id)
 
     def get_webhook_health_status(self) -> WebhookHealthStatus:
-        """Get webhook system health status for the organization.
-
-        Returns:
-            WebhookHealthStatus with webhook health metrics
-
-        Raises:
-            ValueError: If organization is not set
-        """
-        if not self.organization:
-            raise ValueError("Organization must be set")
-
-        # Time boundaries
-        now = datetime.datetime.now(tz=datetime.UTC)
-        twenty_four_hours_ago = now - datetime.timedelta(hours=24)
-        expiring_soon_threshold = now + datetime.timedelta(hours=24)
-
-        # Subscription counts
-        subscriptions_qs = CalendarWebhookSubscription.objects.filter(
-            organization=self.organization
-        )
-        total_subscriptions = subscriptions_qs.count()
-        active_subscriptions = subscriptions_qs.filter(is_active=True).count()
-        expired_subscriptions = subscriptions_qs.filter(is_active=True, expires_at__lt=now).count()
-        expiring_soon_subscriptions = subscriptions_qs.filter(
-            is_active=True,
-            expires_at__gte=now,
-            expires_at__lte=expiring_soon_threshold,
-        ).count()
-
-        # Event counts in last 24 hours
-        events_qs = CalendarWebhookEvent.objects.filter(
-            organization=self.organization, created__gte=twenty_four_hours_ago
-        )
-        recent_events_count = events_qs.count()
-        failed_events_count = events_qs.filter(
-            processing_status=IncomingWebhookProcessingStatus.FAILED
-        ).count()
-
-        # Calculate success rate
-        if recent_events_count > 0:
-            success_rate = ((recent_events_count - failed_events_count) / recent_events_count) * 100
-        else:
-            success_rate = 100.0
-
-        return WebhookHealthStatus(
-            {
-                "total_subscriptions": total_subscriptions,
-                "active_subscriptions": active_subscriptions,
-                "expired_subscriptions": expired_subscriptions,
-                "expiring_soon_subscriptions": expiring_soon_subscriptions,
-                "recent_events_count": recent_events_count,
-                "failed_events_count": failed_events_count,
-                "success_rate": success_rate,
-            }
-        )
+        """Get webhook health status. Delegates to :class:`CalendarWebhookService`."""
+        return self._get_webhook_service().get_webhook_health_status()
