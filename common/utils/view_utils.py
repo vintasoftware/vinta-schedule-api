@@ -7,7 +7,7 @@ from django.shortcuts import get_object_or_404
 
 import django_virtual_models as v
 from rest_framework import generics, mixins, status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet, ViewSetMixin
@@ -38,7 +38,7 @@ class TenantScopedViewMixin:
       reads this stash so all ~60 existing call sites are header-aware without
       change.
 
-    Resolution table (Phase 2b implements the multi-org-no-header 400; 2c stubbed):
+    Resolution table (Phase 2b: multi-org-no-header 400; Phase 2c: non-member 403):
 
     +-----------------------+---------------------------------+------------------------------------------+
     | Memberships (active)  | Header                          | Result                                   |
@@ -48,7 +48,7 @@ class TenantScopedViewMixin:
     | 1                     | present, matches                | resolve to it                            |
     | 2+                    | present, matches member         | resolve to named org                     |
     | 2+                    | absent                          | **400** (X-Organization-Id required)     |
-    | any                   | present, non-member org         | fallback to first [Phase 2c → 403]       |
+    | any                   | present, non-member org         | **403** (PermissionDenied)               |
     | any                   | present, non-integer            | treated as absent header                 |
     |                       |                                 | (1 → resolve · 2+ → 400 · 0 → gated)     |
     +-----------------------+---------------------------------+------------------------------------------+
@@ -62,9 +62,10 @@ class TenantScopedViewMixin:
     header (e.g. the org-discovery ``GET /organizations/mine/`` endpoint and the
     onboarding/gated flows) sets the class attribute
     ``active_org_resolution_optional = True``.  When set, the ``2+ / absent`` case
-    does **not** raise — the active org simply resolves to ``None`` (left gated)
-    so the view can list the caller's memberships.  Defaults to ``False``; no
-    existing view sets it (Phase 3 wires it onto the ``mine`` endpoint).
+    does **not** raise a 400, and the ``non-member org`` case does **not** raise a
+    403 — the active org simply resolves to ``None`` (left gated) so the view can
+    list the caller's memberships.  Defaults to ``False``; no existing view sets it
+    (Phase 3 wires it onto the ``mine`` endpoint).
 
     Unauthenticated requests pass through untouched (the mixin sets ``None`` on
     all three attributes so downstream code doesn't KeyError); DRF's own
@@ -72,9 +73,10 @@ class TenantScopedViewMixin:
     """
 
     #: When ``True``, a multi-org caller that omits ``X-Organization-Id`` is *not*
-    #: rejected with a 400 — the active org resolves to ``None`` instead.  Concrete
-    #: views that must function without the header (org discovery, onboarding) opt
-    #: in.  See the class docstring's resolution table for the affected row.
+    #: rejected with a 400, and a header naming a non-member org is *not* rejected
+    #: with a 403 — the active org resolves to ``None`` instead.  Concrete views
+    #: that must function without the header (org discovery, onboarding) opt in.
+    #: See the class docstring's resolution table for the affected rows.
     active_org_resolution_optional: bool = False
 
     def initial(self, request: Request, *args: Any, **kwargs: Any) -> None:
@@ -133,22 +135,25 @@ class TenantScopedViewMixin:
                     # Happy path: header names an org the user actively belongs to.
                     resolved_membership = matching
                 else:
-                    # Phase 2c will raise PermissionDenied (403) here when the header
-                    # names an org the caller is not an active member of.
-                    # For now fall back to the pre-existing single-membership behaviour
-                    # so nothing regresses.
-                    resolved_membership = (
-                        user.organization_memberships.filter(  # type: ignore[union-attr]
-                            is_active=True,
+                    # Header names an org the caller is not an active member of
+                    # (either the org doesn't exist, the user has no membership in
+                    # it, or the membership exists but is inactive).  Raise 403
+                    # unless the concrete view opted out of strict resolution
+                    # (active_org_resolution_optional = True).
+                    if not getattr(self, "active_org_resolution_optional", False):
+                        logger.debug(
+                            "X-Organization-Id header '%s' did not match any active membership for "
+                            "user %s; raising PermissionDenied (403).",
+                            org_id_header,
+                            user.pk,  # type: ignore[union-attr]
                         )
-                        .select_related("organization")
-                        .order_by("created")
-                        .first()
-                    )
+                        raise PermissionDenied(
+                            "X-Organization-Id header names an organization you are not an "
+                            "active member of."
+                        )
                     logger.debug(
                         "X-Organization-Id header '%s' did not match any active membership for "
-                        "user %s; falling back to single-membership resolution. "
-                        "(Phase 2c will reject this with 403.)",
+                        "user %s; view opted out of the 403 — resolving to gated (None).",
                         org_id_header,
                         user.pk,  # type: ignore[union-attr]
                     )

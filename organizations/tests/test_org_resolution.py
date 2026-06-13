@@ -1,4 +1,4 @@
-"""Integration tests for active-org resolution (Phase 2a + 2b).
+"""Integration tests for active-org resolution (Phase 2a + 2b + 2c).
 
 Verifies that the ``TenantScopedViewMixin`` resolver correctly resolves the
 active organization from the ``X-Organization-Id`` header and stashes the result
@@ -18,7 +18,11 @@ Phase 2b adds the multi-org-no-header rejection:
 * The 0-membership (gated) and single-membership rows are unchanged.
 * A view setting ``active_org_resolution_optional = True`` is exempt from the 400.
 
-Phase 2c (non-member org header → 403) is *not* tested here.
+Phase 2c adds the non-member rejection:
+
+* Header naming an org the caller is not an active member of (no membership, or
+  an inactive membership) → **403** ``PermissionDenied``.
+* A view setting ``active_org_resolution_optional = True`` is exempt from the 403.
 """
 
 from django.contrib.auth import get_user_model
@@ -26,7 +30,7 @@ from django.urls import reverse
 
 import pytest
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.request import Request
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
@@ -586,10 +590,21 @@ class _StrictView(TenantScopedViewMixin):
     active_org_resolution_optional = False
 
 
-def _drf_request_for(user: User) -> Request:  # type: ignore[valid-type]
-    """Build a DRF Request authenticated as *user* with no X-Organization-Id header."""
+def _drf_request_for(
+    user: User,  # type: ignore[valid-type]
+    *,
+    org_id_header: str | None = None,
+) -> Request:
+    """Build a DRF Request authenticated as *user*.
+
+    If *org_id_header* is given it is sent as the ``X-Organization-Id`` header;
+    otherwise the request carries no header.
+    """
     factory = APIRequestFactory()
-    django_request = factory.get("/anything/")
+    if org_id_header is not None:
+        django_request = factory.get("/anything/", HTTP_X_ORGANIZATION_ID=org_id_header)
+    else:
+        django_request = factory.get("/anything/")
     force_authenticate(django_request, user=user)
     drf_request = Request(django_request)
     # force_authenticate stamps the wsgi request; mirror it on the DRF request so
@@ -632,4 +647,118 @@ class TestActiveOrgResolutionOptionalOptOut:
         request = _drf_request_for(two_org_user)
 
         with pytest.raises(ValidationError):
+            view._resolve_active_organization(request)  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2c — Tests: header naming a non-member org is rejected with 403
+# ---------------------------------------------------------------------------
+# A valid-integer X-Organization-Id that names an organization the caller is
+# *not* an active member of (org the user has no membership in, or a membership
+# that exists but is inactive) is rejected with 403 PermissionDenied. The
+# malformed-header and absent-header rules (Phase 2b) are unaffected. A view
+# setting ``active_org_resolution_optional = True`` is exempt from the 403 and
+# resolves to gated (None).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def org_c() -> Organization:
+    """A third org the user is not a member of."""
+    return _make_org("Org C")
+
+
+@pytest.mark.django_db
+class TestNonMemberOrgHeaderRejected:
+    """A header naming an org the caller is not an active member of → 403."""
+
+    def test_header_for_non_member_org_returns_403(
+        self,
+        two_org_user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+        org_b: Organization,
+        org_c: Organization,
+    ) -> None:
+        """GET /calendar/ with a header naming an org the user has no membership in → 403."""
+        client = _auth_client_for(two_org_user)
+        url = reverse("api:Calendars-list")
+
+        response = client.get(url, HTTP_X_ORGANIZATION_ID=str(org_c.pk))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
+
+    def test_header_for_inactive_membership_org_returns_403(
+        self,
+        user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+        org_b: Organization,
+    ) -> None:
+        """A header naming an org where the user's membership is inactive → 403.
+
+        The resolver's matching lookup filters ``is_active=True``, so an inactive
+        membership yields ``matching is None`` and is rejected just like a
+        non-member org.
+        """
+        # Active membership in A (so the user is authenticated/non-gated) plus an
+        # inactive membership in B named by the header.
+        _make_membership(user, org_a)
+        _make_membership(user, org_b, is_active=False)
+        client = _auth_client_for(user)
+        url = reverse("api:Calendars-list")
+
+        response = client.get(url, HTTP_X_ORGANIZATION_ID=str(org_b.pk))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
+
+    def test_header_for_member_org_still_returns_200(
+        self,
+        two_org_user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+        org_b: Organization,
+    ) -> None:
+        """A header naming a member org still resolves to 200 (no regression)."""
+        client = _auth_client_for(two_org_user)
+        url = reverse("api:Calendars-list")
+
+        response = client.get(url, HTTP_X_ORGANIZATION_ID=str(org_a.pk))
+
+        assert response.status_code == status.HTTP_200_OK, response.content
+
+
+@pytest.mark.django_db
+class TestNonMemberOrgHeaderOptOut:
+    """A view with active_org_resolution_optional = True is exempt from the 403."""
+
+    def test_opt_out_view_does_not_raise_for_non_member_header(
+        self,
+        two_org_user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+        org_b: Organization,
+        org_c: Organization,
+    ) -> None:
+        """active_org_resolution_optional = True + non-member header → no 403; gated (None)."""
+        view = _OptOutView()
+        request = _drf_request_for(two_org_user, org_id_header=str(org_c.pk))
+
+        # Must not raise PermissionDenied.
+        view._resolve_active_organization(request)  # type: ignore[attr-defined]
+
+        assert request.organization_membership is None  # type: ignore[attr-defined]
+        assert request.organization is None  # type: ignore[attr-defined]
+
+    def test_strict_view_raises_for_non_member_header(
+        self,
+        two_org_user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+        org_b: Organization,
+        org_c: Organization,
+    ) -> None:
+        """The default (strict) view raises PermissionDenied for the same input.
+
+        Confirms the opt-out is what suppresses the 403, not some other difference.
+        """
+        view = _StrictView()
+        request = _drf_request_for(two_org_user, org_id_header=str(org_c.pk))
+
+        with pytest.raises(PermissionDenied):
             view._resolve_active_organization(request)  # type: ignore[attr-defined]
