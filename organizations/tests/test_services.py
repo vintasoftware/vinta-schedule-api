@@ -1,8 +1,6 @@
 import datetime
 from unittest.mock import Mock, patch
 
-from django.db.utils import IntegrityError
-
 import pytest
 from allauth.socialaccount.models import SocialAccount
 from model_bakery import baker
@@ -146,7 +144,13 @@ class TestOrganizationService:
     def test_create_organization_multiple_calls(
         self, organization_service, user, mock_calendar_service
     ):
-        """Test that multiple calls to create_organization work correctly."""
+        """Test that multiple calls to create_organization work correctly.
+
+        Phase 1: OrganizationMembership.user is now a ForeignKey (not OneToOne),
+        so a user may be admin of multiple organizations. Each call creates a
+        distinct org and a distinct (user, org) membership — no IntegrityError.
+        The unique constraint is (user, organization), not (user,) alone.
+        """
         # Create first organization
         org1 = organization_service.create_organization(
             creator=user, name="Organization 1", should_sync_rooms=False
@@ -155,20 +159,18 @@ class TestOrganizationService:
         # Verify first organization was created successfully
         assert org1.name == "Organization 1"
         assert org1.should_sync_rooms is False
-        # Store the ID before attempting the second call
-        org1_id = org1.id
 
-        # Create second organization with same user - this should fail due to unique constraint
-        # since OrganizationMembership has a unique constraint on user_id
-        with pytest.raises(IntegrityError):
-            organization_service.create_organization(
-                creator=user, name="Organization 2", should_sync_rooms=True
-            )
+        # Create second organization with same user — allowed post-Phase 1.
+        org2 = organization_service.create_organization(
+            creator=user, name="Organization 2", should_sync_rooms=False
+        )
 
-        # The transaction is broken after the IntegrityError, so we need to verify in a way
-        # that doesn't require a new query. The first organization should still exist conceptually
-        # even though we can't query for it due to the broken transaction.
-        assert org1.id == org1_id
+        assert org2.name == "Organization 2"
+        assert org1.id != org2.id
+        # User now holds two memberships, one in each org.
+        from organizations.models import OrganizationMembership
+
+        assert OrganizationMembership.objects.filter(user=user).count() == 2
 
     def test_create_organization_with_sync_rooms_calendar_service_exception(
         self, user, mock_calendar_service

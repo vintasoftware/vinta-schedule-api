@@ -1460,7 +1460,7 @@ class TestGraphQLQueries:
 
         # user_with_organization is already created by the fixture
         user = user_with_organization
-        organization = user.organization_membership.organization
+        organization = user.organization_memberships.get().organization
 
         # Create another user in the same organization to ensure filtering works
         user_model = get_user_model()

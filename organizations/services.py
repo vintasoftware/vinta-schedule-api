@@ -273,17 +273,18 @@ class OrganizationService:
 
         Raises UserAlreadyHasMembershipError if the user is already a member of any
         organization before the membership create is attempted, preventing an IntegrityError
-        from the OneToOne constraint on OrganizationMembership.user.
+        from the composite unique constraint ``uniq_membership_user_organization``
+        (user, organization) which acts as the DB backstop.
 
         :param token: Invitation token.
         :param user: User who is accepting the invitation.
         :return: Created OrganizationMembership instance.
         """
-        # DESIGN: hasattr check intentionally matches BOTH active and inactive memberships.
-        # An inactive membership still has a DB row, so accept_invitation must refuse
-        # re-provisioning here.  The supported un-disable path is admin REACTIVATION
-        # (setting is_active=True); not re-accepting an invitation.
-        if hasattr(user, "organization_membership"):
+        # DESIGN: this guard refuses re-provisioning when the user already has ANY
+        # membership (active or inactive) — preserving the original OneToOne-era
+        # semantics and the admin-reactivation-only un-disable path. Phase 4
+        # deliberately relaxes this to per-org for multi-org invite accept.
+        if user.organization_memberships.exists():
             raise UserAlreadyHasMembershipError()
 
         now = datetime.datetime.now(tz=datetime.UTC)
@@ -335,11 +336,11 @@ class OrganizationService:
         :raises UserAlreadyHasMembershipError: When the user already belongs to an
             organization.
         """
-        # DESIGN: hasattr check intentionally matches BOTH active and inactive memberships.
-        # An inactive membership still has a DB row, so provision_tenant_for_user must
-        # refuse re-provisioning here.  The supported un-disable path is admin REACTIVATION
-        # (setting is_active=True); not re-provisioning the user.
-        if hasattr(user, "organization_membership"):
+        # DESIGN: this guard refuses re-provisioning when the user already has ANY
+        # membership (active or inactive) — preserving the original OneToOne-era
+        # semantics and the admin-reactivation-only un-disable path. Phase 4
+        # deliberately relaxes this to per-org for multi-org invite accept.
+        if user.organization_memberships.exists():
             raise UserAlreadyHasMembershipError()
 
         now = datetime.datetime.now(tz=datetime.UTC)

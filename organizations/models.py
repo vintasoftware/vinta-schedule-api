@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from django.conf import settings
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 def get_active_organization_membership(
     user: User | None,
 ) -> OrganizationMembership | None:
-    """Return the user's OrganizationMembership only if it is active, else None.
+    """Return the user's active OrganizationMembership, or None.
 
     This is the canonical helper for all tenant-access gates. Call it wherever
     a view, permission, or serializer needs to resolve an active membership:
@@ -27,15 +27,20 @@ def get_active_organization_membership(
         if not membership:
             return <empty queryset / clean denial>
 
-    An inactive membership (is_active=False) is treated identically to a missing
-    membership — no tenant access, no 500. An active membership returns normally.
+    Phase 1 implementation: returns the user's single active membership via a
+    manager query. Phase 2a will layer the ``_active_membership`` stash so
+    header-driven resolution is picked up here automatically.
+
+    A user with no active memberships returns None (gated). An inactive
+    membership (is_active=False) is treated identically to no membership.
     """
-    membership = getattr(user, "organization_membership", None)
-    if membership is None:
+    if user is None:
         return None
-    if not membership.is_active:
-        return None
-    return membership
+    # Stable ordering: once later phases allow multiple active memberships, an
+    # accidental two-active-row state must resolve deterministically. Multi-active
+    # resolution becomes header-driven in Phase 2a, so this ordering is only a
+    # deterministic fallback.
+    return user.organization_memberships.filter(is_active=True).order_by("created").first()  # type: ignore[union-attr]
 
 
 class OrganizationTier(BaseModel):
@@ -130,24 +135,29 @@ class OrganizationMembership(BaseModel):
 
     Hard-gate invariant:
         Every authenticated user is in exactly one of two states:
-        1. **Has membership** — ``user.organization_membership`` resolves to an
-           ``OrganizationMembership`` instance and all tenant-scoped endpoints are
-           open to them.
-        2. **Gated (membership-less)** — ``user.organization_membership`` raises
-           ``RelatedObjectDoesNotExist``. Only the onboarding surfaces respond:
+        1. **Has active membership** — ``get_active_organization_membership(user)``
+           returns an ``OrganizationMembership`` instance and all tenant-scoped
+           endpoints are open to them.
+        2. **Gated (zero active memberships)** — ``get_active_organization_membership``
+           returns ``None``. Only the onboarding surfaces respond:
            ``POST /organizations/`` (create own org) and ``POST /invitations/accept``
            (join an invited org). All other tenant-scoped endpoints must return an
            empty queryset or permission denial — never a 500.
 
-        Code that reads ``user.organization_membership`` must guard with
-        ``getattr(user, "organization_membership", None)`` (or equivalent) so that
-        membership-less users get a clean refusal rather than an unhandled exception.
+        A user may hold memberships in multiple organizations. Resolution of the
+        *active* organization is handled by ``get_active_organization_membership``,
+        which in Phase 1 returns the user's single active membership. Phase 2a
+        introduces header-driven resolution for multi-org users.
+
+        Never read ``user.organization_memberships`` directly in permission /
+        scoping code — always go through ``get_active_organization_membership`` so
+        the resolution seam is centralised.
     """
 
-    user = models.OneToOneField(
+    user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="organization_membership",
+        related_name="organization_memberships",
     )
     organization = models.ForeignKey(
         Organization,
@@ -176,6 +186,14 @@ class OrganizationMembership(BaseModel):
             "read unchanged."
         ),
     )
+
+    class Meta:
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=["user", "organization"],
+                name="uniq_membership_user_organization",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.user} in {self.organization}"

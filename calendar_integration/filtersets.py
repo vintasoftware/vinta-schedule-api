@@ -7,6 +7,7 @@ from calendar_integration.models import (
     CalendarEvent,
     CalendarGroup,
 )
+from organizations.models import get_active_organization_membership
 
 
 class CalendarEventFilterSet(filters.FilterSet):
@@ -57,9 +58,7 @@ class CalendarEventFilterSet(filters.FilterSet):
 
         user = self.request.user if self.request else None
         membership = (
-            getattr(user, "organization_membership", None)
-            if user and user.is_authenticated
-            else None
+            get_active_organization_membership(user) if user and user.is_authenticated else None
         )
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="calendar_fk_id",
@@ -102,9 +101,7 @@ class BlockedTimeFilterSet(filters.FilterSet):
 
         user = self.request.user if self.request else None
         membership = (
-            getattr(user, "organization_membership", None)
-            if user and user.is_authenticated
-            else None
+            get_active_organization_membership(user) if user and user.is_authenticated else None
         )
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="calendar_fk_id",
@@ -135,9 +132,7 @@ class CalendarGroupFilterSet(filters.FilterSet):
 
         user = self.request.user if self.request else None
         membership = (
-            getattr(user, "organization_membership", None)
-            if user and user.is_authenticated
-            else None
+            get_active_organization_membership(user) if user and user.is_authenticated else None
         )
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="slots__memberships__calendar_fk_id",
@@ -174,9 +169,7 @@ class AvailableTimeFilterSet(filters.FilterSet):
 
         user = self.request.user if self.request else None
         membership = (
-            getattr(user, "organization_membership", None)
-            if user and user.is_authenticated
-            else None
+            get_active_organization_membership(user) if user and user.is_authenticated else None
         )
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="calendar_fk_id",

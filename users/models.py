@@ -52,15 +52,14 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
         An inactive membership (is_active=False) is treated the same as no
         membership — returns False to deny access.
         """
-        membership = getattr(self, "organization_membership", None)
-        if membership is None:
-            return False
-        if not getattr(membership, "is_active", False):
-            return False
+        from organizations.models import OrganizationRole
+
         organization_id = getattr(organization, "id", organization)
-        return membership.organization_id == organization_id and getattr(
-            membership, "is_admin", False
-        )
+        return self.organization_memberships.filter(  # type: ignore[attr-defined]
+            organization_id=organization_id,
+            is_active=True,
+            role=OrganizationRole.ADMIN,
+        ).exists()
 
     def __str__(self):
         return f"{self.profile} <{self.email}>"

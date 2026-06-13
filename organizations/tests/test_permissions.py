@@ -104,7 +104,7 @@ class TestIsOrganizationAdminPermission:
 
     def test_has_object_permission_admin_same_org(self, factory, admin_user, permission, view_mock):
         """Admin user should have object permission for an object in their organization."""
-        org = admin_user.organization_membership.organization
+        org = admin_user.organization_memberships.get().organization
         request = factory.get("/")
         request.user = admin_user
         assert permission.has_object_permission(request, view_mock, org) is True
@@ -113,7 +113,7 @@ class TestIsOrganizationAdminPermission:
         self, factory, member_user, permission, view_mock
     ):
         """Member user should not have object permission for an object in their organization."""
-        org = member_user.organization_membership.organization
+        org = member_user.organization_memberships.get().organization
         request = factory.get("/")
         request.user = member_user
         assert permission.has_object_permission(request, view_mock, org) is False
@@ -122,7 +122,7 @@ class TestIsOrganizationAdminPermission:
         self, factory, admin_user, different_org_admin, permission, view_mock
     ):
         """Admin user should not have object permission for an object in a different organization."""
-        different_org = different_org_admin.organization_membership.organization
+        different_org = different_org_admin.organization_memberships.get().organization
         request = factory.get("/")
         request.user = admin_user
         assert permission.has_object_permission(request, view_mock, different_org) is False
@@ -142,7 +142,7 @@ class TestIsOrganizationAdminPermission:
         """Admin user should have object permission for OrganizationModel subclasses."""
         from calendar_integration.models import Calendar
 
-        org = admin_user.organization_membership.organization
+        org = admin_user.organization_memberships.get().organization
         calendar = baker.make(Calendar, organization=org)
         request = factory.get("/")
         request.user = admin_user
@@ -154,7 +154,7 @@ class TestIsOrganizationAdminPermission:
         """Member user should not have object permission for OrganizationModel subclasses."""
         from calendar_integration.models import Calendar
 
-        org = member_user.organization_membership.organization
+        org = member_user.organization_memberships.get().organization
         calendar = baker.make(Calendar, organization=org)
         request = factory.get("/")
         request.user = member_user

@@ -111,19 +111,19 @@ class TestSocialGatedOnboarding:
             "save_user must NOT create an Organisation for an uninvited social user"
         )
 
-    def test_uninvited_social_user_has_no_organization_membership_attribute(self):
+    def test_uninvited_social_user_has_no_organization_membership(self):
         """
-        Accessing user.organization_membership on a gated user raises
-        RelatedObjectDoesNotExist (the OneToOne reverse descriptor raises when absent).
-        The views guard against this with hasattr / try-except, so this confirms the
-        gating invariant at the model level.
+        A gated (membership-less) user has no OrganizationMembership rows.
+        With user.organization_memberships now a FK manager (not a OneToOne
+        descriptor), the gating invariant is confirmed by checking the queryset
+        is empty rather than expecting RelatedObjectDoesNotExist.
         """
-        from django.core.exceptions import ObjectDoesNotExist
+        from organizations.models import get_active_organization_membership
 
         user = _social_save_user("gated@social.example.com")
 
-        with pytest.raises(ObjectDoesNotExist):
-            _ = user.organization_membership
+        assert user.organization_memberships.count() == 0
+        assert get_active_organization_membership(user) is None
 
     # ------------------------------------------------------------------
     # Scenario 2 — gated user creates org and becomes ADMIN

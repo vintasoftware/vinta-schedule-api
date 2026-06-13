@@ -1456,7 +1456,7 @@ class TestOrganizationMembershipViewSet:
         results = response.json()["results"]
         # Should only see 1 member (the admin from org1)
         assert len(results) == 1
-        assert results[0]["id"] == user.organization_membership.id
+        assert results[0]["id"] == user.organization_memberships.get().id
 
     def test_retrieve_member_admin_success(self, auth_client, user):
         """Test that admin can retrieve a specific member"""
