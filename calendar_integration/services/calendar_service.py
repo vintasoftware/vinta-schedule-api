@@ -5,7 +5,6 @@ from collections.abc import Callable, Iterable
 from typing import Annotated, Any, Literal, TypedDict, cast
 
 from django.conf import settings
-from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Q, QuerySet
 from django.http import HttpRequest
@@ -25,7 +24,6 @@ from calendar_integration.constants import (
 )
 from calendar_integration.exceptions import (
     InvalidCalendarTokenError,
-    NoAvailableTimeWindowsError,
     ServiceNotAuthenticatedError,
     WebhookIgnoredError,
 )
@@ -38,7 +36,6 @@ from calendar_integration.models import (
     BlockedTimeRecurrenceException,
     Calendar,
     CalendarEvent,
-    CalendarManagementToken,
     CalendarOrganizationResourcesImport,
     CalendarOwnership,
     CalendarSync,
@@ -46,16 +43,14 @@ from calendar_integration.models import (
     CalendarWebhookSubscription,
     ChildrenCalendarRelationship,
     EventAttendance,
-    EventBulkModification,
     EventExternalAttendance,
-    EventRecurrenceException,
     ExternalAttendee,
     GoogleCalendarServiceAccount,
     RecurrenceRule,
     RecurringMixin,
-    ResourceAllocation,
 )
 from calendar_integration.querysets import CalendarEventQuerySet
+from calendar_integration.services.calendar_event_service import CalendarEventService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.calendar_service_utils import (
@@ -90,21 +85,16 @@ from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     AvailableTimeWindow,
     BlockedTimeData,
-    CalendarEventAdapterInputData,
     CalendarEventAdapterOutputData,
     CalendarEventData,
     CalendarEventInputData,
     CalendarResourceData,
-    CalendarSettingsData,
     EventAttendanceInputData,
-    EventAttendeeData,
     EventExternalAttendanceInputData,
     EventExternalAttendeeData,
     EventInternalAttendeeData,
     EventsSyncChanges,
-    ExternalAttendeeInputData,
     ResourceAllocationInputData,
-    ResourceData,
     UnavailableTimeWindow,
 )
 from calendar_integration.services.protocols.base_calendar_service import BaseCalendarService
@@ -380,6 +370,41 @@ class CalendarService(BaseCalendarService):
             calendar_adapter=self.calendar_adapter,
             calendar_permission_service=self.calendar_permission_service,
             calendar_side_effects_service=self.calendar_side_effects_service,
+        )
+
+    def _build_context_snapshot(self) -> CalendarServiceContext:
+        """Build a context snapshot from the current auth-state instance attributes.
+
+        Read live each time the event sub-service is requested so the snapshot always
+        reflects the facade's current auth state — including the (unset) state before
+        ``authenticate()`` / ``initialize_without_provider()`` (the sub-service guard
+        then fires exactly as the former facade method did) and any direct mutation of
+        the facade's ``account`` / ``calendar_adapter`` attributes.
+        """
+        return CalendarServiceContext(
+            organization=self.organization,
+            user_or_token=self.user_or_token,
+            account=self.account,
+            calendar_adapter=self.calendar_adapter,
+            calendar_permission_service=self.calendar_permission_service,
+            calendar_side_effects_service=self.calendar_side_effects_service,
+        )
+
+    def _get_event_service(self) -> CalendarEventService:
+        """Return the event sub-service bound to the facade's current auth context.
+
+        The event service shares the facade-owned calendar cache and recurrence
+        manager, and routes availability (Phase 4), bundle fan-out (Phase 3), and the
+        shared write-adapter / attendee-permission helpers back through the facade
+        (``host=self``). The context is rebuilt from the live facade attributes each
+        call (a cheap dataclass construction — no network / adapter rebuild), so it
+        never goes stale across re-authentication or direct attribute mutation.
+        """
+        return CalendarEventService(
+            context=self._build_context_snapshot(),
+            recurrence_manager=self._recurrence_manager,
+            calendar_cache=self._calendar_cache,
+            host=self,
         )
 
     def request_organization_calendar_resources_import(
@@ -1074,196 +1099,7 @@ class CalendarService(BaseCalendarService):
         :param event_data: Dictionary containing event details.
         :return: Response from the calendar client.
         """
-        if not is_initialized_or_authenticated_calendar_service(self):
-            raise
-
-        calendar = self._get_calendar_by_id(calendar_id)
-
-        if isinstance(self.user_or_token, User):
-            self.calendar_permission_service.initialize_with_user(
-                self.user_or_token,
-                organization_id=calendar.organization_id,
-                calendar_id=calendar_id,
-            )
-        elif isinstance(self.user_or_token, SystemUser):
-            raise PermissionDenied("Events cannot be created through the Public API.")
-
-        if not self.calendar_permission_service.can_perform_scheduling(
-            calendar_id=calendar_id,
-            calendar_settings=CalendarSettingsData(
-                manage_available_windows=calendar.manage_available_windows,
-                accepts_public_scheduling=calendar.accepts_public_scheduling,
-            ),
-            event=event_data,
-        ):
-            raise PermissionDenied("You do not have permission to update this event.")
-
-        if calendar.calendar_type == CalendarType.BUNDLE:
-            return self._create_bundle_event(bundle_calendar=calendar, event_data=event_data)
-
-        available_windows = self.get_availability_windows_in_range(
-            calendar,
-            event_data.start_time,
-            event_data.end_time,
-        )
-        if not available_windows:
-            raise NoAvailableTimeWindowsError()
-
-        external_id = ""
-        original_payload: dict = {}
-        if calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE] and (
-            write_adapter := self._get_write_adapter_for_calendar(calendar)
-        ):
-            users_by_id = {
-                u.id: u
-                for u in User.objects.filter(id__in=[a.user_id for a in event_data.attendances])
-            }
-            resources_by_id = {
-                r.id: r
-                for r in Calendar.objects.filter_by_organization(self.organization.id).filter(
-                    id__in=[r.resource_id for r in event_data.resource_allocations]
-                )
-            }
-
-            created_event = write_adapter.create_event(
-                CalendarEventAdapterInputData(
-                    calendar_external_id=calendar.external_id,
-                    title=event_data.title,
-                    description=event_data.description,
-                    start_time=event_data.start_time,
-                    end_time=event_data.end_time,
-                    timezone=event_data.timezone,
-                    attendees=[
-                        EventAttendeeData(
-                            email=users_by_id[a.user_id].email,
-                            name=(
-                                users_by_id[a.user_id].get_full_name()
-                                if hasattr(users_by_id[a.user_id], "profile")
-                                and hasattr(users_by_id[a.user_id].profile, "__str__")
-                                else None
-                            )
-                            or users_by_id[a.user_id].email,
-                            status="pending",
-                        )
-                        for a in event_data.attendances
-                    ],
-                    resources=[
-                        ResourceData(
-                            email=resources_by_id[r.resource_id].email,
-                            title=resources_by_id[r.resource_id].name,
-                            external_id=resources_by_id[r.resource_id].external_id,
-                            status="accepted",
-                        )
-                        for r in event_data.resource_allocations
-                    ],
-                    recurrence_rule=event_data.recurrence_rule,
-                    is_recurring_instance=event_data.is_recurring_exception,
-                )
-            )
-            external_id = created_event.external_id
-            original_payload = created_event.original_payload or {}
-
-        # Handle parent event for exceptions/instances
-        parent_event = None
-        if event_data.parent_event_id:
-            parent_event = CalendarEvent.objects.get(
-                id=event_data.parent_event_id,
-                organization_id=self.organization.id,
-            )
-
-        # Create recurrence rule if provided
-        recurrence_rule = None
-        if event_data.recurrence_rule and not event_data.parent_event_id:
-            recurrence_rule = RecurrenceRule.from_rrule_string(
-                event_data.recurrence_rule, self.organization
-            )
-            recurrence_rule.save()
-
-        # Create the event using the manager's create method to ensure proper organization handling
-        event = CalendarEvent(
-            calendar_fk=calendar,
-            organization=self.organization,
-            title=event_data.title,
-            description=event_data.description or "",
-            start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
-                event_data.start_time, event_data.timezone
-            ),
-            end_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
-                event_data.end_time, event_data.timezone
-            ),
-            timezone=event_data.timezone,
-            external_id=external_id,
-            meta={"latest_original_payload": original_payload} if self.calendar_adapter else {},
-            parent_recurring_object_fk=parent_event,
-            is_recurring_exception=event_data.is_recurring_exception,
-            recurrence_id=event_data.start_time if parent_event else None,
-        )
-
-        if recurrence_rule:
-            event.recurrence_rule_fk = recurrence_rule  # type: ignore
-
-        event.save()
-
-        EventExternalAttendance.objects.bulk_create(
-            [
-                EventExternalAttendance(
-                    organization=self.organization,
-                    event=event,
-                    external_attendee=ExternalAttendee.objects.create(
-                        organization=self.organization,
-                        email=attendance_data.external_attendee.email,
-                        name=attendance_data.external_attendee.name,
-                    ),
-                )
-                for attendance_data in event_data.external_attendances
-            ]
-        )
-
-        EventAttendance.objects.bulk_create(
-            [
-                EventAttendance(
-                    organization=self.organization,
-                    event=event,
-                    user_id=attendance_data.user_id,
-                )
-                for attendance_data in event_data.attendances
-            ]
-        )
-
-        ResourceAllocation.objects.bulk_create(
-            [
-                ResourceAllocation(
-                    organization=self.organization,
-                    event=event,
-                    calendar_fk_id=resource_allocation_data.resource_id,
-                )
-                for resource_allocation_data in event_data.resource_allocations
-            ]
-        )
-
-        # Grant permissions to event attendees
-        self._grant_event_attendee_permissions(event)
-
-        transaction.on_commit(
-            lambda: (
-                self.calendar_side_effects_service.on_create_event(
-                    actor=(
-                        self.calendar_permission_service.token.user
-                        if (
-                            self.calendar_permission_service.token
-                            and self.calendar_permission_service.token.user
-                        )
-                        else self.calendar_permission_service.token
-                    ),
-                    event=self._serialize_event(event),
-                    organization=event.organization,
-                )
-                if self.calendar_side_effects_service
-                else None
-            )
-        )
-
-        return event
+        return self._get_event_service().create_event(calendar_id, event_data)
 
     def _update_bundle_event(
         self, bundle_event: CalendarEvent, event_data: "CalendarEventInputData"
@@ -1336,343 +1172,7 @@ class CalendarService(BaseCalendarService):
         :param event_data: Dictionary containing updated event details.
         :return: Updated CalendarEvent instance.
         """
-        if not is_initialized_or_authenticated_calendar_service(self):
-            raise
-
-        event = CalendarEvent.objects.select_related("calendar").get(
-            calendar_fk_id=calendar_id,
-            id=event_id,
-            organization_id=self.organization.id,
-        )
-
-        if isinstance(self.user_or_token, User):
-            self.calendar_permission_service.initialize_with_user(
-                self.user_or_token, organization_id=event.organization_id, event_id=event_id
-            )
-        elif isinstance(self.user_or_token, SystemUser):
-            raise PermissionDenied("Events cannot be created through the Public API.")
-
-        serialized_old_event = self._serialize_event(event)
-        if not self.calendar_permission_service.can_perform_update(
-            old_event=serialized_old_event,
-            new_event=self._serialize_event_data_input(event, event_data),
-        ):
-            raise PermissionDenied("You do not have permission to update this event.")
-
-        if event.is_bundle_primary:
-            return self._update_bundle_event(event, event_data)
-        elif event.is_bundle_event:
-            raise ValueError(
-                "Cannot update an event created from bundle calendar from a non-primary "
-                "calendar event"
-            )
-
-        original_payload: dict[str, Any] = {}
-        if event.calendar.calendar_type in [
-            CalendarType.PERSONAL,
-            CalendarType.RESOURCE,
-        ] and (write_adapter := self._get_write_adapter_for_calendar(event.calendar)):
-            users_by_id = {
-                u.id: u
-                for u in User.objects.filter(id__in=[a.user_id for a in event_data.attendances])
-            }
-            attendance_by_user_id = {
-                a.user_id: a
-                for a in EventAttendance.objects.filter_by_organization(
-                    self.organization.id
-                ).filter(event__id=event_id, user_id__in=users_by_id.keys())
-            }
-            resources_by_id = {
-                r.id: r
-                for r in Calendar.objects.filter_by_organization(self.organization.id).filter(
-                    id__in=[r.resource_id for r in event_data.resource_allocations]
-                )
-            }
-
-            updated_event = write_adapter.update_event(
-                event.calendar.id,
-                event.id,
-                CalendarEventAdapterInputData(
-                    calendar_external_id=event.calendar.external_id,
-                    title=event_data.title,
-                    description=event_data.description,
-                    start_time=event_data.start_time,
-                    end_time=event_data.end_time,
-                    timezone=event_data.timezone,
-                    attendees=[
-                        EventAttendeeData(
-                            email=users_by_id[a.user_id].email,
-                            name=(
-                                users_by_id[a.user_id].get_full_name()
-                                if hasattr(users_by_id[a.user_id], "profile")
-                                and hasattr(users_by_id[a.user_id].profile, "__str__")
-                                else None
-                            )
-                            or users_by_id[a.user_id].email,
-                            status=(
-                                attendance_by_user_id[a.user_id].status
-                                if a.user_id in attendance_by_user_id
-                                else "pending"
-                            ),
-                        )
-                        for a in event_data.attendances
-                    ],
-                    external_id=event.external_id,
-                    resources=[
-                        ResourceData(
-                            email=resources_by_id[r.resource_id].email,
-                            title=resources_by_id[r.resource_id].name,
-                            external_id=resources_by_id[r.resource_id].external_id,
-                            status="accepted",
-                        )
-                        for r in event_data.resource_allocations
-                    ],
-                ),
-            )
-            original_payload = updated_event.original_payload or {}
-
-        event.title = event_data.title
-        event.description = event_data.description
-        event.start_time = event_data.start_time
-        event.end_time = event_data.end_time
-        if self.calendar_adapter:
-            event.meta["latest_original_payload"] = original_payload
-
-        # update recurrence rule
-        if event_data.recurrence_rule:
-            recurrence_rule = RecurrenceRule.from_rrule_string(
-                rrule_string=event_data.recurrence_rule,
-                organization=self.organization,
-            )
-            if event.recurrence_rule:
-                recurrence_rule.id = event.recurrence_rule.id
-            recurrence_rule.save()
-            event.recurrence_rule = recurrence_rule
-        elif event.recurrence_rule:
-            # turn recurring event into non-recurring
-            event.recurrence_rule.delete()
-            event.recurrence_rule = None
-
-        event.save()
-
-        existing_attendances = {a.user_id: a for a in event.attendances.all()}
-        existing_external_attendances = {
-            a.external_attendee_fk_id: a for a in event.external_attendances.all()
-        }
-        existing_resource_allocation = {
-            r.calendar_fk_id: r for r in event.resource_allocations.all()
-        }
-
-        maintained_external_attendees_ids = []
-        external_attendees_to_update = []
-        external_attendees_to_create = []
-        external_attendances_to_create = []
-        serialized_external_attendances_to_create = []
-        serialized_external_attendances_to_update = []
-        for external_attendance_data in event_data.external_attendances:
-            if (
-                external_attendance_data.external_attendee.id
-                and external_attendance_data.external_attendee.id
-                in existing_external_attendances.keys()
-            ):
-                attendance_to_update = existing_external_attendances[
-                    external_attendance_data.external_attendee.id
-                ]
-                attendance_to_update.external_attendee.email = (
-                    external_attendance_data.external_attendee.email
-                )
-                attendance_to_update.external_attendee.name = (
-                    external_attendance_data.external_attendee.name
-                )
-                serialized_external_attendances_to_update.append(
-                    self._serialize_event_external_attendee(attendance_to_update)
-                )
-                external_attendees_to_update.append(attendance_to_update.external_attendee)
-            else:
-                external_attendee = ExternalAttendee(
-                    organization=self.organization,
-                    email=external_attendance_data.external_attendee.email,
-                    name=external_attendance_data.external_attendee.name,
-                )
-                external_attendees_to_create.append(external_attendee)
-                external_attendance_instance = EventExternalAttendance(
-                    organization=self.organization,
-                    event=event,
-                    external_attendee=external_attendee,
-                )
-                external_attendances_to_create.append(external_attendance_instance)
-                serialized_external_attendances_to_create.append(
-                    self._serialize_event_external_attendee(external_attendance_instance)
-                )
-            if external_attendance_data.external_attendee:
-                maintained_external_attendees_ids.append(
-                    external_attendance_data.external_attendee.id
-                )
-        ExternalAttendee.objects.bulk_update(external_attendees_to_update, ["email", "name"])
-        ExternalAttendee.objects.bulk_create(external_attendees_to_create)
-        EventExternalAttendance.objects.bulk_create(external_attendances_to_create)
-
-        external_attendees_to_delete = set(existing_external_attendances.keys()) - set(
-            maintained_external_attendees_ids
-        )
-
-        event_external_attendances_instance_to_delete = (
-            EventExternalAttendance.objects.filter_by_organization(self.organization.id).filter(
-                external_attendee_fk_id__in=external_attendees_to_delete
-            )
-        )
-        serialized_external_attendances_to_delete = [
-            self._serialize_event_external_attendee(external_attendance)
-            for external_attendance in event_external_attendances_instance_to_delete
-        ]
-
-        event_external_attendances_instance_to_delete.delete()
-        ExternalAttendee.objects.filter_by_organization(self.organization.id).filter(
-            id__in=external_attendees_to_delete
-        ).delete()
-
-        maintained_attendees_ids = []
-        event_attendances_to_create = []
-        serialized_attendances_to_create = []
-        for attendance_data in event_data.attendances:
-            if not existing_attendances.get(attendance_data.user_id):
-                event_attendance_instance = EventAttendance(
-                    organization=self.organization,
-                    event=event,
-                    user_id=attendance_data.user_id,
-                )
-                event_attendances_to_create.append(event_attendance_instance)
-                serialized_attendances_to_create.append(
-                    self._serialize_event_internal_attendee(event_attendance_instance)
-                )
-            maintained_attendees_ids.append(attendance_data.user_id)
-
-        EventAttendance.objects.bulk_create(event_attendances_to_create)
-
-        # Grant permissions to newly added internal attendees
-        if event_attendances_to_create and self.calendar_permission_service:
-            for attendance in event_attendances_to_create:
-                user = User.objects.get(id=attendance.user_id)
-                # Check if user already has a token for this event
-                existing_token = CalendarManagementToken.objects.filter(
-                    user=user,
-                    event_fk_id=event.id,
-                    organization_id=self.organization.id,
-                    revoked_at__isnull=True,
-                ).first()
-
-                if not existing_token:
-                    self.calendar_permission_service.create_attendee_token(
-                        organization_id=event.organization_id,
-                        user=user,
-                        permissions=None,  # Will use default attendee permissions
-                        event_id=event.id,
-                    )
-
-        # Grant permissions to newly added external attendees
-        if external_attendances_to_create and self.calendar_permission_service:
-            for external_attendance in external_attendances_to_create:
-                # Check if external attendee already has a token for this event
-                existing_token = CalendarManagementToken.objects.filter(
-                    organization_id=event.organization_id,
-                    external_attendee_fk_id=external_attendance.external_attendee.id,
-                    event_fk_id=event.id,
-                    revoked_at__isnull=True,
-                ).first()
-
-                if not existing_token:
-                    self.calendar_permission_service.create_external_attendee_update_token(
-                        organization_id=event.organization_id,
-                        event_id=event.id,
-                        external_attendee_id=external_attendance.external_attendee.id,
-                        permissions=None,  # Will use default external attendee permissions
-                    )
-
-        attendances_to_delete = set(existing_attendances.keys()) - set(maintained_attendees_ids)
-        attendances_instances_to_delete = EventAttendance.objects.filter_by_organization(
-            self.organization.id
-        ).filter(user_id__in=attendances_to_delete)
-        serialized_attendances_to_delete = [
-            self._serialize_event_internal_attendee(attendance)
-            for attendance in attendances_instances_to_delete
-        ]
-        attendances_instances_to_delete.delete()
-
-        maintained_resources_ids = []
-        resource_allocations_to_create = []
-        for resource_allocation_data in event_data.resource_allocations:
-            if resource_allocation_data.resource_id not in existing_resource_allocation.keys():
-                resource_allocations_to_create.append(
-                    ResourceAllocation(
-                        organization_id=self.organization.id,
-                        event=event,
-                        calendar_fk_id=resource_allocation_data.resource_id,
-                    )
-                )
-            maintained_resources_ids.append(resource_allocation_data.resource_id)
-
-        ResourceAllocation.objects.bulk_create(resource_allocations_to_create)
-        resources_to_delete = set(existing_resource_allocation) - set(maintained_resources_ids)
-        ResourceAllocation.objects.filter_by_organization(self.organization.id).filter(
-            calendar_fk_id__in=resources_to_delete
-        ).delete()
-
-        def call_side_effects():
-            if not self.calendar_side_effects_service:
-                return
-
-            actor = (
-                self.calendar_permission_service.token.user
-                if (
-                    self.calendar_permission_service.token
-                    and self.calendar_permission_service.token.user
-                )
-                else self.calendar_permission_service.token
-            )
-            self.calendar_side_effects_service.on_update_event(
-                actor=actor,
-                event=self._serialize_event(event),
-                organization=event.organization,
-            )
-            for payload in serialized_attendances_to_create:
-                self.calendar_side_effects_service.on_add_attendee_to_event(
-                    actor=actor,
-                    event=self._serialize_event(event),
-                    attendee=payload,
-                    organization=event.organization,
-                )
-            for payload in serialized_attendances_to_delete:
-                self.calendar_side_effects_service.on_remove_attendee_from_event(
-                    actor=actor,
-                    event=self._serialize_event(event),
-                    attendee=payload,
-                    organization=event.organization,
-                )
-            for payload in serialized_external_attendances_to_create:
-                self.calendar_side_effects_service.on_add_attendee_to_event(
-                    actor=actor,
-                    event=self._serialize_event(event),
-                    attendee=payload,
-                    organization=event.organization,
-                )
-            for payload in serialized_external_attendances_to_delete:
-                self.calendar_side_effects_service.on_remove_attendee_from_event(
-                    actor=actor,
-                    event=self._serialize_event(event),
-                    attendee=payload,
-                    organization=event.organization,
-                )
-            for payload in serialized_external_attendances_to_update:
-                self.calendar_side_effects_service.on_update_attendee_on_event(
-                    actor=actor,
-                    event=self._serialize_event(event),
-                    attendee=payload,
-                    organization=event.organization,
-                )
-
-        transaction.on_commit(lambda: call_side_effects())
-
-        return event
+        return self._get_event_service().update_event(calendar_id, event_id, event_data)
 
     def create_recurring_event(
         self,
@@ -1692,33 +1192,19 @@ class CalendarService(BaseCalendarService):
 
         This method is just a shortcut, the `create_event` method also supports the
         creation of recurring events.
-
-        :param calendar_id: Internal ID of the calendar
-        :param title: Event title
-        :param description: Event description
-        :param start_time: Start time for the first occurrence
-        :param end_time: End time for the first occurrence
-        :param recurrence_rule: RRULE string defining the recurrence pattern
-        :param attendances: List of internal attendees
-        :param external_attendances: List of external attendees
-        :param resource_allocations: List of resource allocations
-        :return: Created CalendarEvent with recurrence rule
         """
-        if not is_initialized_or_authenticated_calendar_service(self):
-            raise
-
-        event_data = CalendarEventInputData(
+        return self._get_event_service().create_recurring_event(
+            calendar_id=calendar_id,
             title=title,
             description=description,
             start_time=start_time,
             end_time=end_time,
             timezone=timezone,
             recurrence_rule=recurrence_rule,
-            attendances=attendances or [],
-            external_attendances=external_attendances or [],
-            resource_allocations=resource_allocations or [],
+            attendances=attendances,
+            external_attendances=external_attendances,
+            resource_allocations=resource_allocations,
         )
-        return self.create_event(calendar_id, event_data)
 
     def create_recurring_event_exception(
         self,
@@ -1734,105 +1220,18 @@ class CalendarService(BaseCalendarService):
         """
         Create an exception for a recurring event (either cancelled or modified).
 
-        If the exception is on the master event, this method makes the master event non-recurring
-        and creates a new recurring event on the second occurrence
-
-        :param parent_event: The recurring event to create an exception for
-        :param exception_date: The date of the occurrence to modify/cancel
-        :param modified_title: New title for the modified occurrence (if not cancelled)
-        :param modified_description: New description for the modified occurrence (if not cancelled)
-        :param modified_start_time: New start time for the modified occurrence (if not cancelled)
-        :param modified_end_time: New end time for the modified occurrence (if not cancelled)
-        :param modified_timezone: New timezone for the modified occurrence (if not cancelled)
-        :param is_cancelled: True if cancelling the occurrence, False if modifying
-        :return: Created modified event or None if cancelled
+        See ``CalendarEventService.create_recurring_event_exception`` for full semantics.
         """
-
-        def create_new_recurring_event(
-            parent_obj: RecurringMixin,
-            second_occurrence: RecurringMixin,
-            new_recurrence_rule: RecurrenceRule,
-        ) -> RecurringMixin:
-            parent_event = cast(CalendarEvent, parent_obj)
-            second_event = cast(CalendarEvent, second_occurrence)
-            new_recurring_event = self.create_recurring_event(
-                calendar_id=parent_event.calendar.id,
-                title=parent_event.title,
-                description=parent_event.description,
-                start_time=second_event.start_time,
-                end_time=second_event.end_time,
-                timezone=parent_event.timezone,
-                recurrence_rule=new_recurrence_rule.to_rrule_string(),
-                attendances=[
-                    EventAttendanceInputData(user_id=a.user_id)
-                    for a in parent_event.attendances.all()
-                ],
-                external_attendances=[
-                    EventExternalAttendanceInputData(
-                        external_attendee=ExternalAttendeeInputData(
-                            email=ea.external_attendee.email,
-                            name=ea.external_attendee.name,
-                            id=ea.external_attendee.id,
-                        )
-                    )
-                    for ea in parent_event.external_attendances.all()
-                ],
-                resource_allocations=[
-                    ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
-                    for r in parent_event.resource_allocations.all()
-                ],
-            )
-            return new_recurring_event
-
-        def create_modified_event(
-            parent_obj: RecurringMixin,
-            exception_datetime: datetime.datetime,
-            modification_data: dict[str, Any],
-        ) -> RecurringMixin:
-            parent_event = cast(CalendarEvent, parent_obj)
-            modified_event_data = CalendarEventInputData(
-                title=modification_data.get("title") or parent_event.title,
-                description=modification_data.get("description") or parent_event.description,
-                start_time=modification_data.get("start_time") or exception_datetime,
-                end_time=modification_data.get("end_time")
-                or (exception_datetime + parent_event.duration),
-                timezone=modification_data.get("timezone") or parent_event.timezone,
-                parent_event_id=parent_event.id,
-                is_recurring_exception=True,
-            )
-            return self.create_event(parent_event.calendar.id, modified_event_data)
-
-        def update_exception_manager(
-            parent_obj: RecurringMixin, new_recurring_obj: RecurringMixin
-        ) -> None:
-            EventRecurrenceException.objects.filter(parent_event=parent_obj).update(
-                parent_event_fk=new_recurring_obj
-            )
-
-        def delete_exception_manager(parent_obj: RecurringMixin) -> None:
-            EventRecurrenceException.objects.filter(parent_event=parent_obj).delete()
-
-        modification_data = {
-            "title": modified_title,
-            "description": modified_description,
-            "start_time": modified_start_time,
-            "end_time": modified_end_time,
-            "timezone": modified_timezone,
-        }
-
-        result = self._recurrence_manager.create_recurring_exception_generic(
-            self._context,
-            object_type_name="event",
-            parent_object=parent_event,
+        return self._get_event_service().create_recurring_event_exception(
+            parent_event=parent_event,
             exception_date=exception_date,
+            modified_title=modified_title,
+            modified_description=modified_description,
+            modified_start_time=modified_start_time,
+            modified_end_time=modified_end_time,
+            modified_timezone=modified_timezone,
             is_cancelled=is_cancelled,
-            modification_data=modification_data,
-            create_new_recurring_callback=create_new_recurring_event,
-            create_modified_object_callback=create_modified_event,
-            exception_manager_update_callback=update_exception_manager,
-            exception_manager_delete_callback=delete_exception_manager,
         )
-        return cast(CalendarEvent, result) if result else None
 
     def get_recurring_event_instances(
         self,
@@ -1850,14 +1249,8 @@ class CalendarService(BaseCalendarService):
         :param include_exceptions: Whether to include modified exceptions
         :return: List of event instances
         """
-        if not is_initialized_or_authenticated_calendar_service(self):
-            raise
-
-        if not recurring_event.is_recurring:
-            return [recurring_event] if start_date <= recurring_event.start_time <= end_date else []
-
-        return recurring_event.get_occurrences_in_range(
-            start_date, end_date, include_self=True, include_exceptions=include_exceptions
+        return self._get_event_service().get_recurring_event_instances(
+            recurring_event, start_date, end_date, include_exceptions
         )
 
     def get_calendar_events_expanded(
@@ -1870,105 +1263,11 @@ class CalendarService(BaseCalendarService):
         """
         Get all calendar events in a date range with recurring events expanded to instances.
 
-        For all calendars (both external and internal), this method:
-        1. Gets non-recurring events within the date range
-        2. Gets recurring master events and generates their instances dynamically
-        3. Includes synced exceptions (modified/cancelled instances from external providers)
-        4. Excludes master recurring events from the final result (only instances are returned)
-
-        External providers (Google, Microsoft) only store master recurring events and sync
-        exceptions, so we generate instances on our side while respecting their exceptions.
-
-        :param calendar: The calendar to get events from
-        :param start_date: Start of the date range
-        :param end_date: End of the date range
-        :param optimize_queryset: Optional callable (typically a serializer's
-            ``get_optimized_queryset``) applied to the master-event base queryset so its
-            nested relations are prefetched. Generated occurrences reuse their master's
-            prefetch cache, so the whole result serializes without per-event N+1s.
-        :return: List of all event instances in the range
+        See ``CalendarEventService.get_calendar_events_expanded`` for full semantics.
         """
-        if not is_initialized_or_authenticated_calendar_service(self):
-            raise
-
-        base_qs = (
-            CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
-            .select_related("recurrence_rule")
-            .filter(
-                parent_recurring_object__isnull=True,  # Master events only
-            )
+        return self._get_event_service().get_calendar_events_expanded(
+            calendar, start_date, end_date, optimize_queryset
         )
-        if calendar.calendar_type == CalendarType.BUNDLE:
-            base_qs = base_qs.filter(
-                organization_id=calendar.organization_id,
-                calendar__in=calendar.bundle_children.all(),
-            )
-        else:
-            base_qs = base_qs.filter(
-                organization_id=calendar.organization_id,
-                calendar=calendar,
-            )
-
-        # Get non-recurring events within the date range
-        non_recurring_events = base_qs.filter(
-            Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
-            recurrence_rule__isnull=True,  # Non-recurring only
-            is_recurring_exception=False,  # Exclude exception objects
-        )
-
-        # Get recurring master events and generate their instances. Apply the
-        # serializer optimization here so generated occurrences inherit prefetched
-        # relations from their master (real events are optimized by the caller).
-        recurring_events = base_qs.filter(
-            recurrence_rule__isnull=False,  # Recurring only
-        ).filter(
-            Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start_date),
-            start_time__lte=end_date,
-        )
-        if optimize_queryset is not None:
-            recurring_events = optimize_queryset(recurring_events)
-
-        events: list[CalendarEvent] = list(non_recurring_events)
-
-        for master_event in recurring_events:
-            instances = master_event.get_occurrences_in_range(
-                start_date, end_date, include_self=False, include_exceptions=True
-            )
-            # Occurrences are in-memory copies of the master (pk=None). Reuse the
-            # master's prefetched relations so each occurrence serializes without
-            # re-querying attendances/resources (occurrences inherit them by design).
-            master_cache = getattr(master_event, "_prefetched_objects_cache", None)
-            if master_cache:
-                for instance in instances:
-                    instance._prefetched_objects_cache = master_cache
-            events.extend(instances)
-
-        # Sort by start time
-        events.sort(key=lambda x: x.start_time)
-
-        # If this is a bundle calendar, filter out bundle representations to avoid duplicates
-        if calendar.calendar_type == CalendarType.BUNDLE:
-            # Remove duplicates (keep primary events, remove representations)
-            seen_primary_events = set()
-            unique_events = []
-
-            for event in events:
-                if event.is_bundle_representation:
-                    # Skip representations - we want to show the primary event instead
-                    continue
-                elif event.is_bundle_primary:
-                    # For bundle primary events, check if we've already seen this one
-                    if event.id not in seen_primary_events:
-                        seen_primary_events.add(event.id)
-                        unique_events.append(event)
-                else:
-                    # For non-bundle events, include them normally
-                    unique_events.append(event)
-
-            events = unique_events
-            events.sort(key=lambda x: x.start_time)
-
-        return events
 
     def _delete_bundle_event(self, bundle_event: CalendarEvent) -> None:
         """Delete a bundle event and all its representations."""
@@ -1997,7 +1296,6 @@ class CalendarService(BaseCalendarService):
         # Delete the primary event
         self.delete_event(bundle_event.calendar.id, bundle_event.id)
 
-    @transaction.atomic()
     def delete_event(self, calendar_id: int, event_id: int, delete_series: bool = False) -> None:
         """
         Delete an event from the calendar.
@@ -2006,84 +1304,7 @@ class CalendarService(BaseCalendarService):
         :param delete_series: If True and the event is recurring, delete the entire series
         :return: None
         """
-        if not is_initialized_or_authenticated_calendar_service(self):
-            raise
-
-        event = CalendarEvent.objects.select_related("calendar").get(
-            calendar_fk_id=calendar_id,
-            id=event_id,
-            organization_id=self.organization.id,
-        )
-        if isinstance(self.user_or_token, User):
-            self.calendar_permission_service.initialize_with_user(
-                self.user_or_token, organization_id=event.organization_id, event_id=event_id
-            )
-        elif isinstance(self.user_or_token, SystemUser):
-            raise PermissionDenied("Events cannot be created through the Public API.")
-
-        serialized_old_event = self._serialize_event(event)
-        if not self.calendar_permission_service.can_perform_update(
-            old_event=serialized_old_event,
-            new_event=None,
-        ):
-            raise PermissionDenied("You do not have permission to update this event.")
-
-        if event.is_bundle_primary:
-            self._delete_bundle_event(event)
-            return
-
-        if event.calendar.calendar_type in [
-            CalendarType.PERSONAL,
-            CalendarType.RESOURCE,
-        ] and (write_adapter := self._get_write_adapter_for_calendar(event.calendar)):
-            if event.is_recurring and delete_series:
-                # Delete the entire recurring series from external calendar
-                write_adapter.delete_event(event.calendar.external_id, event.external_id)
-            elif event.is_recurring_instance and not delete_series:
-                # Create a cancellation exception instead of deleting
-                if event.parent_recurring_object:
-                    event.parent_recurring_object.create_exception(
-                        event.recurrence_id, is_cancelled=True
-                    )
-            else:
-                # Delete single event or instance
-                write_adapter.delete_event(event.calendar.external_id, event.external_id)
-
-        if event.is_recurring and delete_series:
-            # Delete the entire series including all instances and exceptions
-            event.calendarevent_recurring_instances.all().delete()
-            event.recurrence_exceptions.all().delete()
-            if event.recurrence_rule:
-                event.recurrence_rule.delete()
-        elif event.is_recurring_instance and not delete_series:
-            # For instances, we create an exception rather than delete
-            if event.parent_recurring_object and event.recurrence_id:
-                event.parent_recurring_object.create_exception(
-                    event.recurrence_id, is_cancelled=True
-                )
-
-        serialized_event = self._serialize_event(event)
-
-        event.delete()
-
-        transaction.on_commit(
-            lambda: (
-                self.calendar_side_effects_service.on_delete_event(
-                    actor=(
-                        self.calendar_permission_service.token.user
-                        if (
-                            self.calendar_permission_service.token
-                            and self.calendar_permission_service.token.user
-                        )
-                        else self.calendar_permission_service.token
-                    ),
-                    event=serialized_event,
-                    organization=event.organization,
-                )
-                if self.calendar_side_effects_service
-                else None
-            )
-        )
+        return self._get_event_service().delete_event(calendar_id, event_id, delete_series)
 
     def transfer_event(self, event: CalendarEvent, new_calendar: Calendar) -> CalendarEvent:
         """
@@ -2092,49 +1313,7 @@ class CalendarService(BaseCalendarService):
         :param new_calendar_external_id: External ID of the new calendar.
         :return: Transferred CalendarEvent instance.
         """
-        if not is_authenticated_calendar_service(self):
-            raise
-
-        event_data = self.calendar_adapter.get_event(event.calendar.external_id, event.external_id)
-
-        # Create a new event in the target calendar
-        new_event_data = CalendarEventInputData(
-            title=event_data.title,
-            description=event_data.description,
-            start_time=event_data.start_time,
-            end_time=event_data.end_time,
-            timezone=event_data.timezone,
-            recurrence_rule=event_data.recurrence_rule,
-            attendances=[
-                EventAttendanceInputData(
-                    user_id=a.user_id,
-                )
-                for a in event.attendances.all()
-            ],
-            external_attendances=[
-                EventExternalAttendanceInputData(
-                    external_attendee=ExternalAttendeeInputData(
-                        id=a.external_attendee.id,
-                        email=a.external_attendee.email,
-                        name=a.external_attendee.name,
-                    )
-                )
-                for a in event.external_attendances.all()
-            ],
-            resource_allocations=[
-                ResourceAllocationInputData(
-                    resource_id=r.calendar_fk_id,
-                )
-                for r in event.resource_allocations.all()
-                if r.calendar_fk_id
-            ],
-        )
-        new_event = self.create_event(new_calendar.id, new_event_data)
-
-        # Delete the old event
-        self.delete_event(event.calendar.id, event.id)
-
-        return new_event
+        return self._get_event_service().transfer_event(event, new_calendar)
 
     def _create_recurrence_rule_if_needed(self, rrule_string: str | None) -> RecurrenceRule | None:
         """Helper method to create recurrence rule from RRULE string if provided."""
@@ -3473,136 +2652,16 @@ class CalendarService(BaseCalendarService):
         modification_rrule_string: str | None = None,
     ) -> CalendarEvent | None:
         """Create a bulk modification for a recurring event from the specified date onwards."""
-
-        def truncate_parent(
-            parent_obj: RecurringMixin,
-            new_recurrence_rule: RecurrenceRule | None,
-        ):
-            parent = cast(CalendarEvent, parent_obj)
-            return self.update_event(
-                calendar_id=parent.calendar_fk_id,  # type: ignore
-                event_id=parent.id,
-                event_data=CalendarEventInputData(
-                    title=parent.title,
-                    description=parent.description,
-                    start_time=parent.start_time,
-                    end_time=parent.end_time,
-                    timezone=parent.timezone,
-                    resource_allocations=[
-                        ResourceAllocationInputData(resource_id=ra.calendar_fk_id)  # type: ignore
-                        for ra in parent.resource_allocations.all()
-                    ],
-                    attendances=[
-                        EventAttendanceInputData(user_id=att.user_id)
-                        for att in parent.attendances.all()
-                    ],
-                    external_attendances=[
-                        EventExternalAttendanceInputData(
-                            external_attendee=ExternalAttendeeInputData(
-                                id=ext.external_attendee.id,
-                                email=ext.external_attendee.email,
-                                name=ext.external_attendee.name,
-                            )
-                        )
-                        for ext in parent.external_attendances.all()
-                    ],
-                    # Recurrence fields
-                    recurrence_rule=(
-                        new_recurrence_rule.to_rrule_string() if new_recurrence_rule else None
-                    ),
-                    parent_event_id=(
-                        parent.parent_recurring_object.id
-                        if parent.parent_recurring_object
-                        else None
-                    ),
-                    is_recurring_exception=parent.is_recurring_exception,
-                ),
-            )
-
-        def create_continuation(
-            parent_obj: RecurringMixin,
-            start_dt: datetime.datetime,
-            recurrence_rule: RecurrenceRule | None,
-            modification_data: dict[str, Any],
-        ) -> RecurringMixin:
-            parent = cast(CalendarEvent, parent_obj)
-            # Compute new start/end based on offsets or mirror parent's times at start_dt
-            new_start = (
-                (start_dt + modification_data["start_time_offset"])
-                if modification_data.get("start_time_offset")
-                else start_dt
-            )
-            duration = parent.duration
-            new_end = (
-                new_start + modification_data["end_time_offset"]
-                if modification_data.get("end_time_offset")
-                else new_start + duration
-            )
-
-            return self.create_event(
-                calendar_id=parent.calendar.id,
-                event_data=CalendarEventInputData(
-                    title=modification_data.get("title") or parent.title,
-                    description=modification_data.get("description") or parent.description,
-                    start_time=new_start,
-                    end_time=new_end,
-                    timezone=parent.timezone,
-                    recurrence_rule=recurrence_rule.to_rrule_string() if recurrence_rule else None,
-                    attendances=[
-                        EventAttendanceInputData(user_id=a.user_id)
-                        for a in parent.attendances.all()
-                    ],
-                    external_attendances=[
-                        EventExternalAttendanceInputData(
-                            external_attendee=ExternalAttendeeInputData(
-                                email=ea.external_attendee.email,
-                                name=ea.external_attendee.name,
-                                id=ea.external_attendee.id,
-                            )
-                        )
-                        for ea in parent.external_attendances.all()
-                    ],
-                    resource_allocations=[
-                        ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
-                        for r in parent.resource_allocations.all()
-                    ],
-                ),
-            )
-
-        def record_bulk(
-            parent_obj: RecurringMixin,
-            start_dt: datetime.datetime,
-            continuation_obj: RecurringMixin | None,
-            cancelled: bool,
-        ):
-            EventBulkModification.objects.create(
-                organization=parent_obj.organization,
-                parent_event=parent_obj,
-                modification_start_date=start_dt,
-                modified_continuation=None,
-                is_bulk_cancelled=cancelled,
-            )
-
-        modification_data = {
-            "title": modified_title,
-            "description": modified_description,
-            "start_time_offset": modified_start_time_offset,
-            "end_time_offset": modified_end_time_offset,
-        }
-
-        result = self._recurrence_manager.create_recurring_bulk_modification_generic(
-            self._context,
-            object_type_name="event",
-            parent_object=parent_event,
+        return self._get_event_service().create_recurring_event_bulk_modification(
+            parent_event=parent_event,
             modification_start_date=modification_start_date,
+            modified_title=modified_title,
+            modified_description=modified_description,
+            modified_start_time_offset=modified_start_time_offset,
+            modified_end_time_offset=modified_end_time_offset,
             is_bulk_cancelled=is_bulk_cancelled,
-            modification_data=modification_data,
-            truncate_parent_callback=truncate_parent,
-            create_continuation_callback=create_continuation,
-            bulk_modification_record_callback=record_bulk,
             modification_rrule_string=modification_rrule_string,
         )
-        return cast(CalendarEvent, result) if result else None
 
     def create_recurring_blocked_time_bulk_modification(
         self,
@@ -3765,7 +2824,6 @@ class CalendarService(BaseCalendarService):
         )
         return cast(AvailableTime, result) if result else None
 
-    # Phase 6 - Integration helpers: expose clearer method names used by API
     def modify_recurring_event_from_date(
         self,
         parent_event: CalendarEvent,
@@ -3777,18 +2835,15 @@ class CalendarService(BaseCalendarService):
         modification_rrule_string: str | None = None,
     ) -> CalendarEvent | None:
         """Modify recurring event series from the given date onwards."""
-        continuation = self.create_recurring_event_bulk_modification(
+        return self._get_event_service().modify_recurring_event_from_date(
             parent_event=parent_event,
             modification_start_date=modification_start_date,
             modified_title=modified_title,
             modified_description=modified_description,
             modified_start_time_offset=modified_start_time_offset,
             modified_end_time_offset=modified_end_time_offset,
-            is_bulk_cancelled=False,
             modification_rrule_string=modification_rrule_string,
         )
-
-        return continuation
 
     def cancel_recurring_event_from_date(
         self,
@@ -3797,10 +2852,9 @@ class CalendarService(BaseCalendarService):
         modification_rrule_string: str | None = None,
     ) -> None:
         """Cancel all occurrences from modification_start_date onwards."""
-        self.create_recurring_event_bulk_modification(
+        return self._get_event_service().cancel_recurring_event_from_date(
             parent_event=parent_event,
             modification_start_date=modification_start_date,
-            is_bulk_cancelled=True,
             modification_rrule_string=modification_rrule_string,
         )
 
