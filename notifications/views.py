@@ -13,11 +13,12 @@ from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_sche
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.mixins import ListModelMixin
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
-from vintasend.constants import NotificationTypes
+from vintasend.constants import NotificationStatus, NotificationTypes
 from vintasend.services.notification_service import NotificationService
 from vintasend_django.models import Notification
 
@@ -50,7 +51,7 @@ def _parse_positive_int(value: str, param_name: str, default: int) -> int:
 
 
 @extend_schema(tags=["Notifications"])
-class NotificationViewSet(GenericViewSet):
+class NotificationViewSet(ListModelMixin, GenericViewSet):
     """
     ViewSet for user-scoped in-app notifications.
 
@@ -77,6 +78,47 @@ class NotificationViewSet(GenericViewSet):
         super().__init__(*args, **kwargs)
         self.notification_service = notification_service
 
+    @extend_schema(
+        summary="List all in-app notifications for the authenticated user",
+        description=(
+            "Returns the authenticated user's IN_APP notifications with status in (SENT, READ). "
+            "Ordered by creation date (newest first). Paginated via limit/offset."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="limit",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Number of items per page. Defaults to 10.",
+            ),
+            OpenApiParameter(
+                name="offset",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Number of items to skip. Defaults to 0.",
+            ),
+        ],
+        responses={
+            200: OpenApiResponse(
+                description=(
+                    "Standard LimitOffsetPagination envelope: "
+                    "{count: int, next: url|null, previous: url|null, results: [...]}"
+                )
+            ),
+            401: OpenApiResponse(description="Unauthenticated"),
+        },
+    )
+    def list(self, request: Request, *args, **kwargs) -> Response:  # type: ignore[override]
+        """GET /notifications/ — list all in-app notifications for the current user.
+
+        Returns the authenticated user's IN_APP notifications with status in (SENT, READ),
+        ordered by creation date (newest first). Uses the project's default
+        LimitOffsetPagination (limit/offset query params).
+        """
+        return super().list(request, *args, **kwargs)
+
     def get_queryset(self):  # type: ignore[override]
         """
         Return the requesting user's IN_APP notifications (SENT + READ).
@@ -90,6 +132,7 @@ class NotificationViewSet(GenericViewSet):
         return Notification.objects.filter(
             user=self.request.user,
             notification_type=NotificationTypes.IN_APP.value,
+            status__in=[NotificationStatus.SENT.value, NotificationStatus.READ.value],
         ).order_by("-created")
 
     @extend_schema(

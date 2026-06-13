@@ -4942,6 +4942,69 @@ paths:
               schema:
                 $ref: '#/components/schemas/AcceptInvitation'
           description: ''
+  /notifications/:
+    get:
+      operationId: notifications_list
+      description: Returns the authenticated user's IN_APP notifications with status
+        in (SENT, READ). Ordered by creation date (newest first). Paginated via limit/offset.
+      summary: List all in-app notifications for the authenticated user
+      parameters:
+      - in: query
+        name: limit
+        schema:
+          type: integer
+        description: Number of items per page. Defaults to 10.
+      - in: query
+        name: offset
+        schema:
+          type: integer
+        description: Number of items to skip. Defaults to 0.
+      tags:
+      - Notifications
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: 'Standard LimitOffsetPagination envelope: {count: int, next:
+            url|null, previous: url|null, results: [...]}'
+        '401':
+          description: Unauthenticated
+  /notifications{format}:
+    get:
+      operationId: notifications_formatted_list
+      description: Returns the authenticated user's IN_APP notifications with status
+        in (SENT, READ). Ordered by creation date (newest first). Paginated via limit/offset.
+      summary: List all in-app notifications for the authenticated user
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: query
+        name: limit
+        schema:
+          type: integer
+        description: Number of items per page. Defaults to 10.
+      - in: query
+        name: offset
+        schema:
+          type: integer
+        description: Number of items to skip. Defaults to 0.
+      tags:
+      - Notifications
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: 'Standard LimitOffsetPagination envelope: {count: int, next:
+            url|null, previous: url|null, results: [...]}'
+        '401':
+          description: Unauthenticated
   /notifications/unread/:
     get:
       operationId: notifications_unread_retrieve
