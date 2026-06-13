@@ -238,6 +238,36 @@ class CurrentMembershipSerializer(serializers.ModelSerializer):
         return OrganizationSerializer(obj.organization, context=self.context).data  # type: ignore[call-arg]
 
 
+class OrganizationBriefSerializer(serializers.ModelSerializer):
+    """Lightweight read-only serializer for an Organization.
+
+    Exposes only the fields needed for the org-switcher list: ``id`` and ``name``.
+    Intentionally avoids the heavier ``OrganizationSerializer`` (which loads the
+    Google service account) to keep ``GET /organizations/mine/`` fast.
+    """
+
+    class Meta:
+        model = Organization
+        fields = ("id", "name")
+        read_only_fields = ("id", "name")
+
+
+class MyMembershipSerializer(serializers.ModelSerializer):
+    """Read-only serializer for the caller's active organization memberships.
+
+    Used by ``GET /organizations/mine/`` to power the frontend org switcher.
+    Returns a list of ``{organization: {id, name}, role}`` entries — one per
+    active membership — without requiring the ``X-Organization-Id`` header.
+    """
+
+    organization = OrganizationBriefSerializer(read_only=True)
+
+    class Meta:
+        model = OrganizationMembership
+        fields = ("organization", "role")
+        read_only_fields = ("organization", "role")
+
+
 class OrganizationMembershipSerializer(serializers.ModelSerializer):
     """
     Read-only serializer for listing and retrieving organization members.

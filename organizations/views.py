@@ -47,6 +47,7 @@ from organizations.serializers import (
     AcceptInvitationSerializer,
     CurrentMembershipSerializer,
     GoogleServiceAccountWriteSerializer,
+    MyMembershipSerializer,
     OrganizationInvitationSerializer,
     OrganizationMembershipSerializer,
     OrganizationSerializer,
@@ -67,6 +68,11 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     queryset = Organization.objects.all()
     serializer_class = OrganizationSerializer
     permission_classes = (IsAuthenticated, OrganizationManagementPermission)
+    #: The ``mine`` action lists the caller's own memberships and must not require
+    #: the ``X-Organization-Id`` header — it is the endpoint the frontend uses to
+    #: *discover* which org ids are available.  All other actions on this viewset
+    #: keep the standard header enforcement (400 / 403).
+    active_org_optional_actions = ("mine",)
 
     def get_permissions(self):
         """
@@ -204,6 +210,31 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         if membership is None:
             raise NotFound(detail="No organization membership.")
         serializer = CurrentMembershipSerializer(membership, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="List the authenticated user's active organization memberships",
+        responses={
+            200: MyMembershipSerializer(many=True),
+        },
+    )
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="mine",
+        permission_classes=[IsAuthenticated],
+        pagination_class=None,  # bare list — no count/next/previous envelope
+    )
+    def mine(self, request):
+        """Return all active memberships for the authenticated caller.
+
+        Designed for the frontend org switcher: the client calls this endpoint
+        *before* it knows which ``X-Organization-Id`` to send, so no header is
+        required.  The response is always HTTP 200; gated users receive an empty
+        list (``[]``).
+        """
+        memberships = OrganizationMembership.objects.active_for_user(request.user)
+        serializer = MyMembershipSerializer(memberships, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(

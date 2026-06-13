@@ -58,14 +58,24 @@ class TenantScopedViewMixin:
     required."}``) so a multi-org caller can never resolve to an ambiguous,
     implicit organization.
 
-    **Opt-out:** a concrete view that must serve multi-org callers *without* the
-    header (e.g. the org-discovery ``GET /organizations/mine/`` endpoint and the
-    onboarding/gated flows) sets the class attribute
-    ``active_org_resolution_optional = True``.  When set, the ``2+ / absent`` case
-    does **not** raise a 400, and the ``non-member org`` case does **not** raise a
-    403 — the active org simply resolves to ``None`` (left gated) so the view can
-    list the caller's memberships.  Defaults to ``False``; no existing view sets it
-    (Phase 3 wires it onto the ``mine`` endpoint).
+    **Opt-out (class-level):** a concrete view that must serve multi-org callers
+    *without* the header (e.g. the org-discovery ``GET /organizations/mine/``
+    endpoint and the onboarding/gated flows) sets the class attribute
+    ``active_org_resolution_optional = True``.  When set, the ``2+ / absent``
+    case does **not** raise a 400, and the ``non-member org`` case does **not**
+    raise a 403 — the active org simply resolves to ``None`` (left gated) so the
+    view can list the caller's memberships.  Defaults to ``False``.
+
+    **Opt-out (per-action):** when only a *specific* action on an otherwise
+    strict viewset must bypass the header requirement, list that action name in
+    the ``active_org_optional_actions`` tuple instead.  The resolver treats a
+    request as opted-out when ``active_org_resolution_optional is True`` **or**
+    ``self.action in self.active_org_optional_actions``.  ``self.action`` is set
+    by ``ViewSetMixin.initialize_request`` before ``initial()`` runs, so the
+    check is always current.  Example: ``active_org_optional_actions = ("mine",)``
+    on ``OrganizationViewSet`` waives the header for the ``mine`` action only,
+    leaving ``current``, ``update``, and ``sync-rooms`` with the full 400/403
+    enforcement.
 
     Unauthenticated requests pass through untouched (the mixin sets ``None`` on
     all three attributes so downstream code doesn't KeyError); DRF's own
@@ -78,6 +88,35 @@ class TenantScopedViewMixin:
     #: that must function without the header (org discovery, onboarding) opt in.
     #: See the class docstring's resolution table for the affected rows.
     active_org_resolution_optional: bool = False
+
+    #: Per-action opt-out: list action names for which the header requirement is
+    #: waived.  When ``self.action`` (set by ``ViewSetMixin.initialize_request``
+    #: before ``initial()`` runs) is in this tuple, the resolver behaves exactly
+    #: as if ``active_org_resolution_optional = True`` for that single action —
+    #: the multi-org 400 and non-member 403 are suppressed, and the active org
+    #: resolves to ``None`` instead.  Use this on a viewset where *most* actions
+    #: require the header but a specific action (e.g. ``mine``) must not.
+    #:
+    #: Example::
+    #:
+    #:     class OrganizationViewSet(NoListVintaScheduleModelViewSet):
+    #:         active_org_optional_actions = ("mine",)
+    active_org_optional_actions: tuple[str, ...] = ()
+
+    def _is_active_org_resolution_optional(self) -> bool:
+        """Return ``True`` when strict org resolution should be skipped for this request.
+
+        Resolution is optional when either the class-level
+        ``active_org_resolution_optional`` flag is set, *or* the current action
+        name is listed in ``active_org_optional_actions``.  The latter allows a
+        single action on an otherwise strict viewset to opt out without affecting
+        the other actions.
+        """
+        if getattr(self, "active_org_resolution_optional", False):
+            return True
+        action_name = getattr(self, "action", None)
+        optional_actions: tuple[str, ...] = getattr(self, "active_org_optional_actions", ())
+        return action_name in optional_actions if action_name is not None else False
 
     def initial(self, request: Request, *args: Any, **kwargs: Any) -> None:
         """Run DRF initialisation, then resolve and stash the active org."""
@@ -140,7 +179,7 @@ class TenantScopedViewMixin:
                     # it, or the membership exists but is inactive).  Raise 403
                     # unless the concrete view opted out of strict resolution
                     # (active_org_resolution_optional = True).
-                    if not getattr(self, "active_org_resolution_optional", False):
+                    if not self._is_active_org_resolution_optional():
                         logger.debug(
                             "X-Organization-Id header '%s' did not match any active membership for "
                             "user %s; raising PermissionDenied (403).",
@@ -177,7 +216,7 @@ class TenantScopedViewMixin:
                     # Reject with 400 so we never silently pick one — unless the
                     # concrete view opted out (org discovery / onboarding), in which
                     # case resolution falls through to gated (None).
-                    if not getattr(self, "active_org_resolution_optional", False):
+                    if not self._is_active_org_resolution_optional():
                         raise ValidationError(
                             {"detail": "X-Organization-Id header required."},
                         )

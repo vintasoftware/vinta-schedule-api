@@ -8,7 +8,7 @@ from django.db import models
 
 from common.fields import TenantSafeForeignKey, TenantSafeOneToOneField
 from common.models import BaseModel
-from organizations.managers import BaseOrganizationModelManager
+from organizations.managers import BaseOrganizationModelManager, OrganizationMembershipManager
 
 
 if TYPE_CHECKING:
@@ -203,6 +203,8 @@ class OrganizationMembership(BaseModel):
             "read unchanged."
         ),
     )
+
+    objects: OrganizationMembershipManager = OrganizationMembershipManager()
 
     class Meta:
         constraints: ClassVar = [

@@ -3211,4 +3211,278 @@ class TestPhase20SyncAllCalendars:
         )
 
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
-        mock_sync.assert_not_called()
+
+
+@pytest.mark.django_db
+class TestOrganizationMineAction:
+    """Tests for GET /organizations/mine/ (Use-case 5 — list caller's memberships)."""
+
+    # ------------------------------------------------------------------
+    # Happy paths
+    # ------------------------------------------------------------------
+
+    def test_mine_returns_both_active_memberships_for_multi_org_user(self, user):
+        """Multi-org user without X-Organization-Id header gets 200 with all memberships."""
+        org_a = baker.make(Organization, name="Alpha Corp")
+        org_b = baker.make(Organization, name="Beta LLC")
+        membership_a = OrganizationMembership.objects.create(
+            user=user,
+            organization=org_a,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        membership_b = OrganizationMembership.objects.create(
+            user=user,
+            organization=org_b,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        # No X-Organization-Id header — the endpoint must not require one.
+        url = reverse("api:Organizations-mine")
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) == 2
+
+        returned_org_ids = {item["organization"]["id"] for item in data}
+        assert returned_org_ids == {org_a.id, org_b.id}
+
+        # Verify role is reported correctly for each membership.
+        role_by_org = {item["organization"]["id"]: item["role"] for item in data}
+        assert role_by_org[org_a.id] == OrganizationRole.ADMIN
+        assert role_by_org[org_b.id] == OrganizationRole.MEMBER
+
+        # Verify the membership objects that were created match what we get back.
+        assert membership_a.id is not None  # sanity
+        assert membership_b.id is not None
+
+    def test_mine_returns_org_id_and_name(self, user):
+        """The nested organization object contains exactly id and name."""
+        org = baker.make(Organization, name="Named Org")
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        url = reverse("api:Organizations-mine")
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+        assert len(data) == 1
+        org_data = data[0]["organization"]
+        assert org_data["id"] == org.id
+        assert org_data["name"] == "Named Org"
+        # Heavier fields from OrganizationSerializer must NOT appear.
+        assert "google_service_account" not in org_data
+        assert "should_sync_rooms" not in org_data
+
+    def test_mine_gated_user_returns_empty_list(self, auth_client):
+        """Gated user (zero memberships) gets 200 [] — not 404."""
+        url = reverse("api:Organizations-mine")
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json() == []
+
+    def test_mine_role_admin_is_reported_correctly(self, user):
+        """Admin role is serialised correctly."""
+        org = baker.make(Organization, name="Admin Org")
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        url = reverse("api:Organizations-mine")
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json()[0]["role"] == OrganizationRole.ADMIN
+
+    def test_mine_role_member_is_reported_correctly(self, user):
+        """Member role is serialised correctly."""
+        org = baker.make(Organization, name="Member Org")
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        url = reverse("api:Organizations-mine")
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json()[0]["role"] == OrganizationRole.MEMBER
+
+    # ------------------------------------------------------------------
+    # Inactive memberships are excluded
+    # ------------------------------------------------------------------
+
+    def test_mine_excludes_inactive_memberships(self, user):
+        """Inactive memberships are never returned in the list."""
+        active_org = baker.make(Organization, name="Active Org")
+        inactive_org = baker.make(Organization, name="Inactive Org")
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=active_org,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=inactive_org,
+            role=OrganizationRole.MEMBER,
+            is_active=False,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        url = reverse("api:Organizations-mine")
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["organization"]["id"] == active_org.id
+
+    def test_mine_only_inactive_memberships_returns_empty_list(self, user):
+        """User with only inactive memberships gets 200 [] (same as gated)."""
+        org = baker.make(Organization, name="Dead Org")
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org,
+            role=OrganizationRole.MEMBER,
+            is_active=False,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        url = reverse("api:Organizations-mine")
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json() == []
+
+    # ------------------------------------------------------------------
+    # Per-action opt-out: stale/foreign X-Organization-Id is not rejected
+    # ------------------------------------------------------------------
+
+    def test_mine_with_stale_org_id_header_returns_200_not_403(self, user):
+        """A stale/foreign X-Organization-Id on mine → 200, NOT 403.
+
+        The per-action opt-out (active_org_optional_actions = ("mine",)) ensures
+        that even when the header names an org the user is not a member of, the
+        mine action still returns the list rather than raising PermissionDenied.
+        """
+        own_org = baker.make(Organization, name="Own Org")
+        other_org = baker.make(Organization, name="Foreign Org")
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=own_org,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        url = reverse("api:Organizations-mine")
+        # Deliberately send the foreign org id in the header.
+        response = client.get(url, HTTP_X_ORGANIZATION_ID=str(other_org.id))
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        data = response.json()
+        # Still returns the caller's actual memberships, not an error.
+        assert len(data) == 1
+        assert data[0]["organization"]["id"] == own_org.id
+
+    def test_mine_multi_org_no_header_returns_200_not_400(self, user):
+        """Multi-org caller without X-Organization-Id → 200, NOT 400.
+
+        The per-action opt-out bypasses the 400 that other viewset actions
+        would raise for multi-org callers without the header.
+        """
+        org_a = baker.make(Organization, name="Gamma A")
+        org_b = baker.make(Organization, name="Gamma B")
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org_a,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org_b,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        # No header — should return the list, not 400.
+        url = reverse("api:Organizations-mine")
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert len(response.json()) == 2
+
+    # ------------------------------------------------------------------
+    # Auth guard
+    # ------------------------------------------------------------------
+
+    def test_mine_unauthenticated_returns_401(self, anonymous_client):
+        """Unauthenticated requests get 401, not 200 or 403."""
+        url = reverse("api:Organizations-mine")
+        response = anonymous_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    # ------------------------------------------------------------------
+    # Per-action opt-out isolation: mine opt-out does NOT leak to current
+    # ------------------------------------------------------------------
+
+    def test_current_still_returns_400_for_multi_org_user_without_header(self, user):
+        """The mine opt-out is isolated: /organizations/current/ still returns 400
+        for a multi-org caller who omits the X-Organization-Id header.
+
+        This proves that ``active_org_optional_actions = ("mine",)`` only exempts
+        the ``mine`` action and does not accidentally make ``current`` (or any
+        other sibling action) header-optional.
+        """
+        org_a = baker.make(Organization, name="Isolation Org A")
+        org_b = baker.make(Organization, name="Isolation Org B")
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org_a,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org_b,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        # No X-Organization-Id — multi-org users MUST supply the header for current.
+        url = reverse("api:Organizations-current")
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)

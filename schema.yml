@@ -5916,6 +5916,64 @@ paths:
           description: ''
         '404':
           description: No organization membership (gated user)
+  /organizations/mine/:
+    get:
+      operationId: organizations_mine_list
+      description: |-
+        Return all active memberships for the authenticated caller.
+
+        Designed for the frontend org switcher: the client calls this endpoint
+        *before* it knows which ``X-Organization-Id`` to send, so no header is
+        required.  The response is always HTTP 200; gated users receive an empty
+        list (``[]``).
+      summary: List the authenticated user's active organization memberships
+      tags:
+      - organizations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MyMembership'
+          description: ''
+  /organizations/mine{format}:
+    get:
+      operationId: organizations_mine_formatted_list
+      description: |-
+        Return all active memberships for the authenticated caller.
+
+        Designed for the frontend org switcher: the client calls this endpoint
+        *before* it knows which ``X-Organization-Id`` to send, so no header is
+        required.  The response is always HTTP 200; gated users receive an empty
+        list (``[]``).
+      summary: List the authenticated user's active organization memberships
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - organizations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MyMembership'
+          description: ''
   /payments/{id}/payment-update/{provider}/:
     post:
       operationId: payments_payment_update_create
@@ -9175,6 +9233,31 @@ components:
         * `WEEKLY` - Weekly
         * `MONTHLY` - Monthly
         * `YEARLY` - Yearly
+    MyMembership:
+      type: object
+      description: |-
+        Read-only serializer for the caller's active organization memberships.
+
+        Used by ``GET /organizations/mine/`` to power the frontend org switcher.
+        Returns a list of ``{organization: {id, name}, role}`` entries — one per
+        active membership — without requiring the ``X-Organization-Id`` header.
+      properties:
+        organization:
+          allOf:
+          - $ref: '#/components/schemas/OrganizationBrief'
+          readOnly: true
+        role:
+          allOf:
+          - $ref: '#/components/schemas/RoleEnum'
+          readOnly: true
+          description: |-
+            Role the user holds in this organization. Admins can manage organization-scoped resources (e.g. CalendarGroups) regardless of direct ownership.
+
+            * `member` - Member
+            * `admin` - Admin
+      required:
+      - organization
+      - role
     Organization:
       type: object
       description: |-
@@ -9216,6 +9299,24 @@ components:
       - google_service_account
       - id
       - modified
+      - name
+    OrganizationBrief:
+      type: object
+      description: |-
+        Lightweight read-only serializer for an Organization.
+
+        Exposes only the fields needed for the org-switcher list: ``id`` and ``name``.
+        Intentionally avoids the heavier ``OrganizationSerializer`` (which loads the
+        Google service account) to keep ``GET /organizations/mine/`` fast.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          readOnly: true
+      required:
+      - id
       - name
     OrganizationInvitation:
       type: object

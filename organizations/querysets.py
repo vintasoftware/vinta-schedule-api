@@ -1,5 +1,30 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from django.core.exceptions import ImproperlyConfigured
 from django.db.models.query import QuerySet
+
+
+if TYPE_CHECKING:
+    from users.models import User
+
+
+class OrganizationMembershipQuerySet(QuerySet):
+    """QuerySet for OrganizationMembership with domain-specific filtering methods."""
+
+    def active_for_user(self, user: User) -> OrganizationMembershipQuerySet:
+        """Return all active memberships for *user*, with organization pre-fetched.
+
+        Ordered by creation date (oldest first) so the result is deterministic
+        for the org-switcher list.  ``select_related("organization")`` avoids
+        an N+1 when iterating over the returned memberships.
+        """
+        return (
+            self.filter(user=user, is_active=True)
+            .select_related("organization")
+            .order_by("created")
+        )
 
 
 class BaseOrganizationModelQuerySet(QuerySet):
