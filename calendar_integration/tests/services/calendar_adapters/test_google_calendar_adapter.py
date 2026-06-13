@@ -786,90 +786,157 @@ class TestEventOperations:
         assert call_args[1]["showDeleted"] is True
 
 
+def _make_sa_adapter(mock_rate_limiters: tuple[Mock, Mock]) -> GoogleCalendarAdapter:
+    """Build a minimal service-account adapter without calling __init__.
+
+    Sets ``account_id`` and ``admin_client`` directly (as ``from_service_account``
+    does) so that ``get_calendar_resources`` / ``get_calendar_resource`` are available.
+    The ``client`` is also set so that freebusy calls work in integration-style tests.
+    """
+    adapter = GoogleCalendarAdapter.__new__(GoogleCalendarAdapter)
+    adapter.account_id = "service-test_sa"
+    adapter.client = Mock()
+    adapter.admin_client = Mock()
+    return adapter
+
+
 class TestResourceOperations:
     """Test calendar resource operations."""
 
-    def test_get_calendar_resources(self, adapter, mock_rate_limiters):
-        """Test retrieving calendar resources."""
-        mock_resources = {
-            "items": [
-                {
-                    "id": "calendar_1",
-                    "summary": "Calendar 1",
-                    "description": "Description 1",
-                    "email": "calendar1@example.com",
-                    "capacity": 10,
-                },
-                {
-                    "id": "calendar_2",
-                    "summary": "Calendar 2",
-                    "description": "Description 2",
-                    "email": "calendar2@example.com",
-                    "capacity": 20,
-                },
-            ]
+    def test_get_calendar_resources_uses_admin_sdk(self, mock_rate_limiters):
+        """get_calendar_resources uses Admin SDK resources().calendars().list()."""
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        mock_admin_sdk_items = [
+            {
+                "resourceId": "room_1",
+                "resourceName": "Conference Room A",
+                "resourceDescription": "Big room",
+                "resourceEmail": "room-a@resource.calendar.google.com",
+                "capacity": 10,
+            },
+            {
+                "resourceId": "room_2",
+                "resourceName": "Conference Room B",
+                "resourceDescription": "",
+                "resourceEmail": "room-b@resource.calendar.google.com",
+                "capacity": 20,
+            },
+        ]
+        sa_adapter.admin_client.resources.return_value.calendars.return_value.list.return_value.execute.return_value = {
+            "items": mock_admin_sdk_items,
         }
 
-        adapter.client.calendarList.return_value.list.return_value.execute.return_value = (
-            mock_resources
+        resources = list(sa_adapter.get_calendar_resources())
+
+        # Verify Admin SDK called with expected params
+        sa_adapter.admin_client.resources.return_value.calendars.return_value.list.assert_called_once_with(
+            customer="my_customer", maxResults=500
         )
-
-        resources = list(adapter.get_calendar_resources())
-
         assert len(resources) == 2
         assert isinstance(resources[0], CalendarResourceData)
-        assert resources[0].external_id == "calendar_1"
-        assert resources[0].name == "Calendar 1"
-        assert resources[0].email == "calendar1@example.com"
+        # Admin SDK field mapping: resourceId → external_id, resourceName → name, etc.
+        assert resources[0].external_id == "room_1"
+        assert resources[0].name == "Conference Room A"
+        assert resources[0].description == "Big room"
+        assert resources[0].email == "room-a@resource.calendar.google.com"
         assert resources[0].capacity == 10
         assert resources[0].provider == "google"
-
+        assert resources[1].external_id == "room_2"
+        assert resources[1].email == "room-b@resource.calendar.google.com"
+        # Rate limiter called once per page (one page in this test)
         mock_rate_limiters[0].try_acquire.assert_called_once()
 
-    def test_get_calendar_resource(self, adapter, mock_rate_limiters):
-        """Test retrieving a specific calendar resource."""
-        mock_resource = {
-            "id": "calendar_123",
-            "summary": "Test Calendar",
-            "description": "Test Description",
-            "email": "test@example.com",
+    def test_get_calendar_resources_paginates(self, mock_rate_limiters):
+        """get_calendar_resources exhausts all pages via nextPageToken."""
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+
+        page1_item = {
+            "resourceId": "room_1",
+            "resourceName": "Room 1",
+            "resourceEmail": "room1@resource.calendar.google.com",
+        }
+        page2_item = {
+            "resourceId": "room_2",
+            "resourceName": "Room 2",
+            "resourceEmail": "room2@resource.calendar.google.com",
+        }
+        # First execute() returns items + nextPageToken; second returns items only.
+        sa_adapter.admin_client.resources.return_value.calendars.return_value.list.return_value.execute.side_effect = [
+            {"items": [page1_item], "nextPageToken": "token_abc"},
+            {"items": [page2_item]},
+        ]
+
+        resources = list(sa_adapter.get_calendar_resources())
+
+        assert len(resources) == 2
+        assert resources[0].external_id == "room_1"
+        assert resources[1].external_id == "room_2"
+
+        # Should have been called twice: first page without token, second with it
+        list_mock = sa_adapter.admin_client.resources.return_value.calendars.return_value.list
+        assert list_mock.call_count == 2
+        first_call_kwargs = list_mock.call_args_list[0][1]
+        second_call_kwargs = list_mock.call_args_list[1][1]
+        assert "pageToken" not in first_call_kwargs
+        assert second_call_kwargs["pageToken"] == "token_abc"
+        # Rate limiter acquired once per page request
+        assert mock_rate_limiters[0].try_acquire.call_count == 2
+
+    def test_get_calendar_resources_raises_without_admin_client(self, adapter, mock_rate_limiters):
+        """get_calendar_resources raises NotImplementedError on non-SA (OAuth) adapters."""
+        # The regular `adapter` fixture is built via __init__ and has no admin_client attribute.
+        assert not hasattr(adapter, "admin_client")
+        with pytest.raises(NotImplementedError, match="service-account adapter"):
+            list(adapter.get_calendar_resources())
+
+    def test_get_calendar_resource(self, mock_rate_limiters):
+        """get_calendar_resource retrieves a single resource via Admin SDK."""
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        mock_resource_payload = {
+            "resourceId": "room_xyz",
+            "resourceName": "Board Room",
+            "resourceDescription": "Executive board room",
+            "resourceEmail": "board@resource.calendar.google.com",
             "capacity": 15,
         }
+        sa_adapter.admin_client.resources.return_value.calendars.return_value.get.return_value.execute.return_value = mock_resource_payload
 
-        adapter.client.calendarList.return_value.get.return_value.execute.return_value = (
-            mock_resource
-        )
-
-        resource = adapter.get_calendar_resource("calendar_123")
+        resource = sa_adapter.get_calendar_resource("room_xyz")
 
         assert isinstance(resource, CalendarResourceData)
-        assert resource.external_id == "calendar_123"
-        assert resource.name == "Test Calendar"
-        assert resource.email == "test@example.com"
+        assert resource.external_id == "room_xyz"
+        assert resource.name == "Board Room"
+        assert resource.description == "Executive board room"
+        assert resource.email == "board@resource.calendar.google.com"
         assert resource.capacity == 15
-
-        adapter.client.calendarList.return_value.get.assert_called_once_with(
-            calendarId="calendar_123"
+        assert resource.provider == "google"
+        sa_adapter.admin_client.resources.return_value.calendars.return_value.get.assert_called_once_with(
+            customer="my_customer", calendarResourceId="room_xyz"
         )
         mock_rate_limiters[0].try_acquire.assert_called_once()
 
+    def test_get_calendar_resource_raises_without_admin_client(self, adapter, mock_rate_limiters):
+        """get_calendar_resource raises NotImplementedError on non-SA (OAuth) adapters."""
+        assert not hasattr(adapter, "admin_client")
+        with pytest.raises(NotImplementedError, match="service-account adapter"):
+            adapter.get_calendar_resource("room_xyz")
+
     def test_get_available_calendar_resources(self, adapter, mock_rate_limiters):
-        """Test retrieving available calendar resources."""
-        # Mock calendar resources
-        mock_resources = {
-            "items": [
-                {
-                    "id": "calendar_1",
-                    "summary": "Available Calendar",
-                    "email": "available@example.com",
-                },
-                {
-                    "id": "calendar_2",
-                    "summary": "Busy Calendar",
-                    "email": "busy@example.com",
-                },
-            ]
-        }
+        """Test retrieving available calendar resources (mocks get_calendar_resources)."""
+        available_resource = CalendarResourceData(
+            external_id="calendar_1",
+            name="Available Calendar",
+            description="",
+            email="available@example.com",
+            provider="google",
+        )
+        busy_resource = CalendarResourceData(
+            external_id="calendar_2",
+            name="Busy Calendar",
+            description="",
+            email="busy@example.com",
+            provider="google",
+        )
 
         # Mock free/busy query result
         mock_freebusy_result = {
@@ -881,17 +948,26 @@ class TestResourceOperations:
             }
         }
 
-        adapter.client.calendarList.return_value.list.return_value.execute.return_value = (
-            mock_resources
-        )
-        adapter.client.freebusy.return_value.query.return_value.execute.return_value = (
-            mock_freebusy_result
-        )
+        # get_calendar_resources now requires admin_client; mock it at the method level
+        # so this test exercises only the availability-checking logic.
+        # Use side_effect to return a fresh iterator on each call (get_available_calendar_resources
+        # calls get_calendar_resources twice internally).
+        sample_resources = [available_resource, busy_resource]
+        with patch.object(
+            adapter,
+            "get_calendar_resources",
+            side_effect=lambda: iter(sample_resources),
+        ):
+            adapter.client.freebusy.return_value.query.return_value.execute.return_value = (
+                mock_freebusy_result
+            )
 
-        start_time = datetime.datetime(2025, 6, 22, 9, 0, tzinfo=datetime.UTC)
-        end_time = datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC)
+            start_time = datetime.datetime(2025, 6, 22, 9, 0, tzinfo=datetime.UTC)
+            end_time = datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC)
 
-        available_resources = list(adapter.get_available_calendar_resources(start_time, end_time))
+            available_resources = list(
+                adapter.get_available_calendar_resources(start_time, end_time)
+            )
 
         # Only the available calendar should be returned
         assert len(available_resources) == 1
@@ -900,14 +976,13 @@ class TestResourceOperations:
 
     def test_get_available_calendar_resources_no_resources(self, adapter, mock_rate_limiters):
         """Test get_available_calendar_resources when no resources exist."""
-        adapter.client.calendarList.return_value.list.return_value.execute.return_value = {
-            "items": []
-        }
-
         start_time = datetime.datetime(2025, 6, 22, 9, 0, tzinfo=datetime.UTC)
         end_time = datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC)
 
-        available_resources = list(adapter.get_available_calendar_resources(start_time, end_time))
+        with patch.object(adapter, "get_calendar_resources", return_value=iter([])):
+            available_resources = list(
+                adapter.get_available_calendar_resources(start_time, end_time)
+            )
 
         assert len(available_resources) == 0
 

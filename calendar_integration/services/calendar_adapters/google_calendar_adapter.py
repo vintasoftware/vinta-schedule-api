@@ -552,28 +552,65 @@ class GoogleCalendarAdapter(CalendarAdapter):
         self.client.events().delete(calendarId=calendar_id, eventId=event_id).execute()
 
     def get_calendar_resources(self) -> Iterable[CalendarResourceData]:
-        read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
-        calendar_resources_result = self.client.calendarList().list().execute()
-        calendar_resources = calendar_resources_result.get("items", [])
-        for resource in calendar_resources:
-            yield CalendarResourceData(
-                external_id=resource["id"],
-                name=resource["summary"],
-                description=resource.get("description", ""),
-                email=resource.get("email", ""),
-                capacity=resource.get("capacity", 0),
-                original_payload=resource,
-                provider=self.provider,
+        """List all Google Workspace resource calendars via the Admin SDK Directory API.
+
+        Requires a service-account adapter built via ``from_service_account()`` so that
+        ``self.admin_client`` is available. OAuth-user adapters do not have ``admin_client``
+        and will raise ``NotImplementedError``.
+
+        Pages through all results using ``nextPageToken`` (up to 500 resources per page).
+        """
+        if not hasattr(self, "admin_client"):
+            raise NotImplementedError(
+                "get_calendar_resources requires a service-account adapter with admin_client."
             )
+        return self._iter_calendar_resources()
+
+    def _iter_calendar_resources(self) -> Iterable[CalendarResourceData]:
+        page_token: str | None = None
+        while True:
+            read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
+            kwargs: dict[str, Any] = {"customer": "my_customer", "maxResults": 500}
+            if page_token:
+                kwargs["pageToken"] = page_token
+            result = self.admin_client.resources().calendars().list(**kwargs).execute()
+            for resource in result.get("items", []):
+                yield CalendarResourceData(
+                    external_id=resource["resourceId"],
+                    name=resource["resourceName"],
+                    description=resource.get("resourceDescription", ""),
+                    email=resource.get("resourceEmail", ""),
+                    capacity=resource.get("capacity", 0),
+                    original_payload=resource,
+                    provider=self.provider,
+                )
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
 
     def get_calendar_resource(self, resource_id: str) -> CalendarResourceData:
+        """Fetch a single Google Workspace resource calendar via the Admin SDK Directory API.
+
+        Requires a service-account adapter built via ``from_service_account()`` so that
+        ``self.admin_client`` is available. OAuth-user adapters do not have ``admin_client``
+        and will raise ``NotImplementedError``.
+        """
+        if not hasattr(self, "admin_client"):
+            raise NotImplementedError(
+                "get_calendar_resource requires a service-account adapter with admin_client."
+            )
         read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
-        resource = self.client.calendarList().get(calendarId=resource_id).execute()
+        resource = (
+            self.admin_client.resources()
+            .calendars()
+            .get(customer="my_customer", calendarResourceId=resource_id)
+            .execute()
+        )
         return CalendarResourceData(
-            external_id=resource["id"],
-            name=resource["summary"],
-            description=resource.get("description", ""),
-            email=resource.get("email", ""),
+            external_id=resource["resourceId"],
+            name=resource["resourceName"],
+            description=resource.get("resourceDescription", ""),
+            email=resource.get("resourceEmail", ""),
             capacity=resource.get("capacity", 0),
             original_payload=resource,
             provider=self.provider,
