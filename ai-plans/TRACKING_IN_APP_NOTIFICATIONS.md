@@ -1,0 +1,38 @@
+# Tracking — IN_APP_NOTIFICATIONS
+
+- **Feature**: In-App Notifications (vintasend)
+- **Plan**: ai-plans/2026-06-13-IN_APP_NOTIFICATIONS_IMPLEMENTATION_PLAN.md
+- **Started**: 2026-06-13
+- **Last updated**: 2026-06-13
+- **Feature flag**: none (purely additive surface)
+
+## Run options
+- pause_between_phases: false (auto-flow)
+- generate_inline_comments: true
+- use_worktree: true
+- commit_strategy_resolved: modular-commits
+- plan_branch: plan/in-app-notifications
+- worktree_path: /Users/hugobessa/Workspaces/vinta-schedule/.claude/worktrees/plan-in-app-notifications
+- worktree_branch: plan/in-app-notifications
+- worktree_summary: .vinta-ai-workflows/worktrees/plan-in-app-notifications.yaml
+- pr_url: https://github.com/vintasoftware/vinta-schedule-api/pull/67
+
+## Completed phases
+
+### Phase 0 — In-app adapter, renderer & DI wiring ✅
+- **Model used**: claude-sonnet-4-6 (plan tier: 3)
+- **Commits**: `0cbe17b` renderer, `e0ccf58` adapter, `0c88915` DI register, `592dfe4` example context, `b77a0fb` review fixes (trim override + docstring + TypeVar + assertion), `600269b` DI unread guard test
+- **Review**: Layer-3 adversarial, 0 blockers; 3 should-fixes + 2 nits applied in-phase.
+- **Summary**: Added `DjangoInAppNotificationAdapter` + `DjangoTemplatedInAppRenderer` (repo-local; vintasend_django ships neither). Registered IN_APP adapter in `di_core/containers.py`. Added `FixedDjangoDbNotificationBackend` — a one-method subclass fixing a real vendored bug where the unread queryset filtered by the raw `NotificationTypes.IN_APP` enum (serialized to `"NotificationTypes.IN_APP"` ≠ stored `"IN_APP"`); service-level `notification_backend` swapped to it. Example `in_app_generic_context` registered via `apps.ready()` + `templates/notifications/in_app/example.body.txt`. No migration, no flag.
+- **Key fact for later phases**: `send()` does NOT persist a rendered body — vintasend stores the raw `context_used` dict; read paths must re-render `body_template` against `context_used`.
+- **Gates**: notifications scoped 9 passed; full suite 1559 passed + 1 pre-existing unrelated SMS failure.
+
+## Current phase
+- Phase 1 — List unread endpoint (Tier 2) — NEXT
+
+## Remaining phases
+- Phase 2 — List all endpoint (Tier 2)
+- Phase 3 — Mark-as-read endpoint (Tier 2)
+
+## Deferred phases
+_(none — no cross-repo, no flag-removal)_
