@@ -1,6 +1,6 @@
 ---
 name: amend-plan
-description: Adjust an existing implementation plan in `ai-plans/` after implementation has started or finished. Updates the plan file (revising existing phases or appending new ones), then for each affected phase that was already implemented adjusts its commits (`git commit --amend` or new commits) on the phase branch, force-pushes the rewritten branch, rebases every downstream stacked phase branch, force-pushes each, and refreshes the PR-context files. Use when the user says "amend the plan", "update phase N", "add a phase to plan X", "the spec changed, fix the plan", or "rewrite the implementation for phase N". NOT for one-off changes to a single file unrelated to a plan; use the regular implement skill for that. Agents push branches and open PRs via `gh` after review passes.
+description: Adjust an existing implementation plan in `ai-plans/` after implementation has started or finished. Updates the plan file (revising existing phases or appending new ones), then for each affected phase that was already implemented adjusts its commits (`git commit --amend` or new commits) on the phase branch, force-pushes the rewritten branch, rebases every downstream stacked phase branch, force-pushes each, and refreshes the PR-context files. Use when the user says "amend the plan", "update phase N", "add a phase to plan X", "the spec changed, fix the plan", or "rewrite the implementation for phase N". NOT for one-off changes to a single file unrelated to a plan; use the regular implement skill for that. Agents push branches and open PRs via `open-pr-from-context` after review passes.
 ---
 
 # Amend Plan
@@ -9,9 +9,25 @@ Revise a plan in [`ai-plans/`](ai-plans/) after work has begun. Companion to [im
 
 The flow is destructive (force-push). Every modification is gated on user confirmation. Default disposition for any ambiguous case is "stop and ask" — never force-push without an explicit per-branch `Confirm` from the user.
 
+## Unsupported commit strategy
+
+**This skill does not yet support `commit_strategy = modular-commits`.** Detected from `.vinta-ai-workflows.yaml` `policies.commit_strategy` (or `TRACKING_{plan-id}.md` `run_options.commit_strategy_resolved` when the project policy is `ask` and a run is already in flight).
+
+This project's `policies.commit_strategy` is `ask` — at amend time, read `TRACKING_{plan-id}.md` `run_options.commit_strategy_resolved` first. When it resolves to `stacked-branches`, the full amend flow below runs unchanged. When it resolves to `modular-commits`, refuse with the guidance in this section.
+
+Amending under modular commits requires rewriting an arbitrary number of inline atomic commits across a shared `plan/{plan-id-kebab}` branch. The git topology is fundamentally different from the per-phase stacked branches this skill is designed around — the rewrite plan, force-push targets, and downstream rebase fan-out all differ. Full support is tracked as a follow-up.
+
+**Resolve the amendment one of three ways:**
+
+1. **Append a new phase** — extend the plan with the change as a new `Phase N+1`, then run [implement-plan](../implement-plan/SKILL.md). Cleanest path; preserves the existing commit log.
+2. **Hand-craft the amendment** — `git rebase -i plan/{plan-id-kebab}` (or `git commit --fixup` + `git rebase --autosquash`) on the plan branch, force-push, and re-run review manually. Skip this skill entirely.
+3. **Re-run the plan from scratch on a new branch** — abandon the in-flight commits (leave them for audit), regenerate the plan with [plan-feature](../plan-feature/SKILL.md), implement forward.
+
+Refuse with this guidance; do not proceed.
+
 ## Working assumptions
 
-- Repo: vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant via OrganizationModel, Postgres, dependency-injector). Conventions: [AGENTS.md](AGENTS.md).
+- Repo: vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (OrganizationModel), Postgres, deployed to Render). Conventions: [AGENTS.md](AGENTS.md).
 - Plan files: [`ai-plans/YYYY-MM-DD-FEATURE_NAME_PLAN.md`](ai-plans/).
 - Lint: `uv run ruff check ./`. Format: `uv run ruff format ./`.
 - Type / build gate: `uv run python manage.py check --deploy` plus full mypy via `uv run mypy .`.
@@ -187,7 +203,7 @@ Spawn an implementer subagent. Prompt shape (token-efficient, mirrors the [imple
 You are amending {phase.id}: {phase.title} of plan {plan.id}.
 
 ## Repo
-vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant via OrganizationModel, Postgres, dependency-injector).
+vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (OrganizationModel), Postgres, deployed to Render).
 
 ## Read first
 1. AGENTS.md — repo conventions.
@@ -210,6 +226,34 @@ Use `git commit --amend` ONLY when:
 - The branch has exactly one commit, AND
 - The amendment is small (≤30% of the original diff size), AND
 - The user explicitly authorized amend in Step 0.
+
+## Adding new third-party dependencies
+
+Before running any install command (`npm add`, `pnpm add`, `yarn add`, `pip install`, `poetry add`, `uv add`, `cargo add`, `go get`, `gem install`, equivalents), check the package's SPDX license against the project's forbidden list — see the **Dependency licenses** section in [AGENTS.md](AGENTS.md) for the full list, the per-package overrides, and any project-specific notes.
+
+Quick lookup:
+
+- **npm / pnpm / yarn**: `npm view <pkg> license`.
+- **PyPI**: `pip index versions <pkg>` then read the project metadata, or open `https://pypi.org/project/<pkg>/`.
+- **Cargo**: `cargo metadata --format-version 1 | jq '.packages[] | select(.name=="<pkg>") | .license'` (after a temporary `cargo add` in a scratch dir, or read `Cargo.toml` upstream).
+- **Go**: open the module's repo `LICENSE` file directly.
+- **Gem**: `gem specification <pkg> licenses`.
+
+If the license is in the forbidden list AND the `(package, license)` pair is **not** listed under **Approved overrides** in AGENTS.md:
+
+1. Stop. Do not run the install command.
+2. Surface the violation to the user with: package name, SPDX identifier, why it's forbidden, link to the upstream license.
+3. Offer alternatives (search the ecosystem for an MIT / Apache-2.0 / BSD-licensed equivalent) before asking for an override.
+4. If the user grants a one-off override, the orchestrator must record it in `policies.dependency_licenses.allowed_overrides[]` of `.vinta-ai-workflows.yaml` (package + SPDX + one-line reason) before re-running the install. Undocumented overrides leak into the diff and the reviewer agent will flag them.
+
+**License unknown / undeclared.** When the lookup above returns no license, an empty value, `UNKNOWN`, `SEE LICENSE IN <file>`, or only an unstructured `LICENSE` file in the repo with no SPDX identifier, treat it as a **policy decision the user owns** — don't guess, don't auto-infer, don't fall back to "assume MIT". The package may be unlicensed (all-rights-reserved by default in most jurisdictions), proprietary, or simply missing metadata.
+
+1. Stop. Do not run the install command.
+2. Surface to the user: package name, what was found (e.g. "the `license` field is absent in `package.json`", "PyPI metadata returned `UNKNOWN`", "no LICENSE file in the repo"), the upstream repo / registry URL so the user can verify.
+3. Ask via `AskUserQuestion`: `Skip — find a licensed alternative`, `Treat as forbidden — refuse install`, `Treat as allowed — record an override` (the third option only when the user has independently confirmed the license off-channel; record the resolved SPDX in `allowed_overrides[]` with the source in the `reason` field, e.g. `"unlicensed but author confirmed MIT via GitHub issue #42"`).
+4. Don't add the dep until the user picks one of the three.
+
+Transitive deps follow the same rule, but checking every transitive license at install time is impractical — the project's CI (or a separate license-audit run) handles the deep walk. The subagent's responsibility is the **direct** add.
 
 ## Working instructions (same loops as implement-plan)
 1. Read existing code paths your changes touch.
@@ -325,6 +369,7 @@ After every queue entry processes:
 - **PR-context file is a derived artifact.** Refresh it after the rewrite; never edit the file as a substitute for fixing the diff.
 - **Subagents commit but never push.** Orchestrator owns force-push. or open PRs themselves.
 - **No AI co-author trailers in commits.** The project forbids them; treat any AI trailer as a BLOCKER.
+- **License check before any new dep.** Refuse `npm add` / `pnpm add` / `pip install` / `poetry add` / `uv add` / `cargo add` / `go get` when the package's SPDX license is in the forbidden list — see AGENTS.md **Dependency licenses**. User can grant a one-off override after acknowledging the violation; record the override in `policies.dependency_licenses.allowed_overrides` before re-running.
 - **Stop on Tier-4 failure** (model escalation, same rules as the [implement-plan "Pick model" step](../implement-plan/SKILL.md#1b-pick-model-from-plans-per-phase-suggestion)).
 - **Stop on rebase failure** the fixer can't resolve in one retry. Don't ship half-rebased branches.
 

@@ -22,7 +22,7 @@
     "setup:ai-tools": "node ai-tools/scripts/setup-ai-tools.mjs --only claude,cursor,copilot"
   },
   "dependencies": {
-    "vinta-ai-workflows": "^0.1.7"
+    "vinta-ai-workflows": "^0.2.0-alpha1"
   },
   "devDependencies": {
     "yaml": "^2.9.0"

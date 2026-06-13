@@ -270,6 +270,31 @@ Occurrences are calculated **in Postgres**, not in Python, from the master event
 - **Staging:** explicit paths only (`git add path/to/file.py path/to/other.py`). **Never `git add -A` / `git add .`** — the repo root holds untracked `.env`, `.env.docker`, generated `schema.yml` / `schema-auth.yml`, `.coverage`, `mailpit-data/`, and other locals that `-A` will sweep in.
 - **PRs:** agents may push the branch and open the PR (`gh pr create`). Title should match the Conventional Commits style. Body should describe the change and link the related plan / spec under `ai-plans/` when one exists.
 
+## Dependency licenses
+
+**Enforcement:** `block` — refuse install + ask user before override.
+
+**Forbidden SPDX licenses** (any new third-party dep matching these must be checked before install):
+
+- `GPL-2.0-only`
+- `GPL-3.0-only`
+- `AGPL-3.0-only`
+- `SSPL-1.0`
+
+**Pre-install check.** Before running `npm add` / `pnpm add` / `pip install` / `poetry add` / `uv add` / `cargo add` / `go get` (or equivalent) for any new dep, look up the package's declared license and compare to the list above. If the license is in the list and the `(package, license)` pair is not in **Approved overrides**, stop and surface the conflict to the user.
+
+- **npm / pnpm / yarn**: `npm view <pkg> license`.
+- **PyPI**: `pip index versions <pkg>` then read the project metadata, or open `https://pypi.org/project/<pkg>/`.
+- **Cargo**: `cargo metadata --format-version 1 | jq '.packages[] | select(.name=="<pkg>") | .license'` (after a temporary `cargo add` in a scratch dir, or read `Cargo.toml` upstream).
+- **Go**: open the module's repo `LICENSE` file directly.
+- **Gem**: `gem specification <pkg> licenses`.
+
+**Unknown / undeclared license.** When the lookup returns no license, an empty value, `UNKNOWN`, `SEE LICENSE IN <file>`, or only an unstructured `LICENSE` file with no SPDX identifier, **stop and ask the user** regardless of the enforcement mode above. Don't guess, don't fall back to "assume MIT" — the package may be all-rights-reserved by default. The user picks one of: skip the dep, treat as forbidden, or record an `allowed_overrides` entry with the SPDX they independently confirmed off-channel.
+
+**Approved overrides:** none.
+
+**Notes:** none.
+
 ## Key Documentation
 
 - `README.md` — setup, Docker, Floci, Render, opinionated settings.

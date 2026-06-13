@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=./node_modules/vinta-ai-workflows/schemas/vinta-ai-workflows-config.v1.schema.json
 
 schema_version: 1
-vinta_ai_workflows_version: "0.1.7"
-last_synced_at: "2026-06-03T00:00:00Z"
+vinta_ai_workflows_version: "0.2.0-alpha1"
+last_synced_at: "2026-06-13T00:00:00Z"
 
 project:
   name: vinta_schedule_api
@@ -24,8 +24,18 @@ policies:
   pr_creation: agents-create
   ai_coauthor: forbidden
   commit_style: conventional
+  commit_strategy: ask
   stage_pattern: "git add <explicit paths>"
   anti_git_add_all_reason: "repo root holds untracked .env / .env.docker, generated schema.yml / schema-auth.yml, .coverage, mailpit-data — `git add -A` will sweep them in"
+  dependency_licenses:
+    enforcement: block
+    forbidden_spdx:
+      - GPL-2.0-only
+      - GPL-3.0-only
+      - AGPL-3.0-only
+      - SSPL-1.0
+    allowed_overrides: []
+    notes: ""
 
 vendors:
   - claude
@@ -43,6 +53,7 @@ foundation_skills:
   add-env-var: enabled
   systematic-debugging: enabled
   add-one-off-script: enabled
+  prepare-worktree: enabled
 
 foundation_agents:
   implementer: enabled
@@ -59,6 +70,7 @@ run_options:
   implement-plan:
     pause_between_phases: false
     generate_inline_comments: false
+    use_worktree: true
   amend-plan:
     blast_radius_signal_threshold: 2
 
@@ -73,3 +85,9 @@ skills:
     s3_prefix: one-off-runs/
   systematic-debugging:
     observability_mcp_servers: []
+  prepare-worktree:
+    worktree_root: .claude/worktrees
+    deps_strategy: symlink
+    compose_network: per-worktree
+    test_db_strategy: fork-on-schema-change
+    summary_dir: .vinta-ai-workflows/worktrees
