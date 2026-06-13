@@ -18,7 +18,6 @@ from vintasend.constants import NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 
-from common.twilio import get_twilio_client
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import get_active_organization_membership
 from organizations.services import OrganizationService
@@ -468,12 +467,13 @@ class AccountAdapter(DefaultAccountAdapter):
             logger.warning("No phone number provided for sending unknown account SMS.")
             return
 
-        client = get_twilio_client()
-
-        client.messages.create(
-            body="Your phone number is not associated with any account.",
-            from_=settings.TWILIO_NUMBER,
-            to=phone,
+        self.notification_service.create_one_off_notification(
+            email_or_phone=phone,
+            notification_type=NotificationTypes.SMS.value,
+            title="Phone Verification Unknown Account Message",
+            body_template="accounts/notifications/sms/unknown_account.body.txt",
+            context_name="phone_verification_error_context",
+            context_kwargs=NotificationContextDict({"phone_number": phone}),
         )
 
     def send_account_already_exists_sms(self, phone: str | None, **kwargs) -> None:
@@ -486,12 +486,13 @@ class AccountAdapter(DefaultAccountAdapter):
             logger.warning("No phone number provided for sending account-already-exists SMS.")
             return
 
-        client = get_twilio_client()
-
-        client.messages.create(
-            body="An account already exists for this phone number.",
-            from_=settings.TWILIO_NUMBER,
-            to=phone,
+        self.notification_service.create_one_off_notification(
+            email_or_phone=phone,
+            notification_type=NotificationTypes.SMS.value,
+            title="Phone Verification Account already exists Message",
+            body_template="accounts/notifications/sms/account_already_exists.body.txt",
+            context_name="phone_verification_error_context",
+            context_kwargs=NotificationContextDict({"phone_number": phone}),
         )
 
 

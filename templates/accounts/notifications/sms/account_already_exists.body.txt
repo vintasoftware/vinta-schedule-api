@@ -1,0 +1,1 @@
+An account already exists for this phone number {{phone_number}}. Please try to reset your password.
