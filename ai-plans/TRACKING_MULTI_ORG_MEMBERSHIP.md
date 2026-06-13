@@ -47,11 +47,23 @@
 ## Stack note
 2026-06-13: rebased base/phase-1/phase-2a onto origin/main (twilio fix `3286b69`); force-pushed; PR bases intact. No sanctioned failures remain — full suite must be 100% green.
 
+### Phase 2c — Non-member org → 403 ✅
+- **Model used:** claude-sonnet-4-6 · agent: implementer (first attempt died on a socket error after partial code edit; a fresh implementer verified the edit + added tests/gate/commit)
+- **Branch:** plan/multi-org-membership/phase-2c · **base:** plan/multi-org-membership/phase-2b
+- **PR:** https://github.com/vintasoftware/vinta-schedule-api/pull/71 (published, 2 inline comments)
+- **Summary:** valid-int header for a non-member (or inactive-membership) org → 403 PermissionDenied; opt-out skips both 400 and 403. Resolution table closed.
+- **Review:** Layer-3 clean (no blockers). 401-before-403 confirmed; opt-out can't leak wrong org.
+- **Gate:** full suite green — `pytest -n auto` 1583 passed, 0 failures.
+
+## Carry-forward notes
+- **For Phase 5 (create-additional-org):** the post-`perform_create` re-resolve in `CreateModelMixin.create` can call `_resolve_active_organization`, which can now raise 400/403 AFTER the write commits. Unreachable today (initial() rejects first), but once multi-org create is reachable, add a test that a create cannot 400/403 post-write (or guard the re-resolve to not raise after commit).
+- **Plan doc nit:** plan text says header is a `uuid`; org PK is integer BigAutoField. Cosmetic; fix opportunistically.
+
 ## Current phase
-Phase 2c — Non-member org → 403 (Tier 2 · sonnet · implementer).
+Phase 3 — List my orgs endpoint (Tier 2 · haiku · implementer).
 
 ## Remaining phases
-- Phase 2c — Non-member org → 403
+- Phase 3 — List my orgs endpoint (GET /organizations/mine/)
 - Phase 3 — List my orgs endpoint
 - Phase 4 — Multi-org invitation accept
 - Phase 5 — Create additional org
