@@ -325,7 +325,7 @@ class CalendarService(BaseCalendarService):
                 GoogleCalendarAdapter,
             )
 
-            return GoogleCalendarAdapter.from_service_account_credentials(
+            return GoogleCalendarAdapter.from_service_account(
                 {
                     "account_id": str(account.id),
                     "email": account.email,

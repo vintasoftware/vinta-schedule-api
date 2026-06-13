@@ -178,7 +178,7 @@ def mock_google_adapter():
         del mock_adapter.resolve_expression
         del mock_adapter.get_source_expressions
         mock_adapter_class.return_value = mock_adapter
-        mock_adapter_class.from_service_account_credentials.return_value = mock_adapter
+        mock_adapter_class.from_service_account.return_value = mock_adapter
         yield mock_adapter
 
 
@@ -578,10 +578,18 @@ def test_get_calendar_adapter_for_google_service_account(
     google_service_account, mock_google_adapter
 ):
     """Test getting Google adapter for service account."""
+    from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
+        GoogleCalendarAdapter,
+    )
+
     adapter, account = CalendarService.get_calendar_adapter_for_account(google_service_account)
 
     assert adapter == mock_google_adapter
     assert account is google_service_account
+    GoogleCalendarAdapter.from_service_account.assert_called_once()
+    passed = GoogleCalendarAdapter.from_service_account.call_args.args[0]
+    assert passed["admin_email"] == google_service_account.admin_email
+    assert passed["email"] == google_service_account.email
 
 
 @pytest.mark.django_db

@@ -8,6 +8,7 @@ from allauth.socialaccount.models import SocialAccount, SocialToken
 
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
+    _SA_SCOPES,
     GoogleCalendarAdapter,
     GoogleCredentialTypedDict,
     GoogleServiceAccountCredentialsTypedDict,
@@ -237,71 +238,71 @@ class TestGoogleCalendarAdapterInitialization:
 
 
 class TestServiceAccountCredentials:
-    """Test service account credential handling."""
+    """Test service account credential handling via domain-wide delegation."""
 
     @patch(
-        "calendar_integration.services.calendar_adapters.google_calendar_adapter.google.auth.jwt.encode"
+        "calendar_integration.services.calendar_adapters.google_calendar_adapter.google_service_account.Credentials.from_service_account_info"
     )
-    @patch(
-        "calendar_integration.services.calendar_adapters.google_calendar_adapter.google.auth.crypt.RSASigner.from_service_account_info"
-    )
-    def test_generate_jwt(self, mock_signer, mock_jwt_encode, service_account_credentials):
-        """Test JWT generation for service accounts."""
-        mock_jwt_encode.return_value = "mock_jwt_token"
+    def test_from_service_account_builds_both_clients(
+        self, mock_from_info, service_account_credentials
+    ):
+        """from_service_account sets client, admin_client, and account_id with service- prefix."""
+        mock_sa_creds = Mock()
+        mock_delegated_creds = Mock()
+        mock_from_info.return_value = mock_sa_creds
+        mock_sa_creds.with_subject.return_value = mock_delegated_creds
 
-        jwt_token = GoogleCalendarAdapter._generate_jwt(
-            service_account_private_key_id=service_account_credentials["private_key_id"],
-            service_account_private_key=service_account_credentials["private_key"],
-            service_account_email=service_account_credentials["email"],
-            audience=service_account_credentials["admin_email"],
+        with patch(
+            "calendar_integration.services.calendar_adapters.google_calendar_adapter.build"
+        ) as mock_build:
+            mock_calendar_client = Mock()
+            mock_admin_client = Mock()
+
+            def build_side_effect(service, version, **kwargs):
+                if service == "calendar":
+                    return mock_calendar_client
+                if service == "admin":
+                    return mock_admin_client
+                raise ValueError(f"Unexpected build call: {service}/{version}")
+
+            mock_build.side_effect = build_side_effect
+
+            adapter = GoogleCalendarAdapter.from_service_account(service_account_credentials)
+
+        assert adapter.account_id == "service-service_123"
+        assert adapter.client is mock_calendar_client
+        assert adapter.admin_client is mock_admin_client
+        mock_build.assert_any_call("calendar", "v3", credentials=mock_delegated_creds)
+        mock_build.assert_any_call("admin", "directory_v1", credentials=mock_delegated_creds)
+        assert mock_build.call_count == 2
+        mock_from_info.assert_called_once_with(
+            {
+                "type": "service_account",
+                "private_key_id": service_account_credentials["private_key_id"],
+                "private_key": service_account_credentials["private_key"],
+                "client_email": service_account_credentials["email"],
+                "token_uri": "https://oauth2.googleapis.com/token",
+            },
+            scopes=_SA_SCOPES,
         )
 
-        assert jwt_token == "mock_jwt_token"
-        mock_signer.assert_called_once()
-        mock_jwt_encode.assert_called_once()
-
     @patch(
-        "calendar_integration.services.calendar_adapters.google_calendar_adapter.GoogleCalendarAdapter._generate_jwt"
+        "calendar_integration.services.calendar_adapters.google_calendar_adapter.google_service_account.Credentials.from_service_account_info"
     )
-    def test_from_service_account_credentials(
-        self,
-        mock_generate_jwt,
-        service_account_credentials,
-        mock_settings,
-        mock_build,
-        mock_rate_limiters,
+    def test_from_service_account_calls_with_subject(
+        self, mock_from_info, service_account_credentials
     ):
-        """Test creating adapter from service account credentials."""
-        mock_generate_jwt.return_value = "mock_jwt_token"
+        """from_service_account passes admin_email as the DWD impersonation subject."""
+        mock_sa_creds = Mock()
+        mock_from_info.return_value = mock_sa_creds
+        mock_sa_creds.with_subject.return_value = Mock()
 
-        with patch(
-            "calendar_integration.services.calendar_adapters.google_calendar_adapter.Credentials"
-        ) as mock_creds:
-            # Mock credentials for service account - these should be valid
-            creds_instance = Mock()
-            creds_instance.valid = True  # Service account creds should be valid
-            creds_instance.expired = False
-            creds_instance.token = "mock_jwt_token"
-            creds_instance.refresh_token = None  # Service accounts don't have refresh tokens
-            mock_creds.return_value = creds_instance
+        with patch("calendar_integration.services.calendar_adapters.google_calendar_adapter.build"):
+            GoogleCalendarAdapter.from_service_account(service_account_credentials)
 
-            adapter = GoogleCalendarAdapter.from_service_account_credentials(
-                service_account_credentials
-            )
-
-            assert adapter.account_id == "service-service_123"
-            mock_generate_jwt.assert_called_once()
-
-    def test_from_service_account_missing_settings(self, service_account_credentials):
-        """Test service account creation fails without proper settings."""
-        with patch(
-            "calendar_integration.services.calendar_adapters.google_calendar_adapter.settings"
-        ) as mock_settings:
-            mock_settings.GOOGLE_CLIENT_ID = None
-            mock_settings.GOOGLE_CLIENT_SECRET = "mock_secret"
-
-            with pytest.raises(ImproperlyConfigured):
-                GoogleCalendarAdapter.from_service_account_credentials(service_account_credentials)
+        mock_sa_creds.with_subject.assert_called_once_with(
+            service_account_credentials["admin_email"]
+        )
 
 
 class TestCalendarOperations:
@@ -1106,32 +1107,14 @@ class TestErrorHandling:
             with pytest.raises(Exception, match="Refresh failed"):
                 GoogleCalendarAdapter(google_credentials)
 
-    def test_service_account_invalid_credentials(
-        self, service_account_credentials, mock_settings, mock_build, mock_rate_limiters
-    ):
-        """Test service account with invalid credentials."""
-        with (
-            patch(
-                "calendar_integration.services.calendar_adapters.google_calendar_adapter.GoogleCalendarAdapter._generate_jwt"
-            ) as mock_jwt,
-            patch(
-                "calendar_integration.services.calendar_adapters.google_calendar_adapter.Credentials"
-            ) as mock_creds,
-            patch(
-                "calendar_integration.services.calendar_adapters.google_calendar_adapter.Request"
-            ),
-        ):
-            mock_jwt.return_value = "invalid_jwt"
-            creds_instance = Mock()
-            creds_instance.valid = False
-            creds_instance.expired = False
-            creds_instance.refresh_token = None
-            mock_creds.return_value = creds_instance
-
-            with pytest.raises(
-                ValueError, match="Invalid or expired Google service account credentials"
-            ):
-                GoogleCalendarAdapter.from_service_account_credentials(service_account_credentials)
+    def test_service_account_from_service_account_info_error(self, service_account_credentials):
+        """from_service_account propagates errors from from_service_account_info."""
+        with patch(
+            "calendar_integration.services.calendar_adapters.google_calendar_adapter.google_service_account.Credentials.from_service_account_info"
+        ) as mock_from_info:
+            mock_from_info.side_effect = ValueError("Invalid key")
+            with pytest.raises(ValueError, match="Invalid key"):
+                GoogleCalendarAdapter.from_service_account(service_account_credentials)
 
 
 class TestGoogleEventDatetimeParsing:

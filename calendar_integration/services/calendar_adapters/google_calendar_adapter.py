@@ -1,7 +1,6 @@
 import datetime
 import logging
 import re
-import time
 import uuid
 from collections.abc import Iterable
 from typing import Any, Literal, NotRequired, TypedDict
@@ -10,9 +9,8 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpHeaders, HttpRequest
 
-import google.auth.crypt
-import google.auth.jwt
 from google.auth.transport.requests import Request
+from google.oauth2 import service_account as google_service_account
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from pyrate_limiter import Duration, Rate
@@ -52,6 +50,11 @@ write_quote_limiter = build_resilient_limiter(
     max_delay=2000,  # Allow a maximum delay of 2 seconds for write operations
 )
 
+_SA_SCOPES = [
+    "https://www.googleapis.com/auth/admin.directory.resource.calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
+]
+
 
 class GoogleCredentialTypedDict(TypedDict):
     token: str
@@ -74,6 +77,10 @@ class GoogleServiceAccountCredentialsTypedDict(TypedDict):
 
 class GoogleCalendarAdapter(CalendarAdapter):
     provider = "google"
+    account_id: str
+    # admin_client is set only on service-account adapters built via from_service_account().
+    # Regular OAuth adapters created by __init__ do not have this attribute.
+    admin_client: Any
     RSVP_STATUS_MAPPING: dict[str | None, Literal["pending", "accepted", "declined"]] = {  # noqa: RUF012
         "needsAction": "pending",
         "declined": "declined",
@@ -174,83 +181,31 @@ class GoogleCalendarAdapter(CalendarAdapter):
             expires_at=new_expiry,
         )
 
-    @staticmethod
-    def _generate_jwt(
-        service_account_private_key_id: str,
-        service_account_private_key: str,
-        service_account_email: str,
-        audience: str,
-        expiry_length=3600,  # Default expiry length of 1 hour (3600 seconds
-    ):
-        """Generates a signed JSON Web Token using a Google API Service Account."""
-
-        now = int(time.time())
-
-        # build payload
-        payload = {
-            "iat": now,
-            # expires after 'expiry_length' seconds.
-            "exp": now + expiry_length,
-            # iss must match 'issuer' in the security configuration in your
-            # swagger spec (e.g. service account email). It can be any string.
-            "iss": service_account_email,
-            # aud must be either your Endpoints service name, or match the value
-            # specified as the 'x-google-audience' in the OpenAPI document.
-            "aud": audience,
-            # sub and email should match the service account's email address
-            "sub": service_account_email,
-            "email": service_account_email,
-        }
-
-        # sign with keyfile
-        signer = google.auth.crypt.RSASigner.from_service_account_info(
-            {
-                "private_key_id": service_account_private_key_id,
-                "private_key": service_account_private_key,
-            }
-        )
-        jwt = google.auth.jwt.encode(signer, payload)
-
-        return jwt
-
     @classmethod
-    def from_service_account_credentials(
-        cls, service_account_credentials: GoogleServiceAccountCredentialsTypedDict
+    def from_service_account(
+        cls, credentials: GoogleServiceAccountCredentialsTypedDict
     ) -> "GoogleCalendarAdapter":
+        """Create an adapter authenticated via domain-wide delegation (DWD).
+
+        Uses ``google.oauth2.service_account.Credentials`` so the Google client
+        library handles token minting and refresh automatically. The SA must have
+        DWD granted in the Google Admin Console for both scopes in ``_SA_SCOPES``.
         """
-        Creates an instance of GoogleCalendarAdapter using service account credentials.
-        """
-        GOOGLE_CLIENT_ID = getattr(settings, "GOOGLE_CLIENT_ID", None)  # noqa: N806
-        GOOGLE_CLIENT_SECRET = getattr(settings, "GOOGLE_CLIENT_SECRET", None)  # noqa: N806
-        if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
-            raise ImproperlyConfigured(
-                "Google Calendar integration requires GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET settings."
-            )
-        jwt_token = cls._generate_jwt(
-            service_account_private_key_id=service_account_credentials["private_key_id"],
-            service_account_private_key=service_account_credentials["private_key"],
-            service_account_email=service_account_credentials["email"],
-            audience=service_account_credentials["admin_email"],
-        )
-        credentials = Credentials(
-            token=jwt_token,
-            client_id=GOOGLE_CLIENT_ID,
-            client_secret=GOOGLE_CLIENT_SECRET,
-        )
-        if not credentials or not credentials.valid:
-            raise ValueError("Invalid or expired Google service account credentials provided.")
-        # Refresh the credentials if they are not valid
-        if credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
-        elif not credentials.valid:
-            raise ValueError("Google service account credentials are not valid.")
-        return cls(
-            credentials_dict={
-                "token": credentials.token,
-                "refresh_token": credentials.refresh_token,
-                "account_id": f"service-{service_account_credentials['account_id']}",
-            }
-        )
+        sa_creds = google_service_account.Credentials.from_service_account_info(
+            {
+                "type": "service_account",
+                "private_key_id": credentials["private_key_id"],
+                "private_key": credentials["private_key"],
+                "client_email": credentials["email"],
+                "token_uri": "https://oauth2.googleapis.com/token",
+            },
+            scopes=_SA_SCOPES,
+        ).with_subject(credentials["admin_email"])
+        adapter = cls.__new__(cls)
+        adapter.account_id = f"service-{credentials['account_id']}"
+        adapter.client = build("calendar", "v3", credentials=sa_creds)
+        adapter.admin_client = build("admin", "directory_v1", credentials=sa_creds)
+        return adapter
 
     @staticmethod
     def parse_webhook_headers(headers: HttpHeaders) -> dict[str, str]:
