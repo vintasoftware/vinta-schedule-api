@@ -2,9 +2,7 @@ import copy
 import datetime
 import json
 import logging
-import zoneinfo
 from collections.abc import Callable, Iterable
-from functools import lru_cache
 from typing import Annotated, Any, Literal, TypedDict, cast
 
 from django.conf import settings
@@ -61,6 +59,34 @@ from calendar_integration.models import (
 from calendar_integration.querysets import CalendarEventQuerySet
 from calendar_integration.recurrence_utils import OccurrenceValidator, RecurrenceRuleSplitter
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
+from calendar_integration.services.calendar_service_context import CalendarServiceContext
+from calendar_integration.services.calendar_service_utils import (
+    convert_naive_utc_datetime_to_timezone as _convert_naive_utc_datetime_to_timezone,
+)
+from calendar_integration.services.calendar_service_utils import (
+    get_calendar_by_external_id as _get_calendar_by_external_id_util,
+)
+from calendar_integration.services.calendar_service_utils import (
+    get_calendar_by_id as _get_calendar_by_id_util,
+)
+from calendar_integration.services.calendar_service_utils import (
+    grant_calendar_owner_permissions as _grant_calendar_owner_permissions_util,
+)
+from calendar_integration.services.calendar_service_utils import (
+    grant_event_attendee_permissions as _grant_event_attendee_permissions_util,
+)
+from calendar_integration.services.calendar_service_utils import (
+    serialize_event as _serialize_event_util,
+)
+from calendar_integration.services.calendar_service_utils import (
+    serialize_event_data_input as _serialize_event_data_input_util,
+)
+from calendar_integration.services.calendar_service_utils import (
+    serialize_event_external_attendee as _serialize_event_external_attendee_util,
+)
+from calendar_integration.services.calendar_service_utils import (
+    serialize_event_internal_attendee as _serialize_event_internal_attendee_util,
+)
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
@@ -130,6 +156,13 @@ class CalendarService(BaseCalendarService):
         self.calendar_adapter = None
         self.calendar_side_effects_service = calendar_side_effects_service
         self.calendar_permission_service = calendar_permission_service
+        # Per-instance calendar lookup cache: keyed on (organization_id, id_or_external_id).
+        # This replaces the @lru_cache approach which was keyed only on id/external_id and
+        # could return a cached Calendar from a different organization when the service
+        # instance is reused across organizations (multi-tenant safety bug).
+        self._calendar_cache: dict[tuple[int, str | int], Calendar] = {}
+        # Shared auth-context snapshot; set by authenticate() / initialize_without_provider().
+        self._context: CalendarServiceContext | None = None
 
     def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None:
         """
@@ -138,28 +171,7 @@ class CalendarService(BaseCalendarService):
         if not self.calendar_permission_service:
             return
 
-        # Grant permissions to all calendar owners
-        calendar_owners = User.objects.filter(
-            calendar_ownerships__calendar=calendar,
-            calendar_ownerships__organization=calendar.organization,
-        ).distinct()
-
-        for owner in calendar_owners:
-            # Check if user already has a token for this calendar
-            existing_token = CalendarManagementToken.objects.filter(
-                user=owner,
-                calendar_fk_id=calendar.id,
-                organization_id=calendar.organization_id,
-                event_fk_id__isnull=True,
-                revoked_at__isnull=True,
-            ).first()
-
-            if not existing_token:
-                self.calendar_permission_service.create_calendar_owner_token(
-                    organization_id=calendar.organization_id,
-                    user=owner,
-                    calendar_id=calendar.id,
-                )
+        _grant_calendar_owner_permissions_util(self.calendar_permission_service, calendar)
 
     def _grant_event_attendee_permissions(self, event: CalendarEvent) -> None:
         """
@@ -168,127 +180,21 @@ class CalendarService(BaseCalendarService):
         if not self.calendar_permission_service:
             return
 
-        # Grant permissions to internal attendees
-        for attendance in event.attendances.all():
-            # Check if user already has a token for this event
-            existing_token = CalendarManagementToken.objects.filter(
-                user=attendance.user,
-                event_fk_id=event.id,
-                organization_id=event.organization_id,
-                revoked_at__isnull=True,
-            ).first()
-
-            if not existing_token:
-                self.calendar_permission_service.create_attendee_token(
-                    organization_id=attendance.organization_id,
-                    user=attendance.user,
-                    event_id=event.id,
-                )
-
-        # Grant permissions to external attendees
-        for external_attendance in event.external_attendances.filter_by_organization(  # type: ignore
-            event.organization_id
-        ):
-            # Check if external attendee already has a token for this event
-            existing_token = CalendarManagementToken.objects.filter(
-                organization_id=event.organization_id,
-                external_attendee_fk_id=external_attendance.external_attendee_fk_id,
-                event_fk_id=event.id,
-                revoked_at__isnull=True,
-            ).first()
-
-            if not existing_token:
-                self.calendar_permission_service.create_external_attendee_update_token(
-                    organization_id=external_attendance.organization_id,
-                    event_id=event.id,
-                    external_attendee_id=external_attendance.external_attendee_fk_id,  # type: ignore
-                )
+        _grant_event_attendee_permissions_util(self.calendar_permission_service, event)
 
     def _serialize_event_internal_attendee(
         self, attendance: EventAttendance
     ) -> EventInternalAttendeeData:
-        return EventInternalAttendeeData(
-            user_id=attendance.user.id,
-            email=attendance.user.email,
-            name=attendance.user.get_full_name(),
-            status=cast(Literal["accepted", "declined", "pending"], attendance.status),
-        )
+        return _serialize_event_internal_attendee_util(attendance)
 
     def _serialize_event_external_attendee(
         self, external_attendance: EventExternalAttendance
     ) -> EventExternalAttendeeData:
-        return EventExternalAttendeeData(
-            email=external_attendance.external_attendee_fk.email,  # type: ignore
-            name=external_attendance.external_attendee_fk.name,  # type: ignore
-            status=cast(
-                Literal["accepted", "declined", "pending"],
-                external_attendance.status,
-            ),
-        )
+        return _serialize_event_external_attendee_util(external_attendance)
 
     def _serialize_event(self, event: CalendarEvent) -> CalendarEventData:
         """Build webhook payload for calendar event."""
-
-        return CalendarEventData(
-            id=event.id,
-            calendar_id=event.calendar_fk_id,  # type: ignore
-            start_time=event.start_time,
-            end_time=event.end_time,
-            timezone=event.timezone,
-            title=event.title,
-            description=event.description,
-            calendar_settings=CalendarSettingsData(
-                manage_available_windows=event.calendar_fk.manage_available_windows,  # type: ignore
-                accepts_public_scheduling=event.calendar_fk.accepts_public_scheduling,  # type: ignore
-            ),
-            original_payload=event.meta.get("latest_original_payload", {})
-            if hasattr(event, "meta") and event.meta
-            else {},
-            attendees=[
-                self._serialize_event_internal_attendee(attendance)
-                # For recurring instances, get attendances from the parent event; for regular events, use their own
-                for attendance in (
-                    event.parent_recurring_object.attendances.all()
-                    if event.parent_recurring_object
-                    else (event.attendances.all() if event.id else [])
-                )
-            ],
-            external_attendees=[
-                self._serialize_event_external_attendee(external_attendance)
-                # For recurring instances, get external attendances from the parent event; for regular events, use their own
-                for external_attendance in (
-                    event.parent_recurring_object.external_attendances.all()
-                    if event.parent_recurring_object
-                    else (event.external_attendances.all() if event.id else [])
-                )
-            ],
-            resources=[
-                ResourceData(
-                    title=resource_allocation.calendar.name,
-                    email=resource_allocation.calendar.email,
-                    external_id=resource_allocation.calendar.external_id,
-                    status=cast(
-                        Literal["accepted", "declined", "pending"],
-                        resource_allocation.status,
-                    ),
-                )
-                # For recurring instances, get resource allocations from the parent event; for regular events, use their own
-                for resource_allocation in (
-                    event.parent_recurring_object.resource_allocations.all()
-                    if event.parent_recurring_object
-                    else (event.resource_allocations.all() if event.id else [])
-                )
-            ],
-            external_id=event.external_id,
-            recurrence_rule=(
-                event.recurrence_rule.to_rrule_string() if event.recurrence_rule else None
-            ),
-            status="confirmed",
-            is_recurring=event.is_recurring,
-            recurring_event_id=(
-                event.parent_recurring_object_fk_id if event.parent_recurring_object_fk_id else None  # type: ignore
-            ),
-        )
+        return _serialize_event_util(event)
 
     @staticmethod
     def _get_calendar_adapter_cls_for_provider(provider: CalendarProvider):
@@ -424,6 +330,20 @@ class CalendarService(BaseCalendarService):
         self.organization = organization
         self.calendar_adapter, self.account = self.get_calendar_adapter_for_account(account)
 
+        # Reset the per-instance calendar lookup cache whenever the auth context changes.
+        # This ensures no stale cross-organization entries survive a re-authentication.
+        self._calendar_cache = {}
+
+        # Build the immutable auth-context snapshot consumed by sub-services.
+        self._context = CalendarServiceContext(
+            organization=self.organization,
+            user_or_token=self.user_or_token,
+            account=self.account,
+            calendar_adapter=self.calendar_adapter,
+            calendar_permission_service=self.calendar_permission_service,
+            calendar_side_effects_service=self.calendar_side_effects_service,
+        )
+
     def initialize_without_provider(
         self,
         user_or_token: User | str | SystemUser | None = None,
@@ -446,6 +366,19 @@ class CalendarService(BaseCalendarService):
             self.calendar_permission_service.initialize_with_token(
                 self.user_or_token, organization_id=self.organization.id
             )
+
+        # Reset the per-instance calendar lookup cache whenever the auth context changes.
+        self._calendar_cache = {}
+
+        # Build the immutable auth-context snapshot consumed by sub-services.
+        self._context = CalendarServiceContext(
+            organization=self.organization,
+            user_or_token=self.user_or_token,
+            account=self.account,
+            calendar_adapter=self.calendar_adapter,
+            calendar_permission_service=self.calendar_permission_service,
+            calendar_side_effects_service=self.calendar_side_effects_service,
+        )
 
     def request_organization_calendar_resources_import(
         self,
@@ -612,27 +545,25 @@ class CalendarService(BaseCalendarService):
 
         return created_calendar
 
-    @lru_cache(maxsize=128)  # noqa: B019
     def _get_calendar_by_external_id(self, calendar_external_id: str) -> Calendar:
         if not is_authenticated_calendar_service(self):
             raise
 
-        query_kwargs = {
-            "external_id": calendar_external_id,
-            "organization_id": self.organization.id,
-        }
-        if self.calendar_adapter:
-            query_kwargs["provider"] = self.calendar_adapter.provider
-        return Calendar.objects.get(**query_kwargs)
+        return _get_calendar_by_external_id_util(
+            self._calendar_cache,
+            calendar_external_id,
+            self.organization,
+            self.calendar_adapter,
+        )
 
-    @lru_cache(maxsize=128)  # noqa: B019
     def _get_calendar_by_id(self, calendar_id: int) -> Calendar:
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
 
-        return Calendar.objects.get(
-            id=calendar_id,
-            organization_id=self.organization.id,
+        return _get_calendar_by_id_util(
+            self._calendar_cache,
+            calendar_id,
+            self.organization,
         )
 
     def request_calendars_import(self, sync_after_import: bool = True) -> None:
@@ -1116,119 +1047,22 @@ class CalendarService(BaseCalendarService):
 
         return self.calendar_adapter
 
-    def convert_naive_utc_datetime_to_timezone(self, datetime_obj: datetime.datetime, iana_tz: str):
+    def convert_naive_utc_datetime_to_timezone(
+        self, datetime_obj: datetime.datetime, iana_tz: str
+    ) -> datetime.datetime:
         """Return the naive local wall-clock of an instant in the given IANA timezone.
 
-        Used to populate ``*_tz_unaware`` fields: the model stores the naive local
-        wall-clock paired with the IANA ``timezone``, and the DB-generated
-        ``start_time``/``end_time`` re-derive the true instant from them via
-        ``convert_naive_utc_to_timezone``. Naive inputs are treated as UTC.
-
-        Previously this did ``datetime_obj.replace(tzinfo=target_tz)``, which keeps the
-        wall-clock and swaps the zone — storing the instant instead of the local
-        wall-clock and shifting synced times by the zone offset. ``astimezone`` converts
-        the instant correctly.
+        Delegates to the shared module-level utility in ``calendar_service_utils``.
+        See that function's docstring for full semantics.
 
         e.g. 12:00Z + "America/Recife" -> 09:00 (naive).
         """
-        try:
-            target_tz = zoneinfo.ZoneInfo(iana_tz)
-        except zoneinfo.ZoneInfoNotFoundError as e:
-            raise ValueError(f"Invalid IANA timezone: {iana_tz}") from e
-
-        if datetime_obj.tzinfo is None:
-            datetime_obj = datetime_obj.replace(tzinfo=datetime.UTC)
-        # Local wall-clock, tagged UTC so it stores cleanly under USE_TZ (matching how
-        # the batch-create path stores tz_unaware). The generated start_time/end_time
-        # re-interpret this wall-clock in `timezone` to recover the true instant.
-        local_wall_clock = datetime_obj.astimezone(target_tz).replace(tzinfo=None)
-        return local_wall_clock.replace(tzinfo=datetime.UTC)
+        return _convert_naive_utc_datetime_to_timezone(datetime_obj, iana_tz)
 
     def _serialize_event_data_input(
         self, event: CalendarEvent, event_data: CalendarEventInputData
     ) -> CalendarEventData:
-        new_attendance_user_ids = [a.user_id for a in event_data.attendances]
-        new_external_attendances_attendee_ids = [
-            a.external_attendee.id for a in event_data.external_attendances
-        ]
-        attendances_users_by_id = {
-            u.id: u for u in User.objects.filter(id__in=new_attendance_user_ids)
-        }
-        existing_attendances_by_user_id = {
-            a.user_id: a
-            for a in EventAttendance.objects.filter(
-                event=event, user__id__in=new_attendance_user_ids
-            )
-        }
-        existing_external_attendances_by_attendee_id = {
-            a.external_attendee.id: a
-            for a in EventExternalAttendance.objects.filter(
-                event=event, external_attendee__id__in=new_external_attendances_attendee_ids
-            )
-        }
-        return CalendarEventData(
-            id=event.id,
-            calendar_id=event.calendar_fk_id,  # type: ignore
-            start_time=event_data.start_time,
-            end_time=event_data.end_time,
-            timezone=event_data.timezone,
-            title=event_data.title,
-            description=event_data.description,
-            calendar_settings=CalendarSettingsData(
-                manage_available_windows=event.calendar_fk.manage_available_windows,  # type: ignore
-                accepts_public_scheduling=event.calendar_fk.accepts_public_scheduling,  # type: ignore
-            ),
-            original_payload={},  # doesn't matter
-            attendees=[
-                EventInternalAttendeeData(
-                    user_id=attendance.user_id,
-                    email=attendances_users_by_id[attendance.user_id].email,
-                    name=attendances_users_by_id[attendance.user_id].get_full_name(),
-                    status=cast(
-                        Literal["accepted", "declined", "pending"],
-                        existing_attendances_by_user_id.get(attendance.user_id, "pending"),
-                    ),
-                )
-                # For recurring instances, get attendances from the parent event; for regular events, use their own
-                for attendance in event_data.attendances
-            ],
-            external_attendees=[
-                EventExternalAttendeeData(
-                    email=external_attendance.external_attendee.email,
-                    name=external_attendance.external_attendee.name,
-                    status=cast(
-                        Literal["accepted", "declined", "pending"],
-                        existing_external_attendances_by_attendee_id.get(
-                            external_attendance.external_attendee.id, "pending"
-                        ),
-                    ),
-                )
-                # For recurring instances, get external attendances from the parent event; for regular events, use their own
-                for external_attendance in event_data.external_attendances
-            ],
-            resources=[
-                ResourceData(
-                    title=resource_allocation.calendar.name,
-                    email=resource_allocation.calendar.email,
-                    external_id=resource_allocation.calendar.external_id,
-                    status=cast(
-                        Literal["accepted", "declined", "pending"],
-                        resource_allocation.status,
-                    ),
-                )
-                # For recurring instances, get resource allocations from the parent event; for regular events, use their own
-                for resource_allocation in Calendar.objects.filter(
-                    organization=self.organization,
-                    id__in=[r.resource_id for r in event_data.resource_allocations],
-                    calendar_type=CalendarType.RESOURCE,
-                )
-            ],
-            external_id=event.external_id,
-            recurrence_rule=event_data.recurrence_rule,
-            status="confirmed",
-            is_recurring=bool(event_data.recurrence_rule),
-            recurring_event_id=None,
-        )
+        return _serialize_event_data_input_util(event, event_data, self.organization)
 
     @transaction.atomic()
     def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
