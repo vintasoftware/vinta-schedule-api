@@ -35,11 +35,19 @@
 - **Key facts for later phases**: `NotificationSerializer` reusable for Phase 2's ORM list. `get_queryset` already returns `Notification.objects.filter(user=request.user, notification_type=IN_APP).order_by("-created")` — Phase 2 adds `ListModelMixin` + `status__in=[SENT, READ]`. Tests auth via `APIClient().force_authenticate(user=user)`.
 - **Gates**: notifications scoped 42 passed; full suite 1592 passed + 1 pre-existing unrelated SMS failure.
 
+### Phase 2 — List all endpoint ✅
+- **Model used**: claude-haiku-4-5 (plan tier: 2)
+- **Commits**: `1e5c1f0` list-all endpoint, `d5d529b` deterministic ordering + stronger tests
+- **Review**: Layer-3, 0 blockers + 3 should-fixes (added `-id` order tiebreaker; replaced tautological assertions; added mixed-status single-request test) + 1 nit (stale docstring), all applied.
+- **Summary**: `GET /notifications/` lists user's IN_APP notifications with `status in (SENT, READ)` (excludes PENDING_SEND/FAILED/CANCELLED), newest-first (`-created, -id`), LimitOffsetPagination `{count, next, previous, results}`. Re-added `ListModelMixin`; `get_queryset` now status-filtered; `unread` action untouched. Reuses `NotificationSerializer`. schema.yml regenerated.
+- **Note**: Branch rebased onto main's Twilio/SMS test fix; full suite now 0-failure.
+- **Phase-3 coupling**: `get_queryset` excludes pipeline states. Phase 3 may reuse it for the mark-read lookup — a SENT row is findable (mark→READ), a READ row is findable (idempotent 200), PENDING/FAILED/CANCELLED → 404 (acceptable). Phase 3 must NOT add its own status filter.
+- **Gates**: notifications scoped 63 passed; full suite 1615 passed, 0 failures.
+
 ## Current phase
-- Phase 2 — List all endpoint (Tier 2) — NEXT
+- Phase 3 — Mark-as-read endpoint (Tier 2) — NEXT
 
 ## Remaining phases
-- Phase 2 — List all endpoint (Tier 2)
 - Phase 3 — Mark-as-read endpoint (Tier 2)
 
 ## Deferred phases
