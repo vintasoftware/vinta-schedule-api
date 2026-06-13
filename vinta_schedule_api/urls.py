@@ -13,6 +13,7 @@ from rest_framework.routers import DefaultRouter
 from strawberry.django.views import GraphQLView
 
 from calendar_integration.routes import routes as calendar_integration_routes
+from notifications.routes import routes as notifications_routes
 from organizations.routes import routes as organizations_routes
 from organizations.views import AcceptInvitationView
 from payments.routes import routes as payments_routes
@@ -26,6 +27,7 @@ router = DefaultRouter(use_regex_path=False)
 
 routes = (
     *calendar_integration_routes,
+    *notifications_routes,
     *organizations_routes,
     *payments_routes,
     *public_api_routes,

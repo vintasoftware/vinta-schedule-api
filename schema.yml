@@ -4942,6 +4942,170 @@ paths:
               schema:
                 $ref: '#/components/schemas/AcceptInvitation'
           description: ''
+  /notifications/:
+    get:
+      operationId: notifications_list
+      description: |-
+        ViewSet for user-scoped in-app notifications.
+
+        Endpoints:
+        - GET /notifications/unread/  — list only unread (status=SENT) notifications
+          for the authenticated user, using the native vintasend get_in_app_unread.
+
+        Phase 2 will wire up GET /notifications/ (list all) via the inherited
+        ListModelMixin + get_queryset.
+
+        Authentication: IsAuthenticated (JWT or session).
+        Scope: request.user — no org context.
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - Notifications
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedNotificationList'
+          description: ''
+  /notifications{format}:
+    get:
+      operationId: notifications_formatted_list
+      description: |-
+        ViewSet for user-scoped in-app notifications.
+
+        Endpoints:
+        - GET /notifications/unread/  — list only unread (status=SENT) notifications
+          for the authenticated user, using the native vintasend get_in_app_unread.
+
+        Phase 2 will wire up GET /notifications/ (list all) via the inherited
+        ListModelMixin + get_queryset.
+
+        Authentication: IsAuthenticated (JWT or session).
+        Scope: request.user — no org context.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - Notifications
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedNotificationList'
+          description: ''
+  /notifications/unread/:
+    get:
+      operationId: notifications_unread_retrieve
+      description: |-
+        GET /notifications/unread/ — unread in-app notifications for the current user.
+
+        Uses the native vintasend NotificationService.get_in_app_unread(user_id, page,
+        page_size) which returns an Iterable of vintasend Notification dataclasses
+        (not an ORM queryset).  Passthrough pagination: the caller controls page +
+        page_size; no server-side count is available from the native method.
+      summary: List unread in-app notifications for the authenticated user
+      parameters:
+      - in: query
+        name: page
+        schema:
+          type: integer
+        description: Page number (1-based). Defaults to 1.
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+        description: Number of items per page. Defaults to 10.
+      tags:
+      - Notifications
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: 'Passthrough-paginated list of unread notifications. Envelope:
+            {results: [...], page: int, page_size: int}.'
+        '400':
+          description: Invalid page / page_size parameter
+        '401':
+          description: Unauthenticated
+  /notifications/unread{format}:
+    get:
+      operationId: notifications_unread_formatted_retrieve
+      description: |-
+        GET /notifications/unread/ — unread in-app notifications for the current user.
+
+        Uses the native vintasend NotificationService.get_in_app_unread(user_id, page,
+        page_size) which returns an Iterable of vintasend Notification dataclasses
+        (not an ORM queryset).  Passthrough pagination: the caller controls page +
+        page_size; no server-side count is available from the native method.
+      summary: List unread in-app notifications for the authenticated user
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: query
+        name: page
+        schema:
+          type: integer
+        description: Page number (1-based). Defaults to 1.
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+        description: Number of items per page. Defaults to 10.
+      tags:
+      - Notifications
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: 'Passthrough-paginated list of unread notifications. Envelope:
+            {results: [...], page: int, page_size: int}.'
+        '400':
+          description: Invalid page / page_size parameter
+        '401':
+          description: Unauthenticated
   /organization-members/:
     get:
       operationId: organization_members_list
@@ -9175,6 +9339,70 @@ components:
         * `WEEKLY` - Weekly
         * `MONTHLY` - Monthly
         * `YEARLY` - Yearly
+    Notification:
+      type: object
+      description: |-
+        Read-only serializer for in-app notification objects.
+
+        Works for both vintasend Notification dataclasses (Phase 1 — returned by
+        get_in_app_unread) and vintasend_django model instances (Phase 2 — ORM rows).
+
+        Fields:
+        - id, title, notification_type, status: present on both dataclass and model.
+        - body: rendered at read time via body_template + best-available context.
+        - created, modified: model-only; None for dataclass instances.
+      properties:
+        id:
+          type: string
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        notification_type:
+          type: string
+          readOnly: true
+        status:
+          type: string
+          readOnly: true
+        body:
+          type: string
+          description: |-
+            Render the body template with the best-available context.
+
+            Priority:
+            1. context_used — the context that was recorded at send time (on model rows,
+               set by the backend when the notification was processed).
+            2. context_kwargs — the original kwargs passed at creation time.
+            3. Empty dict — render the template with no context (graceful degradation).
+
+            Returns an empty string on rendering failure so the response always serialises.
+          readOnly: true
+        created:
+          type: string
+          nullable: true
+          description: |-
+            Return the creation timestamp as ISO 8601 string, or None for dataclasses.
+
+            The vintasend Notification dataclass has no `created` attribute; only the
+            vintasend_django ORM model does.
+          readOnly: true
+        modified:
+          type: string
+          nullable: true
+          description: |-
+            Return the last-modified timestamp as ISO 8601 string, or None for dataclasses.
+
+            The vintasend Notification dataclass has no `modified` attribute; only the
+            vintasend_django ORM model does.
+          readOnly: true
+      required:
+      - body
+      - created
+      - id
+      - modified
+      - notification_type
+      - status
+      - title
     Organization:
       type: object
       description: |-
@@ -9472,6 +9700,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Calendar'
+    PaginatedNotificationList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
     PaginatedOrganizationInvitationList:
       type: object
       required:
