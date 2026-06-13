@@ -31,11 +31,23 @@
   - Per-instance calendar cache is unbounded (vs old `maxsize=128`) — acceptable now; revisit if a long-lived sync iterates thousands of calendars.
   - Latent bug in `serialize_event_data_input` resources branch deliberately preserved + pinned by a test; a real fix is out of scope (candidate Open-Questions follow-up).
 
+### Phase 1 — Extract RecurrenceManager helper ✅
+- **Status**: complete, PR open
+- **Model**: claude-opus-4-7 (plan tier: Tier 4) + fixer (claude-sonnet-4-6)
+- **Branch**: `plan/calendar-service-refactor/phase-1` (base `…/phase-0`)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/68 (published, 3 inline comments)
+- **Files**: `calendar_integration/services/recurrence_manager.py` (new), `calendar_integration/services/calendar_service.py` (edited, −222 lines), `calendar_integration/tests/services/test_recurrence_manager.py` (new, 9 tests)
+- **Summary**: Extracted the two generic recurrence engines (`create_recurring_exception_generic`, `create_recurring_bulk_modification_generic`) into a stateless `RecurrenceManager`. Engines take `CalendarServiceContext` as first param (only `self` use was the auth guard); per-type truncate/continuation/record callbacks stay caller-supplied. Facade delegates at 6 call sites; engine methods deleted. Bodies moved byte-for-byte (reviewer diff-verified).
+- **Review**: Layer-3 0 blockers (engine bodies byte-identical, guard equivalent, call sites correct). Fixer added a direct master-date exception-branch test.
+- **Gate**: calendar suite 1023 passed; full suite 1572 passed + 1 pre-existing unrelated failure.
+- **Carry-forward notes**:
+  - `RecurrenceManager` is stateless + never imports `CalendarService` — Phase 2 (`CalendarEventService`) and Phase 4 (`AvailabilityService`) will delegate to it for their recurrence methods, passing the context.
+  - Bare-`raise` defensive lines in the guard blocks are verbatim-preserved dead code (guard raises internally first) — leave until Phase 7 if ever.
+
 ## Current Phase
-- Phase 1 — Extract `RecurrenceManager` helper (next).
+- Phase 2 — Extract `CalendarEventService` (next).
 
 ## Remaining Phases
-- Phase 1 — Extract `RecurrenceManager` helper (Tier 4)
 - Phase 2 — Extract `CalendarEventService` (Tier 4)
 - Phase 3 — Extract `CalendarBundleService` (Tier 3)
 - Phase 4 — Extract `AvailabilityService` (Tier 4)
