@@ -56,10 +56,12 @@ class NotificationViewSet(ListModelMixin, GenericViewSet):
     ViewSet for user-scoped in-app notifications.
 
     Endpoints:
-    - GET /notifications/unread/  — list only unread (status=SENT) notifications
-      for the authenticated user, using the native vintasend get_in_app_unread.
-
-    Phase 2 will wire up GET /notifications/ (list all) via get_queryset.
+    - GET /notifications/        — list all SENT+READ IN_APP notifications for the
+      authenticated user, ordered newest first, paginated via LimitOffsetPagination
+      (limit/offset query params; envelope: {count, next, previous, results}).
+    - GET /notifications/unread/ — unread (SENT only) IN_APP notifications, fetched via
+      the native vintasend get_in_app_unread; paginated via page/page_size passthrough
+      (envelope: {results, page, page_size}).
 
     Authentication: IsAuthenticated (JWT or session).
     Scope: request.user — no org context.
@@ -133,7 +135,7 @@ class NotificationViewSet(ListModelMixin, GenericViewSet):
             user=self.request.user,
             notification_type=NotificationTypes.IN_APP.value,
             status__in=[NotificationStatus.SENT.value, NotificationStatus.READ.value],
-        ).order_by("-created")
+        ).order_by("-created", "-id")
 
     @extend_schema(
         summary="List unread in-app notifications for the authenticated user",

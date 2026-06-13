@@ -422,15 +422,59 @@ class TestListEndpointSchemaCompliance:
         client = APIClient()
         client.force_authenticate(user=user)
 
-        # List should return both
+        # List should return both — LimitOffsetPagination envelope
         list_response = client.get(LIST_URL)
         list_data = list_response.json()
         assert list_data["count"] == 2
-        assert "limit" not in list_data or True  # No explicit limit key required in response
-        assert "offset" not in list_data or True  # No explicit offset key required in response
+        assert "count" in list_data
+        assert "next" in list_data
+        assert "page" not in list_data
+        assert "page_size" not in list_data
 
         # Unread should return only SENT
         unread_response = client.get("/notifications/unread/")
         unread_data = unread_response.json()
         assert len(unread_data["results"]) == 1
         assert unread_data["results"][0]["status"] == NotificationStatus.SENT.value
+
+
+@pytest.mark.django_db
+class TestListEndpointMixedStatus:
+    def test_excludes_pending_while_passing_sent_and_read(self, user) -> None:
+        """PENDING_SEND rows are filtered out while SENT and READ rows pass through in the same request."""
+        service = _build_notification_service()
+
+        # SENT notification (via service — status becomes SENT after send)
+        sent_notif = _send_in_app(service, user.id, "sent message")
+        assert sent_notif.status == NotificationStatus.SENT.value
+
+        # READ notification (sent then marked read)
+        read_notif = _send_in_app(service, user.id, "read message")
+        service.mark_read(read_notif.id)
+        read_notif.refresh_from_db()
+        assert read_notif.status == NotificationStatus.READ.value
+
+        # PENDING_SEND notification (created directly via ORM to force status)
+        pending_notif = Notification.objects.create(
+            user=user,
+            notification_type=NotificationTypes.IN_APP.value,
+            title="Pending notification",
+            body_template="notifications/in_app/example.body.txt",
+            context_name="in_app_generic_context",
+            context_kwargs={"message": "pending"},
+            status=NotificationStatus.PENDING_SEND.value,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get(LIST_URL)
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+
+        # Only SENT and READ should appear; PENDING_SEND must be excluded
+        assert data["count"] == 2
+        result_ids = [item["id"] for item in data["results"]]
+        assert str(sent_notif.id) in result_ids
+        assert str(read_notif.id) in result_ids
+        assert str(pending_notif.id) not in result_ids
