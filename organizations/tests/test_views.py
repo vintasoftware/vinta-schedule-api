@@ -1159,11 +1159,11 @@ class TestAcceptInvitationView:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
     def test_accept_invitation_already_accepted(self, auth_client, user, organization):
-        """Test accepting an invitation for a user who is already a member.
+        """Accepting an invitation to an org the user already belongs to returns 400.
 
-        Since accept_invitation now raises UserAlreadyHasMembershipError (a DRF
-        ValidationError) before touching the DB, the view returns a 400 response
-        with a typed error rather than an unhandled IntegrityError.
+        Phase 4: the per-org guard fires — the user is already a member of the SAME
+        organization that issued the invitation.  ``UserAlreadyHasMembershipError`` (a
+        DRF ValidationError) is raised before the DB write, yielding a typed 400.
         """
         # Create a membership for the user in the organization
         OrganizationTestFactory.create_organization_membership(user, organization)
@@ -1188,16 +1188,16 @@ class TestAcceptInvitationView:
         # The hardened service returns a typed 400 error instead of an unhandled IntegrityError.
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
-    def test_accept_invitation_already_member_different_org_rejected(
+    def test_accept_invitation_member_of_org_a_can_accept_invite_to_org_b(
         self, auth_client, user, organization
     ):
-        """Use-case 5: an already-member user POSTs a valid token for a DIFFERENT org.
+        """Phase 4 / Use-case 6: an already-member user accepts a valid token for a DIFFERENT org.
 
-        Acceptance criteria (Phase 7):
-        - HTTP 400 with the user_already_has_membership code and message.
-        - The user's existing membership (org + role) is unchanged.
-        - The target invitation remains pending (accepted_at is None, membership is None).
-        - No second OrganizationMembership is created.
+        Acceptance criteria (Phase 4):
+        - HTTP 201.
+        - The user ends up with TWO active memberships.
+        - The existing membership (org + role) is unchanged.
+        - The accepted invitation is marked accepted.
         """
         # User's existing membership in their own org.
         user_org = OrganizationTestFactory.create_organization(name="User Org")
@@ -1216,36 +1216,35 @@ class TestAcceptInvitationView:
         url = reverse("accept-invitation")
         response = auth_client.post(url, {"token": token}, format="json")
 
-        # --- HTTP response ---
-        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-
-        # --- Error body shape (stable contract for clients) ---
+        # --- HTTP 201: second membership created ---
+        assert_response_status_code(response, status.HTTP_201_CREATED)
         response_data = response.json()
-        assert response_data["error"] == "User already belongs to an organization."
+        assert response_data["message"] == "Invitation accepted successfully"
+        assert response_data["organization_id"] == other_org.id
 
-        # --- Existing membership is unchanged ---
+        # --- User now has TWO memberships ---
+        assert OrganizationMembership.objects.filter(user=user).count() == 2
+
+        # --- Original membership is unchanged ---
         original_membership.refresh_from_db()
         assert original_membership.organization_id == user_org.id
-        assert OrganizationMembership.objects.filter(user=user).count() == 1
 
-        # --- Target invitation remains pending ---
+        # --- Invitation is marked accepted ---
         invitation.refresh_from_db()
-        assert invitation.accepted_at is None
-        assert invitation.membership is None
+        assert invitation.accepted_at is not None
+        assert invitation.membership is not None
 
-    def test_accept_invitation_already_member_error_body_shape(self, auth_client, user):
-        """Assert the error body contract is stable for clients (Phase 7).
+    def test_accept_invitation_same_org_duplicate_returns_400(self, auth_client, user):
+        """Phase 4: accepting an invitation to an org the user is already a member of returns 400.
 
-        When the user already has a membership and POSTs the accept endpoint,
-        the response MUST contain the 'code' and 'detail' keys with the documented
-        user_already_has_membership values.
+        The per-org guard fires and the error body shape must be stable for clients.
         """
         own_org = OrganizationTestFactory.create_organization(name="Own Org")
         OrganizationTestFactory.create_organization_membership(user, own_org)
 
-        other_org = OrganizationTestFactory.create_organization(name="Other Org")
+        # Invitation for the SAME org the user already belongs to.
         invitation = OrganizationTestFactory.create_organization_invitation(
-            other_org, email=user.email
+            own_org, email=user.email
         )
         token = generate_long_lived_token()
         invitation.token_hash = hash_long_lived_token(token)
@@ -1257,7 +1256,7 @@ class TestAcceptInvitationView:
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         body = response.json()
         assert "error" in body, f"Response body missing 'error' key: {body}"
-        assert body["error"] == "User already belongs to an organization."
+        assert body["error"] == "User is already a member of this organization."
 
 
 @pytest.mark.django_db

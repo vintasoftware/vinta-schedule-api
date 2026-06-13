@@ -227,9 +227,14 @@ class OrganizationInvitation(BaseModel):
     """
     Represents an invitation to join a calendar organization.
     This is used to invite users to join their respective calendar organizations.
+
+    The uniqueness constraint is ``unique(email, organization)`` — the same email address
+    may hold concurrent pending invitations in different organizations (multi-org invite
+    accept, Phase 4). A duplicate invite to the *same* org is still rejected by the
+    ``uniq_invitation_email_organization`` constraint.
     """
 
-    email = models.EmailField(unique=True)
+    email = models.EmailField()
     first_name = models.CharField(max_length=150, blank=True)
     last_name = models.CharField(max_length=150, blank=True)
     organization = models.ForeignKey(
@@ -252,6 +257,14 @@ class OrganizationInvitation(BaseModel):
         null=True,
         blank=True,
     )
+
+    class Meta:
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=["email", "organization"],
+                name="uniq_invitation_email_organization",
+            ),
+        ]
 
     def __str__(self):
         return f"Invitation for {self.email} to join {self.organization}"

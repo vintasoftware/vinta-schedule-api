@@ -683,13 +683,20 @@ class AcceptInvitationView(generics.CreateAPIView):
     permission_classes = (IsAuthenticated,)
 
     def create(self, request, *args, **kwargs):
-        """Accept invitation and return success response."""
+        """Accept invitation and return success response.
+
+        Phase 4: ``UserAlreadyHasMembershipError`` now means the caller is already a
+        member of *this specific organization* (same-org duplicate), not of any
+        organization.  A user in org A who accepts a valid invitation from org B will
+        receive 201 and end up with two active memberships.
+        """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         try:
             membership = serializer.create(serializer.validated_data)
         except UserAlreadyHasMembershipError:
+            # 400 — user is already a member of the invitation's organization.
             return Response(
                 {"error": UserAlreadyHasMembershipError.default_detail},
                 status=status.HTTP_400_BAD_REQUEST,

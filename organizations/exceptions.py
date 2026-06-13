@@ -24,5 +24,5 @@ class InvitationNotFoundError(ValidationError):
 
 
 class UserAlreadyHasMembershipError(ValidationError):
-    default_detail = "User already belongs to an organization."
+    default_detail = "User is already a member of this organization."
     default_code = "user_already_has_membership"
