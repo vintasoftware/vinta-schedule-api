@@ -1,3 +1,34 @@
+"""CalendarService — thin facade over the calendar sub-services.
+
+``CalendarService`` is the injected entry point for all calendar operations. It is
+registered in ``di_core/containers.py`` as a ``providers.Factory`` and is the only
+calendar service visible to views, GraphQL resolvers, Celery tasks, and sibling
+services such as ``CalendarGroupService``.
+
+**Responsibility of this module (facade only):**
+
+* Own the authentication / initialization state (``organization``, ``user_or_token``,
+  ``account``, ``calendar_adapter``) and build a ``CalendarServiceContext`` snapshot
+  after each ``authenticate()`` / ``initialize_without_provider()`` call.
+* Lazily construct sub-service instances (``_get_event_service()``, etc.) that share
+  the auth context, the per-instance calendar cache, and the recurrence manager.
+* Forward every public method to the appropriate sub-service.
+* Retain a small set of methods that genuinely belong on the facade because they
+  read/write facade-owned state directly: ``create_application_calendar``,
+  ``create_virtual_calendar``, ``bulk_create_manual_blocked_times``,
+  ``get_default_calendar_for_user``, ``handle_webhook``, and the cache/permission
+  helpers.
+
+**Sub-services (plain classes, not DI providers):**
+
+* ``CalendarEventService`` — single + recurring event CRUD, transfer, expansion.
+* ``CalendarBundleService`` — bundle calendar CRUD, bundle-event fan-out.
+* ``AvailabilityService`` — available times, blocked times, window arithmetic.
+* ``CalendarSyncService`` — calendar/account import, event sync state machine.
+* ``CalendarWebhookService`` — webhook subscription lifecycle, triggered sync.
+* ``RecurrenceManager`` — stateless template-method engine for all recurrence families.
+"""
+
 import datetime
 import logging
 from collections.abc import Callable, Iterable
@@ -580,7 +611,6 @@ class CalendarService(BaseCalendarService):
         """
         return self._get_sync_service().request_calendars_import(sync_after_import)
 
-    @transaction.atomic()
     def import_account_calendars(self, sync_after_import: bool = True):
         """
         Import calendars associated with the authenticated account and create them as Calendar
@@ -630,7 +660,6 @@ class CalendarService(BaseCalendarService):
 
         return calendar
 
-    @transaction.atomic()
     def create_bundle_calendar(
         self,
         name: str,
@@ -653,7 +682,6 @@ class CalendarService(BaseCalendarService):
             primary_calendar=primary_calendar,
         )
 
-    @transaction.atomic()
     def update_bundle_calendar(
         self,
         bundle_calendar: Calendar,
@@ -751,7 +779,6 @@ class CalendarService(BaseCalendarService):
     ) -> CalendarEventData:
         return _serialize_event_data_input_util(event, event_data, self.organization)
 
-    @transaction.atomic()
     def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
         """
         Create a new event in the calendar.
@@ -773,7 +800,6 @@ class CalendarService(BaseCalendarService):
         """
         return self._get_bundle_service().update_bundle_event(bundle_event, event_data)
 
-    @transaction.atomic()
     def update_event(
         self, calendar_id: int, event_id: int, event_data: CalendarEventInputData
     ) -> CalendarEvent:
