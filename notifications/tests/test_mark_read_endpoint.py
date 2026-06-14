@@ -20,9 +20,11 @@ from vintasend.exceptions import NotificationUpdateError
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 from vintasend_django.models import Notification
+from vintasend_django.services.notification_backends.django_db_notification_backend import (
+    DjangoDbNotificationBackend,
+)
 
 from notifications.notification_adapters.django_in_app import DjangoInAppNotificationAdapter
-from notifications.notification_backends import FixedDjangoDbNotificationBackend
 from notifications.notification_template_renderers.django_in_app_renderer import (
     DjangoTemplatedInAppRenderer,
 )
@@ -35,10 +37,10 @@ def _build_notification_service() -> NotificationService:
         notification_adapters=[
             DjangoInAppNotificationAdapter(
                 DjangoTemplatedInAppRenderer(),
-                FixedDjangoDbNotificationBackend(),
+                DjangoDbNotificationBackend(),
             ),
         ],
-        notification_backend=FixedDjangoDbNotificationBackend(),
+        notification_backend=DjangoDbNotificationBackend(),
     )
 
 

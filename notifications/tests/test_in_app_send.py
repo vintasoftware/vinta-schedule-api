@@ -14,9 +14,11 @@ from vintasend.constants import NotificationStatus, NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 from vintasend_django.models import Notification
+from vintasend_django.services.notification_backends.django_db_notification_backend import (
+    DjangoDbNotificationBackend,
+)
 
 from notifications.notification_adapters.django_in_app import DjangoInAppNotificationAdapter
-from notifications.notification_backends import FixedDjangoDbNotificationBackend
 from notifications.notification_template_renderers.django_in_app_renderer import (
     DjangoTemplatedInAppRenderer,
 )
@@ -28,17 +30,17 @@ def _build_notification_service() -> NotificationService:
 
     Mirrors the DI wiring in di_core/containers.py for the IN_APP channel
     (without Email/SMS adapters to avoid needing their credentials/templates).
-    Uses FixedDjangoDbNotificationBackend which corrects the IN_APP ORM filter
-    bug in the vendored DjangoDbNotificationBackend.
+    Uses the stock DjangoDbNotificationBackend (the 1.1.3 enum bug is fixed
+    upstream in vintasend-django 1.2.0).
     """
     return NotificationService(
         notification_adapters=[
             DjangoInAppNotificationAdapter(
                 DjangoTemplatedInAppRenderer(),
-                FixedDjangoDbNotificationBackend(),
+                DjangoDbNotificationBackend(),
             ),
         ],
-        notification_backend=FixedDjangoDbNotificationBackend(),
+        notification_backend=DjangoDbNotificationBackend(),
     )
 
 
@@ -128,9 +130,9 @@ class TestInAppNotificationSend:
         End-to-end guard: get_in_app_unread through the real DI container must return a
         notification created via the same service.
 
-        This test fails if the DI container's notification_backend is reverted to the buggy
-        DjangoDbNotificationBackend (which serialises the enum as "NotificationTypes.IN_APP"
-        instead of "IN_APP", causing the ORM filter to return no rows).
+        This test guards that the DI container's stock DjangoDbNotificationBackend (1.2.0)
+        correctly filters by notification_type=IN_APP (the 1.1.3 enum bug — which serialised
+        the enum as "NotificationTypes.IN_APP" instead of "IN_APP" — is fixed upstream).
         """
         notification_service = di_container.notification_service()
 

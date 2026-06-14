@@ -7,7 +7,7 @@ Covers:
 - Excludes another user's notifications.
 - Respects page / page_size query params.
 - Returns 401 for unauthenticated requests.
-- Response envelope: {results: [...], page: int, page_size: int}.
+- Response envelope: {results: [...], page: int, page_size: int, count: int}.
 - Returns 400 for invalid page / page_size values.
 """
 
@@ -18,9 +18,11 @@ from vintasend.constants import NotificationStatus, NotificationTypes
 from vintasend.services.dataclasses import Notification as NotificationDataclass
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
+from vintasend_django.services.notification_backends.django_db_notification_backend import (
+    DjangoDbNotificationBackend,
+)
 
 from notifications.notification_adapters.django_in_app import DjangoInAppNotificationAdapter
-from notifications.notification_backends import FixedDjangoDbNotificationBackend
 from notifications.notification_template_renderers.django_in_app_renderer import (
     DjangoTemplatedInAppRenderer,
 )
@@ -36,10 +38,10 @@ def _build_notification_service() -> NotificationService:
         notification_adapters=[
             DjangoInAppNotificationAdapter(
                 DjangoTemplatedInAppRenderer(),
-                FixedDjangoDbNotificationBackend(),
+                DjangoDbNotificationBackend(),
             ),
         ],
-        notification_backend=FixedDjangoDbNotificationBackend(),
+        notification_backend=DjangoDbNotificationBackend(),
     )
 
 

@@ -15,7 +15,6 @@ from calendar_integration.services.calendar_permission_service import CalendarPe
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from notifications.notification_adapters.django_in_app import DjangoInAppNotificationAdapter
-from notifications.notification_backends import FixedDjangoDbNotificationBackend
 from notifications.notification_template_renderers.django_in_app_renderer import (
     DjangoTemplatedInAppRenderer,
 )
@@ -77,10 +76,10 @@ class AppContainer(containers.DeclarativeContainer):
             ),
             DjangoInAppNotificationAdapter(
                 DjangoTemplatedInAppRenderer(),
-                FixedDjangoDbNotificationBackend(),
+                DjangoDbNotificationBackend(),
             ),
         ],
-        notification_backend=FixedDjangoDbNotificationBackend(),
+        notification_backend=DjangoDbNotificationBackend(),
     )
 
     webhook_service = providers.Factory(

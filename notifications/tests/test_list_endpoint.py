@@ -5,9 +5,10 @@ Covers:
 - Returns the authenticated user's IN_APP notifications with status in (SENT, READ).
 - Excludes notifications with status PENDING_SEND, FAILED, CANCELLED.
 - Excludes another user's notifications.
-- Respects limit / offset query params.
+- Respects page / page_size query params.
 - Returns 401 for unauthenticated requests.
-- Response envelope: standard LimitOffsetPagination {count, next, previous, results}.
+- Response envelope: {results: [...], page: int, page_size: int, count: int}.
+- count reflects the user's total SENT+READ notifications (not just the current page).
 """
 
 import pytest
@@ -17,9 +18,11 @@ from vintasend.constants import NotificationStatus, NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 from vintasend_django.models import Notification
+from vintasend_django.services.notification_backends.django_db_notification_backend import (
+    DjangoDbNotificationBackend,
+)
 
 from notifications.notification_adapters.django_in_app import DjangoInAppNotificationAdapter
-from notifications.notification_backends import FixedDjangoDbNotificationBackend
 from notifications.notification_template_renderers.django_in_app_renderer import (
     DjangoTemplatedInAppRenderer,
 )
@@ -35,10 +38,10 @@ def _build_notification_service() -> NotificationService:
         notification_adapters=[
             DjangoInAppNotificationAdapter(
                 DjangoTemplatedInAppRenderer(),
-                FixedDjangoDbNotificationBackend(),
+                DjangoDbNotificationBackend(),
             ),
         ],
-        notification_backend=FixedDjangoDbNotificationBackend(),
+        notification_backend=DjangoDbNotificationBackend(),
     )
 
 
@@ -222,7 +225,7 @@ class TestListEndpointContent:
         assert ids == [str(notif3.id), str(notif2.id), str(notif1.id)]
 
     def test_response_envelope_shape(self, user) -> None:
-        """Response has the LimitOffsetPagination envelope: count, next, previous, results."""
+        """Response has the passthrough pagination envelope: results, page, page_size, count."""
         client = APIClient()
         client.force_authenticate(user=user)
         response = client.get(LIST_URL)
@@ -230,9 +233,12 @@ class TestListEndpointContent:
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert "count" in data
-        assert "next" in data
-        assert "previous" in data
+        assert "page" in data
+        assert "page_size" in data
         assert "results" in data
+        # No LimitOffsetPagination-style next/previous links
+        assert "next" not in data
+        assert "previous" not in data
         assert isinstance(data["results"], list)
 
     def test_result_item_shape(self, user) -> None:
@@ -292,19 +298,19 @@ class TestListEndpointContent:
 
 @pytest.mark.django_db
 class TestListEndpointPagination:
-    def test_default_limit_and_offset(self, user) -> None:
-        """Default limit=10, offset=0 when params are absent."""
+    def test_page_and_page_size_defaults(self, user) -> None:
+        """Default page=1, page_size=10 when params are absent."""
         client = APIClient()
         client.force_authenticate(user=user)
         response = client.get(LIST_URL)
 
         data = response.json()
         assert data["count"] == 0
-        assert data["next"] is None
-        assert data["previous"] is None
+        assert data["page"] == 1
+        assert data["page_size"] == 10
 
-    def test_custom_limit_applied(self, user) -> None:
-        """Custom limit parameter restricts the results per page."""
+    def test_custom_page_size_limits_results(self, user) -> None:
+        """page_size=1 returns at most 1 result even when multiple exist."""
         service = _build_notification_service()
         _send_in_app(service, user.id, "msg1")
         _send_in_app(service, user.id, "msg2")
@@ -312,87 +318,89 @@ class TestListEndpointPagination:
 
         client = APIClient()
         client.force_authenticate(user=user)
-        response = client.get(LIST_URL, {"limit": 1})
+        response = client.get(LIST_URL, {"page": 1, "page_size": 1})
 
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["count"] == 3
         assert len(data["results"]) == 1
-        assert data["next"] is not None
-        assert data["previous"] is None
+        assert data["page"] == 1
+        assert data["page_size"] == 1
 
-    def test_custom_offset_applied(self, user) -> None:
-        """Custom offset parameter skips the first N results."""
+    def test_second_page_returns_next_items(self, user) -> None:
+        """Page 2 with page_size=1 returns a different item than page 1."""
         service = _build_notification_service()
         _send_in_app(service, user.id, "msg1")
-        notif2 = _send_in_app(service, user.id, "msg2")
-        notif3 = _send_in_app(service, user.id, "msg3")
+        _send_in_app(service, user.id, "msg2")
 
         client = APIClient()
         client.force_authenticate(user=user)
 
-        # Get first page (newest first = notif3, notif2, notif1)
-        response = client.get(LIST_URL, {"limit": 1, "offset": 0})
-        data = response.json()
-        assert len(data["results"]) == 1
-        assert int(data["results"][0]["id"]) == notif3.id
+        response_p1 = client.get(LIST_URL, {"page": 1, "page_size": 1})
+        response_p2 = client.get(LIST_URL, {"page": 2, "page_size": 1})
 
-        # Get second page (skip 1, get next 1)
-        response = client.get(LIST_URL, {"limit": 1, "offset": 1})
-        data = response.json()
-        assert len(data["results"]) == 1
-        assert int(data["results"][0]["id"]) == notif2.id
+        assert response_p1.status_code == status.HTTP_200_OK
+        assert response_p2.status_code == status.HTTP_200_OK
 
-    def test_offset_beyond_count_returns_empty(self, user) -> None:
-        """Offset beyond the total count returns an empty results list."""
-        service = _build_notification_service()
-        _send_in_app(service, user.id, "msg1")
+        ids_p1 = [item["id"] for item in response_p1.json()["results"]]
+        ids_p2 = [item["id"] for item in response_p2.json()["results"]]
 
+        # Pages should not overlap
+        assert set(ids_p1).isdisjoint(set(ids_p2))
+
+    def test_page_beyond_results_returns_empty(self, user) -> None:
+        """Requesting a page beyond available results returns an empty list (not 404)."""
         client = APIClient()
         client.force_authenticate(user=user)
-        response = client.get(LIST_URL, {"offset": 100})
+        response = client.get(LIST_URL, {"page": 999, "page_size": 10})
 
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
-        assert data["count"] == 1
         assert data["results"] == []
-        assert data["next"] is None
 
-    def test_next_link_present_when_more_results(self, user) -> None:
-        """The 'next' link is present when there are more results to fetch."""
-        service = _build_notification_service()
-        _send_in_app(service, user.id, "msg1")
-        _send_in_app(service, user.id, "msg2")
-
+    def test_page_size_clamped_to_max(self, user) -> None:
+        """page_size above the maximum is silently clamped to 100 (not a 400)."""
         client = APIClient()
         client.force_authenticate(user=user)
-        response = client.get(LIST_URL, {"limit": 1})
+        response = client.get(LIST_URL, {"page_size": 100000})
 
+        assert response.status_code == status.HTTP_200_OK
         data = response.json()
-        assert data["next"] is not None
-        assert "limit=1" in data["next"]
-        assert "offset=1" in data["next"]
+        assert data["page_size"] == 100
 
-    def test_previous_link_present_when_offset(self, user) -> None:
-        """The 'previous' link is present when offset > 0."""
-        service = _build_notification_service()
-        _send_in_app(service, user.id, "msg1")
-        _send_in_app(service, user.id, "msg2")
-
+    def test_invalid_page_returns_400(self, user) -> None:
+        """Non-integer page param returns HTTP 400."""
         client = APIClient()
         client.force_authenticate(user=user)
-        response = client.get(LIST_URL, {"limit": 1, "offset": 1})
+        response = client.get(LIST_URL, {"page": "abc"})
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
 
-        data = response.json()
-        assert data["previous"] is not None
-        # The previous link should point back to offset=0 or no offset param (defaults to 0)
-        assert "limit=1" in data["previous"]
+    def test_invalid_page_size_returns_400(self, user) -> None:
+        """Non-integer page_size param returns HTTP 400."""
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get(LIST_URL, {"page_size": "abc"})
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_zero_page_returns_400(self, user) -> None:
+        """page=0 returns HTTP 400 (must be >= 1)."""
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get(LIST_URL, {"page": 0})
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_zero_page_size_returns_400(self, user) -> None:
+        """page_size=0 returns HTTP 400 (must be >= 1)."""
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get(LIST_URL, {"page_size": 0})
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
 
 
 @pytest.mark.django_db
-class TestListEndpointSchemaCompliance:
-    def test_count_reflects_total_matching_rows(self, user) -> None:
-        """The count field reflects the total number of matching rows (across all pages)."""
+class TestListEndpointCount:
+    def test_count_reflects_total_sent_and_read_for_user(self, user) -> None:
+        """count reflects the user's total SENT+READ notifications across all pages."""
         service = _build_notification_service()
         _send_in_app(service, user.id, "msg1")
         _send_in_app(service, user.id, "msg2")
@@ -400,48 +408,56 @@ class TestListEndpointSchemaCompliance:
 
         client = APIClient()
         client.force_authenticate(user=user)
-        response = client.get(LIST_URL, {"limit": 1})
+        # Request page_size=1 — results is 1 item but count should be 3
+        response = client.get(LIST_URL, {"page": 1, "page_size": 1})
 
         data = response.json()
         assert data["count"] == 3
+        assert len(data["results"]) == 1
 
-    def test_differentiate_from_unread_endpoint(self, user) -> None:
-        """The list endpoint differs from unread in pagination style and content.
-
-        - List uses limit/offset (LimitOffsetPagination)
-        - Unread uses page/page_size (passthrough pagination)
-        - List includes READ + SENT; unread is SENT only
-        """
+    def test_count_excludes_pending_send(self, user) -> None:
+        """count does not include PENDING_SEND notifications."""
         service = _build_notification_service()
-
-        # Create one SENT and one READ
         _send_in_app(service, user.id, "sent")
-        read = _send_in_app(service, user.id, "read")
-        service.mark_read(read.id)
+
+        Notification.objects.create(
+            user=user,
+            notification_type=NotificationTypes.IN_APP.value,
+            title="Pending",
+            body_template="notifications/in_app/example.body.txt",
+            context_name="in_app_generic_context",
+            context_kwargs={"message": "pending"},
+            status=NotificationStatus.PENDING_SEND.value,
+        )
 
         client = APIClient()
         client.force_authenticate(user=user)
+        response = client.get(LIST_URL)
 
-        # List should return both — LimitOffsetPagination envelope
-        list_response = client.get(LIST_URL)
-        list_data = list_response.json()
-        assert list_data["count"] == 2
-        assert "count" in list_data
-        assert "next" in list_data
-        assert "page" not in list_data
-        assert "page_size" not in list_data
+        data = response.json()
+        assert data["count"] == 1
 
-        # Unread should return only SENT
-        unread_response = client.get("/notifications/unread/")
-        unread_data = unread_response.json()
-        assert len(unread_data["results"]) == 1
-        assert unread_data["results"][0]["status"] == NotificationStatus.SENT.value
+    def test_count_is_per_user(self, user) -> None:
+        """count only reflects the authenticated user's own notifications."""
+        other_user = UserFactory().create_user()
+        service = _build_notification_service()
+
+        _send_in_app(service, user.id, "mine")
+        _send_in_app(service, other_user.id, "theirs1")
+        _send_in_app(service, other_user.id, "theirs2")
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get(LIST_URL)
+
+        data = response.json()
+        assert data["count"] == 1
 
 
 @pytest.mark.django_db
 class TestListEndpointMixedStatus:
     def test_excludes_pending_while_passing_sent_and_read(self, user) -> None:
-        """PENDING_SEND rows are filtered out while SENT and READ rows pass through in the same request."""
+        """PENDING_SEND rows are filtered out while SENT and READ rows pass through."""
         service = _build_notification_service()
 
         # SENT notification (via service — status becomes SENT after send)
@@ -478,3 +494,29 @@ class TestListEndpointMixedStatus:
         assert str(sent_notif.id) in result_ids
         assert str(read_notif.id) in result_ids
         assert str(pending_notif.id) not in result_ids
+
+    def test_list_includes_read_while_unread_excludes_them(self, user) -> None:
+        """List endpoint includes READ notifications; unread endpoint excludes them."""
+        service = _build_notification_service()
+
+        # Create one SENT and one READ
+        _send_in_app(service, user.id, "sent")
+        read = _send_in_app(service, user.id, "read")
+        service.mark_read(read.id)
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        # List should return both — page/page_size envelope
+        list_response = client.get(LIST_URL)
+        list_data = list_response.json()
+        assert list_data["count"] == 2
+        assert "page" in list_data
+        assert "page_size" in list_data
+        assert "next" not in list_data
+
+        # Unread should return only SENT
+        unread_response = client.get("/notifications/unread/")
+        unread_data = unread_response.json()
+        assert len(unread_data["results"]) == 1
+        assert unread_data["results"][0]["status"] == NotificationStatus.SENT.value
