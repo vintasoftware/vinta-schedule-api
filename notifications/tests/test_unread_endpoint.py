@@ -142,7 +142,10 @@ class TestUnreadEndpointContent:
         assert data["results"][0]["title"] == "Test notification"
 
     def test_response_envelope_shape(self, user) -> None:
-        """Response has the passthrough pagination envelope: results, page, page_size."""
+        """Response has the passthrough pagination envelope: results, page, page_size, count."""
+        service = _build_notification_service()
+        _send_in_app(service, user.id, "unread item")
+
         client = APIClient()
         client.force_authenticate(user=user)
         response = client.get(UNREAD_URL)
@@ -152,7 +155,57 @@ class TestUnreadEndpointContent:
         assert "results" in data
         assert "page" in data
         assert "page_size" in data
+        assert "count" in data
         assert isinstance(data["results"], list)
+        assert isinstance(data["count"], int)
+
+    def test_count_reflects_total_unread_for_user(self, user) -> None:
+        """count reflects the total number of the user's unread notifications."""
+        service = _build_notification_service()
+        _send_in_app(service, user.id, "msg1")
+        _send_in_app(service, user.id, "msg2")
+        _send_in_app(service, user.id, "msg3")
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        # Request page_size=1 — results is 1 item but count should be 3
+        response = client.get(UNREAD_URL, {"page": 1, "page_size": 1})
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["count"] == 3
+        assert len(data["results"]) == 1
+
+    def test_count_excludes_read_notifications(self, user) -> None:
+        """count does not include READ notifications (only SENT are unread)."""
+        service = _build_notification_service()
+        _send_in_app(service, user.id, "unread")
+
+        read_dc = _send_in_app(service, user.id, "read")
+        service.mark_read(read_dc.id)
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get(UNREAD_URL)
+
+        data = response.json()
+        assert data["count"] == 1
+
+    def test_count_is_per_user(self, user) -> None:
+        """count only reflects the authenticated user's own unread notifications."""
+        other_user = UserFactory().create_user()
+        service = _build_notification_service()
+
+        _send_in_app(service, user.id, "mine")
+        _send_in_app(service, other_user.id, "theirs1")
+        _send_in_app(service, other_user.id, "theirs2")
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get(UNREAD_URL)
+
+        data = response.json()
+        assert data["count"] == 1
 
     def test_result_item_shape(self, user) -> None:
         """Each result item has the expected fields."""

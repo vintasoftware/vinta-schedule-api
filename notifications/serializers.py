@@ -3,12 +3,14 @@ Serializers for the notifications app.
 
 NotificationSerializer is intentionally a plain Serializer (not ModelSerializer) so
 it can handle both:
-  - vintasend Notification dataclasses returned by get_in_app_unread() (Phase 1)
-  - vintasend_django model instances returned by ORM queries (Phase 2)
+  - vintasend Notification dataclasses returned by get_in_app_unread() /
+    get_in_app_notifications() (native service methods returning dataclasses).
+  - vintasend_django model instances returned by ORM queries (e.g. via get_object()).
 
-The dataclass has: id, user_id, notification_type, title, body_template, context_name,
-context_kwargs, send_after, subject_template, preheader_template, status, context_used.
-It does NOT have created or modified — those live only on the Django model.
+In vintasend 1.2.0 the dataclass carries: id, user_id, notification_type, title,
+body_template, context_name, context_kwargs, send_after, subject_template,
+preheader_template, status, context_used, created, modified — so the serializer's
+timestamp fields resolve for both dataclasses and ORM rows.
 """
 
 import logging
@@ -92,10 +94,24 @@ class NotificationSerializer(serializers.Serializer):
         """
         Return the last-modified timestamp as ISO 8601 string, or None for dataclasses.
 
-        The vintasend Notification dataclass has no `modified` attribute; only the
-        vintasend_django ORM model does.
+        In vintasend 1.2.0 the Notification dataclass carries `modified`; ORM rows also
+        have it. Returns None when the attribute is absent or None.
         """
         modified = getattr(obj, "modified", None)
         if modified is None:
             return None
         return modified.isoformat()
+
+
+class BulkMarkReadSerializer(serializers.Serializer):
+    """
+    Input serializer for the bulk mark-as-read endpoint.
+
+    Validates that the request body contains a non-empty list of notification ids.
+    Empty list or missing field → DRF 400 validation error.
+    """
+
+    ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        allow_empty=False,
+    )
