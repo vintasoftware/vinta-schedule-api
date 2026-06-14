@@ -1,15 +1,29 @@
 # In-App Notifications (vintasend) — Implementation Plan
 
+> **Addendum (2026-06-14) — reconciled to vintasend / vintasend-django 1.2.0.**
+> The first cut (Phases 0–3) shipped against vintasend 1.1.3, which lacked a native
+> "list all" method and had an IN_APP enum-filter bug, forcing two workarounds: a
+> repo-local `FixedDjangoDbNotificationBackend` and a thin ORM query for the "all" list.
+> **1.2.0 fixes both** and adds native bulk mark-read + count methods. This plan is now
+> updated to: (a) drop the `FixedDjangoDbNotificationBackend` workaround (use the stock
+> `DjangoDbNotificationBackend`); (b) back the "list all" endpoint with native
+> `get_in_app_notifications` + `get_in_app_notifications_count`; (c) add `count` to the
+> unread envelope via `get_in_app_unread_count`; (d) add a **bulk mark-read** endpoint
+> via native `mark_read_bulk` (Phase 4). In 1.2.0 the vintasend `Notification` dataclass
+> also carries `created`, `modified`, and `context_used`, so the serializer's
+> timestamp/body fields now resolve for natively-returned notifications, not just ORM rows.
+
 ## 1. Goals
 
 1. Make in-app notifications **sendable** through vintasend's native `NotificationService.create_notification(..., notification_type=IN_APP)` by registering a real IN_APP adapter + renderer in the DI container (today `get_in_app_unread` and any IN_APP send raises `NotificationError("No in-app notification adapter found")`).
-2. Expose an internal REST endpoint to **list all** of the current user's in-app notifications (read + unread).
-3. Expose an internal REST endpoint to **list only unread** in-app notifications, backed by vintasend's native `get_in_app_unread`.
+2. Expose an internal REST endpoint to **list all** of the current user's in-app notifications (read + unread), backed by vintasend's native `get_in_app_notifications` + `get_in_app_notifications_count` (1.2.0).
+3. Expose an internal REST endpoint to **list only unread** in-app notifications, backed by vintasend's native `get_in_app_unread` (+ `get_in_app_unread_count` for the total).
 4. Expose an internal REST endpoint to **mark a single notification as read**, backed by vintasend's native `mark_read`, with ownership enforcement so a user can only mark their own notifications.
+5. Expose an internal REST endpoint to **mark multiple notifications as read at once**, backed by vintasend's native `mark_read_bulk(ids, user_id=...)` — ownership-scoped + idempotent (1.2.0).
 
 **Non-goals:**
 - Wiring in-app notifications into any existing flow (org invitations, calendar events, etc.). v1 ships the *capability* + a reusable example context only — no triggers in existing code paths.
-- Bulk "mark all as read" (vintasend has no native bulk method; deferred).
+- "Mark ALL unread as read" in a single sweep (no-id-list mark-everything). Bulk is by explicit id list only; a mark-everything sweep is a separate follow-up.
 - Real-time delivery (websockets / SSE / push). The IN_APP adapter persists + renders only; clients poll the list endpoints.
 - Public GraphQL surface. Internal REST only.
 - Email / SMS / PUSH changes. Those adapters stay exactly as configured.
@@ -20,12 +34,13 @@
 
 | Decision | Resolution |
 |---|---|
-| **Use native vintasend methods** | List-unread → `NotificationService.get_in_app_unread(user_id, page, page_size)`; mark-read → `NotificationService.mark_read(notification_id)`; sending → `NotificationService.create_notification(...)`. These are the project's contract per the request; we do not reimplement them. |
-| **"List all" has no native method** | vintasend only exposes unread (`get_in_app_unread` / backend `filter_*_in_app_unread_notifications`). For "list all" we add a thin ORM query on the existing `vintasend_django` `Notification` model filtered to `user=request.user, notification_type=IN_APP` (statuses `SENT` + `READ`). Documented as a deliberate gap-fill, still reusing the vendored model — no new table. |
-| **IN_APP adapter is required infra** | The DI container ([di_core/containers.py](../di_core/containers.py)) registers only Email + SMS adapters. Without an IN_APP adapter, both sending and `get_in_app_unread` raise. We add a minimal repo-local `DjangoInAppNotificationAdapter` (`notification_type = IN_APP`) plus an in-app template renderer, since vintasend_django ships neither. The adapter renders the body template on `send`; persistence + status transitions stay with `DjangoDbNotificationBackend`. |
+| **vintasend ≥ 1.2.0** | Pins bumped to `vintasend>=1.2.0,<2`, `vintasend-django>=1.2.0,<2`, `vintasend-celery>=1.2.0,<2`. 1.2.0 fixes the IN_APP enum-filter bug, adds native `get_in_app_notifications` / `get_in_app_notifications_count` / `get_in_app_unread_count` / `mark_read_bulk`, and populates `created`/`modified`/`context_used` on the `Notification` dataclass. The earlier `FixedDjangoDbNotificationBackend` workaround is removed. |
+| **Use native vintasend methods** | List-all → `get_in_app_notifications(user_id, page, page_size)` + `get_in_app_notifications_count(user_id)`; list-unread → `get_in_app_unread(user_id, page, page_size)` + `get_in_app_unread_count(user_id)`; mark-read → `mark_read(notification_id)`; bulk mark-read → `mark_read_bulk(ids, user_id=...)`; sending → `create_notification(...)`. All native; we do not reimplement them. |
+| **No more "list all" workaround** | 1.1.3 had no native "all" method, so the first cut used a thin ORM query (`Notification.objects.filter(...)` via `get_queryset` + `ListModelMixin` + `LimitOffsetPagination`). 1.2.0 ships native `get_in_app_notifications` + count, so the list-all endpoint now uses the native method (passthrough `page`/`page_size` + a real `count`), consistent with the unread endpoint. The ORM `get_queryset` is retained **only** for the single mark-read `get_object()` ownership lookup, not for listing. |
+| **IN_APP adapter is required infra** | The DI container ([di_core/containers.py](../di_core/containers.py)) registers only Email + SMS adapters. Without an IN_APP adapter, both sending and the in-app read methods raise. We add a minimal repo-local `DjangoInAppNotificationAdapter` (`notification_type = IN_APP`) plus an in-app template renderer, since vintasend_django ships neither. The adapter renders the body template on `send`; persistence + status transitions stay with the stock `DjangoDbNotificationBackend` (no subclass — the 1.1.3 enum bug that required `FixedDjangoDbNotificationBackend` is fixed upstream in 1.2.0). |
 | **User-scoped, not org-scoped** | Notifications belong to a `User` (the model's `user` FK), independent of organization. Endpoints filter by `request.user`; no `OrganizationModel` / membership scoping. |
-| **Ownership enforcement on mark-read** | Native `mark_read(notification_id)` takes only an id — no user check. The viewset first loads the notification, 404s if it isn't `request.user`'s IN_APP notification, then calls `mark_read`. Prevents IDOR. |
-| **Pagination split** | "All" endpoint returns an ORM queryset → standard project `LimitOffsetPagination` (PAGE_SIZE 10). "Unread" endpoint calls native `get_in_app_unread`, which takes `page`/`page_size` and returns an `Iterable` (not a queryset) → passthrough pagination: accept `page`/`page_size` query params, hand them to the native method, serialize the returned page. Documented so the two list endpoints' query params differ intentionally. |
+| **Ownership enforcement on mark-read** | Single mark-read: the viewset's `get_object()` (scoped queryset: `user=request.user`, `notification_type=IN_APP`, `status in SENT/READ`) 404s on a foreign/unknown id before any native call. Bulk mark-read: native `mark_read_bulk(ids, user_id=request.user.id)` scopes the update to the user server-side, so foreign ids in the list are silently never touched. Both prevent IDOR. |
+| **Pagination — native + count everywhere** | BOTH list endpoints use native methods that take `page`/`page_size` and return an `Iterable` (not a queryset), serialized into a passthrough envelope `{ results, page, page_size, count }`. `count` comes from `get_in_app_notifications_count` / `get_in_app_unread_count`. `page_size` is clamped to a max (100). LimitOffsetPagination is no longer used for these endpoints — the two list endpoints now share one consistent contract. |
 | **No feature flag** | Purely additive surface: brand-new REST endpoints + a new adapter/renderer no existing code path invokes. The only shared touch is appending one adapter to the DI `notification_adapters` list, which cannot change Email/SMS behavior. Per plan-feature rules, additive-only ⇒ no flag. |
 | **App placement** | All new code lives in the existing `notifications` app (already holds the vintasend periodic send task). |
 | **DI injection into the viewset** | The viewset receives `notification_service` via the project's `@inject` + `Annotated[NotificationService, Provide["notification_service"]]` constructor pattern (same as `OrganizationViewSet`). |
@@ -45,25 +60,33 @@ No schema changes. Reuses `vintasend_django.models.Notification`:
 
 All endpoints are internal REST, JWT/session auth, `IsAuthenticated`, user-scoped via `request.user`. Registered through a new `notifications/routes.py` aggregated in [vinta_schedule_api/urls.py](../vinta_schedule_api/urls.py). Base path group: `notifications`.
 
+All list endpoints share one passthrough envelope: `{ results: [...], page, page_size, count }`. Response item: `{ id, title, notification_type, status, body, created, modified }`. `page_size` is clamped to a max of 100.
+
 ### 4.1 List all notifications
 
 - **GET** `/notifications/` → `200`
-- Query params: `limit`, `offset` (standard `LimitOffsetPagination`).
-- Returns the user's IN_APP notifications with `status in (SENT, READ)`, newest first.
-- Response item: `{ id, title, notification_type, status, body, created, modified }` (`body` = rendered body when available via `context_used`, else the template-rendered body; see Phase 2 note). Paginated envelope: `{ count, next, previous, results: [...] }`.
+- Query params: `page` (default 1), `page_size` (default 10, max 100).
+- Returns the user's IN_APP notifications with `status in (SENT, READ)`, newest first, via `NotificationService.get_in_app_notifications(request.user.id, page, page_size)`; `count` from `get_in_app_notifications_count(request.user.id)`.
 
 ### 4.2 List unread notifications
 
 - **GET** `/notifications/unread/` → `200`
-- Query params: `page` (default 1), `page_size` (default 10) — passthrough to native `get_in_app_unread`.
-- Returns only `status=SENT` IN_APP notifications for the user via `NotificationService.get_in_app_unread(request.user.id, page, page_size)`.
-- Response: list of the same item shape as the "all" endpoint (passthrough pagination — envelope documented in the phase; no `count` from native, so `next` is "has more" heuristic based on page fill).
+- Query params: `page` (default 1), `page_size` (default 10, max 100).
+- Returns only `status=SENT` IN_APP notifications via `NotificationService.get_in_app_unread(request.user.id, page, page_size)`; `count` from `get_in_app_unread_count(request.user.id)`.
 
 ### 4.3 Mark a notification as read
 
 - **POST** `/notifications/{id}/mark-read/` → `200` with the updated notification, or `404` if the id is not an IN_APP notification owned by `request.user`.
-- Calls `NotificationService.mark_read(id)` after the ownership check.
-- Idempotent: marking an already-`READ` notification returns `200` with unchanged state (no error).
+- Calls `NotificationService.mark_read(id)` after the `get_object()` ownership check.
+- Idempotent: marking an already-`READ` notification returns `200` with unchanged state (the viewset short-circuits and also catches `NotificationUpdateError` for the concurrent race).
+
+### 4.4 Mark multiple notifications as read (bulk)
+
+- **POST** `/notifications/mark-read/` (collection-level; distinct from the detail `…/{id}/mark-read/`) → `200`.
+- Request body: `{ "ids": [<id>, ...] }` (non-empty list of notification ids; validated → `400` on empty/malformed).
+- Calls `NotificationService.mark_read_bulk(ids, user_id=request.user.id)` — ownership-scoped (foreign ids silently skipped, never an error) and idempotent (already-READ/missing/non-SENT ids skipped).
+- Response: `{ "results": [ ...serialized notifications that are READ after the op... ] }` (the requested ids the user owns and that are now READ; the count of returned items may be fewer than requested ids).
+- Unauthenticated → `401`.
 
 ## 5. Phased Rollout
 
@@ -104,7 +127,7 @@ Acceptance: with the new adapter registered, `NotificationService.create_notific
 
 Changes:
 1. `notifications/serializers.py` (new): `NotificationSerializer` (read-only) exposing `id, title, notification_type, status, body, created, modified`.
-2. `notifications/views.py` (new): `NotificationViewSet` (read viewset). Inject `notification_service` via `@inject` + `Provide["notification_service"]` (same constructor pattern as [organizations/views.py](../organizations/views.py)). Add an `unread` action (`GET /notifications/unread/`) reading `page`/`page_size` query params, calling `self.notification_service.get_in_app_unread(request.user.id, page, page_size)`, serializing the returned iterable with passthrough pagination envelope.
+2. `notifications/views.py` (new): `NotificationViewSet` (read viewset). Inject `notification_service` via `@inject` + `Provide["notification_service"]` (same constructor pattern as [organizations/views.py](../organizations/views.py)). Add an `unread` action (`GET /notifications/unread/`) reading `page`/`page_size` query params, calling `self.notification_service.get_in_app_unread(request.user.id, page, page_size)`, serializing the returned iterable into the passthrough envelope `{ results, page, page_size, count }` — `count` from `get_in_app_unread_count(request.user.id)` (added in 1.2.0; the first cut omitted `count`).
 3. `notifications/routes.py` (new): register `NotificationViewSet` under regex `notifications`, basename `Notifications`.
 4. [vinta_schedule_api/urls.py](../vinta_schedule_api/urls.py): import `notifications_routes` and add to the `routes` aggregation tuple.
 
@@ -122,26 +145,28 @@ Acceptance: `GET /notifications/unread/` returns only the current user's `IN_APP
 
 ---
 
-### Phase 2 — List all endpoint (thin ORM, read + unread)
+### Phase 2 — List all endpoint (native `get_in_app_notifications`, read + unread)
+
+> **Updated for 1.2.0.** Originally specced as a thin ORM list (`get_queryset` + `ListModelMixin` + `LimitOffsetPagination`) because 1.1.3 had no native "all" method. 1.2.0 ships native `get_in_app_notifications` + `get_in_app_notifications_count`, so the endpoint now uses the native method with passthrough `page`/`page_size` + `count`, consistent with the unread endpoint.
 
 **Goal**: Authenticated user can `GET /notifications/` and see all their in-app notifications (read + unread).
 
 **Feature flag**: none — additive new endpoint.
 
 Changes:
-1. `notifications/views.py`: implement the `NotificationViewSet` `list`/`get_queryset` to return `Notification.objects.filter(user=request.user, notification_type=IN_APP, status__in=[SENT, READ]).order_by("-created")`. Standard `LimitOffsetPagination` (project default). Reuse the Phase 1 `NotificationSerializer`.
-2. `notifications/serializers.py`: ensure `body` resolution handles `context_used`-rendered body vs. unrendered fallback (document chosen source).
+1. `notifications/views.py`: implement `list` (custom, not `ListModelMixin`) calling `self.notification_service.get_in_app_notifications(request.user.id, page, page_size)` for the page and `self.notification_service.get_in_app_notifications_count(request.user.id)` for the total; return the passthrough envelope `{ results, page, page_size, count }`. Read `page`/`page_size` (clamped to max 100) exactly like the `unread` action. Reuse the Phase 1 `NotificationSerializer`. Keep `get_queryset` (now only consumed by Phase 3's `get_object()` ownership lookup, not by listing).
+2. `notifications/serializers.py`: no change needed — `body` re-renders `body_template` against `context_used` / `context_kwargs`, and in 1.2.0 the native dataclass carries `context_used` + `created` + `modified`, so the same serializer works identically for native results and ORM rows.
 
 Spec use-case: List all notifications (Goal 2).
 
 Tests:
-- **Integration**: `notifications/tests/test_list_endpoint.py` — seed SENT + READ + PENDING_SEND + FAILED for the user and rows for another user; assert `GET /notifications/` returns only the user's SENT+READ rows newest-first, excludes PENDING/FAILED, respects `limit`/`offset`, isolates by user, 401 when unauth.
+- **Integration**: `notifications/tests/test_list_endpoint.py` — seed SENT + READ + PENDING_SEND + FAILED for the user (via the service / direct ORM for the excluded statuses) and rows for another user; assert `GET /notifications/` returns only the user's SENT+READ rows newest-first, excludes PENDING/FAILED/CANCELLED, respects `page`/`page_size`, returns the `{results, page, page_size, count}` envelope with a correct `count`, isolates by user, 401 when unauth.
 
-**Suggested AI model**: Tier 2 — `claude-haiku-4-5` / `gpt-5-mini` / `gemini-2.5-flash`. ORM-backed list mirroring existing read viewsets.
+**Suggested AI model**: Tier 2 — `claude-haiku-4-5` / `gpt-5-mini` / `gemini-2.5-flash`. Native-method-backed list action mirroring the `unread` action.
 
 **Reusable skills**: `create-rest-endpoint`; `write-tests`.
 
-Acceptance: `GET /notifications/` returns the current user's `IN_APP` notifications with `status in (SENT, READ)`, newest first, paginated via `limit`/`offset`, isolated per user.
+Acceptance: `GET /notifications/` returns the current user's `IN_APP` notifications with `status in (SENT, READ)`, newest first, paginated via `page`/`page_size` with a real `count`, isolated per user.
 
 ---
 
@@ -171,6 +196,62 @@ Tests:
 
 Acceptance: `POST /notifications/{id}/mark-read/` marks the owner's notification `READ` and removes it from the unread list; non-owners and unknown ids get `404`; repeat calls are idempotent.
 
+---
+
+### Phase 4 — Bulk mark-as-read endpoint (native `mark_read_bulk`)
+
+> **Added in the 1.2.0 reconciliation (2026-06-14).** Possible only with 1.2.0's native `mark_read_bulk`.
+
+**Goal**: Authenticated user can `POST /notifications/mark-read/` with a list of ids to mark several notifications read at once.
+
+**Feature flag**: none — additive new endpoint.
+
+Changes:
+1. `notifications/serializers.py`: add a small input serializer `BulkMarkReadSerializer` with `ids = serializers.ListField(child=serializers.CharField(), allow_empty=False)` (validate non-empty list of ids → `400` on empty/malformed).
+2. `notifications/views.py`: add a collection action `@action(detail=False, methods=["post"], url_path="mark-read")` named `mark_read_bulk` (distinct from the detail `mark_read` at `…/{id}/mark-read/`; different route, different method name). Validate the body with `BulkMarkReadSerializer`, then call `self.notification_service.mark_read_bulk(ids, user_id=request.user.id)` (ownership-scoped → foreign ids silently skipped; idempotent). Serialize the returned iterable with `NotificationSerializer(many=True)` and return `{ "results": [...] }` at `200`.
+3. Route already registered (Phase 1) — the collection action needs no new `routes.py` entry. Regenerate `schema.yml`.
+
+Spec use-case: Mark multiple notifications as read (Goal 5).
+
+Tests:
+- **Integration**: `notifications/tests/test_bulk_mark_read_endpoint.py` —
+  - user POSTs ids of two own SENT notifications → `200`; both become `READ` in the DB and drop out of `/notifications/unread/`;
+  - mix of own SENT + own already-READ ids → `200`, idempotent (no error), all returned READ;
+  - including another user's id in the list → that row is NOT marked (ownership scope), still SENT in the DB, and absent from the response (IDOR guard);
+  - empty / missing `ids` → `400`;
+  - non-existent ids in the list → silently skipped, `200`;
+  - unauthenticated → `401`.
+
+**Suggested AI model**: Tier 2 — `claude-haiku-4-5` / `gpt-5-mini` / `gemini-2.5-flash`. Single collection action + input serializer + native call.
+
+**Reusable skills**: `create-rest-endpoint`; `write-tests`.
+
+Acceptance: `POST /notifications/mark-read/` with a list of ids marks the caller's SENT notifications `READ` (idempotent, ownership-scoped); foreign/unknown ids are silently skipped; empty body → `400`; unauth → `401`.
+
+---
+
+### Phase R — Reconcile to vintasend 1.2.0 (dependency bump + drop workarounds)
+
+> **Cross-cutting (2026-06-14).** Not a user-facing endpoint; the foundation the Phase 2/4 updates build on. Landed as its own commits ahead of the endpoint changes.
+
+**Goal**: Adopt vintasend 1.2.0 and remove the 1.1.3 workarounds.
+
+**Feature flag**: none.
+
+Changes:
+1. `pyproject.toml` + `uv.lock`: bump `vintasend` / `vintasend-django` / `vintasend-celery` to `>=1.2.0,<2`; `uv lock --upgrade-package …` + `uv sync`.
+2. Delete `notifications/notification_backends.py` (`FixedDjangoDbNotificationBackend` — the enum bug it patched is fixed upstream).
+3. `di_core/containers.py`: drop the `FixedDjangoDbNotificationBackend` import; the in-app adapter and the service-level `notification_backend` use the stock `DjangoDbNotificationBackend`.
+4. `notifications/tests/test_in_app_send.py`: update `_build_notification_service` to use the stock `DjangoDbNotificationBackend`; keep the DI end-to-end unread test (now guards the stock wiring).
+
+Tests: full suite green on 1.2.0; the in-app send/unread integration tests pass against the stock backend.
+
+**Suggested AI model**: Tier 2 — `claude-haiku-4-5` / `gpt-5-mini` / `gemini-2.5-flash`. Dependency bump + delete-and-rewire.
+
+**Reusable skills**: `write-tests`.
+
+Acceptance: stock `DjangoDbNotificationBackend` is the only backend; `notification_backends.py` is gone; `grep -r FixedDjangoDbNotificationBackend` returns nothing; full suite green on 1.2.0.
+
 ## 6. Risk & Rollout Notes
 
 - **No feature flag** — every phase is additive (new endpoints, new adapter/renderer). The single shared edit is appending one entry to the DI `notification_adapters` list; it introduces a new channel and cannot alter Email/SMS sending. Phase 0's integration test asserts existing channels still resolve. No flag-removal phase needed.
@@ -185,10 +266,10 @@ Acceptance: `POST /notifications/{id}/mark-read/` marks the owner's notification
 
 | Question | Recommended default | Owner |
 |---|---|---|
-| Should `body` in the response be the **rendered** body (from `context_used` after send) or the raw template path? | Return the rendered body when `context_used` is present; fall back to rendering `body_template` with `context_kwargs`. Confirm the frontend's expectation. | Frontend + backend |
-| Do we need an **unread count** endpoint (badge) for the UI? | Defer to a follow-up; derivable from `/notifications/unread/` length for now. | Product |
-| Index on `(user, notification_type, status)` for the "all" query at scale? | Defer until list latency is measured in prod; add a migration only if needed. | Backend |
-| Bulk **mark-all-read** in a later version? | Deferred (Non-goal). Revisit if the UI needs it; would loop native `mark_read` or a custom bulk ORM update. | Product |
+| Should `body` in the response be the **rendered** body or the raw template path? | **Resolved**: rendered body — `body_template` re-rendered against `context_used` (now on the 1.2.0 dataclass) with `context_kwargs` fallback. | Backend |
+| **Unread count** for a UI badge? | **Resolved**: both list envelopes now include `count` (`get_in_app_unread_count` / `get_in_app_notifications_count`). No separate count-only endpoint unless the badge needs one without fetching a page. | Product |
+| Index on `(user, notification_type, status)` for the list queries at scale? | Defer until list latency is measured in prod; the index would live in `vintasend_django`'s model (upstream), not this repo. | Backend |
+| "Mark ALL unread as read" (no-id sweep)? | Deferred (Non-goal). The id-list bulk endpoint covers the immediate need; a sweep would use a future `mark_all_in_app_read(user_id)` if 1.x adds one. | Product |
 
 ## 8. Touch List
 
@@ -209,11 +290,22 @@ Acceptance: `POST /notifications/{id}/mark-read/` marks the owner's notification
 - @notifications/tests/test_serializers.py (new)
 - @notifications/tests/test_unread_endpoint.py (new)
 
-**Phase 2 — list all endpoint**
-- @notifications/views.py (edit — `get_queryset`/`list`)
-- @notifications/serializers.py (edit — `body` resolution)
+**Phase 2 — list all endpoint (native)**
+- @notifications/views.py (edit — native `list` via `get_in_app_notifications` + count)
 - @notifications/tests/test_list_endpoint.py (new)
 
 **Phase 3 — mark-as-read endpoint**
 - @notifications/views.py (edit — `mark_read` detail action)
 - @notifications/tests/test_mark_read_endpoint.py (new)
+
+**Phase 4 — bulk mark-as-read endpoint**
+- @notifications/serializers.py (edit — `BulkMarkReadSerializer`)
+- @notifications/views.py (edit — `mark_read_bulk` collection action)
+- @notifications/tests/test_bulk_mark_read_endpoint.py (new)
+
+**Phase R — reconcile to vintasend 1.2.0**
+- [pyproject.toml](../pyproject.toml) (edit — bump vintasend* to `>=1.2.0`)
+- [uv.lock](../uv.lock) (edit — re-lock)
+- @notifications/notification_backends.py (delete — drop `FixedDjangoDbNotificationBackend`)
+- [di_core/containers.py](../di_core/containers.py) (edit — stock `DjangoDbNotificationBackend`)
+- @notifications/tests/test_in_app_send.py (edit — stock backend)
