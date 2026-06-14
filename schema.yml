@@ -5331,7 +5331,22 @@ paths:
   /organizations/:
     post:
       operationId: organizations_create
-      description: A viewset for managing organizations.
+      description: |-
+        Create a new organization for the authenticated user.
+
+        Overrides ``CreateModelMixin.create`` to handle the post-write refetch
+        correctly for members who already have one or more memberships (Phase 5).
+
+        We skip the base mixin's post-write ``_resolve_active_organization`` call
+        entirely.  For the ``create`` action — exempted via
+        ``active_org_optional_actions = ("mine", "create")`` — that re-resolve
+        would leave a multi-org caller with no ``X-Organization-Id`` header
+        resolved to ``None``, making ``get_queryset`` return nothing and causing
+        the re-fetch to raise ``DoesNotExist`` / 500.
+
+        Instead, after ``perform_create`` we look up the just-created membership
+        directly and stash it on the request so the re-fetch (via
+        ``get_queryset``) is scoped to the new organization.
       tags:
       - organizations
       requestBody:
@@ -5359,7 +5374,22 @@ paths:
   /organizations{format}:
     post:
       operationId: organizations_formatted_create
-      description: A viewset for managing organizations.
+      description: |-
+        Create a new organization for the authenticated user.
+
+        Overrides ``CreateModelMixin.create`` to handle the post-write refetch
+        correctly for members who already have one or more memberships (Phase 5).
+
+        We skip the base mixin's post-write ``_resolve_active_organization`` call
+        entirely.  For the ``create`` action — exempted via
+        ``active_org_optional_actions = ("mine", "create")`` — that re-resolve
+        would leave a multi-org caller with no ``X-Organization-Id`` header
+        resolved to ``None``, making ``get_queryset`` return nothing and causing
+        the re-fetch to raise ``DoesNotExist`` / 500.
+
+        Instead, after ``perform_create`` we look up the just-created membership
+        directly and stash it on the request so the re-fetch (via
+        ``get_queryset``) is scoped to the new organization.
       parameters:
       - in: path
         name: format

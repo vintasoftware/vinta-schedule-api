@@ -1,10 +1,13 @@
 """
-Phase 5 — Integration tests: Gated onboarding for uninvited social signup.
+Integration tests: Gated onboarding for uninvited social signup.
 
 Use-case 3: A social user who signed up without a pending invitation lands
 authenticated but membership-less (gated).  They then create their own
 organisation via the existing OrganizationViewSet create endpoint and become
-ADMIN.  A second create attempt is rejected by OrganizationManagementPermission.
+ADMIN.
+
+Phase 5 update: a second create attempt now also SUCCEEDS — any authenticated
+user may POST /organizations/ and become ADMIN of the new org (Use-case 7).
 
 Four scenarios are covered:
 
@@ -12,8 +15,8 @@ Four scenarios are covered:
    Organisation is created, no OrganizationMembership row exists.
 2. Gated → create org → ADMIN: a membership-less authenticated user POSTs the
    org-create endpoint, succeeds, and is recorded as ADMIN of the new org.
-3. Second create rejected: the now-member user POSTs org-create again and is
-   refused with 403; no second org or membership is created.
+3. Second create succeeds (Phase 5): the now-member user POSTs org-create again
+   and creates a second org; they end up with two ADMIN memberships.
 4. Membership-less user blocked from a member-only tenant endpoint: a
    membership-less user hitting OrganizationInvitationViewSet gets 403 (no
    membership → OrganizationInvitationPermission denies access).
@@ -165,11 +168,16 @@ class TestSocialGatedOnboarding:
     # Scenario 3 — second create attempt is rejected
     # ------------------------------------------------------------------
 
-    def test_second_org_create_rejected_after_first_succeeds(self):
-        """
-        After a social user creates their org (now ADMIN / member), a second
-        POST to org-create returns 403 and no second Organisation or membership
-        is created.
+    def test_second_org_create_succeeds_after_first_succeeds(self):
+        """Phase 5 / Use-case 7: after creating a first org, a member can create a second one.
+
+        Prior to Phase 5 this was expected to return 403 (OrganizationManagementPermission
+        blocked members from the create action).  Phase 5 relaxes the permission so any
+        authenticated user may POST /organizations/ and become ADMIN of the new org.
+        The second create must therefore:
+        - Return HTTP 201.
+        - Create the second org with the caller as ADMIN.
+        - Leave the caller with TWO active memberships.
         """
         user = _social_save_user("onceonly@social.example.com")
         client = _membership_less_auth_client(user)
@@ -183,22 +191,24 @@ class TestSocialGatedOnboarding:
         assert first_response.status_code == status.HTTP_201_CREATED, (
             f"First create failed unexpectedly: {first_response.status_code}"
         )
+        assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 1
 
-        membership_count_after_first = OrganizationMembership.objects.filter(user=user).count()
-
-        # Second create — must be rejected by OrganizationManagementPermission.
+        # Second create — Phase 5: now succeeds for an authenticated member.
         second_response = client.post(
             url, {"name": "Second Org", "should_sync_rooms": False}, format="json"
         )
-        assert second_response.status_code == status.HTTP_403_FORBIDDEN, (
-            f"Expected 403, got {second_response.status_code}: {second_response.json()}"
+        assert second_response.status_code == status.HTTP_201_CREATED, (
+            f"Expected 201, got {second_response.status_code}: {second_response.json()}"
         )
 
-        # No extra membership or org created.
-        assert (
-            OrganizationMembership.objects.filter(user=user).count() == membership_count_after_first
-        )
-        assert not Organization.objects.filter(name="Second Org").exists()
+        # Caller now has TWO active memberships; both orgs exist.
+        assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 2
+        assert Organization.objects.filter(name="Second Org").exists()
+
+        # The second membership is also ADMIN.
+        second_org = Organization.objects.get(name="Second Org")
+        second_membership = OrganizationMembership.objects.get(user=user, organization=second_org)
+        assert second_membership.role == OrganizationRole.ADMIN
 
     # ------------------------------------------------------------------
     # Scenario 4 — membership-less user blocked from member-only endpoint

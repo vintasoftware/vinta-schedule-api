@@ -70,9 +70,17 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     permission_classes = (IsAuthenticated, OrganizationManagementPermission)
     #: The ``mine`` action lists the caller's own memberships and must not require
     #: the ``X-Organization-Id`` header — it is the endpoint the frontend uses to
-    #: *discover* which org ids are available.  All other actions on this viewset
-    #: keep the standard header enforcement (400 / 403).
-    active_org_optional_actions = ("mine",)
+    #: *discover* which org ids are available.
+    #:
+    #: The ``create`` action is also exempt so that a member with existing
+    #: memberships can POST /organizations/ without a header (Phase 5). Without
+    #: this exemption, the multi-org 400 would fire in ``initial()`` before
+    #: ``perform_create`` runs, and the post-create re-resolve in
+    #: ``CreateModelMixin.create`` would again raise 400 (the user now has one
+    #: more membership than before the write).
+    #:
+    #: All other actions keep the standard header enforcement (400 / 403).
+    active_org_optional_actions = ("mine", "create")
 
     def get_permissions(self):
         """
@@ -81,8 +89,10 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
           can only reach their own org because get_queryset is scoped by
           membership, so cross-org attempts return 404.
         - All other actions keep the class-level defaults (IsAuthenticated +
-          OrganizationManagementPermission), which gates onboarding (create)
-          to membership-less users and locks down retrieve/destroy.
+          OrganizationManagementPermission).  As of Phase 5, ``create`` is open
+          to any authenticated user (not gated to membership-less users); the
+          other default-permission actions (retrieve, destroy) keep the full
+          membership gate.
         """
         if self.action in ("update", "partial_update"):
             return [IsAuthenticated(), IsOrganizationAdmin()]
@@ -104,6 +114,68 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         if membership:
             return Organization.objects.filter(id=membership.organization_id)
         return Organization.objects.none()
+
+    def create(self, request, *args, **kwargs):
+        """Create a new organization for the authenticated user.
+
+        Overrides ``CreateModelMixin.create`` to handle the post-write refetch
+        correctly for members who already have one or more memberships (Phase 5).
+
+        We skip the base mixin's post-write ``_resolve_active_organization`` call
+        entirely.  For the ``create`` action — exempted via
+        ``active_org_optional_actions = ("mine", "create")`` — that re-resolve
+        would leave a multi-org caller with no ``X-Organization-Id`` header
+        resolved to ``None``, making ``get_queryset`` return nothing and causing
+        the re-fetch to raise ``DoesNotExist`` / 500.
+
+        Instead, after ``perform_create`` we look up the just-created membership
+        directly and stash it on the request so the re-fetch (via
+        ``get_queryset``) is scoped to the new organization.
+        """
+        serializer = self.get_create_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        instance = serializer.instance
+
+        # Stash the newly-created membership so get_queryset can scope to the
+        # new org for the re-fetch below.  The membership was created by
+        # create_organization; it exists in the DB at this point.
+        new_membership = (
+            OrganizationMembership.objects.filter(
+                user=request.user,
+                organization_id=instance.pk,
+                is_active=True,
+            )
+            .select_related("organization")
+            .first()
+        )
+        # The membership was just created with is_active=True, so this lookup
+        # is expected to always succeed.  A None result here would be a hard bug
+        # (e.g. a post-create signal deleted the membership), not a graceful
+        # fallback — there is no safe org context to recover with.
+        if new_membership is None:
+            logger.error(
+                "Membership lookup returned None immediately after create for org %s — "
+                "this is a bug; the response will be misconfigured.",
+                instance.pk,
+            )
+        request.user._active_membership = new_membership  # type: ignore[union-attr]
+        request.organization_membership = new_membership  # type: ignore[attr-defined]
+        request.organization = (  # type: ignore[attr-defined]
+            new_membership.organization if new_membership is not None else None
+        )
+
+        # Re-fetch the instance so any annotations/virtual-model fields on
+        # OrganizationVirtualModel are populated.  Mirror the base
+        # CreateModelMixin.create branch: prefer get_return_queryset() when
+        # present so a future override is not silently ignored here.
+        if hasattr(self, "get_return_queryset"):
+            annotated_instance = self.get_return_queryset().get(pk=instance.pk)
+        else:
+            annotated_instance = self.get_queryset().get(pk=instance.pk)
+        return_serializer = self.get_retrieve_serializer(annotated_instance)
+        headers = self.get_success_headers(return_serializer.data)
+        return Response(return_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     def update(self, request, *args, **kwargs):
         """Override update to:

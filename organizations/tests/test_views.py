@@ -240,7 +240,13 @@ class TestOrganizationViewSet:
     def test_create_organization_authenticated_with_existing_membership(
         self, auth_client, user, organization_with_membership
     ):
-        """Test creating an organization when user already has membership"""
+        """Phase 5 / Use-case 7: a member with an existing membership can create
+        an additional organization and becomes its ADMIN.
+
+        Prior to Phase 5 this returned 403 (OrganizationManagementPermission
+        blocked members). The permission is now action-aware: ``create`` is open
+        to any authenticated user.
+        """
         url = reverse("api:Organizations-list")
         data = {
             "name": "Another Organization",
@@ -248,7 +254,17 @@ class TestOrganizationViewSet:
         }
         response = auth_client.post(url, data, format="json")
 
-        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        response_data = response.json()
+        assert response_data["name"] == "Another Organization"
+
+        # Creator must now have TWO active memberships.
+        assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 2
+
+        # The new org's membership must be ADMIN.
+        new_org_id = response_data["id"]
+        new_membership = OrganizationMembership.objects.get(user=user, organization_id=new_org_id)
+        assert new_membership.role == OrganizationRole.ADMIN
 
     def test_create_organization_unauthenticated(self, anonymous_client):
         """Test creating an organization without authentication"""
@@ -3485,3 +3501,164 @@ class TestOrganizationMineAction:
         response = client.get(url)
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+
+@pytest.mark.django_db
+class TestCreateAdditionalOrganization:
+    """Phase 5 / Use-case 7 — a member creates an additional organization.
+
+    Acceptance criteria:
+    - POST /organizations/ succeeds for a user who already has memberships.
+    - The caller becomes ADMIN of the new org.
+    - The response is HTTP 201 with the newly created org body.
+    - A multi-org user (2+ existing memberships) with NO header gets 201, NOT 400.
+    - A gated user (0 memberships) first-org create still works (no regression).
+    - An unauthenticated POST still gets 401 (no regression).
+    """
+
+    def test_member_with_one_existing_org_can_create_additional_org(self, user):
+        """Use-case 7 core: user in org A creates org C → 201, becomes ADMIN of C, 2 memberships."""
+        # Existing org A with membership
+        org_a = baker.make(Organization, name="Org A")
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org_a,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        # POST without X-Organization-Id header (the common case for this flow)
+        url = reverse("api:Organizations-list")
+        response = client.post(url, {"name": "Org C"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        body = response.json()
+        assert body["name"] == "Org C"
+
+        # Creator now has TWO active memberships
+        assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 2
+
+        # The new membership must be ADMIN
+        new_membership = OrganizationMembership.objects.get(user=user, organization_id=body["id"])
+        assert new_membership.role == OrganizationRole.ADMIN
+
+    def test_member_with_one_existing_org_mine_lists_both_after_create(self, user):
+        """After creating org C, GET /organizations/mine/ lists both A and C."""
+        org_a = baker.make(Organization, name="Org A Mine")
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org_a,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        url = reverse("api:Organizations-list")
+        response = client.post(url, {"name": "Org C Mine"}, format="json")
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        new_org_id = response.json()["id"]
+
+        # mine/ must list both
+        mine_url = reverse("api:Organizations-mine")
+        mine_response = client.get(mine_url)
+
+        assert_response_status_code(mine_response, status.HTTP_200_OK)
+        org_ids = {item["organization"]["id"] for item in mine_response.json()}
+        assert org_a.id in org_ids
+        assert new_org_id in org_ids
+
+    def test_member_can_scope_new_org_with_header(self, user):
+        """After creating org C, sending X-Organization-Id: <C> scopes to C."""
+        org_a = baker.make(Organization, name="Org A Header")
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org_a,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        url = reverse("api:Organizations-list")
+        response = client.post(url, {"name": "Org C Header"}, format="json")
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        new_org_id = response.json()["id"]
+
+        # GET /organizations/current/ with new org header → resolves to new org
+        current_url = reverse("api:Organizations-current")
+        scoped_response = client.get(current_url, HTTP_X_ORGANIZATION_ID=str(new_org_id))
+        assert_response_status_code(scoped_response, status.HTTP_200_OK)
+        assert scoped_response.json()["organization"]["id"] == new_org_id
+
+    def test_multi_org_member_two_existing_orgs_can_create_third(self, user):
+        """A user with TWO existing memberships can POST /organizations/ with NO header → 201.
+
+        This is the carry-forward concern from Phase 2b: the create action must NOT 400
+        even when the caller already has 2+ active memberships and omits the header.
+        The post-write re-resolve must also NOT 400/403.
+        """
+        org_a = baker.make(Organization, name="Multi Org A")
+        org_b = baker.make(Organization, name="Multi Org B")
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org_a,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org_b,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        # No X-Organization-Id header — would 400 on any other action
+        url = reverse("api:Organizations-list")
+        response = client.post(url, {"name": "Org D Third"}, format="json")
+
+        # Must be 201, NOT 400 — the create action is exempt from the multi-org-no-header 400
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        body = response.json()
+        assert body["name"] == "Org D Third"
+
+        # User now has THREE active memberships
+        assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 3
+
+        # New membership is ADMIN
+        new_membership = OrganizationMembership.objects.get(user=user, organization_id=body["id"])
+        assert new_membership.role == OrganizationRole.ADMIN
+
+    def test_gated_user_first_org_create_still_works(self, user):
+        """Regression: a gated user (0 memberships) can still create their first org → 201."""
+        # user has NO membership (gated state)
+        assert OrganizationMembership.objects.filter(user=user).count() == 0
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        url = reverse("api:Organizations-list")
+        response = client.post(url, {"name": "First Org"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        body = response.json()
+        assert body["name"] == "First Org"
+
+        # Now the user has exactly one membership
+        assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 1
+        membership = OrganizationMembership.objects.get(user=user)
+        assert membership.role == OrganizationRole.ADMIN
+
+    def test_unauthenticated_post_returns_401(self, anonymous_client):
+        """Unauthenticated POST /organizations/ must still return 401 (no regression)."""
+        url = reverse("api:Organizations-list")
+        response = anonymous_client.post(url, {"name": "Hacker Org"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
