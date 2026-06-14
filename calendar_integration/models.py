@@ -1614,7 +1614,15 @@ class GoogleCalendarServiceAccount(OrganizationModel):
         related_name="google_service_accounts",
     )
     email = models.EmailField()
-    audience = models.CharField(max_length=255, blank=True)
+    admin_email = models.EmailField(
+        max_length=255,
+        blank=True,
+        help_text=(
+            "Google Workspace super-admin email used as the DWD impersonation subject. "
+            "The service account must have domain-wide delegation granted for the Admin SDK "
+            "and Calendar API scopes in the Google Admin Console."
+        ),
+    )
     public_key = models.TextField()
     private_key_id = EncryptedCharField(max_length=255)
     private_key = EncryptedTextField()

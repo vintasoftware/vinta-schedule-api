@@ -22,7 +22,7 @@ class GoogleServiceAccountWriteSerializer(serializers.Serializer):
     """
 
     email = serializers.EmailField()
-    audience = serializers.CharField(max_length=255, allow_blank=True)
+    admin_email = serializers.EmailField(allow_blank=True)
     public_key = serializers.CharField()
     private_key_id = serializers.CharField(write_only=True)
     private_key = serializers.CharField(write_only=True)
@@ -37,7 +37,7 @@ class GoogleServiceAccountReadSerializer(serializers.Serializer):
     """
 
     email = serializers.CharField(read_only=True)
-    audience = serializers.CharField(read_only=True)
+    admin_email = serializers.EmailField(read_only=True)
     configured = serializers.SerializerMethodField()
 
     def get_configured(self, obj: GoogleCalendarServiceAccount) -> bool:
@@ -56,7 +56,7 @@ class ServiceAccountReadSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = GoogleCalendarServiceAccount
-        fields = ("id", "email", "audience", "configured", "created", "modified")
+        fields = ("id", "email", "admin_email", "configured", "created", "modified")
         read_only_fields = fields
 
     def get_configured(self, obj: GoogleCalendarServiceAccount) -> bool:
@@ -80,17 +80,17 @@ class ServiceAccountWriteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = GoogleCalendarServiceAccount
-        fields = ("email", "audience", "public_key", "private_key_id", "private_key")
+        fields = ("email", "admin_email", "public_key", "private_key_id", "private_key")
 
 
 class OrganizationSerializer(VirtualModelSerializer):
     """Serializer for Organization instances.
 
     The ``google_service_account`` field supports both reading and writing:
-    - **Write**: accepts ``email``, ``audience``, ``public_key``,
+    - **Write**: accepts ``email``, ``admin_email``, ``public_key``,
       ``private_key_id`` (write-only), and ``private_key`` (write-only).
       Omitting the field on PATCH leaves existing credentials unchanged.
-    - **Read**: returns ``email``, ``audience``, and ``configured: true/false``.
+    - **Read**: returns ``email``, ``admin_email``, and ``configured: true/false``.
       Secret fields are never returned.
     """
 

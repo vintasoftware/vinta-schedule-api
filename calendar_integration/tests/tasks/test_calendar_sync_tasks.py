@@ -63,7 +63,7 @@ def google_service_account(db, organization):
     """Create a Google service account for testing."""
     return GoogleCalendarServiceAccount.objects.create(
         email="service@example.com",
-        audience="https://oauth2.googleapis.com/token",
+        admin_email="admin@example.com",
         public_key="test_public_key",
         private_key_id="test_key_id",
         private_key="test_private_key",

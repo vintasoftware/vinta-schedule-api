@@ -325,14 +325,14 @@ class CalendarService(BaseCalendarService):
                 GoogleCalendarAdapter,
             )
 
-            return GoogleCalendarAdapter.from_service_account_credentials(
+            return GoogleCalendarAdapter.from_service_account(
                 {
                     "account_id": str(account.id),
                     "email": account.email,
                     "public_key": account.public_key,
                     "private_key_id": account.private_key_id,
                     "private_key": account.private_key,
-                    "audience": account.audience,
+                    "admin_email": account.admin_email,
                 }
             ), account
 
