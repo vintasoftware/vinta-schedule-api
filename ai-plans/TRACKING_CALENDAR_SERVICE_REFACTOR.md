@@ -104,11 +104,28 @@
   - Phase 7 cleanup list += drop redundant facade `@transaction.atomic()` on `import_account_calendars` delegation; remove stale `_process_events_for_sync`/`_link_orphaned_recurring_instances` from the `AuthenticatedCalendarService` protocol; add a direct orphan-link unit test (currently integration-covered).
   - Checkpoint strategy (commit extraction before tests) worked well for the long extraction — reuse if Phase 6 runs long.
 
+### Phase 6 — Extract CalendarWebhookService ✅
+- **Status**: complete, PR open
+- **Model**: claude-sonnet-4-6 (Tier 3) + fixer (sonnet, guard regression)
+- **Branch**: `plan/calendar-service-refactor/phase-6` (base `…/phase-5`)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/77 (published, 3 inline comments)
+- **Files**: `calendar_integration/services/calendar_webhook_service.py` (new, ~676 lines), `calendar_integration/services/calendar_service.py` (edited, −430 lines → facade now 1618 lines), `calendar_integration/tests/services/test_calendar_webhook_service.py` (new, 12 tests)
+- **Summary**: Moved the 8 webhook methods + `WebhookHealthStatus` TypedDict into `CalendarWebhookService`. `handle_webhook` split: facade keeps org-extraction + `self.organization=` mutation (so the snapshot sees it), service does parsing/dispatch. webhook→sync routes via host; terminates.
+- **Review**: Layer-3 0 blockers, 1 should-fix (guard had been weakened to `raise_error=False` in `process_webhook_notification` — restored to immediate-raise + regression test added). Security-sensitive validation diffed byte-for-byte.
+- **Gate**: full suite 1634 passed, 0 failed. mypy 137→136 (0 new).
+
 ## Current Phase
-- Phase 6 — Extract `CalendarWebhookService` (next).
+- Phase 7 — Shrink the facade and finalize wiring (final phase).
+
+## Phase 7 cleanup checklist (accumulated across phases)
+- [ ] Drop redundant facade-level `@transaction.atomic()` on the now-1-line delegations (event create/update/delete, bundle create/update_bundle_calendar, `import_account_calendars`) — sub-service methods own atomicity.
+- [ ] Remove stale declarations from `AuthenticatedCalendarService` / `InitializedOrAuthenticatedCalendarService` protocols for methods the facade no longer implements (e.g. `_process_events_for_sync`, `_link_orphaned_recurring_instances`) — but KEEP any the facade still delegates (tests call them).
+- [ ] Export the 6 sub-services from `calendar_integration/services/__init__.py` if referenced cross-module.
+- [ ] Confirm `di_core/containers.py` `calendar_service` provider signature unchanged (still injects side_effects + permission services); `calendar_group_service` still injects `calendar_service`.
+- [ ] `grep` for stale references to migrated internals; ensure facade is delegation-only where possible (note: many private delegations are intentionally kept because `test_calendar_service.py` calls them on a facade instance — do NOT remove those).
+- [ ] Optional follow-ups noted (not blocking): direct orphan-link unit test; the `_remove_...` cast-style note; duplicated `expires_at=None` in webhook service.
 
 ## Remaining Phases
-- Phase 6 — Extract `CalendarWebhookService` (Tier 3)
 - Phase 7 — Shrink the facade and finalize wiring (Tier 2)
 
 ## Deferred Phases
