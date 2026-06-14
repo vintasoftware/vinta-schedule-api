@@ -9183,3 +9183,249 @@ def test_subtract_busy_intervals_unit():
     ) == [(ws, at(11)), (at(14), at(16))]
     # fully covered -> empty
     assert CalendarService._subtract_busy_intervals(ws, we, [(at(8), at(18))]) == []
+
+
+# ---------------------------------------------------------------------------
+# Facade delegation tests for recurring availability / blocked-time exceptions
+# and from-date modifications.  These exercise the 6 facade methods that were
+# previously uncovered (each delegates to AvailabilityService in a single
+# line): create_recurring_blocked_time_exception,
+# create_recurring_available_time_exception,
+# modify_recurring_blocked_time_from_date,
+# cancel_recurring_blocked_time_from_date,
+# modify_recurring_available_time_from_date,
+# cancel_recurring_available_time_from_date.
+# ---------------------------------------------------------------------------
+
+
+def _make_service(organization: Organization) -> CalendarService:
+    """Return a CalendarService initialized (no provider) for *organization*."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+    return service
+
+
+def _make_recurring_blocked_time(
+    organization: Organization, calendar: Calendar
+) -> tuple[BlockedTime, RecurrenceRule]:
+    """Create and persist a recurring BlockedTime (FREQ=DAILY;COUNT=5)."""
+    rule = RecurrenceRule.from_rrule_string("FREQ=DAILY;COUNT=5", organization=organization)
+    rule.save()
+    start = datetime.datetime(2025, 11, 3, 9, 0, tzinfo=datetime.UTC)
+    bt = BlockedTime.objects.create(
+        calendar_fk=calendar,
+        start_time_tz_unaware=start,
+        end_time_tz_unaware=start + datetime.timedelta(hours=1),
+        timezone="UTC",
+        reason="Recurring block",
+        organization=organization,
+        recurrence_rule_fk=rule,
+    )
+    return bt, rule
+
+
+def _make_available_time_calendar(organization: Organization) -> Calendar:
+    """Return a Calendar with manage_available_windows=True for available-time tests."""
+    return Calendar.objects.create(
+        name="Availability Calendar",
+        organization=organization,
+        manage_available_windows=True,
+    )
+
+
+def _make_recurring_available_time(
+    organization: Organization, calendar: Calendar
+) -> tuple[AvailableTime, RecurrenceRule]:
+    """Create and persist a recurring AvailableTime (FREQ=DAILY;COUNT=5).
+
+    *calendar* must have manage_available_windows=True.  Use
+    _make_available_time_calendar() to obtain a suitable one.
+    """
+    rule = RecurrenceRule.from_rrule_string("FREQ=DAILY;COUNT=5", organization=organization)
+    rule.save()
+    start = datetime.datetime(2025, 11, 3, 10, 0, tzinfo=datetime.UTC)
+    avail_time = AvailableTime.objects.create(
+        calendar_fk=calendar,
+        start_time_tz_unaware=start,
+        end_time_tz_unaware=start + datetime.timedelta(hours=1),
+        timezone="UTC",
+        organization=organization,
+        recurrence_rule_fk=rule,
+    )
+    return avail_time, rule
+
+
+@pytest.mark.django_db
+def test_facade_create_recurring_blocked_time_exception_cancelled(organization, calendar):
+    """create_recurring_blocked_time_exception (cancel path) delegates through the facade."""
+    bt, _ = _make_recurring_blocked_time(organization, calendar)
+    service = _make_service(organization)
+
+    # Cancel the second occurrence (first future occurrence after master)
+    second_occurrence_date = (bt.start_time + datetime.timedelta(days=1)).date()
+    result = service.create_recurring_blocked_time_exception(
+        parent_blocked_time=bt,
+        exception_date=second_occurrence_date,
+        is_cancelled=True,
+    )
+
+    # A cancelled exception returns None and records a BlockedTimeRecurrenceException
+    assert result is None
+    assert bt.recurrence_exceptions.filter_by_organization(organization.id).count() == 1
+    exc = bt.recurrence_exceptions.filter_by_organization(organization.id).get()
+    assert exc.is_cancelled is True
+
+
+@pytest.mark.django_db
+def test_facade_create_recurring_blocked_time_exception_modified(organization, calendar):
+    """create_recurring_blocked_time_exception (modify path) delegates through the facade."""
+    bt, _ = _make_recurring_blocked_time(organization, calendar)
+    service = _make_service(organization)
+
+    second_occurrence_date = (bt.start_time + datetime.timedelta(days=1)).date()
+    new_start = bt.start_time + datetime.timedelta(days=1, hours=2)
+    new_end = new_start + datetime.timedelta(hours=1)
+
+    result = service.create_recurring_blocked_time_exception(
+        parent_blocked_time=bt,
+        exception_date=second_occurrence_date,
+        modified_reason="Modified reason",
+        modified_start_time=new_start,
+        modified_end_time=new_end,
+        modified_timezone="UTC",
+        is_cancelled=False,
+    )
+
+    # A modified exception returns the new modified BlockedTime
+    assert result is not None
+    assert isinstance(result, BlockedTime)
+    assert result.reason == "Modified reason"
+    assert bt.recurrence_exceptions.filter_by_organization(organization.id).count() == 1
+    exc = bt.recurrence_exceptions.filter_by_organization(organization.id).get()
+    assert exc.is_cancelled is False
+
+
+@pytest.mark.django_db
+def test_facade_create_recurring_available_time_exception_cancelled(organization):
+    """create_recurring_available_time_exception (cancel path) delegates through the facade."""
+    avail_calendar = _make_available_time_calendar(organization)
+    avail, _ = _make_recurring_available_time(organization, avail_calendar)
+    service = _make_service(organization)
+
+    second_occurrence_date = (avail.start_time + datetime.timedelta(days=1)).date()
+    result = service.create_recurring_available_time_exception(
+        parent_available_time=avail,
+        exception_date=second_occurrence_date,
+        is_cancelled=True,
+    )
+
+    assert result is None
+    assert avail.recurrence_exceptions.filter_by_organization(organization.id).count() == 1
+    exc = avail.recurrence_exceptions.filter_by_organization(organization.id).get()
+    assert exc.is_cancelled is True
+
+
+@pytest.mark.django_db
+def test_facade_create_recurring_available_time_exception_modified(organization):
+    """create_recurring_available_time_exception (modify path) delegates through the facade."""
+    avail_calendar = _make_available_time_calendar(organization)
+    avail, _ = _make_recurring_available_time(organization, avail_calendar)
+    service = _make_service(organization)
+
+    second_occurrence_date = (avail.start_time + datetime.timedelta(days=1)).date()
+    new_start = avail.start_time + datetime.timedelta(days=1, hours=1)
+    new_end = new_start + datetime.timedelta(hours=2)
+
+    result = service.create_recurring_available_time_exception(
+        parent_available_time=avail,
+        exception_date=second_occurrence_date,
+        modified_start_time=new_start,
+        modified_end_time=new_end,
+        modified_timezone="UTC",
+        is_cancelled=False,
+    )
+
+    assert result is not None
+    assert isinstance(result, AvailableTime)
+    assert avail.recurrence_exceptions.filter_by_organization(organization.id).count() == 1
+    exc = avail.recurrence_exceptions.filter_by_organization(organization.id).get()
+    assert exc.is_cancelled is False
+
+
+@pytest.mark.django_db
+def test_facade_modify_recurring_blocked_time_from_date(organization, calendar):
+    """modify_recurring_blocked_time_from_date delegates through the facade."""
+    bt, _ = _make_recurring_blocked_time(organization, calendar)
+    service = _make_service(organization)
+
+    modification_start = bt.start_time + datetime.timedelta(days=2)
+    result = service.modify_recurring_blocked_time_from_date(
+        parent_blocked_time=bt,
+        modification_start_date=modification_start,
+        modified_reason="Changed reason",
+    )
+
+    # Returns a continuation BlockedTime for the modified tail
+    assert result is not None
+    assert isinstance(result, BlockedTime)
+    assert result.reason == "Changed reason"
+    # A bulk modification record must be created on the parent
+    assert bt.bulk_modification_records.count() == 1
+    assert bt.bulk_modification_records.first().is_bulk_cancelled is False
+
+
+@pytest.mark.django_db
+def test_facade_cancel_recurring_blocked_time_from_date(organization, calendar):
+    """cancel_recurring_blocked_time_from_date delegates through the facade."""
+    bt, _ = _make_recurring_blocked_time(organization, calendar)
+    service = _make_service(organization)
+
+    modification_start = bt.start_time + datetime.timedelta(days=2)
+    result = service.cancel_recurring_blocked_time_from_date(
+        parent_blocked_time=bt,
+        modification_start_date=modification_start,
+    )
+
+    # Cancel returns None; a cancellation bulk-modification record must be created
+    assert result is None
+    assert bt.bulk_modification_records.count() == 1
+    assert bt.bulk_modification_records.first().is_bulk_cancelled is True
+
+
+@pytest.mark.django_db
+def test_facade_modify_recurring_available_time_from_date(organization):
+    """modify_recurring_available_time_from_date delegates through the facade."""
+    avail_calendar = _make_available_time_calendar(organization)
+    avail, _ = _make_recurring_available_time(organization, avail_calendar)
+    service = _make_service(organization)
+
+    modification_start = avail.start_time + datetime.timedelta(days=2)
+    result = service.modify_recurring_available_time_from_date(
+        parent_available_time=avail,
+        modification_start_date=modification_start,
+    )
+
+    # Returns a continuation AvailableTime for the modified tail
+    assert result is not None
+    assert isinstance(result, AvailableTime)
+    assert avail.bulk_modification_records.count() == 1
+    assert avail.bulk_modification_records.first().is_bulk_cancelled is False
+
+
+@pytest.mark.django_db
+def test_facade_cancel_recurring_available_time_from_date(organization):
+    """cancel_recurring_available_time_from_date delegates through the facade."""
+    avail_calendar = _make_available_time_calendar(organization)
+    avail, _ = _make_recurring_available_time(organization, avail_calendar)
+    service = _make_service(organization)
+
+    modification_start = avail.start_time + datetime.timedelta(days=2)
+    result = service.cancel_recurring_available_time_from_date(
+        parent_available_time=avail,
+        modification_start_date=modification_start,
+    )
+
+    # Cancel returns None; a cancellation bulk-modification record must be created
+    assert result is None
+    assert avail.bulk_modification_records.count() == 1
+    assert avail.bulk_modification_records.first().is_bulk_cancelled is True
