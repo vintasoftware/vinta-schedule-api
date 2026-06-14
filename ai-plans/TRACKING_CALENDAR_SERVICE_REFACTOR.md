@@ -63,11 +63,23 @@
 ## Rebase log
 - 2026-06-13: rebased the whole stack (`wt`→`phase-0`→`phase-1`→`phase-2`) onto `origin/main` (3286b69) after the twilio/SMS-adapter test fix landed on main (commit "fix(account-adapter): update SMS notification method to use notification service"). Conflict-free. Force-pushed `wt`/`phase-0`/`phase-1`; PRs #65/#68 auto-updated. The previously-noted "1 pre-existing failure" is now resolved on main — full suite is 0 failures from Phase 2 onward.
 
+### Phase 3 — Extract CalendarBundleService ✅
+- **Status**: complete, PR open
+- **Model**: claude-sonnet-4-6 (plan tier: Tier 3)
+- **Branch**: `plan/calendar-service-refactor/phase-3` (base `…/phase-2`)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/74 (published, 3 inline comments)
+- **Files**: `calendar_integration/services/calendar_bundle_service.py` (new, ~545 lines), `calendar_integration/services/calendar_service.py` (edited, −312 lines), `calendar_integration/tests/services/test_calendar_bundle_service.py` (new, 29 tests)
+- **Summary**: Moved the 7 bundle methods into `CalendarBundleService`. Reused the host-seam pattern (`BundleServiceHost`, facade = host); facade `create_bundle_calendar`/`update_bundle_calendar` delegate; the Phase-2 `EventServiceHost` bundle methods (`_create_bundle_event`/etc.) now route to the bundle service. `_get_bundle_service()` mirrors `_get_event_service()`. No construction cycle (facade mediates); children validated non-BUNDLE so no recursive fan-out.
+- **Review**: Layer-3 0 blockers / 0 should-fix. Bodies byte-for-byte (child reconciliation set math, primary selection, attendee dedup all diffed identical); `@transaction.atomic()` preserved; dropped org-checks were dead code (guard raises first).
+- **Gate**: full suite 1608 passed, 0 failed. mypy net 141→138 (no new context-field union-attr; reused narrowing pattern).
+- **Carry-forward notes**:
+  - Phase 4 (`AvailabilityService`) replaces the host's `get_availability_windows_in_range` (declared on both `EventServiceHost` and `BundleServiceHost`). Same seam-swap pattern.
+  - Phase 7 cleanup list now includes: drop redundant facade-level `@transaction.atomic()` on the 1-line bundle + event delegations (harmless nested savepoints today); revisit whether the `InitializedOrAuthenticatedCalendarService` protocol should keep declaring `_get_primary_calendar`/`_collect_bundle_attendees`/serialize helpers (facade keeps thin delegations for them only to satisfy the protocol).
+
 ## Current Phase
-- Phase 3 — Extract `CalendarBundleService` (next).
+- Phase 4 — Extract `AvailabilityService` (next).
 
 ## Remaining Phases
-- Phase 3 — Extract `CalendarBundleService` (Tier 3)
 - Phase 4 — Extract `AvailabilityService` (Tier 4)
 - Phase 5 — Extract `CalendarSyncService` (Tier 4)
 - Phase 6 — Extract `CalendarWebhookService` (Tier 3)
