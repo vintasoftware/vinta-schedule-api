@@ -363,6 +363,53 @@ tests.
 Acceptance: `POST /organizations/` succeeds for a user who already has memberships, creating a new
 org with the caller as its admin.
 
+### Phase 6 — Document the `X-Organization-Id` header in OpenAPI
+
+**Goal**: every tenant-scoped REST operation that honors `X-Organization-Id` declares it as an
+OpenAPI header parameter, so generated clients / Swagger UI surface the header instead of leaving
+the tenant-selection contract invisible. (Added 2026-06-14 — the resolver from Phase 2a reads the
+header in `TenantScopedViewMixin.initial()`, which drf-spectacular's per-operation introspection
+never sees, so the header was absent from `schema.yml`.)
+
+**Feature flag**: none — additive doc-only surface, no runtime behavior change.
+
+Changes:
+1. New `common/openapi.py`: `TenantScopedAutoSchema(drf_spectacular.openapi.AutoSchema)` overriding
+   `get_override_parameters()`. When `isinstance(self.view, TenantScopedViewMixin)` AND the current
+   action is NOT in the view's `active_org_optional_actions` (and the view isn't fully opted out via
+   `active_org_resolution_optional`), append
+   `OpenApiParameter(name="X-Organization-Id", type=OpenApiTypes.STR, location=OpenApiParameter.HEADER, required=False, description=<the resolution contract: required when the caller has 2+ active memberships; 400 if omitted by a multi-org caller, 403 if it names a non-member org>)`.
+   `required=False` because single-membership callers may omit it. Call `super().get_override_parameters()`
+   and concatenate so existing per-view parameters are preserved.
+2. `vinta_schedule_api/settings/base.py`: change `REST_FRAMEWORK["DEFAULT_SCHEMA_CLASS"]` from
+   `"drf_spectacular.openapi.AutoSchema"` to the new `"common.openapi.TenantScopedAutoSchema"`.
+3. Regenerate `schema.yml` (`uv run python manage.py spectacular --color --file schema.yml`).
+
+This is the centralized mechanism (one class, auto-covers every current + future
+`TenantScopedViewMixin` route) — a raw `POSTPROCESSING_HOOKS` callable can't honor the
+"view is a `TenantScopedViewMixin` subclass + skip the opt-out actions" rule because the assembled
+result dict no longer carries the view class.
+
+Spec use-case: shared API-contract documentation — supports Use-cases 2–4 (the header contract).
+
+Tests:
+- **Unit** (`common/tests/test_openapi.py` or `organizations/tests/`): generate the schema in-process
+  (drf-spectacular `SchemaGenerator().get_schema(request=None, public=True)`), assert a representative
+  tenant-scoped operation (e.g. `GET /calendars/`) declares an `X-Organization-Id` header parameter
+  with `required: false`, and assert an opted-out operation (`GET /organizations/mine/`,
+  `POST /organizations/`) and a non-tenant operation do NOT declare it.
+- **Schema gate**: `schema.yml` regenerated; the `backend-schema-local` pre-commit hook passes (no
+  drift).
+
+**Suggested AI model**: Tier 2 — `claude-haiku-4-5` / `gpt-5-mini` / `gemini-2.5-flash`. Single small
+schema class + a settings line + a generation test; established drf-spectacular extension point.
+
+**Reusable skills**: `write-tests`.
+
+Acceptance: `schema.yml` declares `X-Organization-Id` as a non-required header parameter on every
+tenant-scoped REST operation and omits it from the `mine`/`create` opt-out actions and non-tenant
+operations; the schema pre-commit hook is green.
+
 ## 6. Risk & Rollout Notes
 
 - **No feature flag** — justified in **Guiding Decisions** (pre-production, 1:1 migration,
@@ -432,4 +479,16 @@ org with the caller as its admin.
 
 **Phase 5 — Create additional org**
 - edit [organizations/permissions.py](../organizations/permissions.py) — relax `OrganizationManagementPermission.has_permission`
+- edit [organizations/views.py](../organizations/views.py) — `create` opt-out + `OrganizationViewSet.create` override
+- edit [organizations/tests/test_views.py](../organizations/tests/test_views.py)
+
+**Phase 6 — Document `X-Organization-Id` in OpenAPI**
+- new `@common/openapi.py` — `TenantScopedAutoSchema`
+- edit [vinta_schedule_api/settings/base.py](../vinta_schedule_api/settings/base.py) — `REST_FRAMEWORK["DEFAULT_SCHEMA_CLASS"]`
+- edit `schema.yml` (regenerated)
+- new `common/tests/test_openapi.py`
+
+## 9. Amendments
+
+- **2026-06-14** — Appended **Phase 6 — Document `X-Organization-Id` in OpenAPI**. The Phase 2a resolver reads the header in `TenantScopedViewMixin.initial()`, which drf-spectacular never introspects, so `schema.yml` did not declare the header on any route. Phase 6 adds a shared `TenantScopedAutoSchema` that injects the header parameter on tenant-scoped operations (skipping `active_org_optional_actions`). Append-only: no existing phase rewritten, no branch force-pushed; implemented forward as `plan/multi-org-membership/phase-6` stacked on phase-5.
 - edit [organizations/tests/test_views.py](../organizations/tests/test_views.py), [organizations/tests/test_permissions.py](../organizations/tests/test_permissions.py)
