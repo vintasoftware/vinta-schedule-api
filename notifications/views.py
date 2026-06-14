@@ -71,6 +71,9 @@ class NotificationViewSet(GenericViewSet):
 
     permission_classes = (IsAuthenticated,)
     serializer_class = NotificationSerializer
+    # Disable DRF's default LimitOffsetPagination for schema inference — this viewset
+    # uses native vintasend pagination (page/page_size passthrough) not the DRF paginator.
+    pagination_class = None
 
     @inject
     def __init__(
