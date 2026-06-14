@@ -63,7 +63,7 @@ class NotificationViewSet(GenericViewSet):
       the native vintasend get_in_app_unread; paginated via page/page_size passthrough
       (envelope: {results, page, page_size, count}).
     - POST /notifications/{id}/mark-read/ — mark a single notification as read (detail).
-    - POST /notifications/mark-read/ — mark multiple notifications as read (bulk, collection).
+    - POST /notifications/mark-read-bulk/ — mark multiple notifications as read (bulk, collection).
 
     Authentication: IsAuthenticated (JWT or session).
     Scope: request.user — no org context.
@@ -259,7 +259,6 @@ class NotificationViewSet(GenericViewSet):
         return self._paginated_envelope(notifications, page, page_size, count)
 
     @extend_schema(
-        operation_id="notifications_mark_read",
         summary="Mark a notification as read",
         description=(
             "Marks a single in-app notification as read for the authenticated user. "
@@ -315,7 +314,6 @@ class NotificationViewSet(GenericViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(
-        operation_id="notifications_mark_read_bulk",
         summary="Mark multiple notifications as read (bulk)",
         description=(
             "Marks multiple in-app notifications as read for the authenticated user. "
@@ -335,9 +333,9 @@ class NotificationViewSet(GenericViewSet):
             401: OpenApiResponse(description="Unauthenticated"),
         },
     )
-    @action(detail=False, methods=["post"], url_path="mark-read")
+    @action(detail=False, methods=["post"], url_path="mark-read-bulk")
     def mark_read_bulk(self, request: Request) -> Response:
-        """POST /notifications/mark-read/ — mark multiple notifications as read.
+        """POST /notifications/mark-read-bulk/ — mark multiple notifications as read.
 
         Validates the request body with BulkMarkReadSerializer (non-empty ids list).
         Calls the native NotificationService.mark_read_bulk(ids, user_id=request.user.id)

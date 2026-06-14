@@ -1,5 +1,5 @@
 """
-Integration tests for POST /notifications/mark-read/ (bulk mark-as-read)
+Integration tests for POST /notifications/mark-read-bulk/ (bulk mark-as-read)
 
 Covers:
 - Two own SENT notifications → 200, both become READ, gone from /notifications/unread/.
@@ -28,7 +28,7 @@ from notifications.notification_template_renderers.django_in_app_renderer import
 from users.factories import UserFactory
 
 
-BULK_MARK_READ_URL = "/notifications/mark-read/"
+BULK_MARK_READ_URL = "/notifications/mark-read-bulk/"
 UNREAD_URL = "/notifications/unread/"
 
 

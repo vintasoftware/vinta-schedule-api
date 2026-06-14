@@ -72,6 +72,89 @@ paths:
               schema:
                 $ref: '#/components/schemas/AvailableTime'
           description: ''
+  /available-times{format}:
+    get:
+      operationId: available_times_formatted_list
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - available-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAvailableTimeList'
+          description: ''
+    post:
+      operationId: available_times_formatted_create
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
   /available-times/{id}/:
     get:
       operationId: available_times_retrieve
@@ -176,12 +259,188 @@ paths:
       responses:
         '204':
           description: No response body
+  /available-times/{id}{format}:
+    get:
+      operationId: available_times_formatted_retrieve
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+    put:
+      operationId: available_times_formatted_update
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+    patch:
+      operationId: available_times_formatted_partial_update
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedAvailableTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedAvailableTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedAvailableTime'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+    delete:
+      operationId: available_times_formatted_destroy
+      description: ViewSet for managing available times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /available-times/{id}/bulk-modify/:
     post:
       operationId: available_times_bulk_modify_create
       description: ViewSet for managing available times with recurring support.
       summary: Bulk modify or cancel recurring available time from a date
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBulkModification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBulkModification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBulkModification'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+        '204':
+          description: No response body
+  /available-times/{id}/bulk-modify{format}:
+    post:
+      operationId: available_times_bulk_modify_formatted_create
+      description: ViewSet for managing available times with recurring support.
+      summary: Bulk modify or cancel recurring available time from a date
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -251,6 +510,51 @@ paths:
           description: ''
         '204':
           description: No response body
+  /available-times/{id}/create-exception{format}:
+    post:
+      operationId: available_times_create_exception_formatted_create
+      description: Create an exception for a recurring available time (either cancelled
+        or modified).
+      summary: Create recurring available time exception
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeRecurringException'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeRecurringException'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeRecurringException'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTime'
+          description: ''
+        '204':
+          description: No response body
   /available-times/batch/:
     post:
       operationId: available_times_batch_create
@@ -266,6 +570,70 @@ paths:
           type: string
           format: date-time
         description: End time (less than or equal to)
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - available-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBatch'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBatch'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailableTimeBatch'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAvailableTimeList'
+          description: ''
+  /available-times/batch{format}:
+    post:
+      operationId: available_times_batch_formatted_create
+      description: Apply a list of create/update/delete operations to a single calendar's
+        available times in one transaction (all-or-nothing). The calendar defaults
+        to the user's default calendar when omitted. Returns the calendar's available
+        times after the batch.
+      summary: Batch create/update/delete available times
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - name: limit
         required: false
         in: query
@@ -368,11 +736,115 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedAvailableTimeList'
           description: ''
+  /available-times/expanded{format}:
+    get:
+      operationId: available_times_expanded_formatted_list
+      description: Get expanded available times including recurring instances.
+      summary: Get expanded available times
+      parameters:
+      - in: query
+        name: calendar_id
+        schema:
+          type: integer
+        description: Calendar ID to get available times for
+        required: true
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - available-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAvailableTimeList'
+          description: ''
   /billing-profile/create_billing_profile/:
     post:
       operationId: billing_profile_create_billing_profile_create
       description: Create a new billing profile for the authenticated user.
       summary: Create billing profile
+      tags:
+      - billing-profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillingProfile'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BillingProfile'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BillingProfile'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingProfile'
+          description: ''
+  /billing-profile/create_billing_profile{format}:
+    post:
+      operationId: billing_profile_create_billing_profile_formatted_create
+      description: Create a new billing profile for the authenticated user.
+      summary: Create billing profile
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - billing-profile
       requestBody:
@@ -425,6 +897,42 @@ paths:
               schema:
                 $ref: '#/components/schemas/BillingProfile'
           description: ''
+  /billing-profile/partial_update_billing_profile{format}:
+    patch:
+      operationId: billing_profile_partial_update_billing_profile_formatted_partial_update
+      description: Partially update the billing profile of the authenticated user.
+      summary: Partially update billing profile
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - billing-profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedBillingProfile'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedBillingProfile'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedBillingProfile'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingProfile'
+          description: ''
   /billing-profile/retrieve_billing_profile/:
     get:
       operationId: billing_profile_retrieve_billing_profile_retrieve
@@ -442,11 +950,73 @@ paths:
               schema:
                 $ref: '#/components/schemas/BillingProfile'
           description: ''
+  /billing-profile/retrieve_billing_profile{format}:
+    get:
+      operationId: billing_profile_retrieve_billing_profile_formatted_retrieve
+      description: Retrieve the billing profile of the authenticated user.
+      summary: Retrieve billing profile
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - billing-profile
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingProfile'
+          description: ''
   /billing-profile/update_billing_profile/:
     put:
       operationId: billing_profile_update_billing_profile_update
       description: Update the billing profile of the authenticated user.
       summary: Update billing profile
+      tags:
+      - billing-profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillingProfile'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BillingProfile'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BillingProfile'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingProfile'
+          description: ''
+  /billing-profile/update_billing_profile{format}:
+    put:
+      operationId: billing_profile_update_billing_profile_formatted_update
+      description: Update the billing profile of the authenticated user.
+      summary: Update billing profile
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - billing-profile
       requestBody:
@@ -520,6 +1090,94 @@ paths:
     post:
       operationId: blocked_times_create
       description: ViewSet for managing blocked times with recurring support.
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+  /blocked-times{format}:
+    get:
+      operationId: blocked_times_formatted_list
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: reason
+        schema:
+          type: string
+        description: Filter by partial title match
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - blocked-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBlockedTimeList'
+          description: ''
+    post:
+      operationId: blocked_times_formatted_create
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - blocked-times
       requestBody:
@@ -648,12 +1306,188 @@ paths:
       responses:
         '204':
           description: No response body
+  /blocked-times/{id}{format}:
+    get:
+      operationId: blocked_times_formatted_retrieve
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+    put:
+      operationId: blocked_times_formatted_update
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockedTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+    patch:
+      operationId: blocked_times_formatted_partial_update
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedBlockedTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedBlockedTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedBlockedTime'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+    delete:
+      operationId: blocked_times_formatted_destroy
+      description: ViewSet for managing blocked times with recurring support.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /blocked-times/{id}/bulk-modify/:
     post:
       operationId: blocked_times_bulk_modify_create
       description: ViewSet for managing blocked times with recurring support.
       summary: Bulk modify or cancel recurring blocked time from a date
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeBulkModification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeBulkModification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeBulkModification'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+        '204':
+          description: No response body
+  /blocked-times/{id}/bulk-modify{format}:
+    post:
+      operationId: blocked_times_bulk_modify_formatted_create
+      description: ViewSet for managing blocked times with recurring support.
+      summary: Bulk modify or cancel recurring blocked time from a date
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -723,6 +1557,51 @@ paths:
           description: ''
         '204':
           description: No response body
+  /blocked-times/{id}/create-exception{format}:
+    post:
+      operationId: blocked_times_create_exception_formatted_create
+      description: Create an exception for a recurring blocked time (either cancelled
+        or modified).
+      summary: Create recurring blocked time exception
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeRecurringException'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeRecurringException'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockedTimeRecurringException'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedTime'
+          description: ''
+        '204':
+          description: No response body
   /blocked-times/bulk-create/:
     post:
       operationId: blocked_times_bulk_create_create
@@ -735,6 +1614,72 @@ paths:
           type: string
           format: date-time
         description: End time (less than or equal to)
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: reason
+        schema:
+          type: string
+        description: Filter by partial title match
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - blocked-times
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkBlockedTime'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BulkBlockedTime'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BulkBlockedTime'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBlockedTimeList'
+          description: ''
+  /blocked-times/bulk-create{format}:
+    post:
+      operationId: blocked_times_bulk_create_formatted_create
+      description: Create multiple blocked times.
+      summary: Create bulk blocked times
+      parameters:
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - name: limit
         required: false
         in: query
@@ -847,6 +1792,78 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedBlockedTimeList'
           description: ''
+  /blocked-times/expanded{format}:
+    get:
+      operationId: blocked_times_expanded_formatted_list
+      description: Get expanded blocked times including recurring instances.
+      summary: Get expanded blocked times
+      parameters:
+      - in: query
+        name: calendar_id
+        schema:
+          type: integer
+        description: Calendar ID to get blocked times for
+        required: true
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: reason
+        schema:
+          type: string
+        description: Filter by partial title match
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      tags:
+      - blocked-times
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBlockedTimeList'
+          description: ''
   /calendar/:
     get:
       operationId: calendar_list
@@ -893,6 +1910,91 @@ paths:
     post:
       operationId: calendar_create
       description: ViewSet for managing calendars.
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+  /calendar{format}:
+    get:
+      operationId: calendar_formatted_list
+      description: ViewSet for managing calendars.
+      summary: List calendars
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: query
+        name: include_inactive
+        schema:
+          type: boolean
+        description: When true, include inactive (soft-deleted) calendars (visibility=inactive).
+          Defaults to false.
+      - in: query
+        name: include_unlisted
+        schema:
+          type: boolean
+        description: When true, include unlisted calendars (visibility=unlisted) in
+          the response. Unlisted calendars are hidden from booking queries but still
+          synced. Defaults to false.
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarList'
+          description: ''
+    post:
+      operationId: calendar_formatted_create
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - calendar
       requestBody:
@@ -995,6 +2097,123 @@ paths:
     post:
       operationId: calendar_events_create
       description: ViewSet for managing calendar events.
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarEvent'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarEvent'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarEvent'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+  /calendar-events{format}:
+    get:
+      operationId: calendar_events_formatted_list
+      description: ViewSet for managing calendar events.
+      parameters:
+      - in: query
+        name: calendar
+        schema:
+          type: number
+        description: Filter by calendar ID
+      - in: query
+        name: end_time
+        schema:
+          type: string
+          format: date-time
+        description: End time (less than or equal to)
+      - in: query
+        name: end_time_range_after
+        schema:
+          type: string
+          format: date-time
+        description: End time range
+      - in: query
+        name: end_time_range_before
+        schema:
+          type: string
+          format: date-time
+        description: End time range
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+          format: date-time
+        description: Start time (greater than or equal to)
+      - in: query
+        name: start_time_range_after
+        schema:
+          type: string
+          format: date-time
+        description: Start time range
+      - in: query
+        name: start_time_range_before
+        schema:
+          type: string
+          format: date-time
+        description: Start time range
+      - in: query
+        name: title
+        schema:
+          type: string
+        description: Filter by partial title match
+      tags:
+      - calendar-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarEventList'
+          description: ''
+    post:
+      operationId: calendar_events_formatted_create
+      description: ViewSet for managing calendar events.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - calendar-events
       requestBody:
@@ -1124,12 +2343,189 @@ paths:
       responses:
         '204':
           description: No response body
+  /calendar-events/{id}{format}:
+    get:
+      operationId: calendar_events_formatted_retrieve
+      description: ViewSet for managing calendar events.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+    put:
+      operationId: calendar_events_formatted_update
+      description: ViewSet for managing calendar events.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarEvent'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarEvent'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarEvent'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+    patch:
+      operationId: calendar_events_formatted_partial_update
+      description: ViewSet for managing calendar events.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarEvent'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarEvent'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarEvent'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+    delete:
+      operationId: calendar_events_formatted_destroy
+      description: Delete a calendar event.
+      summary: Delete calendar event
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /calendar-events/{id}/bulk-modify/:
     post:
       operationId: calendar_events_bulk_modify_create
       description: ViewSet for managing calendar events.
       summary: Bulk modify or cancel recurring event from a date
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventBulkModification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/EventBulkModification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/EventBulkModification'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+        '204':
+          description: No response body
+  /calendar-events/{id}/bulk-modify{format}:
+    post:
+      operationId: calendar_events_bulk_modify_formatted_create
+      description: ViewSet for managing calendar events.
+      summary: Bulk modify or cancel recurring event from a date
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -1199,6 +2595,51 @@ paths:
           description: ''
         '204':
           description: No response body
+  /calendar-events/{id}/create-exception{format}:
+    post:
+      operationId: calendar_events_create_exception_formatted_create
+      description: Create an exception for a recurring event (either cancelled or
+        modified).
+      summary: Create recurring event exception
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventRecurringException'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/EventRecurringException'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/EventRecurringException'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+        '204':
+          description: No response body
   /calendar-events/{id}/transfer/:
     post:
       operationId: calendar_events_transfer_create
@@ -1208,6 +2649,51 @@ paths:
         only.
       summary: Transfer event to another calendar (admin)
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarEventTransfer'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+  /calendar-events/{id}/transfer{format}:
+    post:
+      operationId: calendar_events_transfer_formatted_create
+      description: Move an event from its current calendar to a target calendar within
+        the same organization. The service authenticates with the SOURCE calendar
+        owner's credentials to read and delete the event from the provider. Admin
+        only.
+      summary: Transfer event to another calendar (admin)
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -1319,6 +2805,95 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedCalendarEventList'
           description: ''
+  /calendar-events/expanded{format}:
+    get:
+      operationId: calendar_events_expanded_formatted_list
+      description: Get expanded calendar events including materialized recurring instances.
+      summary: Get expanded calendar events
+      parameters:
+      - in: query
+        name: calendar
+        schema:
+          type: number
+        description: Filter by calendar ID
+      - in: query
+        name: calendar_id
+        schema:
+          type: integer
+        description: Calendar ID to get events for
+        required: true
+      - in: query
+        name: end_time
+        schema:
+          type: string
+        description: End datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: end_time_range_after
+        schema:
+          type: string
+          format: date-time
+        description: End time range
+      - in: query
+        name: end_time_range_before
+        schema:
+          type: string
+          format: date-time
+        description: End time range
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_time
+        schema:
+          type: string
+        description: Start datetime for the range (ISO format)
+        required: true
+      - in: query
+        name: start_time_range_after
+        schema:
+          type: string
+          format: date-time
+        description: Start time range
+      - in: query
+        name: start_time_range_before
+        schema:
+          type: string
+          format: date-time
+        description: Start time range
+      - in: query
+        name: title
+        schema:
+          type: string
+        description: Filter by partial title match
+      tags:
+      - calendar-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarEventList'
+          description: ''
   /calendar-groups/:
     get:
       operationId: calendar_groups_list
@@ -1356,6 +2931,82 @@ paths:
     post:
       operationId: calendar_groups_create
       description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarGroup'
+          description: ''
+  /calendar-groups{format}:
+    get:
+      operationId: calendar_groups_formatted_list
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarGroupList'
+          description: ''
+    post:
+      operationId: calendar_groups_formatted_create
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - calendar-groups
       requestBody:
@@ -1485,12 +3136,204 @@ paths:
       responses:
         '204':
           description: No response body
+  /calendar-groups/{id}{format}:
+    get:
+      operationId: calendar_groups_formatted_retrieve
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarGroup'
+          description: ''
+    put:
+      operationId: calendar_groups_formatted_update
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroup'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarGroup'
+          description: ''
+    patch:
+      operationId: calendar_groups_formatted_partial_update
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarGroup'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarGroup'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarGroup'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarGroup'
+          description: ''
+    delete:
+      operationId: calendar_groups_formatted_destroy
+      description: Delete a CalendarGroup. Fails with 400 if the group has any bookings.
+      summary: Delete calendar group
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /calendar-groups/{id}/availability/:
     post:
       operationId: calendar_groups_availability_create
       description: ViewSet for CalendarGroup CRUD and grouped event actions.
       summary: Per-slot availability for requested ranges
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarGroupRangeAvailabilityList'
+          description: ''
+  /calendar-groups/{id}/availability{format}:
+    post:
+      operationId: calendar_groups_availability_formatted_create
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      summary: Per-slot availability for requested ranges
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -1600,6 +3443,76 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedBookableSlotProposalList'
           description: ''
+  /calendar-groups/{id}/bookable-slots{format}:
+    get:
+      operationId: calendar_groups_bookable_slots_formatted_list
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      summary: Bookable slot proposals for the group within a search window
+      parameters:
+      - in: query
+        name: duration_seconds
+        schema:
+          type: integer
+        description: Desired event duration, in seconds
+        required: true
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: search_window_end
+        schema:
+          type: string
+        description: End of the search window (ISO 8601)
+        required: true
+      - in: query
+        name: search_window_start
+        schema:
+          type: string
+        description: Start of the search window (ISO 8601)
+        required: true
+      - in: query
+        name: slot_step_seconds
+        schema:
+          type: integer
+        description: Search step, in seconds (default 900 = 15min)
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBookableSlotProposalList'
+          description: ''
   /calendar-groups/{id}/booked-events/:
     get:
       operationId: calendar_groups_booked_events_list
@@ -1652,12 +3565,113 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedCalendarEventList'
           description: ''
+  /calendar-groups/{id}/booked-events{format}:
+    get:
+      operationId: calendar_groups_booked_events_formatted_list
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      summary: List events booked under this group
+      parameters:
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End datetime in ISO format
+        required: true
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start datetime in ISO format
+        required: true
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarEventList'
+          description: ''
   /calendar-groups/{id}/events/:
     post:
       operationId: calendar_groups_events_create
       description: ViewSet for CalendarGroup CRUD and grouped event actions.
       summary: Create grouped event
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-groups
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupEventCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupEventCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupEventCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+  /calendar-groups/{id}/events{format}:
+    post:
+      operationId: calendar_groups_events_formatted_create
+      description: ViewSet for CalendarGroup CRUD and grouped event actions.
+      summary: Create grouped event
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -1800,12 +3814,197 @@ paths:
       responses:
         '204':
           description: No response body
+  /calendar/{id}{format}:
+    get:
+      operationId: calendar_formatted_retrieve
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+    put:
+      operationId: calendar_formatted_update
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+    patch:
+      operationId: calendar_formatted_partial_update
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendar'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendar'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendar'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+    delete:
+      operationId: calendar_formatted_destroy
+      description: "Disables a calendar by setting visibility=inactive instead of
+        deleting the row. The row persists and is hidden from default list/detail
+        queries. \n\n**Authorization rules (enforced after org-scoping):**\n- BUNDLE
+        calendar: caller must be an org admin. Non-admin members receive 403.\n- Non-bundle
+        calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership)
+        or be an org admin. Non-owner non-admins receive 403.\n\n\n**Bundle semantics:**
+        disabling a bundle sets only the bundle calendar inactive. Child calendars,
+        bundle events, and their representation BlockedTimes/events are deliberately
+        left untouched (event cancellation is out of scope; see plan Phase 11)."
+      summary: Soft-disable a calendar
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /calendar/{id}/admin-sync/:
     post:
       operationId: calendar_admin_sync_create
       description: Admin syncs any calendar in the organization over a date range.
       summary: Admin syncs another user's calendar
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarSync'
+          description: ''
+        '409':
+          description: Sync is disabled for this calendar.
+  /calendar/{id}/admin-sync{format}:
+    post:
+      operationId: calendar_admin_sync_formatted_create
+      description: Admin syncs any calendar in the organization over a date range.
+      summary: Admin syncs another user's calendar
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -1875,6 +4074,51 @@ paths:
                 items:
                   $ref: '#/components/schemas/AvailableTimeWindow'
           description: ''
+  /calendar/{id}/available-windows{format}:
+    get:
+      operationId: calendar_available_windows_formatted_list
+      description: Get available time windows for a calendar within a specified date
+        range.
+      summary: Get available time windows
+      parameters:
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End datetime in ISO format (YYYY-MM-DDTHH:MM:SS)
+        required: true
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start datetime in ISO format (YYYY-MM-DDTHH:MM:SS)
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AvailableTimeWindow'
+          description: ''
   /calendar/{id}/bundle/:
     patch:
       operationId: calendar_bundle_partial_update
@@ -1913,12 +4157,101 @@ paths:
               schema:
                 $ref: '#/components/schemas/Calendar'
           description: ''
+  /calendar/{id}/bundle{format}:
+    patch:
+      operationId: calendar_bundle_formatted_partial_update
+      description: Reconcile the child calendars and primary designation for an existing
+        bundle. Provide the full desired set of bundle_calendars; children not in
+        the list will be removed and new ones will be added. Optionally specify primary_calendar
+        (must be one of bundle_calendars). Admin only. Returns the updated bundle
+        calendar.
+      summary: Update a bundle calendar's children and primary
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarBundleUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
   /calendar/{id}/request-sync/:
     post:
       operationId: calendar_request_sync_create
       description: Request synchronization of an owned calendar over a date range.
       summary: Request calendar sync
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarSync'
+          description: ''
+        '409':
+          description: Sync is disabled for this calendar.
+  /calendar/{id}/request-sync{format}:
+    post:
+      operationId: calendar_request_sync_formatted_create
+      description: Request synchronization of an owned calendar over a date range.
+      summary: Request calendar sync
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -1988,10 +4321,91 @@ paths:
                 items:
                   $ref: '#/components/schemas/UnavailableTimeWindow'
           description: ''
+  /calendar/{id}/unavailable-windows{format}:
+    get:
+      operationId: calendar_unavailable_windows_formatted_list
+      description: Get unavailable time windows for a calendar within a specified
+        date range.
+      summary: Get unavailable time windows
+      parameters:
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End datetime in ISO format (YYYY-MM-DDTHH:MM:SS)
+        required: true
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start datetime in ISO format (YYYY-MM-DDTHH:MM:SS)
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UnavailableTimeWindow'
+          description: ''
   /calendar/bundle/:
     post:
       operationId: calendar_bundle_create
       description: ViewSet for managing calendars.
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarBundleCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarBundleCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarBundleCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+  /calendar/bundle{format}:
+    post:
+      operationId: calendar_bundle_formatted_create
+      description: ViewSet for managing calendars.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - calendar
       requestBody:
@@ -2037,11 +4451,80 @@ paths:
           description: ''
         '404':
           description: No default calendar for this user
+  /calendar/default{format}:
+    get:
+      operationId: calendar_default_formatted_retrieve
+      description: Returns the authenticated user's default calendar in their organization
+        (the active CalendarOwnership flagged is_default). 404 when the user has no
+        default calendar (e.g. before importing any calendars).
+      summary: Get the caller's default calendar
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calendar'
+          description: ''
+        '404':
+          description: No default calendar for this user
   /calendar/request-import/:
     post:
       operationId: calendar_request_import_create
       description: Request import of external calendars for the authenticated user.
       summary: Request calendar import
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Calendar'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+          description: ''
+  /calendar/request-import{format}:
+    post:
+      operationId: calendar_request_import_formatted_create
+      description: Request import of external calendars for the authenticated user.
+      summary: Request calendar import
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - calendar
       requestBody:
@@ -2145,6 +4628,97 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationInvitation'
           description: ''
+  /invitations{format}:
+    get:
+      operationId: invitations_formatted_list
+      description: A viewset for managing organization invitations.
+      parameters:
+      - in: query
+        name: email
+        schema:
+          type: string
+        description: Filter by partial email match
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: query
+        name: invited_by
+        schema:
+          type: number
+        description: Filter by inviter user ID
+      - in: query
+        name: is_accepted
+        schema:
+          type: boolean
+        description: Filter by acceptance status
+      - in: query
+        name: is_expired
+        schema:
+          type: boolean
+        description: Filter by expiration status
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - invitations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedOrganizationInvitationList'
+          description: ''
+    post:
+      operationId: invitations_formatted_create
+      description: A viewset for managing organization invitations.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - invitations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
   /invitations/{id}/:
     get:
       operationId: invitations_retrieve
@@ -2184,6 +4758,59 @@ paths:
       responses:
         '204':
           description: No response body
+  /invitations/{id}{format}:
+    get:
+      operationId: invitations_formatted_retrieve
+      description: A viewset for managing organization invitations.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - invitations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+    delete:
+      operationId: invitations_formatted_destroy
+      description: A viewset for managing organization invitations.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - invitations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /invitations/{id}/resend/:
     post:
       operationId: invitations_resend_create
@@ -2197,6 +4824,61 @@ paths:
         Returns the re-serialized invitation with the new token_hash and extended expires_at.
       summary: Resend a pending organization invitation
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - invitations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitation'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+        '400':
+          description: Invitation already accepted or service error
+        '403':
+          description: Not an active member
+        '404':
+          description: Invitation not found or cross-org
+  /invitations/{id}/resend{format}:
+    post:
+      operationId: invitations_resend_formatted_create
+      description: |-
+        POST /invitations/{id}/resend/ — regenerate token and re-send a pending invitation.
+
+        Guards:
+        - Invitation must not be accepted (accepted_at is None).
+        - User must be an active member of the invitation's organization.
+
+        Returns the re-serialized invitation with the new token_hash and extended expires_at.
+      summary: Resend a pending organization invitation
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -2292,9 +4974,48 @@ paths:
           description: Invalid page / page_size parameter
         '401':
           description: Unauthenticated
+  /notifications{format}:
+    get:
+      operationId: notifications_formatted_list
+      description: 'Returns the authenticated user''s IN_APP notifications with status
+        in (SENT, READ). Ordered by creation date (newest first). Paginated via page/page_size
+        passthrough. Envelope: {results: [...], page: int, page_size: int, count:
+        int}.'
+      summary: List all in-app notifications for the authenticated user
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: query
+        name: page
+        schema:
+          type: integer
+        description: Page number (1-based). Defaults to 1.
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+        description: Number of items per page. Defaults to 10, max 100.
+      tags:
+      - Notifications
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: 'Passthrough-paginated list of all in-app notifications. Envelope:
+            {results: [...], page: int, page_size: int, count: int}.'
+        '400':
+          description: Invalid page / page_size parameter
+        '401':
+          description: Unauthenticated
   /notifications/{id}/mark-read/:
     post:
-      operationId: notifications_mark_read
+      operationId: notifications_mark_read_create
       description: Marks a single in-app notification as read for the authenticated
         user. Ownership is enforced via the scoped queryset — only the owner can mark
         their own notifications. Calling this endpoint on an already-READ notification
@@ -2333,14 +5054,103 @@ paths:
           description: Unauthenticated
         '404':
           description: Notification not found or not owned by the authenticated user
-  /notifications/mark-read/:
+  /notifications/{id}/mark-read{format}:
     post:
-      operationId: notifications_mark_read_bulk
+      operationId: notifications_mark_read_formatted_create
+      description: Marks a single in-app notification as read for the authenticated
+        user. Ownership is enforced via the scoped queryset — only the owner can mark
+        their own notifications. Calling this endpoint on an already-READ notification
+        is idempotent (returns 200).
+      summary: Mark a notification as read
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Notifications
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Notification'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+          description: Notification marked as read. Returns the updated notification.
+        '401':
+          description: Unauthenticated
+        '404':
+          description: Notification not found or not owned by the authenticated user
+  /notifications/mark-read-bulk/:
+    post:
+      operationId: notifications_mark_read_bulk_create
       description: 'Marks multiple in-app notifications as read for the authenticated
         user. Ownership-scoped: notifications belonging to other users in the id list
         are silently skipped (no IDOR error). Idempotent: already-READ ids are returned
         in the results without error. Non-existent ids are silently skipped.'
       summary: Mark multiple notifications as read (bulk)
+      tags:
+      - Notifications
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkMarkRead'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BulkMarkRead'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BulkMarkRead'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: 'Notifications marked as read. Envelope: {results: [...serialized
+            notifications that are READ after the op...]}.'
+        '400':
+          description: Invalid request body (empty or missing ids list)
+        '401':
+          description: Unauthenticated
+  /notifications/mark-read-bulk{format}:
+    post:
+      operationId: notifications_mark_read_bulk_formatted_create
+      description: 'Marks multiple in-app notifications as read for the authenticated
+        user. Ownership-scoped: notifications belonging to other users in the id list
+        are silently skipped (no IDOR error). Idempotent: already-READ ids are returned
+        in the results without error. Non-existent ids are silently skipped.'
+      summary: Mark multiple notifications as read (bulk)
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - Notifications
       requestBody:
@@ -2378,6 +5188,49 @@ paths:
         Passthrough pagination: the caller controls page + page_size.
       summary: List unread in-app notifications for the authenticated user
       parameters:
+      - in: query
+        name: page
+        schema:
+          type: integer
+        description: Page number (1-based). Defaults to 1.
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+        description: Number of items per page. Defaults to 10.
+      tags:
+      - Notifications
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: 'Passthrough-paginated list of unread notifications. Envelope:
+            {results: [...], page: int, page_size: int, count: int}. count reflects
+            the total number of unread notifications for the user.'
+        '400':
+          description: Invalid page / page_size parameter
+        '401':
+          description: Unauthenticated
+  /notifications/unread{format}:
+    get:
+      operationId: notifications_unread_formatted_retrieve
+      description: |-
+        GET /notifications/unread/ — unread in-app notifications for the current user.
+
+        Uses the native vintasend NotificationService.get_in_app_unread(user_id, page,
+        page_size) which returns an Iterable of vintasend Notification dataclasses
+        (not an ORM queryset). Count comes from get_in_app_unread_count(user_id).
+        Passthrough pagination: the caller controls page + page_size.
+      summary: List unread in-app notifications for the authenticated user
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: query
         name: page
         schema:
@@ -2460,6 +5313,71 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedOrganizationMembershipList'
           description: ''
+  /organization-members{format}:
+    get:
+      operationId: organization_members_formatted_list
+      description: |-
+        A viewset for listing, retrieving, and managing organization members.
+
+        Admin-only endpoint — lists both active and inactive members of the caller's
+        organization, suitable for a datatable view. Non-admin members get 403.
+
+        Actions:
+        - `deactivate`: POST to disable a member (prevent self-deactivation and
+          protect the last active admin).
+        - `reactivate`: POST to re-enable a member.
+      parameters:
+      - in: query
+        name: email
+        schema:
+          type: string
+        description: Filter by partial email match
+      - in: query
+        name: first_name
+        schema:
+          type: string
+        description: Filter by partial first name match
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: query
+        name: last_name
+        schema:
+          type: string
+        description: Filter by partial last name match
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Search by first name, last name, or email (OR)
+      tags:
+      - organization-members
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedOrganizationMembershipList'
+          description: ''
   /organization-members/{id}/:
     get:
       operationId: organization_members_retrieve
@@ -2491,6 +5409,44 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
+  /organization-members/{id}{format}:
+    get:
+      operationId: organization_members_formatted_retrieve
+      description: |-
+        A viewset for listing, retrieving, and managing organization members.
+
+        Admin-only endpoint — lists both active and inactive members of the caller's
+        organization, suitable for a datatable view. Non-admin members get 403.
+
+        Actions:
+        - `deactivate`: POST to disable a member (prevent self-deactivation and
+          protect the last active admin).
+        - `reactivate`: POST to re-enable a member.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
   /organization-members/{id}/deactivate/:
     post:
       operationId: organization_members_deactivate_create
@@ -2504,6 +5460,60 @@ paths:
         Idempotency: deactivating an already-inactive member is a no-op success.
       summary: Deactivate an organization member
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '400':
+          description: Cannot deactivate self or last active admin
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
+  /organization-members/{id}/deactivate{format}:
+    post:
+      operationId: organization_members_deactivate_formatted_create
+      description: |-
+        Deactivate a member (set is_active=False).
+
+        Guards:
+        - Cannot deactivate own membership (self-lockout prevention).
+        - Cannot deactivate the last active admin (org lockout prevention).
+
+        Idempotency: deactivating an already-inactive member is a no-op success.
+      summary: Deactivate an organization member
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -2581,10 +5591,96 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
+  /organization-members/{id}/reactivate{format}:
+    post:
+      operationId: organization_members_reactivate_formatted_create
+      description: |-
+        Reactivate a member (set is_active=True).
+
+        No guards — re-enabling is always safe.
+
+        Idempotency: reactivating an already-active member is a no-op success.
+      summary: Reactivate an organization member
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationMembership'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
   /organizations/:
     post:
       operationId: organizations_create
       description: A viewset for managing organizations.
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Organization'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+          description: ''
+  /organizations{format}:
+    post:
+      operationId: organizations_formatted_create
+      description: A viewset for managing organizations.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - organizations
       requestBody:
@@ -2727,6 +5823,152 @@ paths:
       responses:
         '204':
           description: No response body
+  /organizations/{id}{format}:
+    get:
+      operationId: organizations_formatted_retrieve
+      description: A viewset for managing organizations.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+          description: ''
+    put:
+      operationId: organizations_formatted_update
+      description: |-
+        Override update to:
+
+        1. Upsert the org's ``GoogleCalendarServiceAccount`` when ``google_service_account``
+           is present in the request body (create-or-update, one per org, calendar FK=None).
+        2. Trigger rooms sync when ``should_sync_rooms`` flips False→True — but only when a
+           service account is configured (either already stored or just provided in this PATCH).
+           If the flag is being enabled and no service account is configured (neither stored
+           nor in the request), return **400** so the admin knows to configure first.
+
+        Uses select_for_update to lock the row during snapshot + write, serializing
+        concurrent PATCHes and preventing double-fire of the sync on False→True transition.
+
+        The creds check is performed BEFORE any write so that unrelated field changes (e.g.
+        renaming the org) are NOT persisted when the 400 is returned.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Organization'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+          description: ''
+    patch:
+      operationId: organizations_formatted_partial_update
+      description: A viewset for managing organizations.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedOrganization'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedOrganization'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedOrganization'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+          description: ''
+    delete:
+      operationId: organizations_formatted_destroy
+      description: A viewset for managing organizations.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /organizations/{id}/sync-calendars/:
     post:
       operationId: organizations_sync_calendars_create
@@ -2742,6 +5984,60 @@ paths:
         Returns HTTP 202 with ``{"synced": [...], "skipped": [...]}``.
       summary: Trigger a sync of every calendar in the organization
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSyncRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          description: 'Sync enqueued. Body: {synced: [calendar_id, ...], skipped:
+            [{calendar_id, reason}, ...]}.'
+        '400':
+          description: Invalid sync window
+        '403':
+          description: Not an admin
+        '404':
+          description: Organization not found
+  /organizations/{id}/sync-calendars{format}:
+    post:
+      operationId: organizations_sync_calendars_formatted_create
+      description: |-
+        POST /organizations/{id}/sync-calendars/ — enqueue a sync of all calendars.
+
+        Each active calendar in the organization is synced using its owner's
+        linked account. Calendars without an owner or a linked provider account
+        are reported under ``skipped`` rather than failing the whole request.
+
+        Body (``CalendarSyncRequestSerializer``): ``start_datetime``,
+        ``end_datetime`` (required ISO 8601) and ``should_update_events``.
+        Returns HTTP 202 with ``{"synced": [...], "skipped": [...]}``.
+      summary: Trigger a sync of every calendar in the organization
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -2823,6 +6119,62 @@ paths:
           description: Not an admin
         '404':
           description: Organization not found
+  /organizations/{id}/sync-rooms{format}:
+    post:
+      operationId: organizations_sync_rooms_formatted_create
+      description: |-
+        POST /organizations/{id}/sync-rooms/ — enqueue a calendar resources import.
+
+        Optional body fields:
+        - ``start_time``: ISO 8601 datetime for the import window start.
+        - ``end_time``: ISO 8601 datetime for the import window end.
+
+        Defaults (when omitted): ``start_time=now``, ``end_time=now+365d``.
+        Returns HTTP 202 on success.
+      summary: Trigger a rooms/resources import for the organization
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Organization'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+          description: ''
+        '400':
+          description: Invalid datetime format
+        '403':
+          description: Not an admin
+        '404':
+          description: Organization not found
   /organizations/current/:
     get:
       operationId: organizations_current_retrieve
@@ -2832,6 +6184,37 @@ paths:
         HTTP 200 — the user is onboarded (has a membership).
         HTTP 404 — the user is gated (no membership yet).
       summary: Current organization + role for the authenticated user
+      tags:
+      - organizations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentMembership'
+          description: ''
+        '404':
+          description: No organization membership (gated user)
+  /organizations/current{format}:
+    get:
+      operationId: organizations_current_formatted_retrieve
+      description: |-
+        Return the caller's organization and role.
+
+        HTTP 200 — the user is onboarded (has a membership).
+        HTTP 404 — the user is gated (no membership yet).
+      summary: Current organization + role for the authenticated user
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - organizations
       security:
@@ -2874,6 +6257,41 @@ paths:
               schema:
                 description: Payment update received.
           description: ''
+  /payments/{id}/payment-update/{provider}{format}:
+    post:
+      operationId: payments_payment_update_formatted_create
+      description: This endpoint is used to receive payment updates from MercadoPago.
+      summary: Receive payment updates
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - in: path
+        name: provider
+        schema:
+          type: string
+        required: true
+      tags:
+      - payments
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Payment update received.
+          description: ''
   /payments/{id}/subscription-payment-update/{provider}/:
     post:
       operationId: payments_subscription_payment_update_create
@@ -2881,6 +6299,42 @@ paths:
         MercadoPago.
       summary: Receive subscription payment updates
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - in: path
+        name: provider
+        schema:
+          type: string
+        required: true
+      tags:
+      - payments
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Subscription payment update received.
+          description: ''
+  /payments/{id}/subscription-payment-update/{provider}{format}:
+    post:
+      operationId: payments_subscription_payment_update_formatted_create
+      description: This endpoint is used to receive subscription payment updates from
+        MercadoPago.
+      summary: Receive subscription payment updates
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -2994,6 +6448,118 @@ paths:
               schema:
                 $ref: '#/components/schemas/Profile'
           description: ''
+  /profile/{user}{format}:
+    get:
+      operationId: profile_formatted_retrieve
+      description: Retrieve the profile of the currently authenticated user or a specific
+        user.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: user
+        schema:
+          type: string
+        description: User ID to retrieve or update the profile. Use 'me' to refer
+          to the currently authenticated user.
+        required: true
+      tags:
+      - profile
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+          description: ''
+    put:
+      operationId: profile_formatted_update
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: user
+        schema:
+          type: string
+        description: User ID to update the profile. Use 'me' to refer to the currently
+          authenticated user.
+        required: true
+      tags:
+      - profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Profile'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Profile'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Profile'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+          description: ''
+    patch:
+      operationId: profile_formatted_partial_update
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: user
+        schema:
+          type: string
+        description: User ID to update the profile. Use 'me' to refer to the currently
+          authenticated user.
+        required: true
+      tags:
+      - profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedProfile'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedProfile'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedProfile'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+          description: ''
   /profile/{user}/profile-picture-upload-params/:
     post:
       operationId: profile_profile_picture_upload_params_create
@@ -3001,6 +6567,50 @@ paths:
         to S3. Only works for your own profile.
       summary: Get S3 upload params for profile picture
       parameters:
+      - in: path
+        name: user
+        schema:
+          type: string
+        description: User ID. Use 'me' to refer to the currently authenticated user.
+        required: true
+      tags:
+      - profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProfilePictureUploadParamsRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfilePictureUploadParams'
+          description: ''
+  /profile/{user}/profile-picture-upload-params{format}:
+    post:
+      operationId: profile_profile_picture_upload_params_formatted_create
+      description: Returns the parameters needed to upload a profile picture directly
+        to S3. Only works for your own profile.
+      summary: Get S3 upload params for profile picture
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: user
         schema:
@@ -3086,6 +6696,100 @@ paths:
         - Duplicate ``integration_name`` (unique constraint).
 
         HTTP 403 is returned for non-admin callers; HTTP 401 for unauthenticated.
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserTokenResponse'
+          description: ''
+  /public-api-tokens{format}:
+    get:
+      operationId: public_api_tokens_formatted_list
+      description: |-
+        Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
+
+        Phase 12: create only.  Phase 13: list + retrieve.
+        List / retrieve / revoke / edit-grants are supported phases.
+
+        ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
+        organisation, persists the requested ``ResourceAccess`` rows, and returns the
+        plaintext token **once**.  The token is never recoverable after this response.
+
+        ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
+        ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - public-api-tokens
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSystemUserTokenList'
+          description: ''
+    post:
+      operationId: public_api_tokens_formatted_create
+      description: |-
+        Create a SystemUser and ResourceAccess rows; return the plaintext token once.
+
+        Returns HTTP 201 on success.  The response body includes ``id``,
+        ``integration_name``, ``is_active``, ``available_resources``, and a
+        write-once ``token`` field — never ``long_lived_token_hash``.
+
+        HTTP 400 is returned for:
+        - Invalid or unknown ``available_resources`` values.
+        - Empty ``available_resources`` list.
+        - Duplicate ``integration_name`` (unique constraint).
+
+        HTTP 403 is returned for non-admin callers; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - public-api-tokens
       requestBody:
@@ -3233,6 +6937,150 @@ paths:
               schema:
                 $ref: '#/components/schemas/SystemUserToken'
           description: ''
+  /public-api-tokens/{id}{format}:
+    get:
+      operationId: public_api_tokens_formatted_retrieve
+      description: |-
+        Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
+
+        Phase 12: create only.  Phase 13: list + retrieve.
+        List / retrieve / revoke / edit-grants are supported phases.
+
+        ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
+        organisation, persists the requested ``ResourceAccess`` rows, and returns the
+        plaintext token **once**.  The token is never recoverable after this response.
+
+        ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
+        ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+    put:
+      operationId: public_api_tokens_formatted_update
+      description: |-
+        Update a token's resource grants via PUT (full replacement).
+
+        Accepts ``available_resources`` (a non-empty list of valid resource values).
+        Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        ``integration_name`` and ``token`` are never mutated; if sent in the body,
+        they are silently ignored.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 400 is returned for invalid resource values or empty list.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserTokenUpdate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+    patch:
+      operationId: public_api_tokens_formatted_partial_update
+      description: |-
+        Update a token's resource grants via PATCH (full replacement).
+
+        PATCH and PUT behave identically for this endpoint: both require the full
+        ``available_resources`` list and replace grants completely.
+
+        Accepts ``available_resources`` (a non-empty list of valid resource values).
+        Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        ``integration_name`` and ``token`` are never mutated; if sent in the body,
+        they are silently ignored.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 400 is returned for invalid resource values or empty list.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedSystemUserTokenUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
   /public-api-tokens/{id}/revoke/:
     post:
       operationId: public_api_tokens_revoke_create
@@ -3246,6 +7094,54 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - public-api-tokens
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SystemUserToken'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemUserToken'
+          description: ''
+  /public-api-tokens/{id}/revoke{format}:
+    post:
+      operationId: public_api_tokens_revoke_formatted_create
+      description: |-
+        Revoke a public-API token by setting its SystemUser.is_active to False.
+
+        The token will no longer authenticate requests via check_system_user_token.
+        This is idempotent: revoking an already-revoked token is a 200 no-op.
+
+        Returns HTTP 200 with the updated token serialized via SystemUserTokenSerializer.
+        HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
+        exist or belongs to another organization; HTTP 401 for unauthenticated.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:
@@ -3530,6 +7426,93 @@ paths:
               schema:
                 $ref: '#/components/schemas/ServiceAccountRead'
           description: ''
+  /service-accounts{format}:
+    get:
+      operationId: service_accounts_formatted_list
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedServiceAccountReadList'
+          description: ''
+    post:
+      operationId: service_accounts_formatted_create
+      description: |-
+        Create the org-level service account (one per organization).
+
+        HTTP 201 with the secret-free representation. HTTP 400 if an org-level
+        account already exists (rotate via PUT/PATCH or DELETE first) or the
+        payload is invalid.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
   /service-accounts/{id}/:
     get:
       operationId: service_accounts_retrieve
@@ -3661,6 +7644,165 @@ paths:
       responses:
         '204':
           description: No response body
+  /service-accounts/{id}{format}:
+    get:
+      operationId: service_accounts_formatted_retrieve
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+    put:
+      operationId: service_accounts_formatted_update
+      description: |-
+        Rotate/update the org-level service account.
+
+        PUT requires all writable fields; PATCH updates the provided subset
+        (secrets are retained when omitted). Returns HTTP 200 with the
+        secret-free representation.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountWrite'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountRead'
+          description: ''
+    patch:
+      operationId: service_accounts_formatted_partial_update
+      description: |-
+        Admin-only CRUD for the organization's Google Calendar service account.
+
+        Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
+        one used for rooms sync. Per-calendar service accounts are auto-assigned by the
+        calendar auth flow and are intentionally not exposed here.
+
+        Secrets (``private_key``, ``private_key_id``) are write-only and never echoed;
+        all responses use ``ServiceAccountReadSerializer``. There is at most one
+        org-level account per organization: ``create`` refuses a duplicate (rotate via
+        PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
+        queryset; non-admins get 403; anonymous requests 401.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedServiceAccountWrite'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountWrite'
+          description: ''
+    delete:
+      operationId: service_accounts_formatted_destroy
+      description: Delete the org-level service account. HTTP 204.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - service-accounts
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /webhook-configurations/:
     get:
       operationId: webhook_configurations_list
@@ -3697,6 +7839,81 @@ paths:
       description: |-
         ViewSet for managing webhook configurations.
         Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      tags:
+      - webhook-configurations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookConfiguration'
+          description: ''
+  /webhook-configurations{format}:
+    get:
+      operationId: webhook_configurations_formatted_list
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - webhook-configurations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWebhookConfigurationList'
+          description: ''
+    post:
+      operationId: webhook_configurations_formatted_create
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       tags:
       - webhook-configurations
       requestBody:
@@ -3833,6 +8050,146 @@ paths:
       responses:
         '204':
           description: No response body
+  /webhook-configurations/{id}{format}:
+    get:
+      operationId: webhook_configurations_formatted_retrieve
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-configurations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookConfiguration'
+          description: ''
+    put:
+      operationId: webhook_configurations_formatted_update
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-configurations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/WebhookConfiguration'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookConfiguration'
+          description: ''
+    patch:
+      operationId: webhook_configurations_formatted_partial_update
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-configurations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedWebhookConfiguration'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedWebhookConfiguration'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedWebhookConfiguration'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookConfiguration'
+          description: ''
+    delete:
+      operationId: webhook_configurations_formatted_destroy
+      description: |-
+        ViewSet for managing webhook configurations.
+        Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-configurations
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /webhook-events/:
     get:
       operationId: webhook_events_list
@@ -3840,6 +8197,44 @@ paths:
         ViewSet for webhook events.
         Provides read-only operations (list, retrieve) and a custom retry action.
       parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - webhook-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWebhookEventList'
+          description: ''
+  /webhook-events{format}:
+    get:
+      operationId: webhook_events_formatted_list
+      description: |-
+        ViewSet for webhook events.
+        Provides read-only operations (list, retrieve) and a custom retry action.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - name: limit
         required: false
         in: query
@@ -3888,11 +8283,83 @@ paths:
               schema:
                 $ref: '#/components/schemas/WebhookEvent'
           description: ''
+  /webhook-events/{id}{format}:
+    get:
+      operationId: webhook_events_formatted_retrieve
+      description: |-
+        ViewSet for webhook events.
+        Provides read-only operations (list, retrieve) and a custom retry action.
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEvent'
+          description: ''
   /webhook-events/{id}/retry/:
     post:
       operationId: webhook_events_retry_create
       description: Retry a failed webhook event
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - webhook-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEvent'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Bad request - event cannot be retried
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Event not found
+          description: ''
+  /webhook-events/{id}/retry{format}:
+    post:
+      operationId: webhook_events_retry_formatted_create
+      description: Retry a failed webhook event
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
       - in: path
         name: id
         schema:

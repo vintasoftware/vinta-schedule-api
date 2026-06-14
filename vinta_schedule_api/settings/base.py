@@ -349,7 +349,7 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "API for vinta-schedule-api project",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
-    "PREPROCESSING_HOOKS": ["drf_spectacular.hooks.preprocess_exclude_path_format"],
+    "PREPROCESSING_HOOKS": [],
     "ENUM_ADD_EXPLICIT_BLANK_NULL_CHOICE": False,
     "ENUM_NAME_OVERRIDES": {
         "FrequencyEnum": "calendar_integration.constants.RecurrenceFrequency.choices",

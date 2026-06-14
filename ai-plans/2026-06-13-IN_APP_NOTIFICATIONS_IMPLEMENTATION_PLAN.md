@@ -82,7 +82,7 @@ All list endpoints share one passthrough envelope: `{ results: [...], page, page
 
 ### 4.4 Mark multiple notifications as read (bulk)
 
-- **POST** `/notifications/mark-read/` (collection-level; distinct from the detail `…/{id}/mark-read/`) → `200`.
+- **POST** `/notifications/mark-read-bulk/` (collection-level; distinct from the detail `…/{id}/mark-read/`) → `200`.
 - Request body: `{ "ids": [<id>, ...] }` (non-empty list of notification ids; validated → `400` on empty/malformed).
 - Calls `NotificationService.mark_read_bulk(ids, user_id=request.user.id)` — ownership-scoped (foreign ids silently skipped, never an error) and idempotent (already-READ/missing/non-SENT ids skipped).
 - Response: `{ "results": [ ...serialized notifications that are READ after the op... ] }` (the requested ids the user owns and that are now READ; the count of returned items may be fewer than requested ids).
@@ -202,13 +202,13 @@ Acceptance: `POST /notifications/{id}/mark-read/` marks the owner's notification
 
 > **Added in the 1.2.0 reconciliation (2026-06-14).** Possible only with 1.2.0's native `mark_read_bulk`.
 
-**Goal**: Authenticated user can `POST /notifications/mark-read/` with a list of ids to mark several notifications read at once.
+**Goal**: Authenticated user can `POST /notifications/mark-read-bulk/` with a list of ids to mark several notifications read at once.
 
 **Feature flag**: none — additive new endpoint.
 
 Changes:
 1. `notifications/serializers.py`: add a small input serializer `BulkMarkReadSerializer` with `ids = serializers.ListField(child=serializers.CharField(), allow_empty=False)` (validate non-empty list of ids → `400` on empty/malformed).
-2. `notifications/views.py`: add a collection action `@action(detail=False, methods=["post"], url_path="mark-read")` named `mark_read_bulk` (distinct from the detail `mark_read` at `…/{id}/mark-read/`; different route, different method name). Validate the body with `BulkMarkReadSerializer`, then call `self.notification_service.mark_read_bulk(ids, user_id=request.user.id)` (ownership-scoped → foreign ids silently skipped; idempotent). Serialize the returned iterable with `NotificationSerializer(many=True)` and return `{ "results": [...] }` at `200`.
+2. `notifications/views.py`: add a collection action `@action(detail=False, methods=["post"], url_path="mark-read-bulk")` named `mark_read_bulk`. A **distinct** `url_path` (`mark-read-bulk`, not `mark-read`) is deliberate: sharing `url_path="mark-read"` with the detail `mark_read` action makes drf-spectacular derive the same operationId for both → a collision warning + an order-dependent `_2` suffix. The distinct path yields stable, unique operationIds with no global schema hooks. Validate the body with `BulkMarkReadSerializer`, then call `self.notification_service.mark_read_bulk(ids, user_id=request.user.id)` (ownership-scoped → foreign ids silently skipped; idempotent). Serialize the returned iterable with `NotificationSerializer(many=True)` and return `{ "results": [...] }` at `200`.
 3. Route already registered (Phase 1) — the collection action needs no new `routes.py` entry. Regenerate `schema.yml`.
 
 Spec use-case: Mark multiple notifications as read (Goal 5).
@@ -226,7 +226,7 @@ Tests:
 
 **Reusable skills**: `create-rest-endpoint`; `write-tests`.
 
-Acceptance: `POST /notifications/mark-read/` with a list of ids marks the caller's SENT notifications `READ` (idempotent, ownership-scoped); foreign/unknown ids are silently skipped; empty body → `400`; unauth → `401`.
+Acceptance: `POST /notifications/mark-read-bulk/` with a list of ids marks the caller's SENT notifications `READ` (idempotent, ownership-scoped); foreign/unknown ids are silently skipped; empty/over-100 body → `400`; unauth → `401`.
 
 ---
 
