@@ -1,4 +1,3 @@
-import copy
 import datetime
 import json
 import logging
@@ -7,7 +6,7 @@ from typing import Annotated, Any, Literal, TypedDict, cast
 
 from django.conf import settings
 from django.core.exceptions import PermissionDenied
-from django.db import models, transaction
+from django.db import transaction
 from django.db.models import Q, QuerySet
 from django.http import HttpRequest
 from django.urls import reverse
@@ -57,7 +56,6 @@ from calendar_integration.models import (
     ResourceAllocation,
 )
 from calendar_integration.querysets import CalendarEventQuerySet
-from calendar_integration.recurrence_utils import OccurrenceValidator, RecurrenceRuleSplitter
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.calendar_service_utils import (
@@ -111,6 +109,7 @@ from calendar_integration.services.dataclasses import (
 )
 from calendar_integration.services.protocols.base_calendar_service import BaseCalendarService
 from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
+from calendar_integration.services.recurrence_manager import RecurrenceManager
 from calendar_integration.services.type_guards import (
     is_authenticated_calendar_service,
     is_initialized_or_authenticated_calendar_service,
@@ -163,6 +162,9 @@ class CalendarService(BaseCalendarService):
         self._calendar_cache: dict[tuple[int, str | int], Calendar] = {}
         # Shared auth-context snapshot; set by authenticate() / initialize_without_provider().
         self._context: CalendarServiceContext | None = None
+        # Stateless recurrence engine shared by event/blocked-time/available-time methods.
+        # Constructed once; it holds no auth state (everything arrives as method params).
+        self._recurrence_manager = RecurrenceManager()
 
     def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None:
         """
@@ -1718,114 +1720,6 @@ class CalendarService(BaseCalendarService):
         )
         return self.create_event(calendar_id, event_data)
 
-    def _create_recurring_exception_generic(
-        self,
-        object_type_name: str,
-        parent_object: RecurringMixin,
-        exception_date: datetime.date,
-        is_cancelled: bool,
-        modification_data: dict[str, Any] | None = None,
-        create_new_recurring_callback: Callable[
-            [RecurringMixin, RecurringMixin, RecurrenceRule], RecurringMixin
-        ]
-        | None = None,
-        create_modified_object_callback: Callable[
-            [RecurringMixin, datetime.datetime, dict[str, Any]], RecurringMixin
-        ]
-        | None = None,
-        exception_manager_update_callback: Callable[[RecurringMixin, RecurringMixin], None]
-        | None = None,
-        exception_manager_delete_callback: Callable[[RecurringMixin], None] | None = None,
-    ) -> RecurringMixin | None:
-        """
-        Generic method for creating exceptions for recurring objects (events, blocked times, available times).
-
-        :param parent_object: The recurring object to create an exception for
-        :param exception_date: The datetime of the occurrence to modify/cancel
-        :param is_cancelled: True if cancelling the occurrence, False if modifying
-        :param modification_data: Dictionary of fields to modify (if not cancelled)
-        :param create_new_recurring_callback: Callback to create new recurring object after master modification
-        :param create_modified_object_callback: Callback to create modified object for non-cancelled exceptions
-        :param exception_manager_update_callback: Callback to update exception manager references
-        :param exception_manager_delete_callback: Callback to delete exception manager references
-        :return: Created/modified object or None if cancelled
-        """
-        if not is_initialized_or_authenticated_calendar_service(self):
-            raise
-
-        if not parent_object.is_recurring:
-            raise ValueError(f"Cannot create exception for non-recurring {object_type_name}")
-
-        exception_datetime = datetime.datetime.combine(
-            exception_date, parent_object.start_time.time(), tzinfo=parent_object.start_time.tzinfo
-        )
-
-        if exception_date == parent_object.start_time.date():
-            # Exception is on the master object date
-            second_occurrence = parent_object.get_next_occurrence(exception_datetime)
-            old_recurrence_rule = parent_object.recurrence_rule
-
-            if not second_occurrence:
-                # No future occurrences, make the object non-recurring
-                if exception_manager_delete_callback:
-                    exception_manager_delete_callback(parent_object)
-                if old_recurrence_rule:
-                    old_recurrence_rule.delete()
-            else:
-                # Create new recurring object starting from second occurrence
-                new_recurrence_rule: RecurrenceRule = copy.copy(old_recurrence_rule)
-                new_recurrence_rule.id = None
-                new_recurrence_rule.count = (
-                    new_recurrence_rule.count - 1 if new_recurrence_rule.count else None
-                )
-
-                if create_new_recurring_callback:
-                    new_recurring_object = create_new_recurring_callback(
-                        parent_object, second_occurrence, new_recurrence_rule
-                    )
-                    if exception_manager_update_callback:
-                        exception_manager_update_callback(parent_object, new_recurring_object)
-
-                if old_recurrence_rule:
-                    old_recurrence_rule.delete()
-
-            # Update the master object to be non-recurring
-            parent_object.recurrence_rule_fk_id = None
-            if modification_data:
-                for field, value in modification_data.items():
-                    if value is not None:
-                        setattr(parent_object, field, value)
-                    # Keep original value if modification is None (fallback behavior)
-            parent_object.save()
-
-            # NOTE: adapter sync intentionally omitted here. Bulk modifications
-            # will perform explicit adapter calls when truncating the master series.
-
-            # Return the updated master object
-            parent_model = cast(models.Model, parent_object)
-            return parent_object.__class__.objects.get(
-                organization_id=parent_object.organization_id, id=parent_model.pk
-            )
-
-        # Exception is on a future occurrence
-        if is_cancelled:
-            parent_object.create_exception(exception_datetime, is_cancelled=True)
-            return None
-        else:
-            # Create modified object for the specific occurrence
-            if create_modified_object_callback:
-                modified_object = create_modified_object_callback(
-                    parent_object, exception_datetime, modification_data or {}
-                )
-                modified_object.is_recurring_exception = True
-                modified_object.save()
-
-                parent_object.create_exception(
-                    exception_datetime, is_cancelled=False, modified_object=modified_object
-                )
-                return modified_object
-            return None
-
     def create_recurring_event_exception(
         self,
         parent_event: CalendarEvent,
@@ -1926,7 +1820,8 @@ class CalendarService(BaseCalendarService):
             "timezone": modified_timezone,
         }
 
-        result = self._create_recurring_exception_generic(
+        result = self._recurrence_manager.create_recurring_exception_generic(
+            self._context,
             object_type_name="event",
             parent_object=parent_event,
             exception_date=exception_date,
@@ -3460,7 +3355,8 @@ class CalendarService(BaseCalendarService):
             "timezone": modified_timezone,
         }
 
-        result = self._create_recurring_exception_generic(
+        result = self._recurrence_manager.create_recurring_exception_generic(
+            self._context,
             object_type_name="blocked time",
             parent_object=parent_blocked_time,
             exception_date=datetime.datetime.combine(
@@ -3547,7 +3443,8 @@ class CalendarService(BaseCalendarService):
             "timezone": modified_timezone,
         }
 
-        result = self._create_recurring_exception_generic(
+        result = self._recurrence_manager.create_recurring_exception_generic(
+            self._context,
             object_type_name="available time",
             parent_object=parent_available_time,
             exception_date=datetime.datetime.combine(
@@ -3563,111 +3460,6 @@ class CalendarService(BaseCalendarService):
             exception_manager_delete_callback=delete_exception_manager,
         )
         return cast(AvailableTime, result) if result else None
-
-    def _create_recurring_bulk_modification_generic(
-        self,
-        object_type_name: str,
-        parent_object: RecurringMixin,
-        modification_start_date: datetime.datetime,
-        is_bulk_cancelled: bool = False,
-        modification_data: dict[str, Any] | None = None,
-        truncate_parent_callback: Callable[[RecurringMixin, RecurrenceRule | None], RecurringMixin]
-        | None = None,
-        create_continuation_callback: Callable[
-            [RecurringMixin, datetime.datetime, RecurrenceRule | None, dict[str, Any]],
-            RecurringMixin,
-        ]
-        | None = None,
-        bulk_modification_record_callback: Callable[
-            [RecurringMixin, datetime.datetime, RecurringMixin | None, bool], None
-        ]
-        | None = None,
-        modification_rrule_string: str | None = None,
-    ) -> RecurringMixin | None:
-        """
-        Generic method to apply a bulk modification (from modification_start_date onwards)
-        to a recurring series.
-
-        Behaviour:
-        1. Validate parent is recurring and modification_start_date is an occurrence.
-        2. Compute truncated rule for the original (UNTIL set to previous occurrence).
-        3. Compute continuation rule for occurrences from modification_start_date onwards.
-        4. Persist continuation object (unless cancelled) using provided callback.
-        5. Record a bulk modification record using provided callback.
-        Returns the continuation object or None if cancelled.
-        """
-        if not is_initialized_or_authenticated_calendar_service(self):
-            raise
-
-        if not parent_object.is_recurring:
-            raise ValueError(
-                f"Cannot create bulk modification for non-recurring {object_type_name}"
-            )
-
-        # Normalize tz for modification_start_date similar to exceptions
-        if modification_start_date.tzinfo is None:
-            modification_start_date = datetime.datetime.combine(
-                modification_start_date.date(),
-                parent_object.start_time.time(),
-                tzinfo=parent_object.start_time.tzinfo,
-            )
-
-        # Use RecurrenceRule splitting utilities from recurrence_utils
-        # Ensure the modification date corresponds to an occurrence
-        if not OccurrenceValidator.validate_modification_date(
-            parent_object, modification_start_date
-        ):
-            raise ValueError(
-                "Modification start date is not a valid occurrence of the recurring series"
-            )
-
-        # Split the rule into truncated and continuation parts
-        original_start = parent_object.start_time
-        truncated_rule, continuation_rule = RecurrenceRuleSplitter.split_at_date(
-            parent_object.recurrence_rule, modification_start_date, original_start
-        )
-
-        # Persist changes inside a transaction
-        with transaction.atomic():
-            # Update original's recurrence_rule to truncated (or remove recurrence_rule if None)
-            if truncate_parent_callback:
-                parent_object = truncate_parent_callback(parent_object, truncated_rule)
-
-            continuation_obj: RecurringMixin | None = None
-            if not is_bulk_cancelled and (continuation_rule or modification_rrule_string):
-                # Create continuation recurrence rule and object via callback
-                # If caller provided an explicit recurrence string for the continuation,
-                # parse it and use that instead of the splitter-generated continuation_rule.
-                if modification_rrule_string:
-                    continuation_rule = RecurrenceRule.from_rrule_string(
-                        modification_rrule_string, parent_object.organization
-                    )
-                if continuation_rule:
-                    continuation_rule.organization = parent_object.organization
-                    continuation_rule.save()
-
-                if create_continuation_callback is None:
-                    raise ValueError("create_continuation_callback is required when not cancelling")
-
-                continuation_obj = create_continuation_callback(
-                    parent_object,
-                    modification_start_date,
-                    continuation_rule,
-                    modification_data or {},
-                )
-
-                # Link continuation to parent via bulk_modification_parent field if present
-                # Link continuation to parent via bulk_modification_parent field if present
-                if hasattr(continuation_obj, "bulk_modification_parent_fk"):
-                    continuation_obj.bulk_modification_parent_fk = parent_object
-                    continuation_obj.save()
-
-            # Record bulk modification via provided callback (e.g., create EventBulkModification)
-            if bulk_modification_record_callback:
-                bulk_modification_record_callback(
-                    parent_object, modification_start_date, continuation_obj, is_bulk_cancelled
-                )
-            return continuation_obj
 
     def create_recurring_event_bulk_modification(
         self,
@@ -3798,7 +3590,8 @@ class CalendarService(BaseCalendarService):
             "end_time_offset": modified_end_time_offset,
         }
 
-        result = self._create_recurring_bulk_modification_generic(
+        result = self._recurrence_manager.create_recurring_bulk_modification_generic(
+            self._context,
             object_type_name="event",
             parent_object=parent_event,
             modification_start_date=modification_start_date,
@@ -3879,7 +3672,8 @@ class CalendarService(BaseCalendarService):
             "end_time_offset": modified_end_time_offset,
         }
 
-        result = self._create_recurring_bulk_modification_generic(
+        result = self._recurrence_manager.create_recurring_bulk_modification_generic(
+            self._context,
             object_type_name="blocked time",
             parent_object=parent_blocked_time,
             modification_start_date=modification_start_date,
@@ -3957,7 +3751,8 @@ class CalendarService(BaseCalendarService):
             "end_time_offset": modified_end_time_offset,
         }
 
-        result = self._create_recurring_bulk_modification_generic(
+        result = self._recurrence_manager.create_recurring_bulk_modification_generic(
+            self._context,
             object_type_name="available time",
             parent_object=parent_available_time,
             modification_start_date=modification_start_date,
