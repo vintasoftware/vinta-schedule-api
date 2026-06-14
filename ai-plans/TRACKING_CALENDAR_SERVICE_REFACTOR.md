@@ -90,11 +90,24 @@
   - Phase 7 cleanup list += export `AvailabilityService` from `services/__init__.py`; the `_remove_...` cast-style note.
   - NOTE: long opus agents are hitting ~45min API socket timeouts — for Phase 5 (sync, the most coupled), consider checkpointing or expect to finish via a follow-up agent if it dies mid-extraction. The pattern: dead agents leave correct partial work on disk (uncommitted); verify via the suite, then a small finishing agent completes tests+commit.
 
+### Phase 5 — Extract CalendarSyncService ✅
+- **Status**: complete, PR open
+- **Model**: claude-opus-4-7 (Tier 4) — completed in one session (checkpoint-commit strategy used; survived)
+- **Branch**: `plan/calendar-service-refactor/phase-5` (base `…/phase-4`)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/76 (published, 3 inline comments)
+- **Files**: `calendar_integration/services/calendar_sync_service.py` (new, ~992 lines), `calendar_integration/services/calendar_service.py` (edited, −656 lines → facade now 1985 lines), `calendar_integration/tests/services/test_calendar_sync_service.py` (new, 3 tests)
+- **Summary**: Moved the import/sync state machine (6 public + ~11 internal diff/merge methods) into `CalendarSyncService`. Same host-seam (`SyncServiceHost`). Sync reads via `context.calendar_adapter`, writes via the same bulk ops; routes availability/permission + a couple inner calls back through host. Many sync privates kept as facade delegations (tests call them directly).
+- **Review**: Layer-3 0 blockers / 0 should-fix. Diff/merge byte-identical (bulk field lists verified); host self-routing verified non-recursive; external Celery/org callers unaffected.
+- **Gate**: full suite 1622 passed, 0 failed. mypy 7 in new file all verbatim-from-original.
+- **Carry-forward notes**:
+  - Facade now 1985 lines (was 4726, −58%). Remaining: auth/init/adapter resolution, calendar CRUD (create_application/virtual_calendar), webhooks (Phase 6), permission-granting helpers, + many thin private delegations.
+  - Phase 7 cleanup list += drop redundant facade `@transaction.atomic()` on `import_account_calendars` delegation; remove stale `_process_events_for_sync`/`_link_orphaned_recurring_instances` from the `AuthenticatedCalendarService` protocol; add a direct orphan-link unit test (currently integration-covered).
+  - Checkpoint strategy (commit extraction before tests) worked well for the long extraction — reuse if Phase 6 runs long.
+
 ## Current Phase
-- Phase 5 — Extract `CalendarSyncService` (next).
+- Phase 6 — Extract `CalendarWebhookService` (next).
 
 ## Remaining Phases
-- Phase 5 — Extract `CalendarSyncService` (Tier 4)
 - Phase 6 — Extract `CalendarWebhookService` (Tier 3)
 - Phase 7 — Shrink the facade and finalize wiring (Tier 2)
 
