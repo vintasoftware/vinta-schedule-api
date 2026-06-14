@@ -259,6 +259,7 @@ class NotificationViewSet(GenericViewSet):
         return self._paginated_envelope(notifications, page, page_size, count)
 
     @extend_schema(
+        operation_id="notifications_mark_read",
         summary="Mark a notification as read",
         description=(
             "Marks a single in-app notification as read for the authenticated user. "
@@ -314,6 +315,7 @@ class NotificationViewSet(GenericViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(
+        operation_id="notifications_mark_read_bulk",
         summary="Mark multiple notifications as read (bulk)",
         description=(
             "Marks multiple in-app notifications as read for the authenticated user. "

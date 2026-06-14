@@ -266,6 +266,13 @@ class TestBulkMarkReadValidation:
         response = client.post(BULK_MARK_READ_URL, {"ids": ["abc", "def"]}, format="json")
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
+    def test_ids_list_exceeding_max_length_returns_400(self, user) -> None:
+        """ids list with 101 entries exceeds max_length=100 and returns HTTP 400."""
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.post(BULK_MARK_READ_URL, {"ids": list(range(1, 102))}, format="json")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
 
 @pytest.mark.django_db
 class TestBulkMarkReadNonExistentIds:
@@ -339,3 +346,5 @@ class TestBulkMarkReadResponseShape:
             "modified",
         }
         assert item["status"] == NotificationStatus.READ.value
+        assert item["created"] is not None
+        assert item["modified"] is not None

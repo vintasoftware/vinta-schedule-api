@@ -114,4 +114,5 @@ class BulkMarkReadSerializer(serializers.Serializer):
     ids = serializers.ListField(
         child=serializers.IntegerField(),
         allow_empty=False,
+        max_length=100,
     )
