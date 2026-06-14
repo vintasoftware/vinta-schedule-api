@@ -67,11 +67,19 @@
 - **Review:** Layer-3 caught a BLOCKER — spectacular inferred a paginated envelope vs the bare-list runtime; fixed with `pagination_class=None` + schema regen + bare-array test. Added opt-out isolation test (current still 400). Inline query → manager method.
 - **Gate:** full suite green — `pytest -n auto` 1594 passed, 0 failures.
 
+### Phase 4 — Multi-org invitation accept ✅
+- **Model used:** claude-sonnet-4-6 · agent: migration-author
+- **Branch:** plan/multi-org-membership/phase-4 · **base:** plan/multi-org-membership/phase-3
+- **PR:** https://github.com/vintasoftware/vinta-schedule-api/pull/79 (published, 3 inline comments)
+- **Summary:** per-org provisioning guards (refuse only same-org dup); cross-org invite accept → 2nd membership; `organization_name` create branch kept Phase-5-gated. `OrganizationInvitation.email` → `unique(email, organization)` (migration 0007, reversible). Error message reworded.
+- **Review:** Layer-3 no blockers; 4 SHOULD-FIXes applied (error msg, social-signup integration test, inactive-blocks-re-accept test, invite dedup/reset test).
+- **Gate:** full suite green — `pytest -n auto` 1604 passed, 0 failures. (mypy 139: +1 test-only @inject false positive, accepted.)
+
 ## Current phase
-Phase 4 — Multi-org invitation accept (Tier 3 · sonnet · migration-author).
+Phase 5 — Create additional org (Tier 2 · sonnet · implementer). FINAL phase (no flag → no flag-removal phase).
 
 ## Remaining phases
-- Phase 4 — Multi-org invitation accept
+- Phase 5 — Create additional org
 - Phase 3 — List my orgs endpoint
 - Phase 4 — Multi-org invitation accept
 - Phase 5 — Create additional org
