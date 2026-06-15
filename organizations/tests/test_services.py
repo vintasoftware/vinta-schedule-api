@@ -260,15 +260,9 @@ class TestOrganizationService:
         first_name = "John"
         last_name = "Doe"
 
-        # Mock the transaction.on_commit and URL generation
-        with (
-            patch("organizations.services.transaction.on_commit") as mock_on_commit,
-            patch("organizations.services.reverse") as mock_reverse,
-            patch("organizations.services.build_absolute_uri") as mock_build_absolute_uri,
-        ):
+        # Mock the transaction.on_commit so the notification fires synchronously
+        with patch("organizations.services.transaction.on_commit") as mock_on_commit:
             mock_on_commit.side_effect = lambda func: func()
-            mock_reverse.return_value = "/invitation/test-token/"
-            mock_build_absolute_uri.return_value = "http://example.com/invitation/test-token/"
 
             # Mock the NotificationContextDict to avoid the tuple issue
             with patch("organizations.services.NotificationContextDict") as mock_context_dict:
@@ -326,15 +320,9 @@ class TestOrganizationService:
             membership=None,
         )
 
-        # Mock transaction.on_commit and URL generation
-        with (
-            patch("organizations.services.transaction.on_commit") as mock_on_commit,
-            patch("organizations.services.reverse") as mock_reverse,
-            patch("organizations.services.build_absolute_uri") as mock_build_absolute_uri,
-        ):
+        # Mock transaction.on_commit so the notification fires synchronously
+        with patch("organizations.services.transaction.on_commit") as mock_on_commit:
             mock_on_commit.side_effect = lambda func: func()
-            mock_reverse.return_value = "/invitation/test-token/"
-            mock_build_absolute_uri.return_value = "http://example.com/invitation/test-token/"
 
             # Mock the NotificationContextDict to avoid the tuple issue
             with patch("organizations.services.NotificationContextDict") as mock_context_dict:
@@ -1005,12 +993,9 @@ class TestOrganizationService:
 
         with (
             patch("organizations.services.transaction.on_commit") as mock_on_commit,
-            patch("organizations.services.reverse") as mock_reverse,
-            patch("organizations.services.build_absolute_uri"),
             patch("organizations.services.NotificationContextDict"),
         ):
             mock_on_commit.side_effect = lambda func: func()
-            mock_reverse.return_value = "/invitation/tok/"
 
             first_invitation = organization_service_with_mocks.invite_user_to_organization(
                 email=email,
@@ -1060,8 +1045,6 @@ class TestOrganizationService:
 
         with (
             patch("organizations.services.transaction.on_commit") as mock_on_commit,
-            patch("organizations.services.reverse"),
-            patch("organizations.services.build_absolute_uri"),
             patch("organizations.services.NotificationContextDict"),
         ):
             mock_on_commit.side_effect = lambda func: func()
