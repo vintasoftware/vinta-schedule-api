@@ -238,7 +238,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
                     organization=instance,
                     calendar_fk=None,
                     email=sa_data["email"],
-                    audience=sa_data["audience"],
+                    admin_email=sa_data["admin_email"],
                     public_key=sa_data["public_key"],
                     private_key_id=sa_data["private_key_id"],
                     private_key=sa_data["private_key"],

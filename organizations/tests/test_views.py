@@ -2154,7 +2154,7 @@ class TestSyncRoomsAction:
             organization=organization,
             calendar_fk=None,
             email="sa@example.com",
-            audience="https://www.googleapis.com/auth/admin.directory.resource.calendar",
+            admin_email="admin@example.com",
             public_key="pk",
             private_key_id="kid",
             private_key="key",
@@ -2191,7 +2191,7 @@ class TestSyncRoomsAction:
             organization=organization,
             calendar_fk=None,
             email="sa@example.com",
-            audience="https://www.googleapis.com/auth/admin.directory.resource.calendar",
+            admin_email="admin@example.com",
             public_key="pk",
             private_key_id="kid",
             private_key="key",
@@ -2313,7 +2313,7 @@ class TestShouldSyncRoomsTransition:
             organization=org,
             calendar_fk=None,
             email="sa@example.com",
-            audience="https://www.googleapis.com/auth/admin.directory.resource.calendar",
+            admin_email="admin@example.com",
             public_key="pk",
             private_key_id="kid",
             private_key="key",
@@ -2440,7 +2440,7 @@ class TestShouldSyncRoomsTransition:
             organization=org,
             calendar_fk=None,
             email="sa@example.com",
-            audience="https://www.googleapis.com/auth/admin.directory.resource.calendar",
+            admin_email="admin@example.com",
             public_key="pk",
             private_key_id="kid",
             private_key="key",
@@ -2464,7 +2464,7 @@ class TestShouldSyncRoomsTransition:
 # Reusable service-account payload used across Phase 18 tests.
 _SA_PAYLOAD = {
     "email": "rooms-sa@example.iam.gserviceaccount.com",
-    "audience": "https://www.googleapis.com/auth/admin.directory.resource.calendar",
+    "admin_email": "admin@example.com",
     "public_key": "test-public-key-value-not-a-real-key",
     "private_key_id": "key-id-abc123",
     "private_key": "test-private-key-value-not-a-real-key",
@@ -2512,7 +2512,7 @@ class TestPhase18ServiceAccountConfig:
         assert sa_response is not None, f"Expected google_service_account in response: {body}"
         assert sa_response["configured"] is True
         assert sa_response["email"] == _SA_PAYLOAD["email"]
-        assert sa_response["audience"] == _SA_PAYLOAD["audience"]
+        assert sa_response["admin_email"] == _SA_PAYLOAD["admin_email"]
 
         # Secrets MUST NOT be in the response.
         assert "private_key" not in sa_response, "private_key must not be returned"
@@ -2527,7 +2527,7 @@ class TestPhase18ServiceAccountConfig:
         )
         assert stored is not None, "GoogleCalendarServiceAccount row should have been created"
         assert stored.email == _SA_PAYLOAD["email"]
-        assert stored.audience == _SA_PAYLOAD["audience"]
+        assert stored.admin_email == _SA_PAYLOAD["admin_email"]
 
     def test_second_patch_rotates_credentials(self, user):
         """Second PATCH with different creds replaces the stored service account."""
@@ -2615,7 +2615,7 @@ class TestPhase18ServiceAccountConfig:
             organization=org,
             calendar_fk=None,
             email=_SA_PAYLOAD["email"],
-            audience=_SA_PAYLOAD["audience"],
+            admin_email=_SA_PAYLOAD["admin_email"],
             public_key=_SA_PAYLOAD["public_key"],
             private_key_id=_SA_PAYLOAD["private_key_id"],
             private_key=_SA_PAYLOAD["private_key"],
@@ -2704,7 +2704,7 @@ class TestPhase18SyncRoomsTrigger:
             organization=org,
             calendar_fk=None,
             email=_SA_PAYLOAD["email"],
-            audience=_SA_PAYLOAD["audience"],
+            admin_email=_SA_PAYLOAD["admin_email"],
             public_key=_SA_PAYLOAD["public_key"],
             private_key_id=_SA_PAYLOAD["private_key_id"],
             private_key=_SA_PAYLOAD["private_key"],
@@ -2845,7 +2845,7 @@ class TestPhase18TransitionWithNoCredentials:
             organization=org,
             calendar_fk=None,
             email=_SA_PAYLOAD["email"],
-            audience=_SA_PAYLOAD["audience"],
+            admin_email=_SA_PAYLOAD["admin_email"],
             public_key=_SA_PAYLOAD["public_key"],
             private_key_id=_SA_PAYLOAD["private_key_id"],
             private_key=_SA_PAYLOAD["private_key"],
@@ -2924,7 +2924,7 @@ class TestPhase20ServiceAccountCRUD:
             "organization": organization,
             "calendar_fk": None,
             "email": "svc@example.iam.gserviceaccount.com",
-            "audience": "https://www.googleapis.com/auth/admin.directory.resource.calendar",
+            "admin_email": "admin@example.com",
             "public_key": "pub",
             "private_key_id": "kid",
             "private_key": "secret",
@@ -2947,7 +2947,7 @@ class TestPhase20ServiceAccountCRUD:
         assert_response_status_code(response, status.HTTP_201_CREATED)
         body = response.json()
         assert body["email"] == _SA_PAYLOAD["email"]
-        assert body["audience"] == _SA_PAYLOAD["audience"]
+        assert body["admin_email"] == _SA_PAYLOAD["admin_email"]
         assert body["configured"] is True
         self._assert_no_secrets(body)
 

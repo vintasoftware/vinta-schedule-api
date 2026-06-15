@@ -1,0 +1,49 @@
+"""Shared authentication context passed to all CalendarService sub-services.
+
+The facade (``CalendarService``) builds one instance of this after ``authenticate()``
+or ``initialize_without_provider()`` and hands it to every sub-service it constructs.
+Sub-services read the context instead of reaching back into the facade, so they are
+decoupled and independently testable.
+
+Note: the facade *also* keeps its own instance attributes (``organization``,
+``account``, etc.) because the type-guards in ``type_guards.py`` inspect those
+attributes on the facade directly. The context is a separate, immutable snapshot.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from allauth.socialaccount.models import SocialAccount
+
+    from calendar_integration.models import GoogleCalendarServiceAccount
+    from calendar_integration.services.calendar_permission_service import CalendarPermissionService
+    from calendar_integration.services.calendar_side_effects_service import (
+        CalendarSideEffectsService,
+    )
+    from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
+    from organizations.models import Organization
+    from public_api.models import SystemUser
+    from users.models import User
+
+
+@dataclasses.dataclass(frozen=True)
+class CalendarServiceContext:
+    """Immutable snapshot of the auth state built by ``CalendarService`` after authentication.
+
+    All fields are optional because the context is built in two states:
+    - **authenticated** (via ``authenticate()``): all fields set.
+    - **initialized without provider** (via ``initialize_without_provider()``): only
+      ``organization`` and ``user_or_token`` are set; ``account``, ``calendar_adapter``,
+      ``calendar_permission_service``, and ``calendar_side_effects_service`` may be ``None``.
+    """
+
+    organization: Organization | None
+    user_or_token: User | str | SystemUser | None
+    account: SocialAccount | GoogleCalendarServiceAccount | None
+    calendar_adapter: CalendarAdapter | None
+    calendar_permission_service: CalendarPermissionService | None
+    calendar_side_effects_service: CalendarSideEffectsService | None
