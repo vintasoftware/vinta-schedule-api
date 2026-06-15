@@ -62,7 +62,7 @@ services:
       - key: CELERY_WORKER_PREFETCH_MULTIPLIER
         value: 1
       - key: CELERY_WORKER_CONCURRENCY
-        value: null
+        sync: false
       - key: CELERY_WORKER_MAX_TASKS_PER_CHILD
         value: 1000
       - key: CELERY_WORKER_SEND_TASK_EVENTS
