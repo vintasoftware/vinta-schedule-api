@@ -65,7 +65,7 @@ jobs:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.test"
           SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
           DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: ".example.com"
+          CORS_ALLOWED_ORIGINS: "https://example.com"
           ALLOWED_HOSTS: ".example.com"
           SMTP_HOST: 'example.com'
           SMTP_USERNAME: "test"
@@ -102,7 +102,7 @@ jobs:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.production"
           SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
           DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: ".example.com"
+          CORS_ALLOWED_ORIGINS: "https://example.com"
           ALLOWED_HOSTS: ".example.org"
           SMTP_HOST: 'example.org'
           SMTP_USERNAME: "test"
@@ -134,7 +134,7 @@ jobs:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.production"
           SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
           DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: ".example.com"
+          CORS_ALLOWED_ORIGINS: "https://example.com"
           ALLOWED_HOSTS: ".example.org"
           SMTP_HOST: 'example.org'
           SMTP_USERNAME: "test"
@@ -166,7 +166,7 @@ jobs:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.production"
           SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
           DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: ".example.com"
+          CORS_ALLOWED_ORIGINS: "https://example.com"
           ALLOWED_HOSTS: ".example.org"
           SMTP_HOST: 'example.org'
           SMTP_USERNAME: "test"
@@ -199,7 +199,7 @@ jobs:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.test"
           SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
           DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: ".example.com"
+          CORS_ALLOWED_ORIGINS: "https://example.com"
           ALLOWED_HOSTS: ".example.com"
           SMTP_HOST: 'example.com'
           SMTP_USERNAME: "test"
