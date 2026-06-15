@@ -12,15 +12,12 @@ from dependency_injector.wiring import Provide, inject
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.viewsets import GenericViewSet
-from vintasend.constants import NotificationStatus, NotificationTypes
-from vintasend.exceptions import NotificationUpdateError
+from rest_framework.viewsets import ViewSet
 from vintasend.services.notification_service import NotificationService
-from vintasend_django.models import Notification
 
 from notifications.serializers import BulkMarkReadSerializer, NotificationSerializer
 
@@ -51,29 +48,34 @@ def _parse_positive_int(value: str, param_name: str, default: int) -> int:
 
 
 @extend_schema(tags=["Notifications"])
-class NotificationViewSet(GenericViewSet):
+class NotificationViewSet(ViewSet):
     """
     ViewSet for user-scoped in-app notifications.
 
+    All four endpoints read/write exclusively through the native vintasend
+    NotificationService — there is NO ORM query or queryset in this view. It is a
+    plain DRF ViewSet (not GenericViewSet) precisely because there is no model
+    queryset to expose; the serializer is instantiated directly.
+
     Endpoints:
-    - GET /notifications/        — list all SENT+READ IN_APP notifications for the
-      authenticated user, ordered newest first, paginated via page/page_size passthrough
-      (envelope: {results, page, page_size, count}).
-    - GET /notifications/unread/ — unread (SENT only) IN_APP notifications, fetched via
-      the native vintasend get_in_app_unread; paginated via page/page_size passthrough
-      (envelope: {results, page, page_size, count}).
-    - POST /notifications/{id}/mark-read/ — mark a single notification as read (detail).
-    - POST /notifications/mark-read-bulk/ — mark multiple notifications as read (bulk, collection).
+    - GET /notifications/        — all SENT+READ IN_APP notifications via native
+      get_in_app_notifications + get_in_app_notifications_count, page/page_size
+      passthrough (envelope: {results, page, page_size, count}).
+    - GET /notifications/unread/ — unread (SENT only) via native get_in_app_unread +
+      get_in_app_unread_count (same envelope).
+    - POST /notifications/{id}/mark-read/ — single mark-read via native
+      mark_read_bulk([id], user_id=...) (ownership-scoped, idempotent; 404 on miss).
+    - POST /notifications/mark-read-bulk/ — bulk mark-read via native mark_read_bulk.
 
     Authentication: IsAuthenticated (JWT or session).
     Scope: request.user — no org context.
     """
 
     permission_classes = (IsAuthenticated,)
+    # Schema hint only (drf-spectacular). A plain ViewSet has no serializer machinery;
+    # this just tells the OpenAPI generator the default serializer so it doesn't error.
+    # Each action's @extend_schema is the source of truth for its request/response shape.
     serializer_class = NotificationSerializer
-    # Disable DRF's default LimitOffsetPagination for schema inference — this viewset
-    # uses native vintasend pagination (page/page_size passthrough) not the DRF paginator.
-    pagination_class = None
 
     @inject
     def __init__(
@@ -98,7 +100,7 @@ class NotificationViewSet(GenericViewSet):
         Both list-all and list-unread use this envelope:
         {results: [...], page: int, page_size: int, count: int}
         """
-        serializer = self.get_serializer(items, many=True)
+        serializer = NotificationSerializer(items, many=True)
         return Response(
             {
                 "results": serializer.data,
@@ -179,22 +181,6 @@ class NotificationViewSet(GenericViewSet):
         count = self.notification_service.get_in_app_notifications_count(user_id)
         return self._paginated_envelope(notifications, page, page_size, count)
 
-    def get_queryset(self):  # type: ignore[override]
-        """
-        Return the requesting user's IN_APP notifications (SENT + READ).
-
-        Used exclusively by get_object() for ownership-scoped lookups in the
-        mark_read detail action. The list and unread actions bypass this queryset
-        and call the native vintasend service methods directly.
-        """
-        if not self.request.user.is_authenticated:
-            return Notification.objects.none()
-        return Notification.objects.filter(
-            user=self.request.user,
-            notification_type=NotificationTypes.IN_APP.value,
-            status__in=[NotificationStatus.SENT.value, NotificationStatus.READ.value],
-        ).order_by("-created", "-id")
-
     @extend_schema(
         summary="List unread in-app notifications for the authenticated user",
         parameters=[
@@ -262,9 +248,9 @@ class NotificationViewSet(GenericViewSet):
         summary="Mark a notification as read",
         description=(
             "Marks a single in-app notification as read for the authenticated user. "
-            "Ownership is enforced via the scoped queryset — only the owner can mark "
-            "their own notifications. Calling this endpoint on an already-READ "
-            "notification is idempotent (returns 200)."
+            "Fully native + ownership-scoped via mark_read_bulk: an id that is missing, "
+            "owned by another user, or in a non-SENT/READ state yields 404. Idempotent: "
+            "an already-READ owned notification returns 200."
         ),
         responses={
             200: OpenApiResponse(
@@ -279,38 +265,23 @@ class NotificationViewSet(GenericViewSet):
     )
     @action(detail=True, methods=["post"], url_path="mark-read")
     def mark_read(self, request: Request, pk: str | None = None) -> Response:
-        """POST /notifications/{id}/mark-read/ — mark a notification as read.
+        """POST /notifications/{id}/mark-read/ — mark a single notification as read.
 
-        Fetches the notification scoped to the current user (404 if not found or not
-        owned), then calls the native mark_read service method. If the notification
-        is already READ, returns 200 idempotently without calling mark_read (which
-        would raise NotificationUpdateError).
-
-        Returns the serialized updated notification.
+        Fully native: delegates to NotificationService.mark_read_bulk([pk],
+        user_id=request.user.id), which scopes the update + read-back to the user.
+        - foreign / missing / non-SENT-non-READ id → empty result → 404 (IDOR guard);
+        - SENT id → transitioned to READ and returned;
+        - already-READ owned id → returned unchanged (idempotent 200).
+        No ORM query, no get_object() — the native method is the only data path.
         """
-        # get_object() uses get_queryset(), which filters by user, notification_type,
-        # and status (SENT/READ). This automatically enforces ownership + 404 for
-        # non-existent, wrong-user, or wrong-status notifications (e.g., PENDING_SEND).
-        notification = self.get_object()
+        user_id = request.user.id
+        if user_id is None:
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
 
-        # Idempotency: if already READ, return 200 without calling mark_read
-        # (native method would raise NotificationUpdateError).
-        if notification.status == NotificationStatus.READ.value:
-            serializer = self.get_serializer(notification)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-
-        # Status is SENT — call mark_read to transition to READ.
-        # A concurrent request may win the race and mark it READ first; in that
-        # case mark_read raises NotificationUpdateError (0-row update).  Treat
-        # that as idempotent success — the row is already READ.
-        try:
-            self.notification_service.mark_read(notification.pk)
-        except NotificationUpdateError:
-            pass
-
-        # Re-fetch the notification from the DB so created/modified are current
-        notification = self.get_object()
-        serializer = self.get_serializer(notification)
+        results = list(self.notification_service.mark_read_bulk([pk], user_id=user_id))
+        if not results:
+            raise NotFound("Notification not found.")
+        serializer = NotificationSerializer(results[0])
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(

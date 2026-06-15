@@ -10,13 +10,10 @@ Covers:
 - After marking as read, notification disappears from /notifications/unread/.
 """
 
-from unittest.mock import patch
-
 import pytest
 from rest_framework import status
 from rest_framework.test import APIClient
 from vintasend.constants import NotificationStatus, NotificationTypes
-from vintasend.exceptions import NotificationUpdateError
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 from vintasend_django.models import Notification
@@ -193,7 +190,7 @@ class TestMarkReadNotFound:
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
     def test_pending_send_notification_returns_404(self, user) -> None:
-        """PENDING_SEND notifications are excluded by get_queryset; posting returns 404."""
+        """PENDING_SEND is never marked READ by mark_read_bulk → empty result → 404."""
         # Create a PENDING_SEND notification directly via ORM
         pending_notif = Notification.objects.create(
             user=user,
@@ -210,7 +207,7 @@ class TestMarkReadNotFound:
         client.force_authenticate(user=user)
         response = client.post(f"/notifications/{pending_notif.id}/mark-read/")
 
-        # get_queryset filters out PENDING_SEND, so this should 404
+        # mark_read_bulk only marks SENT rows READ; PENDING_SEND stays out → 404
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
         # Verify the notification was NOT modified
@@ -218,7 +215,7 @@ class TestMarkReadNotFound:
         assert pending_notif.status == NotificationStatus.PENDING_SEND.value
 
     def test_failed_notification_returns_404(self, user) -> None:
-        """FAILED notifications are excluded by get_queryset; posting returns 404."""
+        """FAILED is never marked READ by mark_read_bulk → empty result → 404."""
         failed_notif = Notification.objects.create(
             user=user,
             notification_type=NotificationTypes.IN_APP.value,
@@ -241,7 +238,7 @@ class TestMarkReadNotFound:
         assert failed_notif.status == NotificationStatus.FAILED.value
 
     def test_cancelled_notification_returns_404(self, user) -> None:
-        """CANCELLED notifications are excluded by get_queryset; posting returns 404."""
+        """CANCELLED is never marked READ by mark_read_bulk → empty result → 404."""
         cancelled_notif = Notification.objects.create(
             user=user,
             notification_type=NotificationTypes.IN_APP.value,
@@ -353,35 +350,25 @@ class TestMarkReadRemovesFromUnreadList:
 
 @pytest.mark.django_db
 class TestMarkReadConcurrentRace:
-    def test_concurrent_mark_read_raises_update_error_returns_200(self, user) -> None:
-        """Lost-race concurrent request: mark_read raises NotificationUpdateError → 200, not 500.
+    def test_already_read_out_of_band_returns_200(self, user) -> None:
+        """Native idempotency under a concurrent winner: a row flipped to READ
+        out-of-band (e.g. by a parallel request) still returns an idempotent 200.
 
-        Simulates a concurrent request that arrives while the notification is still
-        SENT (passes the status check) but loses the DB race (another request already
-        marked it READ).  The service raises NotificationUpdateError for the loser.
-        The view must catch this and return 200 idempotently.
+        The endpoint delegates to mark_read_bulk([pk], user_id=...), which is
+        idempotent by construction — it marks only SENT rows and returns the
+        requested ids that are READ after the op. An already-READ owned id is
+        returned, so there is no 0-row-update error and no 500 to guard against.
         """
         service = _build_notification_service()
         notification = _send_in_app(service, user.id, "concurrent message")
         assert notification.status == NotificationStatus.SENT.value
 
-        # Simulate a concurrent winner: mark the row READ in the DB directly so
-        # that the re-fetch after the except branch returns the READ state.
+        # Simulate a concurrent winner having already transitioned the row to READ.
         Notification.objects.filter(pk=notification.pk).update(status=NotificationStatus.READ.value)
 
         client = APIClient()
         client.force_authenticate(user=user)
+        response = client.post(f"/notifications/{notification.id}/mark-read/")
 
-        # Patch mark_read to raise NotificationUpdateError, mimicking a 0-row update
-        # (the concurrent winner already transitioned status to READ).
-        with patch.object(
-            NotificationService,
-            "mark_read",
-            side_effect=NotificationUpdateError("concurrent update lost race"),
-        ):
-            response = client.post(f"/notifications/{notification.id}/mark-read/")
-
-        # The lost-race error must collapse into an idempotent 200, not a 500.
         assert response.status_code == status.HTTP_200_OK
-        data = response.json()
-        assert data["status"] == NotificationStatus.READ.value
+        assert response.json()["status"] == NotificationStatus.READ.value

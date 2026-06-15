@@ -5016,10 +5016,10 @@ paths:
   /notifications/{id}/mark-read/:
     post:
       operationId: notifications_mark_read_create
-      description: Marks a single in-app notification as read for the authenticated
-        user. Ownership is enforced via the scoped queryset — only the owner can mark
-        their own notifications. Calling this endpoint on an already-READ notification
-        is idempotent (returns 200).
+      description: 'Marks a single in-app notification as read for the authenticated
+        user. Fully native + ownership-scoped via mark_read_bulk: an id that is missing,
+        owned by another user, or in a non-SENT/READ state yields 404. Idempotent:
+        an already-READ owned notification returns 200.'
       summary: Mark a notification as read
       parameters:
       - in: path
@@ -5057,10 +5057,10 @@ paths:
   /notifications/{id}/mark-read{format}:
     post:
       operationId: notifications_mark_read_formatted_create
-      description: Marks a single in-app notification as read for the authenticated
-        user. Ownership is enforced via the scoped queryset — only the owner can mark
-        their own notifications. Calling this endpoint on an already-READ notification
-        is idempotent (returns 200).
+      description: 'Marks a single in-app notification as read for the authenticated
+        user. Fully native + ownership-scoped via mark_read_bulk: an id that is missing,
+        owned by another user, or in a non-SENT/READ state yields 404. Idempotent:
+        an already-READ owned notification returns 200.'
       summary: Mark a notification as read
       parameters:
       - in: path
