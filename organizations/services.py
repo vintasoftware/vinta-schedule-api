@@ -2,11 +2,10 @@ import datetime
 import logging
 from typing import Annotated
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.urls import reverse
 
 from allauth.socialaccount.models import SocialAccount
-from allauth.utils import build_absolute_uri
 from dependency_injector.wiring import Provide, inject
 from vintasend.services.notification_service import (
     NotificationContextDict,
@@ -257,9 +256,9 @@ class OrganizationService:
                 context_kwargs=NotificationContextDict(
                     {
                         "organization_invitation_id": invitation.id,
-                        "invitation_url": (
-                            build_absolute_uri(reverse("invitation", args=[token])),
-                        ),
+                        "invitation_url": (getattr(settings, "HEADLESS_FRONTEND_URLS", {}))
+                        .get("account_accept_invitation", "")
+                        .format(token=token),
                     }
                 ),
                 subject_template="organizations/emails/organization_invitation.subject.txt",
