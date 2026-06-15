@@ -1,8 +1,6 @@
 import datetime
 from unittest.mock import Mock, patch
 
-from django.db.utils import IntegrityError
-
 import pytest
 from allauth.socialaccount.models import SocialAccount
 from model_bakery import baker
@@ -146,7 +144,13 @@ class TestOrganizationService:
     def test_create_organization_multiple_calls(
         self, organization_service, user, mock_calendar_service
     ):
-        """Test that multiple calls to create_organization work correctly."""
+        """Test that multiple calls to create_organization work correctly.
+
+        Phase 1: OrganizationMembership.user is now a ForeignKey (not OneToOne),
+        so a user may be admin of multiple organizations. Each call creates a
+        distinct org and a distinct (user, org) membership — no IntegrityError.
+        The unique constraint is (user, organization), not (user,) alone.
+        """
         # Create first organization
         org1 = organization_service.create_organization(
             creator=user, name="Organization 1", should_sync_rooms=False
@@ -155,20 +159,18 @@ class TestOrganizationService:
         # Verify first organization was created successfully
         assert org1.name == "Organization 1"
         assert org1.should_sync_rooms is False
-        # Store the ID before attempting the second call
-        org1_id = org1.id
 
-        # Create second organization with same user - this should fail due to unique constraint
-        # since OrganizationMembership has a unique constraint on user_id
-        with pytest.raises(IntegrityError):
-            organization_service.create_organization(
-                creator=user, name="Organization 2", should_sync_rooms=True
-            )
+        # Create second organization with same user — allowed post-Phase 1.
+        org2 = organization_service.create_organization(
+            creator=user, name="Organization 2", should_sync_rooms=False
+        )
 
-        # The transaction is broken after the IntegrityError, so we need to verify in a way
-        # that doesn't require a new query. The first organization should still exist conceptually
-        # even though we can't query for it due to the broken transaction.
-        assert org1.id == org1_id
+        assert org2.name == "Organization 2"
+        assert org1.id != org2.id
+        # User now holds two memberships, one in each org.
+        from organizations.models import OrganizationMembership
+
+        assert OrganizationMembership.objects.filter(user=user).count() == 2
 
     def test_create_organization_with_sync_rooms_calendar_service_exception(
         self, user, mock_calendar_service
@@ -588,18 +590,24 @@ class TestOrganizationService:
         assert membership.role == OrganizationRole.ADMIN
         assert membership.organization.name == "My Org"
 
-    def test_provision_tenant_for_user_already_has_membership(
+    def test_provision_tenant_for_user_already_has_membership_no_invite_no_name_returns_none(
         self, organization_service, organization
     ):
-        """Branch (c): user already has a membership → raises UserAlreadyHasMembershipError."""
+        """Phase 4: user with a membership, no pending invite, no org name → returns None.
+
+        The top-level blanket guard is gone.  With no pending invitation and no
+        organization_name, the function falls through to the no-op branch and returns None.
+        """
         user = baker.make(User, email="member@example.com")
         baker.make(OrganizationMembership, user=user, organization=organization)
 
         # Reload user from DB so the related manager cache is warm.
         user.refresh_from_db()
 
-        with pytest.raises(UserAlreadyHasMembershipError):
-            organization_service.provision_tenant_for_user(user)
+        result = organization_service.provision_tenant_for_user(user)
+        assert result is None
+        # Still exactly one membership — nothing was created.
+        assert OrganizationMembership.objects.filter(user=user).count() == 1
 
     def test_provision_tenant_for_user_no_invite_no_name_returns_none(self, organization_service):
         """Branch (d): no invite, no name → returns None, no membership created."""
@@ -625,10 +633,15 @@ class TestOrganizationService:
         assert result is None
         assert not OrganizationMembership.objects.filter(user=invitee).exists()
 
-    def test_accept_invitation_raises_for_user_with_existing_membership(
+    def test_accept_invitation_user_in_org_a_can_accept_invite_to_org_b(
         self, organization_service, organization
     ):
-        """accept_invitation raises UserAlreadyHasMembershipError when user already has a membership."""
+        """Phase 4 / Use-case 6: a user already in org A can accept an invitation to org B.
+
+        The old blanket guard ("any membership → refuse") is relaxed.  The per-org guard
+        only refuses a duplicate in the SAME organization.  Accepting into a DIFFERENT org
+        must succeed and yield a second OrganizationMembership.
+        """
         from common.utils.authentication_utils import (
             generate_long_lived_token,
             hash_long_lived_token,
@@ -638,7 +651,7 @@ class TestOrganizationService:
         baker.make(OrganizationMembership, user=user, organization=organization)
         user.refresh_from_db()
 
-        # Create a valid (non-expired) invitation for the same user.
+        # Valid invitation to a DIFFERENT org.
         token = generate_long_lived_token()
         token_hash = hash_long_lived_token(token)
         other_org = baker.make(Organization, name="Other Org")
@@ -646,6 +659,36 @@ class TestOrganizationService:
             OrganizationInvitation,
             email=user.email,
             organization=other_org,
+            token_hash=token_hash,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+        )
+
+        # Phase 4: this must SUCCEED — user joins other_org as their second org.
+        membership = organization_service.accept_invitation(token=token, user=user)
+        assert membership.user == user
+        assert membership.organization == other_org
+        assert OrganizationMembership.objects.filter(user=user).count() == 2
+
+    def test_accept_invitation_same_org_duplicate_raises(self, organization_service, organization):
+        """Phase 4: accepting an invitation to an org the user already belongs to raises UserAlreadyHasMembershipError."""
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+
+        user = baker.make(User, email="same_org_member@example.com")
+        baker.make(OrganizationMembership, user=user, organization=organization)
+        user.refresh_from_db()
+
+        # Valid invitation to the SAME org the user is already in.
+        token = generate_long_lived_token()
+        token_hash = hash_long_lived_token(token)
+        baker.make(
+            OrganizationInvitation,
+            email=user.email,
+            organization=organization,
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
@@ -854,6 +897,253 @@ class TestOrganizationService:
         # TransactionManagementError or InternalError.
         count = Organization.objects.count()
         assert count >= 0, "DB query after backstop must succeed (transaction not poisoned)"
+
+    # -----------------------------------------------------------------------
+    # Phase 4 — Multi-org invite accept (Use-case 6)
+    # -----------------------------------------------------------------------
+
+    def test_provision_pending_invite_org_b_user_already_in_org_a(
+        self, organization_service, organization
+    ):
+        """Phase 4: pending invite for org B + user already in org A → creates org-B membership.
+
+        The per-org guard on the invite branch only fires when the user is already in the
+        INVITATION's org.  A user already in org A joining org B via a pending invite must
+        succeed.
+        """
+        user = baker.make(User, email="multi_org_invite@example.com")
+        # User is already a member of org A (the fixture `organization`).
+        baker.make(OrganizationMembership, user=user, organization=organization)
+        user.refresh_from_db()
+
+        # A pending invitation from org B (a different org).
+        org_b = baker.make(Organization, name="Org B")
+        inviter = baker.make(User, email="inviter_orb@example.com")
+        self._make_invitation(email=user.email, organization=org_b, invited_by=inviter)
+
+        membership = organization_service.provision_tenant_for_user(user)
+
+        assert membership is not None
+        assert membership.user == user
+        assert membership.organization == org_b
+        assert membership.role == OrganizationRole.MEMBER
+        # User now has TWO memberships.
+        assert OrganizationMembership.objects.filter(user=user).count() == 2
+
+    def test_provision_pending_invite_same_org_raises(self, organization_service, organization):
+        """Phase 4: pending invite for org A + user already in org A → UserAlreadyHasMembershipError."""
+        user = baker.make(User, email="same_org_invite@example.com")
+        baker.make(OrganizationMembership, user=user, organization=organization)
+        user.refresh_from_db()
+
+        inviter = baker.make(User, email="inviter_same@example.com")
+        self._make_invitation(email=user.email, organization=organization, invited_by=inviter)
+
+        with pytest.raises(UserAlreadyHasMembershipError):
+            organization_service.provision_tenant_for_user(user)
+
+    def test_provision_organization_name_user_already_has_membership_raises(
+        self, organization_service, organization
+    ):
+        """Phase 4: organization_name branch retains the blanket guard — no second-org auto-create.
+
+        Creating an additional org on the signup path is Phase 5's concern.  A user with
+        an existing membership supplying organization_name must still be refused.
+        """
+        user = baker.make(User, email="has_org_name@example.com")
+        baker.make(OrganizationMembership, user=user, organization=organization)
+        user.refresh_from_db()
+
+        with pytest.raises(UserAlreadyHasMembershipError):
+            organization_service.provision_tenant_for_user(user, organization_name="New Org")
+
+        # No new org or membership was created.
+        assert OrganizationMembership.objects.filter(user=user).count() == 1
+
+    def test_concurrent_orgs_can_both_invite_same_email_coexist(self, organization):
+        """Phase 4: two orgs can each have a pending invitation for the same email simultaneously.
+
+        The relaxed unique constraint ``uniq_invitation_email_organization`` allows the
+        same email to appear once per org — both rows must coexist without IntegrityError.
+        """
+        org_b = baker.make(Organization, name="Org B")
+        inviter = baker.make(User, email="dual_inviter@example.com")
+        email = "target@example.com"
+
+        baker.make(
+            OrganizationInvitation,
+            email=email,
+            organization=organization,
+            invited_by=inviter,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+        )
+        baker.make(
+            OrganizationInvitation,
+            email=email,
+            organization=org_b,
+            invited_by=inviter,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+        )
+
+        # Both invitation rows coexist — the constraint only prevents duplicates per org.
+        assert OrganizationInvitation.objects.filter(email=email).count() == 2
+
+    def test_invite_user_to_organization_second_call_resets_not_duplicates(
+        self, organization_service_with_mocks, user, organization
+    ):
+        """Finding 4: calling invite_user_to_organization twice for the SAME (email, org) resets
+        the existing invitation (new token/expiry), rather than creating a duplicate row.
+
+        Verifies the get_or_create path: created=False means the row already existed and
+        was updated in-place. The count must remain 1 (no duplicate row).
+        """
+        email = "reset_invite@example.com"
+
+        with (
+            patch("organizations.services.transaction.on_commit") as mock_on_commit,
+            patch("organizations.services.reverse") as mock_reverse,
+            patch("organizations.services.build_absolute_uri"),
+            patch("organizations.services.NotificationContextDict"),
+        ):
+            mock_on_commit.side_effect = lambda func: func()
+            mock_reverse.return_value = "/invitation/tok/"
+
+            first_invitation = organization_service_with_mocks.invite_user_to_organization(
+                email=email,
+                first_name="Reset",
+                last_name="Me",
+                invited_by=user,
+                organization=organization,
+            )
+            first_token_hash = first_invitation.token_hash
+            first_expires_at = first_invitation.expires_at
+
+            second_invitation = organization_service_with_mocks.invite_user_to_organization(
+                email=email,
+                first_name="Reset",
+                last_name="Me",
+                invited_by=user,
+                organization=organization,
+            )
+
+        # Same row, not a new one.
+        assert first_invitation.pk == second_invitation.pk
+        assert (
+            OrganizationInvitation.objects.filter(email=email, organization=organization).count()
+            == 1
+        )
+
+        # Token and expiry must be regenerated on the second call.
+        second_invitation.refresh_from_db()
+        assert second_invitation.token_hash != first_token_hash, (
+            "token must be rotated on re-invite"
+        )
+        assert second_invitation.expires_at > first_expires_at, (
+            "expires_at must be extended on re-invite"
+        )
+
+    def test_invite_user_same_email_different_orgs_allowed(
+        self, organization_service_with_mocks, user, organization
+    ):
+        """Finding 4: the same email can be invited to two different orgs — one row per org.
+
+        The per-org unique constraint ``uniq_invitation_email_organization`` allows (email,
+        org_A) and (email, org_B) to coexist. This test confirms invite_user_to_organization
+        does not blow up with DuplicateInvitationError on the second org.
+        """
+        email = "multi_org_invitee@example.com"
+        org_b = baker.make(Organization, name="Other Org")
+
+        with (
+            patch("organizations.services.transaction.on_commit") as mock_on_commit,
+            patch("organizations.services.reverse"),
+            patch("organizations.services.build_absolute_uri"),
+            patch("organizations.services.NotificationContextDict"),
+        ):
+            mock_on_commit.side_effect = lambda func: func()
+
+            organization_service_with_mocks.invite_user_to_organization(
+                email=email,
+                first_name="Multi",
+                last_name="Org",
+                invited_by=user,
+                organization=organization,
+            )
+            organization_service_with_mocks.invite_user_to_organization(
+                email=email,
+                first_name="Multi",
+                last_name="Org",
+                invited_by=user,
+                organization=org_b,
+            )
+
+        assert OrganizationInvitation.objects.filter(email=email).count() == 2
+        assert (
+            OrganizationInvitation.objects.filter(email=email, organization=organization).count()
+            == 1
+        )
+        assert OrganizationInvitation.objects.filter(email=email, organization=org_b).count() == 1
+
+    def test_accept_invitation_inactive_membership_blocks_re_accept(
+        self, organization_service, organization
+    ):
+        """Finding 3: the per-org guard does NOT filter on is_active, so an inactive membership
+        in the inviting org still blocks re-accept (prevents a silent second-row scenario where
+        a deactivated user re-accepts an invitation to regain access).
+
+        If someone later adds is_active=True to the filter, this test turns red.
+        """
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+
+        user = baker.make(User, email="inactive_block@example.com")
+        # An inactive (deactivated) membership in the SAME org as the invitation.
+        baker.make(OrganizationMembership, user=user, organization=organization, is_active=False)
+        user.refresh_from_db()
+
+        token = generate_long_lived_token()
+        token_hash = hash_long_lived_token(token)
+        baker.make(
+            OrganizationInvitation,
+            email=user.email,
+            organization=organization,
+            token_hash=token_hash,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+        )
+
+        # The guard checks membership(organization=...) without is_active=True, so even an
+        # inactive membership blocks the accept.
+        with pytest.raises(UserAlreadyHasMembershipError):
+            organization_service.accept_invitation(token=token, user=user)
+
+        # No second membership row was created.
+        assert OrganizationMembership.objects.filter(user=user).count() == 1
+
+    def test_provision_tenant_inactive_membership_blocks_same_org_invite(
+        self, organization_service, organization
+    ):
+        """Finding 3 (provision_tenant level): inactive membership in the inviting org blocks
+        provision_tenant_for_user just as accept_invitation does — no second row is created.
+        """
+        user = baker.make(User, email="inactive_provision@example.com")
+        baker.make(OrganizationMembership, user=user, organization=organization, is_active=False)
+        user.refresh_from_db()
+
+        inviter = baker.make(User, email="inviter_inactive@example.com")
+        self._make_invitation(email=user.email, organization=organization, invited_by=inviter)
+
+        with pytest.raises(UserAlreadyHasMembershipError):
+            organization_service.provision_tenant_for_user(user)
+
+        assert OrganizationMembership.objects.filter(user=user).count() == 1
 
 
 @pytest.mark.django_db

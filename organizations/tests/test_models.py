@@ -1,6 +1,7 @@
 """Tests for OrganizationMembership model additions (Phase 1)."""
 
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError
 from django.urls import reverse
 
 import pytest
@@ -8,7 +9,12 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import (
+    Organization,
+    OrganizationMembership,
+    OrganizationRole,
+    get_active_organization_membership,
+)
 
 
 User = get_user_model()
@@ -162,3 +168,74 @@ class TestInactiveMembershipGating:
         response = client.get(url)
         assert response.status_code == status.HTTP_200_OK
         assert len(response.json()["results"]) == 1
+
+
+@pytest.mark.django_db
+class TestMultiOrgMembership:
+    """Unit tests for Phase 1 — FK cardinality + unique constraint."""
+
+    def test_user_can_hold_memberships_in_two_different_orgs(self):
+        """A user may have OrganizationMembership rows in two distinct orgs."""
+        user = baker.make(User)
+        org_a = baker.make(Organization)
+        org_b = baker.make(Organization)
+
+        m_a = OrganizationMembership.objects.create(user=user, organization=org_a)
+        m_b = OrganizationMembership.objects.create(user=user, organization=org_b)
+
+        assert OrganizationMembership.objects.filter(user=user).count() == 2
+        assert m_a.organization == org_a
+        assert m_b.organization == org_b
+
+    def test_unique_constraint_rejects_duplicate_membership_in_same_org(self):
+        """Creating a second membership for the same (user, organization) raises IntegrityError."""
+        user = baker.make(User)
+        org = baker.make(Organization)
+
+        OrganizationMembership.objects.create(user=user, organization=org)
+
+        with pytest.raises(IntegrityError):
+            OrganizationMembership.objects.create(user=user, organization=org)
+
+    def test_is_organization_admin_is_per_org(self):
+        """is_organization_admin returns True only for the org where the user is ADMIN."""
+        user = baker.make(User)
+        org_admin = baker.make(Organization)
+        org_member = baker.make(Organization)
+
+        OrganizationMembership.objects.create(
+            user=user, organization=org_admin, role=OrganizationRole.ADMIN, is_active=True
+        )
+        OrganizationMembership.objects.create(
+            user=user, organization=org_member, role=OrganizationRole.MEMBER, is_active=True
+        )
+
+        assert user.is_organization_admin(org_admin) is True
+        assert user.is_organization_admin(org_member) is False
+
+    def test_is_organization_admin_inactive_membership_returns_false(self):
+        """An inactive admin membership is not counted as admin access."""
+        user = baker.make(User)
+        org = baker.make(Organization)
+
+        OrganizationMembership.objects.create(
+            user=user, organization=org, role=OrganizationRole.ADMIN, is_active=False
+        )
+
+        assert user.is_organization_admin(org) is False
+
+    def test_get_active_membership_ignores_inactive_membership_in_other_org(self):
+        """With one active (org A) and one inactive (org B) membership, the active one wins."""
+        user = baker.make(User)
+        org_a = baker.make(Organization)
+        org_b = baker.make(Organization)
+
+        active = OrganizationMembership.objects.create(
+            user=user, organization=org_a, is_active=True
+        )
+        OrganizationMembership.objects.create(user=user, organization=org_b, is_active=False)
+
+        resolved = get_active_organization_membership(user)
+
+        assert resolved == active
+        assert resolved.organization == org_a

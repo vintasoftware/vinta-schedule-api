@@ -1,6 +1,22 @@
 from django.db.models import Manager
 
-from organizations.querysets import BaseOrganizationModelQuerySet
+from organizations.querysets import BaseOrganizationModelQuerySet, OrganizationMembershipQuerySet
+
+
+class OrganizationMembershipManager(Manager):
+    """Manager for OrganizationMembership with domain-specific query methods."""
+
+    def get_queryset(self) -> OrganizationMembershipQuerySet:
+        return OrganizationMembershipQuerySet(self.model, using=self._db)
+
+    def active_for_user(self, user) -> OrganizationMembershipQuerySet:
+        """Return all active memberships for *user*, ordered by creation date.
+
+        Wraps :meth:`OrganizationMembershipQuerySet.active_for_user` so callers
+        can write ``OrganizationMembership.objects.active_for_user(user)`` without
+        first obtaining a queryset themselves.
+        """
+        return self.get_queryset().active_for_user(user)
 
 
 class BaseOrganizationModelManager(Manager):

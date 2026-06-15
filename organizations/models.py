@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from django.conf import settings
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
@@ -8,17 +8,23 @@ from django.db import models
 
 from common.fields import TenantSafeForeignKey, TenantSafeOneToOneField
 from common.models import BaseModel
-from organizations.managers import BaseOrganizationModelManager
+from organizations.managers import BaseOrganizationModelManager, OrganizationMembershipManager
 
 
 if TYPE_CHECKING:
     from users.models import User
 
 
+# Sentinel distinguishes "not resolved yet" (off-DRF path) from ``None``
+# (resolved-to-gated / resolved-to-no-membership). Must be module-level so
+# the same object identity is checked everywhere.
+_UNSET: object = object()
+
+
 def get_active_organization_membership(
     user: User | None,
 ) -> OrganizationMembership | None:
-    """Return the user's OrganizationMembership only if it is active, else None.
+    """Return the user's active OrganizationMembership, or None.
 
     This is the canonical helper for all tenant-access gates. Call it wherever
     a view, permission, or serializer needs to resolve an active membership:
@@ -27,15 +33,31 @@ def get_active_organization_membership(
         if not membership:
             return <empty queryset / clean denial>
 
-    An inactive membership (is_active=False) is treated identically to a missing
-    membership — no tenant access, no 500. An active membership returns normally.
+    On the DRF request path (Phase 2a+), ``TenantScopedViewMixin.initial()``
+    resolves the active membership from the ``X-Organization-Id`` header and
+    stashes it on ``user._active_membership``. This helper reads the stash so
+    the ~60 existing call sites are automatically header-aware without change.
+
+    Off the DRF request path (management commands, Celery tasks, tests that
+    bypass views), ``_active_membership`` is absent and the helper falls back
+    to the single-membership query so those callers keep working.
+
+    A user with no active memberships returns None (gated). An inactive
+    membership (is_active=False) is treated identically to no membership.
     """
-    membership = getattr(user, "organization_membership", None)
-    if membership is None:
+    if user is None:
         return None
-    if not membership.is_active:
-        return None
-    return membership
+
+    stashed = getattr(user, "_active_membership", _UNSET)
+    if stashed is not _UNSET:
+        # DRF request path: the resolver has already run; trust its result
+        # (may be an OrganizationMembership or None for gated users).
+        return stashed  # type: ignore[return-value]
+
+    # Off-request path (management commands, Celery tasks, direct test calls):
+    # fall back to the single active membership query. Stable ordering ensures
+    # determinism if a user somehow ends up with two active memberships here.
+    return user.organization_memberships.filter(is_active=True).order_by("created").first()  # type: ignore[union-attr]
 
 
 class OrganizationTier(BaseModel):
@@ -130,24 +152,29 @@ class OrganizationMembership(BaseModel):
 
     Hard-gate invariant:
         Every authenticated user is in exactly one of two states:
-        1. **Has membership** — ``user.organization_membership`` resolves to an
-           ``OrganizationMembership`` instance and all tenant-scoped endpoints are
-           open to them.
-        2. **Gated (membership-less)** — ``user.organization_membership`` raises
-           ``RelatedObjectDoesNotExist``. Only the onboarding surfaces respond:
+        1. **Has active membership** — ``get_active_organization_membership(user)``
+           returns an ``OrganizationMembership`` instance and all tenant-scoped
+           endpoints are open to them.
+        2. **Gated (zero active memberships)** — ``get_active_organization_membership``
+           returns ``None``. Only the onboarding surfaces respond:
            ``POST /organizations/`` (create own org) and ``POST /invitations/accept``
            (join an invited org). All other tenant-scoped endpoints must return an
            empty queryset or permission denial — never a 500.
 
-        Code that reads ``user.organization_membership`` must guard with
-        ``getattr(user, "organization_membership", None)`` (or equivalent) so that
-        membership-less users get a clean refusal rather than an unhandled exception.
+        A user may hold memberships in multiple organizations. Resolution of the
+        *active* organization is handled by ``get_active_organization_membership``,
+        which in Phase 1 returns the user's single active membership. Phase 2a
+        introduces header-driven resolution for multi-org users.
+
+        Never read ``user.organization_memberships`` directly in permission /
+        scoping code — always go through ``get_active_organization_membership`` so
+        the resolution seam is centralised.
     """
 
-    user = models.OneToOneField(
+    user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="organization_membership",
+        related_name="organization_memberships",
     )
     organization = models.ForeignKey(
         Organization,
@@ -177,6 +204,16 @@ class OrganizationMembership(BaseModel):
         ),
     )
 
+    objects: OrganizationMembershipManager = OrganizationMembershipManager()
+
+    class Meta:
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=["user", "organization"],
+                name="uniq_membership_user_organization",
+            ),
+        ]
+
     def __str__(self):
         return f"{self.user} in {self.organization}"
 
@@ -190,9 +227,14 @@ class OrganizationInvitation(BaseModel):
     """
     Represents an invitation to join a calendar organization.
     This is used to invite users to join their respective calendar organizations.
+
+    The uniqueness constraint is ``unique(email, organization)`` — the same email address
+    may hold concurrent pending invitations in different organizations (multi-org invite
+    accept, Phase 4). A duplicate invite to the *same* org is still rejected by the
+    ``uniq_invitation_email_organization`` constraint.
     """
 
-    email = models.EmailField(unique=True)
+    email = models.EmailField()
     first_name = models.CharField(max_length=150, blank=True)
     last_name = models.CharField(max_length=150, blank=True)
     organization = models.ForeignKey(
@@ -215,6 +257,14 @@ class OrganizationInvitation(BaseModel):
         null=True,
         blank=True,
     )
+
+    class Meta:
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=["email", "organization"],
+                name="uniq_invitation_email_organization",
+            ),
+        ]
 
     def __str__(self):
         return f"Invitation for {self.email} to join {self.organization}"

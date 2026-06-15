@@ -265,7 +265,7 @@ class Query:
         org = _get_org(info)
 
         queryset = User.objects.filter(
-            organization_membership__organization=org, organization_membership__is_active=True
+            organization_memberships__organization=org, organization_memberships__is_active=True
         )
         if user_id is not None:
             queryset = queryset.filter(id=user_id)

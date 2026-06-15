@@ -271,27 +271,33 @@ class OrganizationService:
         """
         Accept an invitation to join an organization.
 
-        Raises UserAlreadyHasMembershipError if the user is already a member of any
-        organization before the membership create is attempted, preventing an IntegrityError
-        from the OneToOne constraint on OrganizationMembership.user.
+        Phase 4: raises UserAlreadyHasMembershipError only when the user is already a
+        member of the *specific* organization named in the matched invitation — allowing
+        a user in org A to accept a valid invitation from org B and gain a second
+        membership.  The composite unique constraint ``uniq_membership_user_organization``
+        (user, organization) on OrganizationMembership acts as the DB backstop against
+        any race that bypasses the per-org pre-check.
 
         :param token: Invitation token.
         :param user: User who is accepting the invitation.
         :return: Created OrganizationMembership instance.
+        :raises UserAlreadyHasMembershipError: When the user is already a member of the
+            invitation's organization (same-org duplicate).
+        :raises InvalidInvitationTokenError: When no valid, non-expired invitation
+            matches the token and the user's email.
         """
-        # DESIGN: hasattr check intentionally matches BOTH active and inactive memberships.
-        # An inactive membership still has a DB row, so accept_invitation must refuse
-        # re-provisioning here.  The supported un-disable path is admin REACTIVATION
-        # (setting is_active=True); not re-accepting an invitation.
-        if hasattr(user, "organization_membership"):
-            raise UserAlreadyHasMembershipError()
-
         now = datetime.datetime.now(tz=datetime.UTC)
         invitations = OrganizationInvitation.objects.filter(
             email__iexact=user.email, expires_at__gt=now
         )
         for invitation in invitations:
             if verify_long_lived_token(token, invitation.token_hash):
+                # Per-org guard (Phase 4): refuse only a duplicate in the SAME org.
+                # A user already in a different org is allowed to join this one.
+                if user.organization_memberships.filter(
+                    organization=invitation.organization
+                ).exists():
+                    raise UserAlreadyHasMembershipError()
                 try:
                     with transaction.atomic():
                         membership = OrganizationMembership.objects.create(
@@ -311,37 +317,37 @@ class OrganizationService:
         self, user: User, organization_name: str | None = None
     ) -> OrganizationMembership | None:
         """
-        Provision a tenant for a user who does not yet have a membership.
+        Provision a tenant for a user on the signup / invite-accept path.
 
-        This is the single guarded entry point for turning a membership-less user into a
-        member. It is called by every signup path (email confirmation, social adapter,
-        explicit invite accept) so the provisioning decision is centralised and can never
-        silently create a second membership.
+        Phase 4 changes: the top-level blanket "user has any membership → refuse" guard
+        is removed from the pending-invitation branch so that a user already in org A can
+        accept a pending invitation to org B via the signup adapter.  The
+        ``organization_name`` branch (create-new-org on signup) retains its guard — auto-
+        creating an additional org for an existing member is Phase 5's concern (relaxing
+        ``OrganizationManagementPermission``), not this path.
 
         Logic (in order):
-        1. If the user already has a membership → raise UserAlreadyHasMembershipError.
-        2. Else if a non-expired, unaccepted OrganizationInvitation exists for user.email
-           → create a MEMBER membership in the inviting org and mark the invitation
-           accepted.
-        3. Else if organization_name is truthy → delegate to create_organization (user
-           becomes ADMIN of a new org).
-        4. Else → return None (caller decides — gated onboarding).
+        1. If a non-expired, unaccepted OrganizationInvitation exists for user.email:
+           a. If the user is already a member of the inviting org → raise
+              UserAlreadyHasMembershipError (same-org duplicate).
+           b. Otherwise → create a MEMBER membership in the inviting org and mark the
+              invitation accepted (allows joining a new org even when already a member
+              elsewhere).
+        2. Else if organization_name is truthy:
+           a. If the user already has ANY membership → raise UserAlreadyHasMembershipError.
+              Creating an additional org on the signup path is out of scope here (Phase 5).
+           b. Otherwise → delegate to create_organization (user becomes ADMIN of a new org).
+        3. Else → return None (caller decides — gated onboarding).
 
         :param user: The user to provision a tenant for.
         :param organization_name: Optional name of the new organization to create when no
             pending invitation is found.
         :return: The created OrganizationMembership on the join/create branches; None on
             the no-op branch.
-        :raises UserAlreadyHasMembershipError: When the user already belongs to an
-            organization.
+        :raises UserAlreadyHasMembershipError: On the pending-invitation branch, when the
+            user is already a member of the invitation's organization.  On the
+            organization_name branch, when the user already belongs to any organization.
         """
-        # DESIGN: hasattr check intentionally matches BOTH active and inactive memberships.
-        # An inactive membership still has a DB row, so provision_tenant_for_user must
-        # refuse re-provisioning here.  The supported un-disable path is admin REACTIVATION
-        # (setting is_active=True); not re-provisioning the user.
-        if hasattr(user, "organization_membership"):
-            raise UserAlreadyHasMembershipError()
-
         now = datetime.datetime.now(tz=datetime.UTC)
         pending_invitation = OrganizationInvitation.objects.filter(
             email__iexact=user.email,
@@ -351,6 +357,12 @@ class OrganizationService:
         ).first()
 
         if pending_invitation is not None:
+            # Per-org guard (Phase 4): refuse only a duplicate in the SAME org.
+            # A user already in a different org is allowed to join the inviting org.
+            if user.organization_memberships.filter(
+                organization=pending_invitation.organization
+            ).exists():
+                raise UserAlreadyHasMembershipError()
             try:
                 with transaction.atomic():
                     membership = OrganizationMembership.objects.create(
@@ -366,6 +378,11 @@ class OrganizationService:
             return membership
 
         if organization_name:
+            # DESIGN: auto-creating a second org for an existing member is Phase 5's
+            # concern (relaxing OrganizationManagementPermission on POST /organizations/).
+            # This signup-path branch keeps the original single-membership guard.
+            if user.organization_memberships.exists():
+                raise UserAlreadyHasMembershipError()
             try:
                 with transaction.atomic():
                     organization = self.create_organization(creator=user, name=organization_name)
