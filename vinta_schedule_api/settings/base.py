@@ -287,7 +287,13 @@ SIMPLE_JWT = {
     "UPDATE_LAST_LOGIN": True,
 }
 
-CORS_ORIGIN_ALLOW_ALL = True
+# Wildcard origins are incompatible with credentialed requests: the browser
+# rejects `Access-Control-Allow-Origin: *` when credentials are sent. List
+# explicit origins so the response echoes the request origin instead.
+CORS_ALLOWED_ORIGINS = config(
+    "CORS_ALLOWED_ORIGINS",
+    cast=Csv(),
+)
 from corsheaders.defaults import default_headers
 
 
@@ -296,6 +302,7 @@ CORS_ALLOW_HEADERS = (
     "x-session-token",
     "x-email-verification-key",
     "x-password-reset-key",
+    "x-organization-id",
 )
 CORS_ALLOW_CREDENTIALS = True
 HEADLESS_ONLY = True
