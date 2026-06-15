@@ -253,3 +253,29 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  deploy-staging:
+    name: Deploy staging (Render)
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy hooks
+        run: |
+          deploy() {
+            local name="$1" url="$2"
+            if [ -z "$url" ]; then
+              echo "::error::$name secret is not set"; return 1
+            fi
+            echo "Triggering $name"
+            curl -fsSL -X POST "$url"
+          }
+          rc=0
+          deploy "RENDER_DEPLOY_HOOK_URL (web)" "$RENDER_DEPLOY_HOOK_URL" || rc=1
+          deploy "RENDER_DEPLOY_HOOK_URL_WORKER" "$RENDER_DEPLOY_HOOK_URL_WORKER" || rc=1
+          deploy "RENDER_DEPLOY_HOOK_URL_BEAT" "$RENDER_DEPLOY_HOOK_URL_BEAT" || rc=1
+          exit $rc
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          RENDER_DEPLOY_HOOK_URL_WORKER: ${{ secrets.RENDER_DEPLOY_HOOK_URL_WORKER }}
+          RENDER_DEPLOY_HOOK_URL_BEAT: ${{ secrets.RENDER_DEPLOY_HOOK_URL_BEAT }}
