@@ -14,6 +14,8 @@ services:
     name: vinta_schedule_api-staging
     plan: free
     runtime: python
+    branch: main
+    autoDeploy: true
     buildCommand: "./render_build.sh"
     startCommand: "uv run gunicorn vinta_schedule_api.wsgi:application --limit-request-line 8188 --log-file -"
     envVars:
@@ -40,6 +42,8 @@ services:
     name: worker-default-staging
     runtime: python
     env: python
+    branch: main
+    autoDeploy: true
     buildCommand: uv sync --frozen --no-dev --no-install-project
     startCommand: "uv run celery --app=vinta_schedule_api worker --loglevel=info --max-memory-per-child=$WORKER_MAX_MEMORY  --concurrency=$WORKER_CONCURRENCY"
     envVars:
@@ -87,6 +91,8 @@ services:
     name: beat-staging
     runtime: python
     env: python
+    branch: main
+    autoDeploy: true
     buildCommand: uv sync --frozen --no-dev --no-install-project
     startCommand: "uv run celery --app=vinta_schedule_api beat --loglevel=info"
     envVars:
