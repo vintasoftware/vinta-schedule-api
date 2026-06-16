@@ -239,7 +239,6 @@ class CalendarService(BaseCalendarService):
                 {
                     "account_id": str(account.id),
                     "email": account.email,
-                    "public_key": account.public_key,
                     "private_key_id": account.private_key_id,
                     "private_key": account.private_key,
                     "admin_email": account.admin_email,

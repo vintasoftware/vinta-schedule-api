@@ -1623,7 +1623,6 @@ class GoogleCalendarServiceAccount(OrganizationModel):
             "and Calendar API scopes in the Google Admin Console."
         ),
     )
-    public_key = models.TextField()
     private_key_id = EncryptedCharField(max_length=255)
     private_key = EncryptedTextField()
 
