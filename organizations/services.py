@@ -262,6 +262,7 @@ class OrganizationService:
                     }
                 ),
                 subject_template="organizations/emails/organization_invitation.subject.txt",
+                preheader_template="organizations/emails/organization_invitation.pre_header.txt",
             )
         )
         return invitation
