@@ -659,6 +659,54 @@ class CalendarService(BaseCalendarService):
 
         return calendar
 
+    @transaction.atomic()
+    def create_resource_calendar(
+        self,
+        name: str,
+        description: str | None = None,
+        capacity: int | None = None,
+        manage_available_windows: bool = False,
+    ) -> Calendar:
+        """
+        Create a new internal (manual) resource calendar without linking to an external provider.
+
+        Resource calendars represent shared bookable resources (rooms, equipment, etc.). Unlike
+        synced resource calendars imported from a provider, these are created and owned by the
+        organization directly (``provider=INTERNAL``).
+
+        :param name: Name of the resource calendar.
+        :param description: Description of the resource calendar.
+        :param capacity: Maximum number of attendees the resource can accommodate.
+        :param manage_available_windows: Whether the calendar manages its own available windows.
+        :return: Created Calendar instance.
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        calendar = Calendar.objects.create(
+            organization=self.organization,
+            name=name,
+            description=description,
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            capacity=capacity,
+            manage_available_windows=manage_available_windows,
+        )
+
+        # Create calendar ownership for the user who created it
+        if isinstance(self.user_or_token, User):
+            CalendarOwnership.objects.create(
+                organization=self.organization,
+                calendar=calendar,
+                user=self.user_or_token,
+                is_default=False,
+            )
+
+        # Grant permissions to calendar owners
+        self._grant_calendar_owner_permissions(calendar)
+
+        return calendar
+
     def create_bundle_calendar(
         self,
         name: str,

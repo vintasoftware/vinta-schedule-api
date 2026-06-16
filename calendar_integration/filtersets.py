@@ -1,5 +1,6 @@
 from django_filters import rest_framework as filters
 
+from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -8,6 +9,37 @@ from calendar_integration.models import (
     CalendarGroup,
 )
 from organizations.models import get_active_organization_membership
+
+
+class CalendarFilterSet(filters.FilterSet):
+    """FilterSet for listing calendars.
+
+    Lets org admins narrow the calendar list to resource calendars, by provider
+    (manual ``internal`` vs synced ``google``/``microsoft``/...), and by sync state.
+    """
+
+    calendar_type = filters.ChoiceFilter(
+        field_name="calendar_type",
+        choices=CalendarType.choices,
+        label="Filter by calendar type (e.g. resource)",
+    )
+    provider = filters.ChoiceFilter(
+        field_name="provider",
+        choices=CalendarProvider.choices,
+        label="Filter by provider (internal = manual, others = synced)",
+    )
+    sync_enabled = filters.BooleanFilter(
+        field_name="sync_enabled",
+        label="Filter by whether provider sync is enabled",
+    )
+
+    class Meta:
+        model = Calendar
+        fields = (
+            "calendar_type",
+            "provider",
+            "sync_enabled",
+        )
 
 
 class CalendarEventFilterSet(filters.FilterSet):

@@ -5888,6 +5888,28 @@ def test_create_bundle_calendar(organization):
 
 
 @pytest.mark.django_db
+def test_create_resource_calendar(organization):
+    """Manual resource calendar is internal, typed RESOURCE, and carries capacity."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    resource = service.create_resource_calendar(
+        name="Conference Room A",
+        description="10-person room",
+        capacity=10,
+        manage_available_windows=True,
+    )
+
+    assert resource.name == "Conference Room A"
+    assert resource.description == "10-person room"
+    assert resource.calendar_type == CalendarType.RESOURCE
+    assert resource.provider == CalendarProvider.INTERNAL
+    assert resource.capacity == 10
+    assert resource.manage_available_windows is True
+    assert resource.organization == organization
+
+
+@pytest.mark.django_db
 def test_create_bundle_calendar_with_children(
     organization, child_calendar_internal, child_calendar_google
 ):

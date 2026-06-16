@@ -170,8 +170,57 @@ class CalendarSerializer(VirtualModelSerializer):
             "external_id",
             "provider",
             "calendar_type",
-            "capacity",
         )
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        **kwargs,
+    ):
+        self.calendar_service = calendar_service
+        super().__init__(*args, **kwargs)
+
+    def validate(self, attrs):
+        # `capacity` is only meaningful for resource calendars and is a management
+        # concern, so restrict edits to org admins acting on RESOURCE calendars.
+        # (Creation of resource calendars goes through ResourceCalendarCreateSerializer.)
+        if "capacity" in attrs:
+            calendar_type = getattr(self.instance, "calendar_type", None)
+            if calendar_type != CalendarType.RESOURCE:
+                raise serializers.ValidationError(
+                    {"capacity": "Capacity can only be set on resource calendars."}
+                )
+            user = self.context["request"].user
+            if not user.is_organization_admin(self.instance.organization_id):
+                raise serializers.ValidationError(
+                    {"capacity": "Only org admins can change a resource calendar's capacity."}
+                )
+        return attrs
+
+    def create(self, validated_data):
+        user = self.context["request"].user
+        membership = get_active_organization_membership(user)
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
+        # `organization` is the 2nd param (1st is user_or_token) — pass as keyword.
+        self.calendar_service.initialize_without_provider(organization=membership.organization)
+        return self.calendar_service.create_virtual_calendar(
+            name=validated_data.get("name"),
+            description=validated_data.get("description"),
+        )
+
+
+class ResourceCalendarCreateSerializer(VirtualModelSerializer):
+    """Create an internal (manual) resource calendar. Admin-gated at the view layer."""
+
+    class Meta:
+        model = Calendar
+        virtual_model = CalendarVirtualModel
+        fields = ("name", "description", "capacity", "manage_available_windows")
 
     @inject
     def __init__(
@@ -190,11 +239,12 @@ class CalendarSerializer(VirtualModelSerializer):
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
-        # `organization` is the 2nd param (1st is user_or_token) — pass as keyword.
         self.calendar_service.initialize_without_provider(organization=membership.organization)
-        return self.calendar_service.create_virtual_calendar(
+        return self.calendar_service.create_resource_calendar(
             name=validated_data.get("name"),
             description=validated_data.get("description"),
+            capacity=validated_data.get("capacity"),
+            manage_available_windows=validated_data.get("manage_available_windows", False),
         )
 
 

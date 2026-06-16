@@ -58,6 +58,8 @@ class CalendarIntegrationTestFactory:
         provider=CalendarProvider.GOOGLE,
         calendar_type=CalendarType.PERSONAL,
         manage_available_windows=False,
+        capacity=None,
+        sync_enabled=True,
     ):
         if organization is None:
             organization = CalendarIntegrationTestFactory.create_organization()
@@ -75,6 +77,8 @@ class CalendarIntegrationTestFactory:
             provider=provider,
             calendar_type=calendar_type,
             manage_available_windows=manage_available_windows,
+            capacity=capacity,
+            sync_enabled=sync_enabled,
         )
 
     @staticmethod
@@ -2069,6 +2073,159 @@ class TestCalendarViewSet:
         # Verify the mock was called
         mock_calendar_service.initialize_without_provider.assert_called_once()
         mock_calendar_service.create_virtual_calendar.assert_called_once()
+
+    def test_create_resource_calendar_admin(self, organization):
+        """Org admin creates a manual resource calendar via POST /calendar/resource/."""
+        from rest_framework.test import APIClient
+
+        from di_core.containers import container
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        created_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Conference Room A",
+            description="10-person room",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            capacity=10,
+        )
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.create_resource_calendar.return_value = created_calendar
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-resource")
+        data = {
+            "name": "Conference Room A",
+            "description": "10-person room",
+            "capacity": 10,
+            "manage_available_windows": True,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.data["calendar_type"] == CalendarType.RESOURCE
+        assert response.data["capacity"] == 10
+        mock_calendar_service.initialize_without_provider.assert_called_once()
+        _, kwargs = mock_calendar_service.create_resource_calendar.call_args
+        assert kwargs["name"] == "Conference Room A"
+        assert kwargs["capacity"] == 10
+        assert kwargs["manage_available_windows"] is True
+
+    def test_create_resource_calendar_non_admin_forbidden(self, auth_client, organization, user):
+        """Non-admin members cannot create resource calendars (admin-gated action)."""
+        url = reverse("api:Calendars-resource")
+        response = auth_client.post(url, {"name": "Room", "capacity": 4}, format="json")
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_update_resource_calendar_capacity_admin(self, organization):
+        """Admin can PATCH capacity on a RESOURCE calendar."""
+        from rest_framework.test import APIClient
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+        resource = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.RESOURCE,
+            provider=CalendarProvider.INTERNAL,
+            capacity=4,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:Calendars-detail", kwargs={"pk": resource.id})
+        response = client.patch(url, {"capacity": 12}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        resource.refresh_from_db()
+        assert resource.capacity == 12
+
+    def test_update_capacity_on_non_resource_rejected(self, organization):
+        """Capacity can only be set on resource calendars."""
+        from rest_framework.test import APIClient
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+        personal = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+            provider=CalendarProvider.INTERNAL,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:Calendars-detail", kwargs={"pk": personal.id})
+        response = client.patch(url, {"capacity": 5}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_capacity_non_admin_rejected(self, auth_client, organization, user):
+        """Non-admins cannot change a resource calendar's capacity even if they can access it."""
+        resource = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.RESOURCE,
+            provider=CalendarProvider.INTERNAL,
+            capacity=4,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, resource)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": resource.id})
+        response = auth_client.patch(url, {"capacity": 99}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        resource.refresh_from_db()
+        assert resource.capacity == 4
+
+    def test_list_calendars_filter_by_type_and_provider(self, auth_client, organization, user):
+        """GET /calendar/ supports calendar_type / provider / sync_enabled filters."""
+        resource = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.RESOURCE,
+            provider=CalendarProvider.GOOGLE,
+            sync_enabled=True,
+        )
+        personal = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            calendar_type=CalendarType.PERSONAL,
+            provider=CalendarProvider.INTERNAL,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, resource)
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, personal)
+
+        list_url = reverse("api:Calendars-list")
+
+        response = auth_client.get(list_url, {"calendar_type": CalendarType.RESOURCE})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert resource.id in ids
+        assert personal.id not in ids
+
+        response = auth_client.get(list_url, {"provider": CalendarProvider.GOOGLE})
+        ids = [c["id"] for c in response.data["results"]]
+        assert resource.id in ids
+        assert personal.id not in ids
 
     def test_create_calendar_validation_errors(self, auth_client):
         """Test creating calendar with validation errors"""

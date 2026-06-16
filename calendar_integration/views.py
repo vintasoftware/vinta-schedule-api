@@ -32,6 +32,7 @@ from calendar_integration.filtersets import (
     AvailableTimeFilterSet,
     BlockedTimeFilterSet,
     CalendarEventFilterSet,
+    CalendarFilterSet,
     CalendarGroupFilterSet,
 )
 from calendar_integration.models import (
@@ -71,6 +72,7 @@ from calendar_integration.serializers import (
     CalendarSyncSerializer,
     EventBulkModificationSerializer,
     EventRecurringExceptionSerializer,
+    ResourceCalendarCreateSerializer,
     UnavailableTimeWindowSerializer,
 )
 from calendar_integration.services.calendar_group_service import CalendarGroupService
@@ -127,6 +129,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
     permission_classes = (CalendarAvailabilityPermission,)
     queryset = Calendar.objects.all()
     serializer_class = CalendarSerializer
+    filterset_class = CalendarFilterSet
 
     def get_queryset(self):
         """Filter calendars by user's accessible calendar organizations.
@@ -291,6 +294,39 @@ class CalendarViewSet(VintaScheduleModelViewSet):
 
         return Response(
             self.get_serializer_class()(instance=optimized_calendar_bundle).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        summary="Create a manual resource calendar",
+        description=(
+            "Org admins create an internal (manual) resource calendar — a shared bookable "
+            "resource (room, equipment, etc.) owned by the organization rather than synced "
+            "from an external provider. Sets provider=internal and calendar_type=resource. "
+            "Admin only. Returns the created calendar."
+        ),
+        request=ResourceCalendarCreateSerializer,
+        responses={201: CalendarSerializer},
+    )
+    @action(
+        methods=["post"],
+        detail=False,
+        url_path="resource",
+        url_name="resource",
+        permission_classes=[IsOrganizationAdmin],
+    )
+    def create_resource_calendar(self, request, *args, **kwargs):
+        """POST /calendar/resource/ — admins create a manual resource calendar."""
+        serializer = ResourceCalendarCreateSerializer(
+            data=request.data,
+            context=self.get_serializer_context(),
+        )
+        serializer.is_valid(raise_exception=True)
+        calendar = serializer.save()
+
+        optimized_calendar = self.get_queryset().get(id=calendar.id)
+        return Response(
+            self.get_serializer_class()(instance=optimized_calendar).data,
             status=status.HTTP_201_CREATED,
         )
 
