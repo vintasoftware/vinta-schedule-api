@@ -70,7 +70,6 @@ class GoogleServiceAccountCredentialsTypedDict(TypedDict):
     account_id: str
     email: str
     admin_email: str
-    public_key: str
     private_key_id: str
     private_key: str
 

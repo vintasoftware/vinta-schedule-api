@@ -40,7 +40,6 @@ def service_account_credentials():
         account_id="service_123",
         email="test@service-account.com",
         admin_email="admin@example.com",
-        public_key="mock_public_key",
         private_key_id="mock_key_id",
         private_key="mock_private_key",
     )

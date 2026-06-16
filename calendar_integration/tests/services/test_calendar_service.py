@@ -233,7 +233,6 @@ def google_service_account(db, organization):
     return GoogleCalendarServiceAccount.objects.create(
         email="service@example.com",
         admin_email="admin@example.com",
-        public_key="test_public_key",
         private_key_id="test_key_id",
         private_key="test_private_key",
         organization=organization,

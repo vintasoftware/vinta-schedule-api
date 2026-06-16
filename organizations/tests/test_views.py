@@ -2155,7 +2155,6 @@ class TestSyncRoomsAction:
             calendar_fk=None,
             email="sa@example.com",
             admin_email="admin@example.com",
-            public_key="pk",
             private_key_id="kid",
             private_key="key",
         )
@@ -2192,7 +2191,6 @@ class TestSyncRoomsAction:
             calendar_fk=None,
             email="sa@example.com",
             admin_email="admin@example.com",
-            public_key="pk",
             private_key_id="kid",
             private_key="key",
         )
@@ -2314,7 +2312,6 @@ class TestShouldSyncRoomsTransition:
             calendar_fk=None,
             email="sa@example.com",
             admin_email="admin@example.com",
-            public_key="pk",
             private_key_id="kid",
             private_key="key",
         )
@@ -2441,7 +2438,6 @@ class TestShouldSyncRoomsTransition:
             calendar_fk=None,
             email="sa@example.com",
             admin_email="admin@example.com",
-            public_key="pk",
             private_key_id="kid",
             private_key="key",
         )
@@ -2465,7 +2461,6 @@ class TestShouldSyncRoomsTransition:
 _SA_PAYLOAD = {
     "email": "rooms-sa@example.iam.gserviceaccount.com",
     "admin_email": "admin@example.com",
-    "public_key": "test-public-key-value-not-a-real-key",
     "private_key_id": "key-id-abc123",
     "private_key": "test-private-key-value-not-a-real-key",
 }
@@ -2616,7 +2611,6 @@ class TestPhase18ServiceAccountConfig:
             calendar_fk=None,
             email=_SA_PAYLOAD["email"],
             admin_email=_SA_PAYLOAD["admin_email"],
-            public_key=_SA_PAYLOAD["public_key"],
             private_key_id=_SA_PAYLOAD["private_key_id"],
             private_key=_SA_PAYLOAD["private_key"],
         )
@@ -2705,7 +2699,6 @@ class TestPhase18SyncRoomsTrigger:
             calendar_fk=None,
             email=_SA_PAYLOAD["email"],
             admin_email=_SA_PAYLOAD["admin_email"],
-            public_key=_SA_PAYLOAD["public_key"],
             private_key_id=_SA_PAYLOAD["private_key_id"],
             private_key=_SA_PAYLOAD["private_key"],
         )
@@ -2846,7 +2839,6 @@ class TestPhase18TransitionWithNoCredentials:
             calendar_fk=None,
             email=_SA_PAYLOAD["email"],
             admin_email=_SA_PAYLOAD["admin_email"],
-            public_key=_SA_PAYLOAD["public_key"],
             private_key_id=_SA_PAYLOAD["private_key_id"],
             private_key=_SA_PAYLOAD["private_key"],
         )
@@ -2902,7 +2894,7 @@ class TestPhase18CreateOrganizationNoCredentials:
 class TestPhase20ServiceAccountCRUD:
     """Admin-only CRUD for the org-level Google Calendar service account.
 
-    Security invariant: private_key / private_key_id / public_key are never
+    Security invariant: private_key / private_key_id are never
     returned in any response. Only the org-level account (calendar_fk IS NULL)
     is managed; one per organization (create refuses a duplicate).
     """
@@ -2925,7 +2917,6 @@ class TestPhase20ServiceAccountCRUD:
             "calendar_fk": None,
             "email": "svc@example.iam.gserviceaccount.com",
             "admin_email": "admin@example.com",
-            "public_key": "pub",
             "private_key_id": "kid",
             "private_key": "secret",
         }

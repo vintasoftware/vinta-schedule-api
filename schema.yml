@@ -11337,7 +11337,7 @@ components:
         Serializer for Organization instances.
 
         The ``google_service_account`` field supports both reading and writing:
-        - **Write**: accepts ``email``, ``admin_email``, ``public_key``,
+        - **Write**: accepts ``email``, ``admin_email``,
           ``private_key_id`` (write-only), and ``private_key`` (write-only).
           Omitting the field on PATCH leaves existing credentials unchanged.
         - **Read**: returns ``email``, ``admin_email``, and ``configured: true/false``.
@@ -12154,7 +12154,7 @@ components:
         Serializer for Organization instances.
 
         The ``google_service_account`` field supports both reading and writing:
-        - **Write**: accepts ``email``, ``admin_email``, ``public_key``,
+        - **Write**: accepts ``email``, ``admin_email``,
           ``private_key_id`` (write-only), and ``private_key`` (write-only).
           Omitting the field on PATCH leaves existing credentials unchanged.
         - **Read**: returns ``email``, ``admin_email``, and ``configured: true/false``.
@@ -12219,8 +12219,6 @@ components:
             subject. The service account must have domain-wide delegation granted
             for the Admin SDK and Calendar API scopes in the Google Admin Console.
           maxLength: 255
-        public_key:
-          type: string
         private_key_id:
           type: string
           writeOnly: true
@@ -12476,8 +12474,8 @@ components:
       description: |-
         Read serializer for the org-level Google Calendar service account (CRUD surface).
 
-        Exposes only non-secret fields plus a ``configured`` flag. ``public_key``,
-        ``private_key`` and ``private_key_id`` are never returned.
+        Exposes only non-secret fields plus a ``configured`` flag. ``private_key``
+        and ``private_key_id`` are never returned.
       properties:
         id:
           type: integer
@@ -12531,8 +12529,6 @@ components:
             subject. The service account must have domain-wide delegation granted
             for the Admin SDK and Calendar API scopes in the Google Admin Console.
           maxLength: 255
-        public_key:
-          type: string
         private_key_id:
           type: string
           writeOnly: true
@@ -12544,7 +12540,6 @@ components:
       - email
       - private_key
       - private_key_id
-      - public_key
     SystemUserToken:
       type: object
       description: |-

@@ -17,13 +17,12 @@ class GoogleServiceAccountWriteSerializer(serializers.Serializer):
     """Write-only nested serializer for configuring a Google Calendar service account.
 
     Used within OrganizationSerializer's ``google_service_account`` field.
-    Accepts all five credential fields; ``private_key`` and ``private_key_id``
-    are write-only and are never echoed back in any response.
+    Accepts ``email``, ``admin_email`` and the two key fields; ``private_key``
+    and ``private_key_id`` are write-only and are never echoed back in any response.
     """
 
     email = serializers.EmailField()
     admin_email = serializers.EmailField(allow_blank=True)
-    public_key = serializers.CharField()
     private_key_id = serializers.CharField(write_only=True)
     private_key = serializers.CharField(write_only=True)
 
@@ -48,8 +47,8 @@ class GoogleServiceAccountReadSerializer(serializers.Serializer):
 class ServiceAccountReadSerializer(serializers.ModelSerializer):
     """Read serializer for the org-level Google Calendar service account (CRUD surface).
 
-    Exposes only non-secret fields plus a ``configured`` flag. ``public_key``,
-    ``private_key`` and ``private_key_id`` are never returned.
+    Exposes only non-secret fields plus a ``configured`` flag. ``private_key``
+    and ``private_key_id`` are never returned.
     """
 
     configured = serializers.SerializerMethodField()
@@ -80,14 +79,14 @@ class ServiceAccountWriteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = GoogleCalendarServiceAccount
-        fields = ("email", "admin_email", "public_key", "private_key_id", "private_key")
+        fields = ("email", "admin_email", "private_key_id", "private_key")
 
 
 class OrganizationSerializer(VirtualModelSerializer):
     """Serializer for Organization instances.
 
     The ``google_service_account`` field supports both reading and writing:
-    - **Write**: accepts ``email``, ``admin_email``, ``public_key``,
+    - **Write**: accepts ``email``, ``admin_email``,
       ``private_key_id`` (write-only), and ``private_key`` (write-only).
       Omitting the field on PATCH leaves existing credentials unchanged.
     - **Read**: returns ``email``, ``admin_email``, and ``configured: true/false``.
