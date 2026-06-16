@@ -2286,7 +2286,7 @@ requires-dist = [
     { name = "twilio", specifier = ">=9.6.5,<10" },
     { name = "vintasend", specifier = ">=1.2.0,<2" },
     { name = "vintasend-celery", specifier = ">=1.2.0,<2" },
-    { name = "vintasend-django", specifier = ">=1.2.0,<2" },
+    { name = "vintasend-django", specifier = ">=1.2.1,<2" },
     { name = "whitenoise", specifier = ">=6.9.0,<7" },
 ]
 
@@ -2337,16 +2337,16 @@ wheels = [
 
 [[package]]
 name = "vintasend-django"
-version = "1.2.0"
+version = "1.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django" },
     { name = "django-model-utils" },
     { name = "vintasend" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/da/9a/142f80a1d7b66bc3b1cf1d0fa2ece68ab45bc1659c526d5a9f4cc1e8416a/vintasend_django-1.2.0.tar.gz", hash = "sha256:a1fda9e3256638b009992c406a8efdb606fa7fb09a543cd3902667ca255a887d", size = 18430, upload-time = "2026-06-14T21:31:38.767Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bb/a7/8f4f705d7ccbc552badea2ede2f19032c59b9598ab1c6f80a8f0beee78d5/vintasend_django-1.2.1.tar.gz", hash = "sha256:e1cd2201668aac4c9cb6370974beacab0ea0fc46ef24bc062245393a92daf191", size = 18634, upload-time = "2026-06-16T04:25:19.876Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b0/07/8bed3cc7b47457819b31e08f071db43e1f566fb266441810c8920137553c/vintasend_django-1.2.0-py3-none-any.whl", hash = "sha256:db4c34b6d2e1d6b40c4e2f8ce16fe85d7603975ce99d8c6955309a27a270401d", size = 25548, upload-time = "2026-06-14T21:31:37.556Z" },
+    { url = "https://files.pythonhosted.org/packages/75/c0/86af8599ad95c3c342a515fbb37ea4f882618830ea3d67e3d67ef37f1b64/vintasend_django-1.2.1-py3-none-any.whl", hash = "sha256:13b266eb2df061e40d89d3851e51a6037e643004e6fb67c09650e7218b7aa911", size = 26308, upload-time = "2026-06-16T04:25:18.783Z" },
 ]
 
 [[package]]
