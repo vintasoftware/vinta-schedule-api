@@ -93,10 +93,21 @@ AWS_MEDIA_S3_CUSTOM_DOMAIN = config(
 )
 AWS_S3_URL_PROTOCOL = "https:"
 AWS_MEDIA_S3_ENDPOINT_URL = config("AWS_MEDIA_S3_ENDPOINT_URL")
+# External endpoint for browser/frontend access (S3Direct). On real AWS this is
+# the same S3 endpoint Django uses; allow an override for setups that front S3
+# with a separate public endpoint.
+S3DIRECT_ENDPOINT = config("S3DIRECT_ENDPOINT", default=AWS_MEDIA_S3_ENDPOINT_URL)
 AWS_STORAGE_BUCKET_NAME = AWS_MEDIA_BUCKET_NAME
 AWS_CLOUDFRONT_KEY_ID = config("AWS_CLOUDFRONT_KEY_ID")
 AWS_CLOUDFRONT_KEY = config("AWS_CLOUDFRONT_KEY")
 MEDIA_ROOT = "mediafiles"
+
+# Populate per-destination bucket/endpoint/region so S3Direct uploads resolve
+# the same storage Django writes to.
+for key in S3DIRECT_DESTINATIONS.keys():
+    S3DIRECT_DESTINATIONS[key]["bucket"] = AWS_MEDIA_BUCKET_NAME
+    S3DIRECT_DESTINATIONS[key]["endpoint"] = S3DIRECT_ENDPOINT
+    S3DIRECT_DESTINATIONS[key]["region"] = AWS_MEDIA_REGION
 if AWS_MEDIA_S3_CUSTOM_DOMAIN:
     MEDIA_URL = f"{AWS_S3_URL_PROTOCOL}//{AWS_MEDIA_S3_CUSTOM_DOMAIN}/{AWS_MEDIA_LOCATION + '/' if AWS_MEDIA_LOCATION else ''}"
 else:
