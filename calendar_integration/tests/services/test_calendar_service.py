@@ -5888,6 +5888,24 @@ def test_create_bundle_calendar(organization):
 
 
 @pytest.mark.django_db
+def test_create_virtual_calendar(organization):
+    """Virtual calendar is internal and typed VIRTUAL (regression: no original_payload kwarg)."""
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    calendar = service.create_virtual_calendar(
+        name="My Virtual Calendar",
+        description="A virtual calendar",
+    )
+
+    assert calendar.name == "My Virtual Calendar"
+    assert calendar.description == "A virtual calendar"
+    assert calendar.calendar_type == CalendarType.VIRTUAL
+    assert calendar.provider == CalendarProvider.INTERNAL
+    assert calendar.organization == organization
+
+
+@pytest.mark.django_db
 def test_create_resource_calendar(organization):
     """Manual resource calendar is internal, typed RESOURCE, and carries capacity."""
     service = CalendarService()

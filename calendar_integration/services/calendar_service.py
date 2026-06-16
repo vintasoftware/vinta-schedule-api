@@ -642,7 +642,6 @@ class CalendarService(BaseCalendarService):
             description=description,
             provider=CalendarProvider.INTERNAL,
             calendar_type=CalendarType.VIRTUAL,
-            original_payload={},
         )
 
         # Create calendar ownership for the user who created it
