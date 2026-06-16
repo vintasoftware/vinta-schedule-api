@@ -36,6 +36,7 @@ from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
+    OrganizationRole,
     get_active_organization_membership,
 )
 from organizations.permissions import (
@@ -53,6 +54,7 @@ from organizations.serializers import (
     OrganizationSerializer,
     ServiceAccountReadSerializer,
     ServiceAccountWriteSerializer,
+    UpdateMembershipRoleSerializer,
 )
 from organizations.services import OrganizationService
 
@@ -639,6 +641,7 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     - `deactivate`: POST to disable a member (prevent self-deactivation and
       protect the last active admin).
     - `reactivate`: POST to re-enable a member.
+    - `update-role`: POST to change a member's role (protect the last active admin).
     """
 
     queryset = OrganizationMembership.objects.select_related("user", "user__profile")
@@ -743,6 +746,58 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         # Return the updated membership
         serializer = self.get_serializer(target)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Update an organization member's role",
+        request=UpdateMembershipRoleSerializer,
+        responses={
+            200: OrganizationMembershipSerializer,
+            400: OpenApiResponse(description="Invalid role or would demote the last active admin"),
+            403: OpenApiResponse(description="Not an admin"),
+            404: OpenApiResponse(description="Member not found or cross-org"),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="update-role")
+    def update_role(self, request, pk=None):
+        """Update a member's role (member <-> admin).
+
+        Guards:
+        - Cannot demote the last active admin (org lockout prevention).
+
+        Idempotency: setting the role to its current value is a no-op success.
+        """
+        target = (
+            self.get_object()
+        )  # Permission checks via IsOrganizationAdmin.has_object_permission
+
+        serializer = UpdateMembershipRoleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        new_role = serializer.validated_data["role"]
+
+        # Guard: prevent demoting the last active admin (org lockout prevention).
+        if target.is_admin and new_role != OrganizationRole.ADMIN:
+            org_id = target.organization_id
+            other_active_admin_count = (
+                OrganizationMembership.objects.filter(
+                    organization_id=org_id,
+                    role=OrganizationRole.ADMIN,
+                    is_active=True,
+                )
+                .exclude(id=target.id)
+                .count()
+            )
+            if other_active_admin_count == 0:
+                raise ValidationError(
+                    detail="Cannot demote the last active admin of the organization."
+                )
+
+        # Update (idempotent: no-op if role unchanged)
+        target.role = new_role
+        target.save(update_fields=["role"])
+
+        # Return the updated membership
+        read_serializer = self.get_serializer(target)
+        return Response(read_serializer.data, status=status.HTTP_200_OK)
 
 
 class AcceptInvitationView(generics.CreateAPIView):

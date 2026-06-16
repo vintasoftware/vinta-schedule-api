@@ -5,7 +5,12 @@ from rest_framework import serializers
 
 from calendar_integration.models import GoogleCalendarServiceAccount
 from common.utils.serializer_utils import VirtualModelSerializer
-from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
+from organizations.models import (
+    Organization,
+    OrganizationInvitation,
+    OrganizationMembership,
+    OrganizationRole,
+)
 from organizations.services import OrganizationService
 from organizations.virtual_models import (
     OrganizationInvitationVirtualModel,
@@ -290,6 +295,12 @@ class OrganizationMembershipSerializer(serializers.ModelSerializer):
             "user_last_name",
         )
         read_only_fields = fields
+
+
+class UpdateMembershipRoleSerializer(serializers.Serializer):
+    """Request serializer for updating an organization member's role."""
+
+    role = serializers.ChoiceField(choices=OrganizationRole.choices)
 
 
 class AcceptInvitationSerializer(serializers.Serializer):

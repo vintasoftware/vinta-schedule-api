@@ -118,6 +118,19 @@ def _parse_bool(value, *, default: bool = True) -> bool:
                     "Defaults to false."
                 ),
             ),
+            OpenApiParameter(
+                name="owner",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "Scope the listing to a calendar owner. Pass 'me' to return only the "
+                    "authenticated user's own calendars. Pass a numeric user id to return that "
+                    "user's calendars — allowed for organization admins only; non-admins receive "
+                    "403. When omitted, admins see all organization calendars while non-admins are "
+                    "restricted to their own."
+                ),
+            ),
         ],
     ),
 )
@@ -155,6 +168,28 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         # inactive so unlisted calendars remain directly addressable by id.
         if self.action == "list":
             params = self.request.query_params
+
+            # Owner scoping. Non-admins may only ever list calendars they own; admins see
+            # all org calendars unless they narrow the listing with ?owner=.
+            is_admin = user.is_organization_admin(membership.organization_id)
+            owner = params.get("owner")
+            if owner == "me":
+                qs = qs.filter(users=user)
+            elif owner:
+                # A specific user id — admin-only; members cannot list others' calendars.
+                if not is_admin:
+                    raise PermissionDenied(
+                        "Only organization admins can list other users' calendars."
+                    )
+                try:
+                    owner_id = int(owner)
+                except (TypeError, ValueError) as err:
+                    raise ValidationError({"owner": "Must be 'me' or a numeric user id."}) from err
+                qs = qs.filter(users__id=owner_id)
+            elif not is_admin:
+                # No owner filter + non-admin: restrict to the caller's own calendars.
+                qs = qs.filter(users=user)
+
             include_unlisted = params.get("include_unlisted", "").lower() == "true"
             include_inactive = params.get("include_inactive", "").lower() == "true"
 

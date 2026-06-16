@@ -2385,6 +2385,8 @@ class TestCalendarViewSet:
             calendar_type=CalendarType.PERSONAL,
         )
         mock_calendar_service.create_virtual_calendar.return_value = created_calendar
+        # The creator owns the calendar — required for it to surface in the owner-scoped list.
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, created_calendar)
 
         url = reverse("api:Calendars-list")
         data = {"name": "Active Calendar", "description": "Should be active by default"}
@@ -3298,6 +3300,111 @@ class TestCalendarViewSet:
             assert_response_status_code(response, status.HTTP_202_ACCEPTED)
             assert response.data["id"] == 456
             assert response.data["status"] == "NOT_STARTED"
+
+
+@pytest.mark.django_db
+class TestCalendarViewSetOwnerScoping:
+    """owner query param + non-admin listing restrictions on GET /calendar/."""
+
+    @staticmethod
+    def _make_admin(user, organization):
+        OrganizationMembership.objects.filter(user=user, organization=organization).update(
+            role=OrganizationRole.ADMIN
+        )
+
+    @staticmethod
+    def _own_calendar(user, organization):
+        cal = CalendarIntegrationTestFactory.create_calendar(organization=organization, name="Mine")
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, cal)
+        return cal
+
+    @staticmethod
+    def _other_users_calendar(organization):
+        other_user = baker.make(User)
+        cal = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization, name="Other's"
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(other_user, cal)
+        return other_user, cal
+
+    def test_non_admin_list_excludes_other_users_calendars(self, auth_client, organization, user):
+        """A non-admin's default list only contains calendars they own."""
+        own = self._own_calendar(user, organization)
+        _, others = self._other_users_calendar(organization)
+
+        url = reverse("api:Calendars-list")
+        response = auth_client.get(url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert own.id in ids
+        assert others.id not in ids
+
+    def test_non_admin_owner_me_returns_only_own(self, auth_client, organization, user):
+        """?owner=me scopes a non-admin to their own calendars."""
+        own = self._own_calendar(user, organization)
+        _, others = self._other_users_calendar(organization)
+
+        url = reverse("api:Calendars-list")
+        response = auth_client.get(url, {"owner": "me"})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert own.id in ids
+        assert others.id not in ids
+
+    def test_non_admin_owner_by_id_forbidden(self, auth_client, organization, user):
+        """A non-admin cannot list another user's calendars via ?owner=<id>."""
+        other_user, _ = self._other_users_calendar(organization)
+
+        url = reverse("api:Calendars-list")
+        response = auth_client.get(url, {"owner": str(other_user.id)})
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_list_includes_all_org_calendars(self, auth_client, organization, user):
+        """An admin's default list spans all org calendars, including other users'."""
+        self._make_admin(user, organization)
+        own = self._own_calendar(user, organization)
+        _, others = self._other_users_calendar(organization)
+
+        url = reverse("api:Calendars-list")
+        response = auth_client.get(url)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert own.id in ids
+        assert others.id in ids
+
+    def test_admin_owner_me_returns_only_own(self, auth_client, organization, user):
+        """An admin can narrow to their own calendars with ?owner=me."""
+        self._make_admin(user, organization)
+        own = self._own_calendar(user, organization)
+        _, others = self._other_users_calendar(organization)
+
+        url = reverse("api:Calendars-list")
+        response = auth_client.get(url, {"owner": "me"})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert own.id in ids
+        assert others.id not in ids
+
+    def test_admin_owner_by_id_returns_that_users_calendars(self, auth_client, organization, user):
+        """An admin can list another user's calendars via ?owner=<id>."""
+        self._make_admin(user, organization)
+        own = self._own_calendar(user, organization)
+        other_user, others = self._other_users_calendar(organization)
+
+        url = reverse("api:Calendars-list")
+        response = auth_client.get(url, {"owner": str(other_user.id)})
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [c["id"] for c in response.data["results"]]
+        assert others.id in ids
+        assert own.id not in ids
+
+    def test_admin_owner_invalid_value_returns_400(self, auth_client, organization, user):
+        """A non-'me', non-numeric owner value is a 400 for an admin."""
+        self._make_admin(user, organization)
+
+        url = reverse("api:Calendars-list")
+        response = auth_client.get(url, {"owner": "nonsense"})
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
 
 @pytest.mark.django_db

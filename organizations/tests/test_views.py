@@ -1965,6 +1965,152 @@ class TestOrganizationMembershipViewSet:
         result = response.json()
         assert result["organization"]["id"] == organization.id
 
+    def test_update_role_promote_member_to_admin(self, auth_client, user):
+        """Test that admin can promote a member to admin"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        target_member = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-update-role", kwargs={"pk": target_member.pk})
+        response = auth_client.post(url, {"role": OrganizationRole.ADMIN}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        result = response.json()
+        assert result["role"] == OrganizationRole.ADMIN
+        assert result["id"] == target_member.id
+
+        target_member.refresh_from_db()
+        assert target_member.role == OrganizationRole.ADMIN
+
+    def test_update_role_demote_admin_with_other_admins(self, auth_client, user):
+        """Test that admin can demote another admin when other admins remain"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        other_admin = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-update-role", kwargs={"pk": other_admin.pk})
+        response = auth_client.post(url, {"role": OrganizationRole.MEMBER}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        other_admin.refresh_from_db()
+        assert other_admin.role == OrganizationRole.MEMBER
+
+    def test_update_role_demote_last_active_admin_forbidden(self, auth_client, user):
+        """Test that demoting the last active admin is rejected (org lockout prevention)"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        sole_admin = baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-update-role", kwargs={"pk": sole_admin.pk})
+        response = auth_client.post(url, {"role": OrganizationRole.MEMBER}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        sole_admin.refresh_from_db()
+        assert sole_admin.role == OrganizationRole.ADMIN
+
+    def test_update_role_invalid_choice(self, auth_client, user):
+        """Test that an invalid role value is rejected"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        target_member = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-update-role", kwargs={"pk": target_member.pk})
+        response = auth_client.post(url, {"role": "superuser"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        target_member.refresh_from_db()
+        assert target_member.role == OrganizationRole.MEMBER
+
+    def test_update_role_non_admin_forbidden(self, auth_client, user):
+        """Test that a non-admin member cannot change roles"""
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        target_member = baker.make(
+            OrganizationMembership,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-update-role", kwargs={"pk": target_member.pk})
+        response = auth_client.post(url, {"role": OrganizationRole.ADMIN}, format="json")
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        target_member.refresh_from_db()
+        assert target_member.role == OrganizationRole.MEMBER
+
+    def test_update_role_cross_org_not_found(self, auth_client, user):
+        """Test that admin cannot change the role of a member in another organization"""
+        org1 = OrganizationTestFactory.create_organization(name="Org 1")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org1,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        org2 = OrganizationTestFactory.create_organization(name="Org 2")
+        member_in_org2 = baker.make(
+            OrganizationMembership,
+            organization=org2,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:OrganizationMembers-update-role", kwargs={"pk": member_in_org2.pk})
+        response = auth_client.post(url, {"role": OrganizationRole.ADMIN}, format="json")
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
     def _setup_admin_org(self, user):
         organization = OrganizationTestFactory.create_organization(name="Search Org")
         baker.make(

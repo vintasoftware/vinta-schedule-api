@@ -2324,6 +2324,15 @@ paths:
         schema:
           type: integer
       - in: query
+        name: owner
+        schema:
+          type: string
+        description: Scope the listing to a calendar owner. Pass 'me' to return only
+          the authenticated user's own calendars. Pass a numeric user id to return
+          that user's calendars — allowed for organization admins only; non-admins
+          receive 403. When omitted, admins see all organization calendars while non-admins
+          are restricted to their own.
+      - in: query
         name: provider
         schema:
           type: string
@@ -2460,6 +2469,15 @@ paths:
         description: The initial index from which to return the results.
         schema:
           type: integer
+      - in: query
+        name: owner
+        schema:
+          type: string
+        description: Scope the listing to a calendar owner. Pass 'me' to return only
+          the authenticated user's own calendars. Pass a numeric user id to return
+          that user's calendars — allowed for organization admins only; non-admins
+          receive 403. When omitted, admins see all organization calendars while non-admins
+          are restricted to their own.
       - in: query
         name: provider
         schema:
@@ -6784,6 +6802,7 @@ paths:
         - `deactivate`: POST to disable a member (prevent self-deactivation and
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
+        - `update-role`: POST to change a member's role (protect the last active admin).
       parameters:
       - in: header
         name: X-Organization-Id
@@ -6852,6 +6871,7 @@ paths:
         - `deactivate`: POST to disable a member (prevent self-deactivation and
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
+        - `update-role`: POST to change a member's role (protect the last active admin).
       parameters:
       - in: header
         name: X-Organization-Id
@@ -6927,6 +6947,7 @@ paths:
         - `deactivate`: POST to disable a member (prevent self-deactivation and
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
+        - `update-role`: POST to change a member's role (protect the last active admin).
       parameters:
       - in: header
         name: X-Organization-Id
@@ -6968,6 +6989,7 @@ paths:
         - `deactivate`: POST to disable a member (prevent self-deactivation and
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
+        - `update-role`: POST to change a member's role (protect the last active admin).
       parameters:
       - in: header
         name: X-Organization-Id
@@ -7233,6 +7255,127 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
+  /organization-members/{id}/update-role/:
+    post:
+      operationId: organization_members_update_role_create
+      description: |-
+        Update a member's role (member <-> admin).
+
+        Guards:
+        - Cannot demote the last active admin (org lockout prevention).
+
+        Idempotency: setting the role to its current value is a no-op success.
+      summary: Update an organization member's role
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMembershipRole'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/UpdateMembershipRole'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UpdateMembershipRole'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '400':
+          description: Invalid role or would demote the last active admin
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
+  /organization-members/{id}/update-role{format}:
+    post:
+      operationId: organization_members_update_role_formatted_create
+      description: |-
+        Update a member's role (member <-> admin).
+
+        Guards:
+        - Cannot demote the last active admin (org lockout prevention).
+
+        Idempotency: setting the role to its current value is a no-op success.
+      summary: Update an organization member's role
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMembershipRole'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/UpdateMembershipRole'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UpdateMembershipRole'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '400':
+          description: Invalid role or would demote the last active admin
         '403':
           description: Not an admin
         '404':
@@ -13032,6 +13175,14 @@ components:
       - reason
       - reason_description
       - start_time
+    UpdateMembershipRole:
+      type: object
+      description: Request serializer for updating an organization member's role.
+      properties:
+        role:
+          $ref: '#/components/schemas/RoleEnum'
+      required:
+      - role
     User:
       type: object
       properties:
