@@ -51,9 +51,18 @@ CELERY_BROKER_URL = config("RABBITMQ_URL", default="") or REDIS_URL
 CELERY_RESULT_BACKEND = config("REDIS_URL", default="") or None
 CELERY_SEND_TASK_ERROR_EMAILS = True
 
-# Redbeat https://redbeat.readthedocs.io/en/latest/config.html#redbeat-redis-url
+# Redbeat — distributed beat scheduler. Holds a Redis lock so overlapping beat
+# instances (e.g. during a rolling deploy) never double-emit scheduled tasks.
+# https://redbeat.readthedocs.io/en/latest/config.html#redbeat-redis-url
 # Falls back to REDIS_URL; empty when Redis is not configured.
-redbeat_redis_url = config("REDBEAT_REDIS_URL", default="") or REDIS_URL
+REDBEAT_REDIS_URL = config("REDBEAT_REDIS_URL", default="") or REDIS_URL
+# Only switch the beat scheduler to redbeat when a Redis URL is available.
+# Without this guard, redbeat's `beat_init` lock handler runs against the
+# default PersistentScheduler (which has no `lock_key`) and raises
+# AttributeError on beat startup.
+if REDBEAT_REDIS_URL:
+    CELERY_BEAT_SCHEDULER = "redbeat.RedBeatScheduler"
+    CELERY_REDBEAT_REDIS_URL = REDBEAT_REDIS_URL
 
 
 AWS_REGION = config("AWS_REGION", default="us-east-1")
