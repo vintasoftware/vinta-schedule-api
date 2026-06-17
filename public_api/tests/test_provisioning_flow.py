@@ -3,6 +3,8 @@
 import datetime
 from unittest.mock import MagicMock, patch
 
+from django.contrib.auth import get_user_model
+
 import pytest
 from allauth.socialaccount.models import SocialLogin
 from model_bakery import baker
