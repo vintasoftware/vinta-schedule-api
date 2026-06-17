@@ -120,10 +120,12 @@ class Organization(BaseModel):
         Returns the reseller ancestor (which has branding), or None if no such ancestor exists.
         The None case means this org (or its entire lineage) has no reseller, so vinta defaults apply.
         """
+        seen: set[int] = set()
         org: Organization | None = self
-        while org is not None:
+        while org is not None and org.pk not in seen:
             if org.can_invite_organizations:
                 return org
+            seen.add(org.pk)
             org = org.parent
         return None
 

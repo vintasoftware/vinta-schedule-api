@@ -248,6 +248,30 @@ class TestOrganizationParentAndCapabilities:
         with pytest.raises(IntegrityError):
             reseller.delete()
 
+    def test_get_branding_root_handles_parent_cycle_without_hanging(self):
+        """get_branding_root() terminates even when a parent cycle exists with no reseller.
+
+        Creates a cycle A.parent=B, B.parent=A (both non-reseller), then asserts
+        get_branding_root() returns None and does not hang indefinitely.
+        """
+        # Create two orgs first (must exist to reference each other)
+        org_a = baker.make(Organization, can_invite_organizations=False)
+        org_b = baker.make(Organization, can_invite_organizations=False)
+
+        # Set up cycle: A.parent=B, B.parent=A
+        org_a.parent = org_b
+        org_a.save()
+        org_b.parent = org_a
+        org_b.save()
+
+        # Should return None (no reseller in cycle) and terminate (not hang)
+        result = org_a.get_branding_root()
+        assert result is None
+
+        # Also verify from org_b
+        result = org_b.get_branding_root()
+        assert result is None
+
 
 @pytest.mark.django_db
 class TestMultiOrgMembership:

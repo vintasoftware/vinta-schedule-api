@@ -90,9 +90,15 @@ class TestCanInviteOrganizationsNotExposed:
                                             for f in model._meta.get_fields()
                                             if hasattr(f, "name")
                                         )
-            except (ImportError, AttributeError):
+            except ModuleNotFoundError:
                 # App has no serializers module, skip
                 pass
+
+        # Anti-vacuity assertions: ensure the scan actually found serializers
+        assert serializer_fields_by_name, "serializer scan found nothing — guard would be vacuous"
+        assert "OrganizationSerializer" in serializer_fields_by_name, (
+            "OrganizationSerializer was not scanned — guard would miss the primary org serializer"
+        )
 
         # Verify can_invite_organizations is not in any Organization-related serializer
         for serializer_name, fields in serializer_fields_by_name.items():
@@ -112,5 +118,6 @@ class TestCanInviteOrganizationsNotExposed:
             "Organization.can_invite_organizations must exist on the model itself."
         )
 
-        # But it should not be listed in the model's publicly-exposed fields
-        # (This is enforced by test_can_invite_organizations_not_in_organization_serializers above)
+        # Verify it is a real model field with the correct default
+        field = Organization._meta.get_field("can_invite_organizations")
+        assert field.default is False
