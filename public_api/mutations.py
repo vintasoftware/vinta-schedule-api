@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 from typing import Annotated, cast
 
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.utils import timezone
 
 import strawberry
+from allauth.account.models import EmailAddress
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
@@ -14,7 +16,15 @@ from public_api.capabilities import assert_org_can_invite
 from public_api.models import SystemUser
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 from public_api.services import PublicAPIAuthService
-from public_api.types import CreateOrganizationInput, CreateOrganizationResult, OrganizationResult
+from public_api.types import (
+    CreateOrganizationInput,
+    CreateOrganizationResult,
+    CreateUserInput,
+    CreateUserResult,
+    OrganizationResult,
+    UserResult,
+)
+from users.models import Profile
 
 
 @dataclass
@@ -150,4 +160,66 @@ class Mutation(CalendarGroupMutations):
 
         return CreateOrganizationResult(
             organization=OrganizationResult(id=child_org.id, name=child_org.name)
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_user(
+        self,
+        info: strawberry.Info,
+        input: CreateUserInput,  # noqa: A002
+    ) -> CreateUserResult:
+        """
+        Create a passwordless end-user (provisioned by a reseller).
+
+        The mutation:
+        1. Checks that the acting org has the can_invite_organizations flag (via assert_org_can_invite).
+        2. Idempotent on email: if a User with that email exists, returns it (does NOT duplicate).
+        3. Creates User + Profile with set_unusable_password() and email left UNVERIFIED.
+        4. Returns the created user with id, email, first_name, and last_name.
+
+        The token's OrganizationResourceAccess must include the USER resource.
+        """
+        user_model = get_user_model()
+
+        acting_org = info.context.request.public_api_organization
+        if not acting_org:
+            raise GraphQLError("Organization not found")
+
+        # Gate: check the org can invite before proceeding
+        assert_org_can_invite(acting_org)
+
+        # Idempotent on email: get-or-create pattern
+        user, created = user_model.objects.get_or_create(
+            email=input.email,
+            defaults={},
+        )
+
+        if created:
+            # Only set unusable password and create profile if the user is newly created
+            user.set_unusable_password()
+            user.save(update_fields=["password"])
+
+            # Create the associated Profile with first_name and last_name
+            profile, _ = Profile.objects.get_or_create(user=user)
+            if input.first_name is not None:
+                profile.first_name = input.first_name
+            if input.last_name is not None:
+                profile.last_name = input.last_name
+            profile.save()
+
+            # Create an EmailAddress entry with verified=False (email is unverified)
+            EmailAddress.objects.create(
+                user=user,
+                email=user.email,
+                verified=False,
+                primary=True,
+            )
+
+        return CreateUserResult(
+            user=UserResult(
+                id=user.id,
+                email=user.email,
+                first_name=user.profile.first_name or None,
+                last_name=user.profile.last_name or None,
+            )
         )

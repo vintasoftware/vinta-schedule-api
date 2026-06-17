@@ -31,3 +31,29 @@ class CreateOrganizationResult:
     """Result of creating an organization."""
 
     organization: OrganizationResult
+
+
+@strawberry.input
+class CreateUserInput:
+    """Input for creating a passwordless user."""
+
+    email: str
+    first_name: str | None = None
+    last_name: str | None = None
+
+
+@strawberry.type
+class UserResult:
+    """Represents a user in the API response."""
+
+    id: int
+    email: str
+    first_name: str | None = None
+    last_name: str | None = None
+
+
+@strawberry.type
+class CreateUserResult:
+    """Result of creating a user."""
+
+    user: UserResult
