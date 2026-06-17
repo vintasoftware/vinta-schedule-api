@@ -1886,3 +1886,274 @@ class TestGraphQLQueries:
 
         assert active_user.email in returned_emails, "Active member must appear in users query"
         assert inactive_user.email not in returned_emails, "Inactive member must be excluded"
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestBrandingForTenantQuery:
+    """Test the unauthenticated brandingForTenant public query."""
+
+    @pytest.fixture
+    def anonymous_client(self):
+        """Create an unauthenticated GraphQL client (no Authorization header)."""
+        return APIClient()
+
+    def test_branding_for_unbranded_org_returns_vinta_default(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """Test that an unbranded org returns vinta default branding."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create an org with no branding
+        org = baker.make(Organization, name="Unbranded Org")
+
+        query = """
+            query GetBrandingForTenant($tenantId: ID!) {
+                brandingForTenant(tenantId: $tenantId) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+        variables = {"tenantId": str(org.id)}
+
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        branding = data["brandingForTenant"]
+
+        assert branding["appName"] == "Vinta Schedule"
+        assert branding["logoUrl"] == ""
+        assert branding["primaryColor"] == ""
+        assert branding["secondaryColor"] == ""
+
+    def test_branding_for_unknown_tenant_returns_vinta_default(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """Test that an unknown tenant ID returns vinta default (no enumeration oracle)."""
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query GetBrandingForTenant($tenantId: ID!) {
+                brandingForTenant(tenantId: $tenantId) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+        # Use a random non-existent ID
+        variables = {"tenantId": "999999"}
+
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        branding = data["brandingForTenant"]
+
+        # Same response as unbranded org (no enumeration oracle)
+        assert branding["appName"] == "Vinta Schedule"
+        assert branding["logoUrl"] == ""
+        assert branding["primaryColor"] == ""
+        assert branding["secondaryColor"] == ""
+
+    def test_branding_for_branded_reseller_returns_branding(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """Test that a reseller's branding is returned correctly."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create a reseller org with branding
+        reseller = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        baker.make(
+            "organizations.OrganizationBranding",
+            organization=reseller,
+            app_name="MyScheduler",
+            logo_url="https://example.com/logo.png",
+            primary_color="#FF0000",
+            secondary_color="#00FF00",
+        )
+
+        query = """
+            query GetBrandingForTenant($tenantId: ID!) {
+                brandingForTenant(tenantId: $tenantId) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+        variables = {"tenantId": str(reseller.id)}
+
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_branding = data["brandingForTenant"]
+
+        assert returned_branding["appName"] == "MyScheduler"
+        assert returned_branding["logoUrl"] == "https://example.com/logo.png"
+        assert returned_branding["primaryColor"] == "#FF0000"
+        assert returned_branding["secondaryColor"] == "#00FF00"
+
+    def test_branding_for_child_returns_parent_branding(self, mock_rate_limiter, anonymous_client):
+        """Test that a child org returns its parent reseller's branding."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create a reseller with branding
+        reseller = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        baker.make(
+            "organizations.OrganizationBranding",
+            organization=reseller,
+            app_name="ChildBranding",
+            logo_url="https://example.com/child-logo.png",
+            primary_color="#0000FF",
+            secondary_color="#FFFF00",
+        )
+
+        # Create a child org (no branding of its own)
+        child = baker.make(Organization, name="Child", parent=reseller)
+
+        query = """
+            query GetBrandingForTenant($tenantId: ID!) {
+                brandingForTenant(tenantId: $tenantId) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+        variables = {"tenantId": str(child.id)}
+
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_branding = data["brandingForTenant"]
+
+        # Child returns parent's branding
+        assert returned_branding["appName"] == "ChildBranding"
+        assert returned_branding["logoUrl"] == "https://example.com/child-logo.png"
+        assert returned_branding["primaryColor"] == "#0000FF"
+        assert returned_branding["secondaryColor"] == "#FFFF00"
+
+    def test_branding_does_not_expose_secrets(self, mock_rate_limiter, anonymous_client):
+        """Test that support_email and return_url_allowlist are not exposed."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create a reseller with branding including secrets
+        reseller = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        baker.make(
+            "organizations.OrganizationBranding",
+            organization=reseller,
+            app_name="MyApp",
+            logo_url="https://example.com/logo.png",
+            primary_color="#FF0000",
+            secondary_color="#00FF00",
+            support_email="support@example.com",
+            return_url_allowlist=["https://example.com", "https://app.example.com"],
+        )
+
+        query = """
+            query GetBrandingForTenant($tenantId: ID!) {
+                brandingForTenant(tenantId: $tenantId) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+        variables = {"tenantId": str(reseller.id)}
+
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_branding = data["brandingForTenant"]
+
+        # Verify secrets are not in the response
+        assert "supportEmail" not in returned_branding
+        assert "returnUrlAllowlist" not in returned_branding
+        assert "support_email" not in returned_branding
+        assert "return_url_allowlist" not in returned_branding
+        # Verify the actual secret values are not present (support_email)
+        assert "support@example.com" not in str(returned_branding)
+        # return_url_allowlist should not be present in response at all
+        assert "app.example.com" not in str(returned_branding)
+
+    def test_branding_callable_without_token(self, mock_rate_limiter, anonymous_client):
+        """Test that brandingForTenant is callable without authentication."""
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query {
+                brandingForTenant(tenantId: "1") {
+                    appName
+                }
+            }
+        """
+
+        # Make request without Authorization header
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query}),
+            content_type="application/json",
+        )
+
+        # Should succeed (200) despite no token
+        assert_response_status_code(response, 200)
+        data = response.json()
+        assert "data" in data
+        assert data["data"] is not None
+        assert "brandingForTenant" in data["data"]
+
+    def test_branding_rate_limited_by_ip(self, mock_rate_limiter, anonymous_client):
+        """Test that brandingForTenant is rate-limited per IP."""
+        mock_rate_limiter.return_value = iter([None])
+
+        org = baker.make(Organization, name="TestOrg")
+
+        query = """
+            query GetBrandingForTenant($tenantId: ID!) {
+                brandingForTenant(tenantId: $tenantId) {
+                    appName
+                }
+            }
+        """
+        variables = {"tenantId": str(org.id)}
+
+        # Make a request
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+
+        # Verify that the rate limiter was called
+        assert mock_rate_limiter.called, (
+            "Rate limiter should be called for unauthenticated requests"
+        )

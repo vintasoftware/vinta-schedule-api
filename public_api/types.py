@@ -150,3 +150,17 @@ class UpdateBrandingResult:
     """Result of updating branding."""
 
     branding: BrandingResult | None
+
+
+@strawberry.type
+class PublicBrandingResult:
+    """Represents public, secret-free branding for unauthenticated access.
+
+    Used by brandingForTenant query for frontend interstitials.
+    Excludes the branding row id, support_email, and return_url_allowlist.
+    """
+
+    app_name: str
+    logo_url: str
+    primary_color: str
+    secondary_color: str

@@ -15,14 +15,16 @@ from common.redis import ResilientLimiter
 
 
 class OrganizationRateLimiter(SchemaExtension):
-    """
-    Uses redis and the leaky bucket algorithm to limit the number of requests a organization can make
-    within a specified period.
-    This is useful for preventing abuse and ensuring fair usage of resources across organizations.
+    """Rate-limit organization and anonymous requests.
 
-    Redis is optional: a process-wide circuit breaker guards every Redis call and,
-    when Redis is unconfigured or down, the limiter falls back to an in-process
-    bucket so the public API keeps serving requests.
+    Uses redis and the leaky bucket algorithm to limit the number of requests
+    an organization or IP can make within a specified period.
+    This is useful for preventing abuse and ensuring fair usage of resources
+    across organizations.
+
+    Redis is optional: a process-wide circuit breaker guards every Redis call
+    and, when Redis is unconfigured or down, the limiter falls back to an
+    in-process bucket so the public API keeps serving requests.
     """
 
     limiter: ResilientLimiter | None
@@ -80,30 +82,45 @@ class OrganizationRateLimiter(SchemaExtension):
         ]
 
     def on_execute(self) -> AsyncIteratorOrIterator[None]:
-        """
-        This method is called on each request.
-        It checks if the organization has exceeded the allowed number of requests.
+        """Rate-limit the request (by org ID or client IP).
+
+        This method is called on each request and checks if the organization
+        (or IP for anonymous requests) has exceeded the allowed number of
+        requests.
+
+        For authenticated requests, uses the organization ID.
+        For unauthenticated requests, uses the client's IP address.
 
         It uses yield to control the flow of execution.
         """
         context = self.execution_context.context
         request: HttpRequest = context.request
 
-        # request.public_api_system_user is set by public_api.middlewares.PublicApiSystemUserMiddleware
+        # public_api_system_user set by PublicApiSystemUserMiddleware
         organization = getattr(request, "public_api_organization", None)
         organization_id = organization.id if organization else None
 
-        if organization_id is None or self.limiter is None:
+        if self.limiter is None:
             yield
             return None
+
+        # Determine rate-limit key: org ID for authenticated, IP for anonymous
+        if organization_id is not None:
+            rate_limit_key = str(organization_id)
+        else:
+            # Get client IP from headers (respects X-Forwarded-For behind proxy)
+            client_ip = request.headers.get("X-Forwarded-For", "").split(",")[
+                0
+            ].strip() or request.META.get("REMOTE_ADDR", "")
+            rate_limit_key = f"anon:{client_ip}"
 
         try:
             # pyrate-limiter 4 is non-blocking and returns a bool instead of
             # raising BucketFullException when the limit is exhausted.
-            acquired = self.limiter.try_acquire(str(organization_id))
+            acquired = self.limiter.try_acquire(rate_limit_key)
         except Exception:  # noqa: BLE001
-            # in case we're unable to connect to Redis or any other error occurs let the request go through
-            # This is to ensure that the application remains functional even if the rate-limiting service is down.
+            # If Redis is unreachable or error occurs, allow request. Ensures
+            # the API remains functional even when rate-limiting is down.
             yield
             return None
 

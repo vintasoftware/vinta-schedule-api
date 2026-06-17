@@ -33,11 +33,12 @@ from calendar_integration.models import (
     CalendarEvent,
     CalendarGroup,
 )
+from organizations.models import Organization, resolve_branding
 from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
 )
-from public_api.types import PublicApiHttpRequest
+from public_api.types import PublicApiHttpRequest, PublicBrandingResult
 from users.graphql import UserGraphQLType
 from users.models import User
 
@@ -518,3 +519,52 @@ class Query:
             group_id=group_id, start=start_datetime, end=end_datetime
         )
         return cast(list[CalendarEventGraphQLType], list(events))
+
+    @strawberry.field()
+    def branding_for_tenant(self, tenant_id: strawberry.ID) -> PublicBrandingResult:
+        """Get resolved branding for a tenant, or vinta default if unbranded.
+
+        This is an unauthenticated, rate-limited public query for frontend interstitials.
+        It returns the parent-walked branding for the given tenant ID, or the vinta
+        default when none. No enumeration oracle: unknown tenant ID returns the same
+        default as an unbranded subtree.
+
+        Args:
+            tenant_id: The ID of the organization to get branding for.
+
+        Returns:
+            PublicBrandingResult with app name, logo, and colors (no secrets).
+        """
+        try:
+            tenant_id_int = int(tenant_id)
+            org = Organization.objects.filter(id=tenant_id_int).first()
+        except (ValueError, TypeError):
+            org = None
+
+        if org is None:
+            # Unknown tenant ID returns the vinta default (no enumeration oracle)
+            return PublicBrandingResult(
+                app_name="Vinta Schedule",
+                logo_url="",
+                primary_color="",
+                secondary_color="",
+            )
+
+        # Resolve branding by walking up the parent chain to the nearest reseller
+        branding = resolve_branding(org)
+        if branding is None:
+            # Unbranded subtree returns the vinta default
+            return PublicBrandingResult(
+                app_name="Vinta Schedule",
+                logo_url="",
+                primary_color="",
+                secondary_color="",
+            )
+
+        # Return the resolved branding (no secrets exposed)
+        return PublicBrandingResult(
+            app_name=branding.app_name,
+            logo_url=branding.logo_url,
+            primary_color=branding.primary_color,
+            secondary_color=branding.secondary_color,
+        )
