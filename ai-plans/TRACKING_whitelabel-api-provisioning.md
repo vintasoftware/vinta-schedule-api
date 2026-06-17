@@ -52,8 +52,18 @@ None (capability switch `can_invite_organizations`, DB-only, default off — not
 - **DEVIATION (acknowledged)**: plan 4.3 named INVITATION+MEMBERSHIP; `FIELD_TO_RESOURCE_MAPPING` is one-resource-per-field by design — gated on INVITATION + DB flag, MEMBERSHIP implied. Not re-architected (out of scope). Documented in PR #88.
 - **Carry-forward**: `assert_target_in_subtree(acting_org, target_org)` in public_api/capabilities.py — reuse for Phases 5 & 9 (raises GraphQLError, cycle-guarded). `OrganizationService.invite_user_to_organization(email,first_name,last_name,organization,invited_by=None,role=...)` DI-injected via `organization_service` provider (now a required dep in get_mutation_dependencies). OrgRole strawberry enum (`@strawberry.enum class OrgRole(enum.Enum)`, `.to_model_role()`) in public_api/types.py. organizations migrations now at 0010.
 
+### Phase 4 — Self-managed invitations (email suppression + token return) ✅
+- **Status**: PR #89 (https://github.com/vintasoftware/vinta-schedule-api/pull/89), base phase-3
+- **Branch**: plan/whitelabel-api-provisioning/phase-4
+- **Model**: claude-sonnet-4-6 (Tier 3) · implementer
+- **Commits**: 2ba6070 (feat)
+- **Summary**: `createInvitation` sendEmail=false branch. `invite_user_to_organization` gained `send_email: bool = True` (guards the on_commit email dispatch; existing callers default True = unchanged) and attaches the raw token as transient `invitation._raw_token` (set after save, never persisted — only token_hash/SHA-256 stored). Mutation: false → returns raw token + inviteUrl (from `HEADLESS_FRONTEND_URLS["account_accept_invitation"]`, same as email; test.py adds the test key) once; true → null (Phase 3 unchanged). Returned token validates via accept_invitation (tested end-to-end).
+- **Gate**: 1929 passed; check --deploy + makemigrations --check clean.
+- **Review**: no BLOCKER — all security invariants confirmed (no plaintext persistence; token validates; email truly suppressed; flag/scope/subtree gate holds on false path; true path returns null). Low-value test-convention SHOULD-FIX accepted as-is.
+- **Future hardening (noted, out of scope)**: `accept_invitation` scans invitations cross-org (email__iexact + per-row verify) — latent timing/DoS surface as volume grows.
+
 ## Current Phase
-Phase 4 — Self-managed invitations (email suppression + token return) (starting)
+Phase 5 — createSystemUserToken (token delegation) (starting)
 
 ## Remaining Phases
 - Phase 3 — createInvitation (branded email)
