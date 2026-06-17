@@ -41,6 +41,10 @@ class OrganizationResourceAccess(BasePermission):
         "calendarGroupEvents": PublicAPIResources.CALENDAR_GROUP,
         "deleteSystemUser": PublicAPIResources.SYSTEM_USER,
         "createOrganization": PublicAPIResources.ORGANIZATION,
+        # createInvitation requires INVITATION scope. MEMBERSHIP is conceptually also implied
+        # (the invitation will create a membership on accept), but the permission mechanism
+        # supports one resource per field; INVITATION is the primary gating resource.
+        "createInvitation": PublicAPIResources.INVITATION,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore

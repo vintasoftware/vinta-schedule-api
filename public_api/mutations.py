@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Annotated, cast
 
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.utils import timezone
 
@@ -9,17 +10,27 @@ from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
 from calendar_integration.mutations import CalendarGroupMutations
-from organizations.models import Organization
-from public_api.capabilities import assert_org_can_invite
+from organizations.exceptions import UserAlreadyHasMembershipError
+from organizations.models import Organization, OrganizationMembership
+from organizations.services import OrganizationService
+from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
 from public_api.models import SystemUser
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 from public_api.services import PublicAPIAuthService
-from public_api.types import CreateOrganizationInput, CreateOrganizationResult, OrganizationResult
+from public_api.types import (
+    CreateInvitationInput,
+    CreateInvitationResult,
+    CreateOrganizationInput,
+    CreateOrganizationResult,
+    InvitationResult,
+    OrganizationResult,
+)
 
 
 @dataclass
 class MutationDependencies:
     public_api_auth_service: PublicAPIAuthService
+    organization_service: OrganizationService
 
 
 @inject
@@ -27,8 +38,11 @@ def get_mutation_dependencies(
     public_api_auth_service: Annotated[
         PublicAPIAuthService | None, Provide["public_api_auth_service"]
     ] = None,
+    organization_service: Annotated[
+        OrganizationService | None, Provide["organization_service"]
+    ] = None,
 ) -> MutationDependencies:
-    required_dependencies = [public_api_auth_service]
+    required_dependencies = [public_api_auth_service, organization_service]
     if any(dep is None for dep in required_dependencies):
         raise GraphQLError(
             f"Missing required dependency {', '.join([str(dep) for dep in required_dependencies if dep is None])}"
@@ -36,6 +50,7 @@ def get_mutation_dependencies(
 
     return MutationDependencies(
         public_api_auth_service=cast(PublicAPIAuthService, public_api_auth_service),
+        organization_service=cast(OrganizationService, organization_service),
     )
 
 
@@ -150,4 +165,88 @@ class Mutation(CalendarGroupMutations):
 
         return CreateOrganizationResult(
             organization=OrganizationResult(id=child_org.id, name=child_org.name)
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_invitation(
+        self,
+        info: strawberry.Info,
+        input: CreateInvitationInput,  # noqa: A002
+    ) -> CreateInvitationResult:
+        """
+        Create a pending organization invitation for an end-user (reseller bundle).
+
+        The mutation:
+        1. Checks the acting org has can_invite_organizations (via assert_org_can_invite).
+        2. Validates organizationId is the acting org or a descendant (subtree guard).
+        3. Checks the user is not already an active member of the target org.
+        4. Creates (or resets) a pending OrganizationInvitation via OrganizationService.
+        5. Sends the invitation email (Phase 3: sendEmail=true path only).
+           Phase 4 will add the sendEmail=false branch returning the raw token.
+        6. Returns the invitation with token=None and invite_url=None (email path).
+
+        The token's OrganizationResourceAccess must include the INVITATION resource.
+        """
+        deps = get_mutation_dependencies()
+
+        acting_org = info.context.request.public_api_organization
+        if not acting_org:
+            raise GraphQLError("Organization not found")
+
+        # Gate: check the org can invite before proceeding
+        assert_org_can_invite(acting_org)
+
+        # Resolve the target organization
+        try:
+            target_org = Organization.objects.get(id=int(input.organization_id))
+        except (Organization.DoesNotExist, ValueError) as e:
+            raise GraphQLError(f"Organization with id '{input.organization_id}' not found.") from e
+
+        # Tenant-isolation guard: target must be the acting org or a descendant
+        assert_target_in_subtree(acting_org, target_org)
+
+        # Already-active-member guard: reject if the email belongs to an existing member.
+        # We check by email because the invitation itself creates the user (the user may not
+        # exist yet).
+        user_model = get_user_model()
+        try:
+            existing_user = user_model.objects.get(email=input.user_email)
+        except user_model.DoesNotExist:
+            existing_user = None
+
+        if existing_user is not None:
+            if OrganizationMembership.objects.filter(
+                user=existing_user,
+                organization=target_org,
+                is_active=True,
+            ).exists():
+                raise GraphQLError(
+                    UserAlreadyHasMembershipError.default_detail,
+                )
+
+        # Create (or reset) the pending invitation via OrganizationService.
+        # invited_by=None because the public-API caller is a SystemUser, not a Django User.
+        # first_name/last_name are empty strings — invite_user_to_organization creates (or
+        # reuses) the user and stores names for email rendering only.
+        invitation = deps.organization_service.invite_user_to_organization(
+            email=input.user_email,
+            first_name="",
+            last_name="",
+            organization=target_org,
+            invited_by=None,
+            role=input.role.to_model_role(),
+        )
+
+        # Phase 4: sendEmail=false returns raw token. For now (Phase 3), sendEmail is always true
+        # and the invitation email is sent by invite_user_to_organization above.
+        # token and invite_url remain null in the sendEmail=true path.
+
+        return CreateInvitationResult(
+            invitation=InvitationResult(
+                id=invitation.id,
+                email=invitation.email,
+                expires_at=invitation.expires_at,
+            ),
+            token=None,
+            invite_url=None,
         )

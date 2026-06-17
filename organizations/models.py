@@ -291,8 +291,19 @@ class OrganizationInvitation(BaseModel):
     )
     invited_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
         related_name="sent_organization_invitations",
+        null=True,
+        blank=True,
+    )
+    role = models.CharField(
+        max_length=20,
+        choices=OrganizationRole,
+        default=OrganizationRole.MEMBER,
+        help_text=(
+            "Role the invited user should receive on accepting the invitation. "
+            "Defaults to MEMBER. Admin invitations must be explicit."
+        ),
     )
     accepted_at = models.DateTimeField(null=True, blank=True)
     token_hash = models.TextField()

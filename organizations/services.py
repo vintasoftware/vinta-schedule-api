@@ -203,14 +203,20 @@ class OrganizationService:
         email: str,
         first_name: str,
         last_name: str,
-        invited_by: User,
         organization: Organization,
+        invited_by: User | None = None,
+        role: str = OrganizationRole.MEMBER,
     ) -> OrganizationInvitation:
         """
         Invite a user to join the organization. if the invitation already exists, resets the token
         and the expiration date.
         :param email: Email of the user to invite.
-        :param invited_by: User who is sending the invitation.
+        :param organization: Organization the user is being invited to.
+        :param invited_by: User who is sending the invitation. May be None when the invitation is
+            created by an API-level actor (e.g. a reseller via the public GraphQL API) that has no
+            corresponding Django User.
+        :param role: Role the invited user should receive on accepting the invitation. Defaults to
+            MEMBER. Use OrganizationRole.ADMIN for admin invitations.
         """
         token = generate_long_lived_token()
         token_hash = hash_long_lived_token(token)
@@ -228,6 +234,7 @@ class OrganizationService:
                     "last_name": last_name,
                     "token_hash": token_hash,
                     "expires_at": seven_days_from_now,
+                    "role": role,
                 },
             )
         except IntegrityError as e:
@@ -240,6 +247,7 @@ class OrganizationService:
             invitation.invited_by = invited_by
             invitation.first_name = first_name
             invitation.last_name = last_name
+            invitation.role = role
             invitation.accepted_at = None
             invitation.membership = None
             invitation.save()
@@ -301,7 +309,9 @@ class OrganizationService:
                 try:
                     with transaction.atomic():
                         membership = OrganizationMembership.objects.create(
-                            user=user, organization=invitation.organization
+                            user=user,
+                            organization=invitation.organization,
+                            role=invitation.role,
                         )
                 except IntegrityError as e:
                     raise UserAlreadyHasMembershipError() from e
@@ -368,7 +378,7 @@ class OrganizationService:
                     membership = OrganizationMembership.objects.create(
                         user=user,
                         organization=pending_invitation.organization,
-                        role=OrganizationRole.MEMBER,
+                        role=pending_invitation.role,
                     )
             except IntegrityError as e:
                 raise UserAlreadyHasMembershipError() from e

@@ -385,6 +385,60 @@ class TestOrganizationService:
         assert invitation.accepted_at is not None
         assert invitation.membership == membership
 
+    def test_accept_invitation_propagates_admin_role(self, organization_service, organization):
+        """BLOCKER fix: accept_invitation must honour the invitation's role.
+
+        An ADMIN invitation accepted via the token/REST path must produce an
+        OrganizationMembership with role=ADMIN, not the default MEMBER.
+        """
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+
+        admin_user = baker.make(User, email="admin_accept@example.com")
+        token = generate_long_lived_token()
+        token_hash = hash_long_lived_token(token)
+        baker.make(
+            OrganizationInvitation,
+            email=admin_user.email,
+            organization=organization,
+            token_hash=token_hash,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+            role=OrganizationRole.ADMIN,
+        )
+
+        membership = organization_service.accept_invitation(token=token, user=admin_user)
+
+        assert membership.role == OrganizationRole.ADMIN
+
+    def test_accept_invitation_member_role_default(self, organization_service, organization):
+        """accept_invitation with MEMBER role (default) produces MEMBER membership."""
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+
+        member_user = baker.make(User, email="member_accept@example.com")
+        token = generate_long_lived_token()
+        token_hash = hash_long_lived_token(token)
+        baker.make(
+            OrganizationInvitation,
+            email=member_user.email,
+            organization=organization,
+            token_hash=token_hash,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+            role=OrganizationRole.MEMBER,
+        )
+
+        membership = organization_service.accept_invitation(token=token, user=member_user)
+
+        assert membership.role == OrganizationRole.MEMBER
+
     def test_accept_invitation_invalid_token(self, organization_service, user, organization):
         """Test accepting an invitation with an invalid token."""
         from common.utils.authentication_utils import (

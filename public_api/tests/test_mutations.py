@@ -6,7 +6,12 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from organizations.models import Organization, OrganizationMembership
+from organizations.models import (
+    Organization,
+    OrganizationInvitation,
+    OrganizationMembership,
+    OrganizationRole,
+)
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -362,3 +367,389 @@ class TestGraphQLMutations:
         response_data = response.json()
         assert "errors" in response_data
         assert len(response_data["errors"]) > 0
+
+
+CREATE_INVITATION_MUTATION = """
+mutation CreateInvitation($input: CreateInvitationInput!) {
+    createInvitation(input: $input) {
+        invitation {
+            id
+            email
+            expiresAt
+        }
+        token
+        inviteUrl
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestCreateInvitationMutation:
+    """Unit tests for the createInvitation mutation (Phase 3: branded-email path)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_reseller(self, resources: list[str] | None = None):
+        """Create a reseller org + system user with the given resource scopes."""
+        if resources is None:
+            resources = ["invitation"]
+        reseller_org = baker.make(Organization, name="Reseller Org", can_invite_organizations=True)
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=reseller_org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return reseller_org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": CREATE_INVITATION_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def test_create_invitation_creates_pending_invite_with_default_role(self):
+        """A reseller creates an invitation to a child org; default role is MEMBER."""
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+
+        user_email = "invitee@example.com"
+        with patch(
+            "organizations.services.OrganizationService.invite_user_to_organization"
+        ) as mock_invite:
+            mock_invitation = baker.prepare(
+                OrganizationInvitation,
+                id=1,
+                email=user_email,
+                organization=child_org,
+            )
+            import datetime
+
+            mock_invitation.expires_at = datetime.datetime.now(
+                tz=datetime.UTC
+            ) + datetime.timedelta(days=7)
+            mock_invite.return_value = mock_invitation
+
+            response = self._post_mutation(
+                system_user,
+                token,
+                auth_service,
+                {"input": {"userEmail": user_email, "organizationId": str(child_org.id)}},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        assert data["data"]["createInvitation"]["invitation"]["email"] == user_email
+        # token and invite_url are null in the sendEmail=true (Phase 3) path
+        assert data["data"]["createInvitation"]["token"] is None
+        assert data["data"]["createInvitation"]["inviteUrl"] is None
+
+        # Verify invite_user_to_organization was called with MEMBER role (default)
+        mock_invite.assert_called_once()
+        call_kwargs = mock_invite.call_args.kwargs
+        assert call_kwargs["email"] == user_email
+        assert call_kwargs["organization"] == child_org
+        assert call_kwargs["role"] == OrganizationRole.MEMBER
+        assert call_kwargs["invited_by"] is None
+
+    def test_create_invitation_with_explicit_admin_role(self):
+        """A reseller creates an invitation with an explicit ADMIN role."""
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+
+        user_email = "admin_invitee@example.com"
+        with patch(
+            "organizations.services.OrganizationService.invite_user_to_organization"
+        ) as mock_invite:
+            mock_invitation = baker.prepare(
+                OrganizationInvitation,
+                id=2,
+                email=user_email,
+                organization=child_org,
+            )
+            import datetime
+
+            mock_invitation.expires_at = datetime.datetime.now(
+                tz=datetime.UTC
+            ) + datetime.timedelta(days=7)
+            mock_invite.return_value = mock_invitation
+
+            response = self._post_mutation(
+                system_user,
+                token,
+                auth_service,
+                {
+                    "input": {
+                        "userEmail": user_email,
+                        "organizationId": str(child_org.id),
+                        "role": "ADMIN",
+                    }
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        mock_invite.assert_called_once()
+        call_kwargs = mock_invite.call_args.kwargs
+        assert call_kwargs["role"] == OrganizationRole.ADMIN
+
+    def test_create_invitation_already_active_member_returns_error(self):
+        """createInvitation for an already-active member of the target org → typed error."""
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+
+        user_model = get_user_model()
+        existing_user = user_model.objects.create(email="member@example.com")
+        baker.make(
+            OrganizationMembership,
+            user=existing_user,
+            organization=child_org,
+            is_active=True,
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "userEmail": "member@example.com",
+                    "organizationId": str(child_org.id),
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        # Should carry the UserAlreadyHasMembershipError message
+        assert "already a member" in str(data["errors"]).lower()
+
+    def test_create_invitation_off_subtree_org_rejected(self):
+        """An organizationId not in the acting org's subtree is rejected."""
+        _reseller_org, system_user, token, auth_service = self._setup_reseller()
+        # org with no relation to reseller_org
+        unrelated_org = baker.make(Organization, name="Unrelated Org")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "userEmail": "someone@example.com",
+                    "organizationId": str(unrelated_org.id),
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "subtree" in str(data["errors"]).lower()
+
+    def test_create_invitation_flag_off_acting_org_rejected(self):
+        """createInvitation is denied when the acting org's can_invite_organizations flag is off."""
+        # Non-reseller org (flag off by default)
+        non_reseller_org = baker.make(Organization, name="Non-Reseller Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=non_reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="invitation")
+
+        child_org = baker.make(Organization, name="Child Org")
+
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": CREATE_INVITATION_MUTATION,
+                    "variables": {
+                        "input": {
+                            "userEmail": "someone@example.com",
+                            "organizationId": str(child_org.id),
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "does not have permission to invite or create" in str(data["errors"]).lower()
+
+    def test_create_invitation_missing_invitation_scope_denied(self):
+        """createInvitation is denied when the token lacks the INVITATION scope."""
+        reseller_org = baker.make(Organization, name="Reseller Org", can_invite_organizations=True)
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=reseller_org
+        )
+        # Grant a different scope, not INVITATION
+        baker.make(ResourceAccess, system_user=system_user, resource_name="user")
+
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": CREATE_INVITATION_MUTATION,
+                    "variables": {
+                        "input": {
+                            "userEmail": "someone@example.com",
+                            "organizationId": str(child_org.id),
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_create_invitation_send_email_true_returns_null_token_and_url(self):
+        """sendEmail=true (default) always returns token=null, inviteUrl=null."""
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+
+        with patch(
+            "organizations.services.OrganizationService.invite_user_to_organization"
+        ) as mock_invite:
+            mock_invitation = baker.prepare(
+                OrganizationInvitation,
+                id=3,
+                email="invitee@example.com",
+                organization=child_org,
+            )
+            import datetime
+
+            mock_invitation.expires_at = datetime.datetime.now(
+                tz=datetime.UTC
+            ) + datetime.timedelta(days=7)
+            mock_invite.return_value = mock_invitation
+
+            response = self._post_mutation(
+                system_user,
+                token,
+                auth_service,
+                {
+                    "input": {
+                        "userEmail": "invitee@example.com",
+                        "organizationId": str(child_org.id),
+                        "sendEmail": True,
+                    }
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        assert data["data"]["createInvitation"]["token"] is None
+        assert data["data"]["createInvitation"]["inviteUrl"] is None
+
+    def test_create_invitation_acting_org_can_invite_itself(self):
+        """The acting org can invite a user into itself (organization_id == acting org)."""
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+
+        with patch(
+            "organizations.services.OrganizationService.invite_user_to_organization"
+        ) as mock_invite:
+            mock_invitation = baker.prepare(
+                OrganizationInvitation,
+                id=4,
+                email="self_invitee@example.com",
+                organization=reseller_org,
+            )
+            import datetime
+
+            mock_invitation.expires_at = datetime.datetime.now(
+                tz=datetime.UTC
+            ) + datetime.timedelta(days=7)
+            mock_invite.return_value = mock_invitation
+
+            response = self._post_mutation(
+                system_user,
+                token,
+                auth_service,
+                {
+                    "input": {
+                        "userEmail": "self_invitee@example.com",
+                        "organizationId": str(reseller_org.id),
+                    }
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+    def test_create_invitation_cross_reseller_tree_rejected_no_invite_created(self):
+        """Cross-reseller-tree isolation: R1 calling createInvitation with R2's child is rejected.
+
+        This is the highest-risk multi-tenant failure mode: a reseller R1 must not be able to
+        invite users into any organization belonging to a different reseller R2's tree.
+
+        Asserts:
+        - The mutation returns a GraphQL error referencing 'subtree'.
+        - NO OrganizationInvitation row is created for that email+org combination.
+        """
+        # Build two independent reseller trees
+        r1_org = baker.make(Organization, name="Reseller1", can_invite_organizations=True)
+        r2_org = baker.make(Organization, name="Reseller2", can_invite_organizations=True)
+        r2_child = baker.make(Organization, name="R2Child", parent=r2_org)
+
+        # System user authenticated as R1
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="r1_integration", organization=r1_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="invitation")
+
+        target_email = "victim@example.com"
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "userEmail": target_email,
+                    "organizationId": str(r2_child.id),
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "subtree" in str(data["errors"]).lower()
+
+        # No invitation must have been created
+        assert not OrganizationInvitation.objects.filter(
+            email=target_email, organization=r2_child
+        ).exists()

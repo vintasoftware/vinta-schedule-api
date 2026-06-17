@@ -1,12 +1,23 @@
-"""Integration tests for the provisioning flow (Phase 1: createOrganization)."""
+"""Integration tests for the provisioning flow (Phase 1 & 3: createOrganization, createInvitation)."""
+
+import datetime
+from unittest.mock import MagicMock, patch
 
 import pytest
+from allauth.socialaccount.models import SocialLogin
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from organizations.models import Organization
+from accounts.account_adapters import SocialAccountAdapter
+from organizations.models import (
+    Organization,
+    OrganizationInvitation,
+    OrganizationMembership,
+    OrganizationRole,
+)
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
+from users.models import Profile, User
 
 
 @pytest.mark.django_db
@@ -222,3 +233,185 @@ class TestCreateOrganizationProvisioning:
         assert child_a.parent_id == reseller_org.id
         assert child_b.parent_id == reseller_org.id
         assert child_a.id != child_b.id
+
+
+# ---------------------------------------------------------------------------
+# Helper: simulate social login auto-join (mirrors test_social_invite_autojoin.py)
+# ---------------------------------------------------------------------------
+
+
+def _social_save_user(email: str) -> User:
+    """Simulate the allauth social save_user path for *email*.
+
+    Mirrors the helper in test_social_invite_autojoin.py: the super() call is
+    replaced by a minimal stub that persists the user, then the real
+    SocialAccountAdapter.save_user runs so that profile-creation and invite
+    auto-join logic execute exactly as in production.
+    """
+    adapter = SocialAccountAdapter()
+    new_user = User(email=email)
+    new_user.profile = Profile(user=new_user, first_name="Invited", last_name="User")
+    sociallogin = MagicMock(spec=SocialLogin)
+    sociallogin.user = new_user
+    sociallogin.account = MagicMock(extra_data={})
+
+    def _super_save(request, sociallogin, form=None):
+        sociallogin.user.save()
+        return sociallogin.user
+
+    with patch.object(SocialAccountAdapter.__bases__[0], "save_user", side_effect=_super_save):
+        return adapter.save_user(None, sociallogin, form=None)
+
+
+@pytest.mark.django_db
+class TestCreateInvitationProvisioning:
+    """Integration tests for the full createOrganization → createInvitation chain."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    CREATE_INVITATION_MUTATION = """
+    mutation CreateInvitation($input: CreateInvitationInput!) {
+        createInvitation(input: $input) {
+            invitation {
+                id
+                email
+                expiresAt
+            }
+            token
+            inviteUrl
+        }
+    }
+    """
+
+    def test_full_provisioning_chain_leaves_pending_invite_in_child(self):
+        """
+        Full chain: createOrganization → createInvitation.
+
+        After the chain:
+        - A pending OrganizationInvitation exists in the child org addressed to the user email.
+          (The invitation itself creates the user.)
+        - The invitation has the requested role.
+        - No stray org was created.
+        """
+        from di_core.containers import container
+
+        # Reseller setup
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="organization")
+        baker.make(ResourceAccess, system_user=system_user, resource_name="invitation")
+
+        headers = {"authorization": f"Bearer {system_user.id}:{token}"}
+
+        create_org_mutation = """
+        mutation CreateOrganization($input: CreateOrganizationInput!) {
+            createOrganization(input: $input) {
+                organization { id name }
+            }
+        }
+        """
+
+        org_count_before = Organization.objects.count()
+
+        with container.public_api_auth_service.override(auth_service):
+            # Step 1: createOrganization
+            r1 = self.client.post(
+                "/graphql/",
+                data={"query": create_org_mutation, "variables": {"input": {"name": "Child Org"}}},
+                format="json",
+                headers=headers,
+            )
+            assert r1.status_code == 200
+            d1 = r1.json()
+            assert "errors" not in d1 or len(d1.get("errors", [])) == 0
+            child_org_id = d1["data"]["createOrganization"]["organization"]["id"]
+
+            invited_email = "invited.user@example.com"
+
+            # Step 2: createInvitation (email is mocked to avoid real email send)
+            with patch("organizations.services.NotificationService.create_one_off_notification"):
+                r3 = self.client.post(
+                    "/graphql/",
+                    data={
+                        "query": self.CREATE_INVITATION_MUTATION,
+                        "variables": {
+                            "input": {
+                                "userEmail": invited_email,
+                                "organizationId": str(child_org_id),
+                                "role": "MEMBER",
+                            }
+                        },
+                    },
+                    format="json",
+                    headers=headers,
+                )
+
+        assert r3.status_code == 200
+        d3 = r3.json()
+        assert "errors" not in d3 or len(d3.get("errors", [])) == 0
+
+        # Verify pending invitation exists in the child org
+        child_org = Organization.objects.get(id=child_org_id)
+        pending_invites = OrganizationInvitation.objects.filter(
+            email=invited_email,
+            organization=child_org,
+            accepted_at__isnull=True,
+            membership__isnull=True,
+        )
+        assert pending_invites.count() == 1
+        invite = pending_invites.first()
+        assert invite is not None
+        assert invite.role == OrganizationRole.MEMBER
+
+        # Verify no stray org was created (only reseller + child)
+        assert Organization.objects.count() == org_count_before + 1
+
+        # token and invite_url are null in the sendEmail=true path
+        assert d3["data"]["createInvitation"]["token"] is None
+        assert d3["data"]["createInvitation"]["inviteUrl"] is None
+
+    def test_social_login_auto_joins_invited_user_with_correct_role(self):
+        """
+        After createInvitation, social-login by that email yields an active membership
+        in the child org with the invited role, and no stray org is created.
+        """
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+        invited_email = "socialjoin@example.com"
+
+        # Create a pending invitation directly (simulates the createInvitation mutation result)
+        baker.make(
+            OrganizationInvitation,
+            email=invited_email,
+            organization=child_org,
+            invited_by=None,
+            role=OrganizationRole.ADMIN,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+        )
+
+        org_count_before = Organization.objects.count()
+
+        # Simulate social login (triggers auto-join via SocialAccountAdapter.save_user)
+        user = _social_save_user(invited_email)
+
+        # The user should have exactly one membership in the child org with ADMIN role.
+        memberships = OrganizationMembership.objects.filter(user=user)
+        assert memberships.count() == 1
+        membership = memberships.first()
+        assert membership is not None
+        assert membership.organization == child_org
+        assert membership.role == OrganizationRole.ADMIN
+
+        # No stray org was created.
+        assert Organization.objects.count() == org_count_before
+
+        # The invitation should be marked accepted.
+        invite = OrganizationInvitation.objects.get(email=invited_email, organization=child_org)
+        assert invite.accepted_at is not None
+        assert invite.membership_id == membership.pk
