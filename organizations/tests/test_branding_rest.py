@@ -454,7 +454,7 @@ class TestOrganizationBrandingViewSet:
         assert data["return_url_allowlist"] == original_payload["return_url_allowlist"]
 
     def test_delete_not_allowed(self, client, user, reseller_org, reseller_org_admin):
-        """DELETE /branding/ returns 403."""
+        """DELETE /branding/ returns 405 Method Not Allowed."""
         baker.make(
             OrganizationBranding,
             organization=reseller_org,
@@ -470,8 +470,120 @@ class TestOrganizationBrandingViewSet:
         client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
 
         response = client.delete(BRANDING_URL)
-        # DELETE should not be in allowed methods (405)
-        assert response.status_code in (
-            status.HTTP_403_FORBIDDEN,
-            status.HTTP_405_METHOD_NOT_ALLOWED,
+        assert_response_status_code(response, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_multi_org_header_selects_correct_org(self, client):
+        """Multi-org admin: X-Organization-Id header selects the named org's branding.
+
+        Proves the BLOCKER fix: OrganizationBrandingView must be tenant-scoped via
+        TenantScopedViewMixin so the header drives org selection.
+
+        Setup: a single user is an ADMIN of TWO reseller orgs (reseller_a is older,
+        reseller_b is newer).  Without the mixin the fallback would return the oldest
+        membership (reseller_a) for every request, silently ignoring the header.
+        """
+        user = baker.make(User)
+        reseller_a = baker.make(Organization, can_invite_organizations=True)
+        reseller_b = baker.make(Organization, can_invite_organizations=True)
+
+        # Create memberships: reseller_a first so it is the "oldest".
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=reseller_a,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
         )
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=reseller_b,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        # Create distinct branding rows for each org.
+        baker.make(
+            OrganizationBranding,
+            organization=reseller_a,
+            app_name="BrandA",
+            logo_url="",
+            primary_color="",
+            secondary_color="",
+            support_email="",
+            return_url_allowlist=[],
+        )
+        baker.make(
+            OrganizationBranding,
+            organization=reseller_b,
+            app_name="BrandB",
+            logo_url="",
+            primary_color="",
+            secondary_color="",
+            support_email="",
+            return_url_allowlist=[],
+        )
+
+        client.force_authenticate(user)
+
+        # --- With header pointing to reseller_b → must return reseller_b's branding ---
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_b.id))
+        response = client.get(BRANDING_URL)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json()["app_name"] == "BrandB", (
+            "Expected BrandB but got a different app_name — "
+            "the view is not using the X-Organization-Id header to select the org."
+        )
+
+        # --- With header pointing to reseller_a → must return reseller_a's branding ---
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_a.id))
+        response = client.get(BRANDING_URL)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json()["app_name"] == "BrandA"
+
+        # --- PUT on reseller_b must NOT touch reseller_a's row ---
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_b.id))
+        payload = {
+            "app_name": "BrandB-updated",
+            "logo_url": "",
+            "primary_color": "",
+            "secondary_color": "",
+            "support_email": "",
+            "return_url_allowlist": [],
+        }
+        response = client.put(BRANDING_URL, data=payload, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # reseller_a's row must be untouched
+        reseller_a_branding = OrganizationBranding.objects.get(organization_id=reseller_a.id)
+        assert reseller_a_branding.app_name == "BrandA", (
+            "Writing reseller_b's branding must not touch reseller_a's row."
+        )
+
+    def test_multi_org_absent_header_returns_400(self, client):
+        """Multi-org admin omitting X-Organization-Id gets 400 (not a silent fallback)."""
+        user = baker.make(User)
+        reseller_a = baker.make(Organization, can_invite_organizations=True)
+        reseller_b = baker.make(Organization, can_invite_organizations=True)
+
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=reseller_a,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=reseller_b,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        client.force_authenticate(user)
+        # No X-Organization-Id header.
+        client.credentials()
+
+        response = client.get(BRANDING_URL)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)

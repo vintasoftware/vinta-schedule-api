@@ -20,6 +20,7 @@ from common.utils.view_utils import (
     NoListVintaScheduleModelViewSet,
     NoUpdateVintaScheduleModelViewSet,
     ReadOnlyVintaScheduleModelViewSet,
+    TenantScopedViewMixin,
 )
 from organizations.exceptions import (
     DuplicateInvitationError,
@@ -856,7 +857,7 @@ class AcceptInvitationView(generics.CreateAPIView):
 
 
 @extend_schema(tags=["Branding"])
-class OrganizationBrandingView(views.APIView):
+class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     """Admin-only REST endpoint for managing a reseller organization's branding.
 
     Reseller-admin gate: the acting org must itself be a reseller
@@ -870,6 +871,16 @@ class OrganizationBrandingView(views.APIView):
     Round-trips: app_name, logo_url, primary_color, secondary_color,
     support_email, return_url_allowlist. NEVER exposes can_invite_organizations
     or makes organization writable.
+
+    Tenant-scoping: ``TenantScopedViewMixin`` resolves ``X-Organization-Id``
+    before any handler runs, so multi-org admins always operate on the
+    header-named org. Without the header a multi-org caller receives 400;
+    a header naming a non-member org receives 403 — identical to every other
+    org-scoped endpoint. ``TenantScopedViewMixin._is_active_org_resolution_optional``
+    uses ``getattr(self, "action", None)``, so the absent ``self.action`` attribute
+    (ViewSetMixin is not in the MRO) is safe — ``None`` is never in the default
+    ``active_org_optional_actions = ()`` tuple, so full 400/403 enforcement runs
+    on every HTTP method.
     """
 
     permission_classes = (IsOrganizationAdmin,)
@@ -959,7 +970,3 @@ class OrganizationBrandingView(views.APIView):
         serializer.save()
 
         return Response(serializer.data, status=status.HTTP_200_OK)
-
-    def delete(self, request, *args, **kwargs):
-        """DELETE not allowed."""
-        raise PermissionDenied("DELETE not allowed for branding.")

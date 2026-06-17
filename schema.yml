@@ -2271,6 +2271,17 @@ paths:
       operationId: branding_retrieve
       description: GET /branding/ — retrieve the acting org's branding.
       summary: Retrieve the acting organization's branding
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       tags:
       - Branding
       security:
@@ -2291,6 +2302,17 @@ paths:
       operationId: branding_update
       description: PUT /branding/ — create or replace the acting org's branding.
       summary: Create or replace the acting organization's branding
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       tags:
       - Branding
       requestBody:
@@ -2329,6 +2351,17 @@ paths:
       operationId: branding_partial_update
       description: PATCH /branding/ — update the acting org's branding (partial).
       summary: Update the acting organization's branding (partial)
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       tags:
       - Branding
       requestBody:
@@ -2358,17 +2391,6 @@ paths:
           description: Not a reseller or not an admin
         '404':
           description: Branding not yet configured
-    delete:
-      operationId: branding_destroy
-      description: DELETE not allowed.
-      tags:
-      - Branding
-      security:
-      - jwtAuth: []
-      - cookieAuth: []
-      responses:
-        '204':
-          description: No response body
   /calendar/:
     get:
       operationId: calendar_list

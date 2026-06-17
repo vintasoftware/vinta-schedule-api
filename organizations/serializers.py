@@ -333,6 +333,13 @@ class AcceptInvitationSerializer(serializers.Serializer):
         return self.organization_service.accept_invitation(token=token, user=user)
 
 
+def _validate_hex_color(value: str) -> str:
+    """Validate a hex color string: #RRGGBB or #RRGGBBAA. Returns the value unchanged."""
+    if value and not re.match(r"^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", value):
+        raise serializers.ValidationError("Invalid color format. Expected #RRGGBB or #RRGGBBAA.")
+    return value
+
+
 class OrganizationBrandingSerializer(serializers.ModelSerializer):
     """Serializer for OrganizationBranding (reseller-admin REST endpoints).
 
@@ -358,19 +365,11 @@ class OrganizationBrandingSerializer(serializers.ModelSerializer):
 
     def validate_primary_color(self, value: str) -> str:
         """Validate primary_color hex format: #RRGGBB or #RRGGBBAA."""
-        if value and not re.match(r"^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", value):
-            raise serializers.ValidationError(
-                "Invalid color format. Expected #RRGGBB or #RRGGBBAA."
-            )
-        return value
+        return _validate_hex_color(value)
 
     def validate_secondary_color(self, value: str) -> str:
         """Validate secondary_color hex format: #RRGGBB or #RRGGBBAA."""
-        if value and not re.match(r"^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", value):
-            raise serializers.ValidationError(
-                "Invalid color format. Expected #RRGGBB or #RRGGBBAA."
-            )
-        return value
+        return _validate_hex_color(value)
 
     def validate_return_url_allowlist(self, value: list) -> list:
         """Validate that each return_url_allowlist entry is a valid URL."""
