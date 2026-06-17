@@ -33,15 +33,19 @@ def organization_invitation_context(
     except OrganizationInvitation.DoesNotExist as e:
         raise NotificationContextGenerationError("Invalid organization invitation ID") from e
 
-    try:
-        if invitation.invited_by is None:
-            raise NotificationContextGenerationError(
-                "Invitation has no invited_by user (created by API)"
-            )
-        first_name = invitation.invited_by.profile.first_name
-        last_name = invitation.invited_by.profile.last_name
-    except ObjectDoesNotExist as e:  # noqa: BLE001
-        raise NotificationContextGenerationError("Failed to retrieve inviter's profile") from e
+    if invitation.invited_by is None:
+        # Public-API invites (e.g. reseller createInvitation) are created with
+        # invited_by=None because the caller is a system actor, not a Django User.
+        # Use the organization name as a natural-reading fallback so the sentence
+        # "invited by <org name>" renders correctly in the template.
+        first_name = invitation.organization.name
+        last_name = ""
+    else:
+        try:
+            first_name = invitation.invited_by.profile.first_name
+            last_name = invitation.invited_by.profile.last_name
+        except ObjectDoesNotExist as e:  # noqa: BLE001
+            raise NotificationContextGenerationError("Failed to retrieve inviter's profile") from e
 
     # Resolve branding: walks to the nearest reseller ancestor and uses its branding row.
     # If no reseller ancestor or no branding row, returns None → vinta defaults apply.
@@ -69,7 +73,7 @@ def organization_invitation_context(
             "first_name": invitation.first_name,
             "last_name": invitation.last_name,
             "organization_name": invitation.organization.name,
-            "invited_by_name": f"{first_name} {last_name}",
+            "invited_by_name": f"{first_name} {last_name}".strip(),
             "expires_at": invitation.expires_at,
         },
         "organization_join_url": invitation_url,

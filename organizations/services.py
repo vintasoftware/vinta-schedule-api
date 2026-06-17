@@ -268,6 +268,12 @@ class OrganizationService:
         invitation._raw_token = token  # type: ignore[attr-defined]
 
         if send_email:
+            # TODO(phase-8 follow-up): set From=support_email when branded.
+            # resolve_branding(invitation.organization) gives the reseller's support_email,
+            # but DjangoEmailNotificationAdapter.send() always uses
+            # NOTIFICATION_DEFAULT_FROM_EMAIL and does not accept a per-notification
+            # from_email override. Wiring this requires extending the vintasend
+            # adapter API, which is out of scope for this phase.
             transaction.on_commit(
                 lambda: self.notification_service.create_one_off_notification(
                     email_or_phone=email,

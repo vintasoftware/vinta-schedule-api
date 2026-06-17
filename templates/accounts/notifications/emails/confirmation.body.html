@@ -4,7 +4,7 @@
 {% endblock %}
 
 {% block email_content %}
-  <p>{% blocktrans with app_name=branding.app_name %}You're receiving this email because user {{ user.profile.first_name }} has given your email address to register an account on {{ app_name }}.{% endblocktrans %}</p>
+  <p>{% blocktrans %}You're receiving this email because user {{ user.profile.first_name }} has given your email address to register an account on https://vinta_schedule.com.br/.{% endblocktrans %}</p>
 
   <p>{% if code %}{% blocktrans %}Your email verification code is listed below. Please enter it in your open browser window.{% endblocktrans %}</p>
 
