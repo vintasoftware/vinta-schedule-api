@@ -8,9 +8,12 @@ from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
 from calendar_integration.mutations import CalendarGroupMutations
+from organizations.models import Organization
+from public_api.capabilities import assert_org_can_invite
 from public_api.models import SystemUser
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 from public_api.services import PublicAPIAuthService
+from public_api.types import CreateOrganizationInput, CreateOrganizationResult, OrganizationResult
 
 
 @dataclass
@@ -101,3 +104,44 @@ class Mutation(CalendarGroupMutations):
         system_user.save(update_fields=["deleted_at"])
 
         return DeleteSystemUserResult(success=True)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_organization(
+        self,
+        info: strawberry.Info,
+        input: CreateOrganizationInput,  # noqa: A002
+    ) -> CreateOrganizationResult:
+        """
+        Create a child organization under the acting (reseller) organization.
+
+        The mutation:
+        1. Checks that the acting org has the can_invite_organizations flag (via assert_org_can_invite).
+        2. Ensures no sibling with the same name already exists under the parent.
+        3. Creates the child with parent=acting_org and can_invite_organizations=False.
+        4. Returns the created organization's id and name.
+
+        The token's OrganizationResourceAccess must include the ORGANIZATION resource.
+        """
+        acting_org = info.context.request.public_api_organization
+        if not acting_org:
+            raise GraphQLError("Organization not found")
+
+        # Gate: check the org can invite before proceeding
+        assert_org_can_invite(acting_org)
+
+        # Validate no duplicate name under the same parent
+        if Organization.objects.filter(parent=acting_org, name=input.name).exists():
+            raise GraphQLError(
+                f"An organization with name '{input.name}' already exists under this parent."
+            )
+
+        # Create the child org with parent=acting_org and can_invite_organizations=False
+        child_org = Organization.objects.create(
+            name=input.name,
+            parent=acting_org,
+            can_invite_organizations=False,
+        )
+
+        return CreateOrganizationResult(
+            organization=OrganizationResult(id=child_org.id, name=child_org.name)
+        )

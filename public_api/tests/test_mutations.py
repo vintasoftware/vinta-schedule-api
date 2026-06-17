@@ -65,6 +65,195 @@ class TestGraphQLMutations:
     def setup_method(self):
         self.client = APIClient()
 
+    def test_create_organization_success_reseller(self):
+        """Test successful creation of a child organization by a reseller."""
+        from di_core.containers import container
+
+        # Create a reseller org with the can_invite_organizations flag
+        reseller_org = baker.make(Organization, name="Reseller Org", can_invite_organizations=True)
+
+        # Create a system user for the reseller with ORGANIZATION resource access
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=reseller_org
+        )
+        baker.make(
+            ResourceAccess,
+            system_user=system_user,
+            resource_name="organization",
+        )
+
+        mutation = """
+        mutation CreateOrganization($input: CreateOrganizationInput!) {
+            createOrganization(input: $input) {
+                organization {
+                    id
+                    name
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {"input": {"name": "Child Org"}},
+                    "Authorization": f"Bearer {system_user.id}:{token}",
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "data" in data
+        assert data["data"]["createOrganization"]["organization"]["name"] == "Child Org"
+
+        # Verify the child org was created with correct parent and flag
+        child_org = Organization.objects.get(name="Child Org")
+        assert child_org.parent_id == reseller_org.id
+        assert child_org.can_invite_organizations is False
+
+    def test_create_organization_fails_flag_off(self):
+        """Test that createOrganization fails when acting org has flag off."""
+        from di_core.containers import container
+
+        # Create a non-reseller org (flag is False by default)
+        non_reseller_org = baker.make(Organization, name="Non-Reseller Org")
+
+        # Create a system user with ORGANIZATION resource access
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=non_reseller_org
+        )
+        baker.make(
+            ResourceAccess,
+            system_user=system_user,
+            resource_name="organization",
+        )
+
+        mutation = """
+        mutation CreateOrganization($input: CreateOrganizationInput!) {
+            createOrganization(input: $input) {
+                organization {
+                    id
+                    name
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {"input": {"name": "Child Org"}},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        response_data = response.json()
+        # Should get a GraphQL error
+        assert "errors" in response_data
+        assert len(response_data["errors"]) > 0
+
+    def test_create_organization_fails_no_scope(self):
+        """Test that createOrganization fails without ORGANIZATION scope."""
+        from di_core.containers import container
+
+        # Create a reseller org
+        reseller_org = baker.make(Organization, name="Reseller Org", can_invite_organizations=True)
+
+        # Create a system user without ORGANIZATION resource access
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=reseller_org
+        )
+        # Don't grant ORGANIZATION resource
+
+        mutation = """
+        mutation CreateOrganization($input: CreateOrganizationInput!) {
+            createOrganization(input: $input) {
+                organization {
+                    id
+                    name
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {"input": {"name": "Child Org"}},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        response_data = response.json()
+        # Should get a GraphQL error for permission denied
+        assert "errors" in response_data
+        assert len(response_data["errors"]) > 0
+
+    def test_create_organization_duplicate_name_under_parent(self):
+        """Test that duplicate child names under the same parent are rejected."""
+        from di_core.containers import container
+
+        # Create a reseller org
+        reseller_org = baker.make(Organization, name="Reseller Org", can_invite_organizations=True)
+
+        # Create an existing child with the same name
+        baker.make(Organization, name="Child Org", parent=reseller_org)
+
+        # Create a system user with ORGANIZATION resource access
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=reseller_org
+        )
+        baker.make(
+            ResourceAccess,
+            system_user=system_user,
+            resource_name="organization",
+        )
+
+        mutation = """
+        mutation CreateOrganization($input: CreateOrganizationInput!) {
+            createOrganization(input: $input) {
+                organization {
+                    id
+                    name
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {"input": {"name": "Child Org"}},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        response_data = response.json()
+        # Should get a GraphQL error for duplicate name
+        assert "errors" in response_data
+        assert len(response_data["errors"]) > 0
+        assert "already exists" in str(response_data["errors"])
+
     def test_check_token_success(self, system_user_with_resources):
         # Test check_token mutation with valid credentials
         system_user, token = system_user_with_resources
