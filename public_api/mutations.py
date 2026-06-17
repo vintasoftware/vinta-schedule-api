@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from typing import Annotated, cast
 
@@ -12,7 +13,7 @@ from graphql import GraphQLError
 
 from calendar_integration.mutations import CalendarGroupMutations
 from organizations.exceptions import UserAlreadyHasMembershipError
-from organizations.models import Organization, OrganizationMembership
+from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from organizations.services import OrganizationService
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
 from public_api.constants import PublicAPIResources
@@ -20,6 +21,7 @@ from public_api.models import ResourceAccess, SystemUser
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 from public_api.services import PublicAPIAuthService
 from public_api.types import (
+    BrandingResult,
     CreateInvitationInput,
     CreateInvitationResult,
     CreateOrganizationInput,
@@ -28,6 +30,8 @@ from public_api.types import (
     CreateSystemUserTokenResult,
     InvitationResult,
     OrganizationResult,
+    UpdateBrandingInput,
+    UpdateBrandingResult,
 )
 
 
@@ -345,3 +349,77 @@ class Mutation(CalendarGroupMutations):
             system_user_id=strawberry.ID(str(system_user.id)),
             token=plaintext_token,
         )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def update_branding(
+        self,
+        info: strawberry.Info,
+        input: UpdateBrandingInput,  # noqa: A002
+    ) -> UpdateBrandingResult:
+        """
+        Update or create branding for the acting (reseller) organization.
+
+        The mutation:
+        1. Checks that the acting org has can_invite_organizations (via assert_org_can_invite).
+        2. Validates primary_color and secondary_color format (#RRGGBB or #RRGGBBAA).
+        3. Validates each entry in return_url_allowlist is a valid URL.
+        4. Upserts OrganizationBranding on the acting org only (always keyed to acting_org).
+        5. Returns the upserted branding row (without internal fields like support_email/allowlist).
+
+        The token's OrganizationResourceAccess must include the BRANDING resource.
+        """
+        acting_org = info.context.request.public_api_organization
+        if not acting_org:
+            raise GraphQLError("Organization not found")
+
+        # Gate: check the org can invite before proceeding
+        assert_org_can_invite(acting_org)
+
+        # Validate color format: #RRGGBB or #RRGGBBAA (6 or 8 hex chars after #)
+        hex_pattern = re.compile(r"^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
+
+        if input.primary_color and not hex_pattern.match(input.primary_color):
+            raise GraphQLError(
+                f"Invalid primary_color format: '{input.primary_color}'. "
+                "Expected #RRGGBB or #RRGGBBAA."
+            )
+
+        if input.secondary_color and not hex_pattern.match(input.secondary_color):
+            raise GraphQLError(
+                f"Invalid secondary_color format: '{input.secondary_color}'. "
+                "Expected #RRGGBB or #RRGGBBAA."
+            )
+
+        # Validate return_url_allowlist entries are URLs
+        allowlist = input.return_url_allowlist or []
+        for url in allowlist:
+            # Simple URL validation: must start with http:// or https://
+            if not (url.startswith("http://") or url.startswith("https://")):
+                raise GraphQLError(
+                    f"Invalid URL in return_url_allowlist: '{url}'. "
+                    "URLs must start with http:// or https://."
+                )
+
+        # Upsert branding on the acting org (always acts on acting org, never another org)
+        branding, _ = OrganizationBranding.objects.update_or_create(
+            organization=acting_org,
+            defaults={
+                "app_name": input.app_name,
+                "logo_url": input.logo_url,
+                "primary_color": input.primary_color,
+                "secondary_color": input.secondary_color,
+                "support_email": input.support_email,
+                "return_url_allowlist": allowlist,
+            },
+        )
+
+        # Return the branding without internal fields (no support_email, no allowlist)
+        branding_result = BrandingResult(
+            id=branding.id,
+            app_name=branding.app_name,
+            logo_url=branding.logo_url,
+            primary_color=branding.primary_color,
+            secondary_color=branding.secondary_color,
+        )
+
+        return UpdateBrandingResult(branding=branding_result)

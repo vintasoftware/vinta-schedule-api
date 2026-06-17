@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationBranding
 
 
 @admin.register(Organization)
@@ -40,6 +40,35 @@ class OrganizationAdmin(admin.ModelAdmin):
                     "This is the ONLY place this setting can be toggled. "
                     "When enabled, the organization gains the full reseller capability bundle."
                 ),
+            },
+        ),
+    )
+
+
+@admin.register(OrganizationBranding)
+class OrganizationBrandingAdmin(admin.ModelAdmin):
+    """Admin interface for OrganizationBranding."""
+
+    list_display = ("id", "organization", "app_name", "support_email", "created_at", "updated_at")
+    list_filter = ("created_at", "updated_at")
+    search_fields = ("organization__name", "app_name", "support_email")
+    readonly_fields = ("created_at", "updated_at", "id")
+    fieldsets = (
+        (
+            None,
+            {
+                "fields": (
+                    "id",
+                    "organization",
+                    "app_name",
+                    "logo_url",
+                    "primary_color",
+                    "secondary_color",
+                    "support_email",
+                    "return_url_allowlist",
+                    "created_at",
+                    "updated_at",
+                )
             },
         ),
     )

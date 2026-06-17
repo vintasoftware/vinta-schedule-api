@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from django.conf import settings
+from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
 from django.db import models
 
@@ -414,3 +415,84 @@ class OrganizationModel(BaseModel):
                     setattr(self, f"{field_name}_fk", foreign_object_field_value)
 
         return super().save(*args, **kwargs)
+
+
+class OrganizationBranding(models.Model):
+    """
+    Stores branding customization for a reseller organization.
+
+    A one-to-one relationship with an Organization (expected to be a reseller).
+    Child organizations resolve their branding by walking up the parent chain
+    to the nearest reseller ancestor and using its branding row. If no reseller
+    ancestor has a branding row, the vinta default is used.
+    """
+
+    organization = models.OneToOneField(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="branding",
+        help_text="The reseller organization this branding customizes.",
+    )
+    app_name = models.CharField(
+        max_length=120,
+        help_text="The display name of the white-labeled app (e.g., 'MyScheduler').",
+    )
+    logo_url = models.URLField(
+        blank=True,
+        default="",
+        help_text="URL to the reseller's logo image.",
+    )
+    primary_color = models.CharField(
+        max_length=9,
+        blank=True,
+        default="",
+        help_text="Primary color as hex code: #RRGGBB or #RRGGBBAA.",
+    )
+    secondary_color = models.CharField(
+        max_length=9,
+        blank=True,
+        default="",
+        help_text="Secondary color as hex code: #RRGGBB or #RRGGBBAA.",
+    )
+    support_email = models.EmailField(
+        blank=True,
+        default="",
+        help_text="Email address for the From/reply-to on branded transactional emails.",
+    )
+    return_url_allowlist = ArrayField(
+        models.URLField(),
+        default=list,
+        blank=True,
+        help_text="List of URLs that are allowed as return addresses after OAuth flows.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Organization Branding"
+        verbose_name_plural = "Organization Brandings"
+
+    def __str__(self):
+        return f"Branding for {self.organization.name}"
+
+
+def resolve_branding(org: Organization) -> OrganizationBranding | None:
+    """
+    Resolve branding for an organization, walking up the parent chain to the reseller.
+
+    If the organization itself is a reseller, returns its branding row (or None if unset).
+    Otherwise, walks up the parent chain to find the nearest reseller ancestor and
+    returns its branding row (or None if the reseller has no branding row).
+
+    If no reseller ancestor exists, returns None (vinta default branding applies).
+
+    Args:
+        org: The Organization instance to resolve branding for.
+
+    Returns:
+        The OrganizationBranding row of the reseller ancestor, or None if unset/no reseller.
+    """
+    branding_root = org.get_branding_root()
+    if branding_root is None:
+        return None
+    return getattr(branding_root, "branding", None)

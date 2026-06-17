@@ -1403,3 +1403,313 @@ class TestCreateSystemUserTokenMutation:
         assert "errors" in data
         assert len(data["errors"]) > 0
         assert "subtree" in str(data["errors"]).lower()
+
+
+@pytest.mark.django_db
+class TestUpdateBranding:
+    """Test updateBranding mutation (Phase 6)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def test_update_branding_success_reseller(self):
+        """Test successful branding update by a reseller."""
+        from di_core.containers import container
+
+        # Create a reseller org
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+
+        # Create a system user with BRANDING resource access
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "appName": "MyApp",
+                            "logoUrl": "https://example.com/logo.png",
+                            "primaryColor": "#FF0000",
+                            "secondaryColor": "#00FF00",
+                            "supportEmail": "support@example.com",
+                            "returnUrlAllowlist": ["https://example.com"],
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "data" in data
+        assert data["data"]["updateBranding"]["branding"] is not None
+        assert data["data"]["updateBranding"]["branding"]["appName"] == "MyApp"
+        assert (
+            data["data"]["updateBranding"]["branding"]["logoUrl"] == "https://example.com/logo.png"
+        )
+        assert data["data"]["updateBranding"]["branding"]["primaryColor"] == "#FF0000"
+
+    def test_update_branding_fails_flag_off(self):
+        """Test that updateBranding fails when acting org has flag off."""
+        from di_core.containers import container
+
+        # Create a non-reseller org
+        non_reseller_org = baker.make(Organization, name="Non-Reseller")
+
+        # Create a system user with BRANDING resource access
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=non_reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                    appName
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {"input": {"appName": "MyApp"}},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "does not have permission" in str(data["errors"]).lower()
+
+    def test_update_branding_fails_no_scope(self):
+        """Test that updateBranding fails without BRANDING scope."""
+        from di_core.containers import container
+
+        # Create a reseller org
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+
+        # Create a system user without BRANDING resource access
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=reseller_org
+        )
+        # Don't grant BRANDING resource
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                    appName
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {"input": {"appName": "MyApp"}},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_update_branding_invalid_color_format(self):
+        """Test that invalid color format is rejected."""
+        from di_core.containers import container
+
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "appName": "MyApp",
+                            "primaryColor": "red",  # Invalid — not hex
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert "Invalid primary_color format" in str(data["errors"])
+
+    def test_update_branding_invalid_allowlist_url(self):
+        """Test that invalid URLs in allowlist are rejected."""
+        from di_core.containers import container
+
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "appName": "MyApp",
+                            "returnUrlAllowlist": ["not-a-url"],  # Invalid
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert "Invalid URL" in str(data["errors"])
+
+    def test_update_branding_upsert(self):
+        """Test that multiple updates to the same org create only one branding row."""
+        from di_core.containers import container
+
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                    appName
+                }
+            }
+        }
+        """
+
+        # First update
+        with container.public_api_auth_service.override(auth_service):
+            response1 = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "appName": "First",
+                            "primaryColor": "#FF0000",
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response1.status_code == 200
+        data1 = response1.json()
+        branding_id1 = data1["data"]["updateBranding"]["branding"]["id"]
+
+        # Second update to the same org
+        with container.public_api_auth_service.override(auth_service):
+            response2 = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "appName": "Second",
+                            "primaryColor": "#0000FF",
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response2.status_code == 200
+        data2 = response2.json()
+        branding_id2 = data2["data"]["updateBranding"]["branding"]["id"]
+
+        # Should be the same branding row
+        assert branding_id1 == branding_id2
+        assert data2["data"]["updateBranding"]["branding"]["appName"] == "Second"
+
+        # Should only have one branding row
+        from organizations.models import OrganizationBranding
+
+        assert OrganizationBranding.objects.filter(organization=reseller_org).count() == 1

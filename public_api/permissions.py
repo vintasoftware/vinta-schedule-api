@@ -46,6 +46,7 @@ class OrganizationResourceAccess(BasePermission):
         # supports one resource per field; INVITATION is the primary gating resource.
         "createInvitation": PublicAPIResources.INVITATION,
         "createSystemUserToken": PublicAPIResources.SYSTEM_USER,
+        "updateBranding": PublicAPIResources.BRANDING,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore

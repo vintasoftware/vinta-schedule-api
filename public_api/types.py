@@ -112,3 +112,41 @@ class CreateSystemUserTokenResult:
 
     system_user_id: strawberry.ID
     token: str
+
+
+@strawberry.input
+class UpdateBrandingInput:
+    """Input for updating reseller branding.
+
+    Updates branding on the acting org (must be a reseller). Always upserts
+    (creates if missing, updates if exists). Cannot target another org's tree.
+    """
+
+    app_name: str
+    logo_url: str = ""
+    primary_color: str = ""
+    secondary_color: str = ""
+    support_email: str = ""
+    return_url_allowlist: list[str] | None = None
+
+
+@strawberry.type
+class BrandingResult:
+    """Represents resolved branding in the API response.
+
+    Never includes secrets like support_email or allowlist; those are for internal
+    use only (email rendering, OAuth return-URL validation).
+    """
+
+    id: int
+    app_name: str
+    logo_url: str
+    primary_color: str
+    secondary_color: str
+
+
+@strawberry.type
+class UpdateBrandingResult:
+    """Result of updating branding."""
+
+    branding: BrandingResult | None
