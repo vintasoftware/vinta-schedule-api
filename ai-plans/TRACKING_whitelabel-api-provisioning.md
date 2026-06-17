@@ -41,11 +41,20 @@ None (capability switch `can_invite_organizations`, DB-only, default off — not
 - **Review**: no BLOCKER; SHOULD-FIX (TOCTOU race → unique constraint; weak security asserts → specific gate/scope message + no-creation; flag-injection test behavioral) all fixed.
 - **Carry-forward**: gated-public-mutation pattern — register field in `FIELD_TO_RESOURCE_MAPPING` (public_api/permissions.py), permission_classes=[IsAuthenticated, OrganizationResourceAccess], acting org via `info.context.request.public_api_organization`, `assert_org_can_invite` in-resolver after scope. Types in public_api/types.py. organizations migrations now at 0009.
 
+### Phase 2 — createUser (passwordless shell) ✅
+- **Status**: PR #87 (https://github.com/vintasoftware/vinta-schedule-api/pull/87), base phase-1
+- **Branch**: plan/whitelabel-api-provisioning/phase-2
+- **Model**: claude-haiku-4-5 (Tier 2) · agent implementer
+- **Commits**: 95c6a04 (feat) + f190440 (fix BLOCKER + tests)
+- **Summary**: `createUser(input:{email,firstName,lastName})` → `{user{id email firstName lastName}}`. Gate+scope (USER). Idempotent on email via `get_user_model().objects.get_or_create(email=...)`. New user: `set_unusable_password()` + allauth `EmailAddress(verified=False)` (passwordless, unverified). Profile guaranteed on BOTH paths (no signal exists). No membership created.
+- **Gate**: 1904 passed; check --deploy + makemigrations --check clean.
+- **Review**: BLOCKER — idempotent return dereferenced `user.profile` but no auto-create signal ⇒ 500 on profile-less existing user; fixed (Profile.get_or_create moved before return, defensive read). SHOULD-FIX: no-membership assert, profile-less regression test, behavioral `authenticate()` rejection test, honored plan's test_provisioning_flow.py placement — all done.
+- **Carry-forward**: email verification = allauth `EmailAddress.verified` (django-allauth). User model = `get_user_model()` (users app); Profile at `users.models.Profile` (OneToOne, NO post_save signal — always get_or_create). Provisioned users are passwordless+unverified until social login + invite auto-join.
+
 ## Current Phase
-Phase 2 — createUser (starting)
+Phase 3 — createInvitation (branded-email path) (starting)
 
 ## Remaining Phases
-- Phase 3 — createInvitation (branded email)
 - Phase 4 — Self-managed invitations
 - Phase 5 — createSystemUserToken
 - Phase 6 — Branding storage + updateBranding
