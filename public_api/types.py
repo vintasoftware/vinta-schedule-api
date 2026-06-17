@@ -86,3 +86,29 @@ class CreateInvitationResult:
     invitation: InvitationResult
     token: str | None = None
     invite_url: str | None = None
+
+
+@strawberry.input
+class CreateSystemUserTokenInput:
+    """Input for minting a delegated Public API token (reseller bundle).
+
+    organization_id must be the acting org or a descendant of it.
+    resources must be a non-empty list of valid PublicAPIResources values.
+    ORGANIZATION may be included to delegate the invite-orgs capability for
+    tokens the reseller mints — the minted token still cannot set the DB flag.
+    """
+
+    organization_id: strawberry.ID
+    integration_name: str
+    resources: list[str]
+
+
+@strawberry.type
+class CreateSystemUserTokenResult:
+    """Result of minting a delegated Public API token.
+
+    system_user_id and token are returned once; the plaintext token is never persisted.
+    """
+
+    system_user_id: strawberry.ID
+    token: str

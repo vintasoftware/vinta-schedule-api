@@ -15,7 +15,8 @@ from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationMembership
 from organizations.services import OrganizationService
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
-from public_api.models import SystemUser
+from public_api.constants import PublicAPIResources
+from public_api.models import ResourceAccess, SystemUser
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 from public_api.services import PublicAPIAuthService
 from public_api.types import (
@@ -23,6 +24,8 @@ from public_api.types import (
     CreateInvitationResult,
     CreateOrganizationInput,
     CreateOrganizationResult,
+    CreateSystemUserTokenInput,
+    CreateSystemUserTokenResult,
     InvitationResult,
     OrganizationResult,
 )
@@ -265,4 +268,79 @@ class Mutation(CalendarGroupMutations):
             ),
             token=raw_token,
             invite_url=invite_url,
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_system_user_token(
+        self,
+        info: strawberry.Info,
+        input: CreateSystemUserTokenInput,  # noqa: A002
+    ) -> CreateSystemUserTokenResult:
+        """
+        Mint a delegated Public API token for the reseller's subtree (reseller bundle).
+
+        The mutation:
+        1. Checks that the acting org has the can_invite_organizations flag (via assert_org_can_invite).
+        2. Resolves the target org from organizationId and validates it is the acting org or
+           a descendant (subtree guard — reuses assert_target_in_subtree).
+        3. Validates that resources is non-empty and every item is a valid PublicAPIResources value.
+           ORGANIZATION may be included to delegate the invite-orgs capability; it still cannot
+           set the DB flag (that is DB/admin-only).
+        4. Mints a SystemUser via PublicAPIAuthService.create_system_user and bulk-creates
+           ResourceAccess rows for the requested resources (mirrors REST SystemUserTokenCreate).
+        5. Returns { systemUserId, token } — plaintext token exposed once, never persisted.
+
+        The token's OrganizationResourceAccess must include the SYSTEM_USER resource.
+        """
+        deps = get_mutation_dependencies()
+
+        acting_org = info.context.request.public_api_organization
+        if not acting_org:
+            raise GraphQLError("Organization not found")
+
+        # Gate: check the org can invite before proceeding
+        assert_org_can_invite(acting_org)
+
+        # Resolve the target organization
+        try:
+            target_org = Organization.objects.get(id=int(input.organization_id))
+        except (Organization.DoesNotExist, ValueError) as e:
+            raise GraphQLError(f"Organization with id '{input.organization_id}' not found.") from e
+
+        # Tenant-isolation guard: target must be the acting org or a descendant
+        assert_target_in_subtree(acting_org, target_org)
+
+        # Validate resources: must be non-empty and all values must be valid PublicAPIResources
+        if not input.resources:
+            raise GraphQLError("resources must not be empty.")
+
+        valid_values = {r.value for r in PublicAPIResources}
+        invalid = [r for r in input.resources if r not in valid_values]
+        if invalid:
+            raise GraphQLError(
+                f"Invalid resource(s): {', '.join(invalid)}. "
+                f"Valid values are: {', '.join(sorted(valid_values))}."
+            )
+
+        # Mint the system user and persist ResourceAccess rows (mirrors REST create)
+        try:
+            system_user, plaintext_token = deps.public_api_auth_service.create_system_user(
+                integration_name=input.integration_name,
+                organization=target_org,
+            )
+            # dict.fromkeys dedupes while preserving order; prevents constraint violations
+            ResourceAccess.objects.bulk_create(
+                [
+                    ResourceAccess(system_user=system_user, resource_name=resource_name)
+                    for resource_name in dict.fromkeys(input.resources)
+                ]
+            )
+        except IntegrityError as e:
+            raise GraphQLError(
+                f"A token with integration_name '{input.integration_name}' already exists."
+            ) from e
+
+        return CreateSystemUserTokenResult(
+            system_user_id=strawberry.ID(str(system_user.id)),
+            token=plaintext_token,
         )

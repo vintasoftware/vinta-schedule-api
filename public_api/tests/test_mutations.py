@@ -961,3 +961,344 @@ class TestCreateInvitationMutation:
         assert "errors" in data
         assert len(data["errors"]) > 0
         assert "does not have permission to invite or create" in str(data["errors"]).lower()
+
+
+CREATE_SYSTEM_USER_TOKEN_MUTATION = """
+mutation CreateSystemUserToken($input: CreateSystemUserTokenInput!) {
+    createSystemUserToken(input: $input) {
+        systemUserId
+        token
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestCreateSystemUserTokenMutation:
+    """Unit tests for the createSystemUserToken mutation (Phase 5: token delegation)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_reseller(self, resources: list[str] | None = None):
+        """Create a reseller org + system user with the given resource scopes."""
+        if resources is None:
+            resources = ["system_user"]
+        reseller_org = baker.make(Organization, name="Reseller Org", can_invite_organizations=True)
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="reseller_integration", organization=reseller_org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return reseller_org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": CREATE_SYSTEM_USER_TOKEN_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def test_create_system_user_token_success_returns_system_user_id_and_token(self):
+        """Happy path: reseller mints a token; returns systemUserId + plaintext token once."""
+        from public_api.models import SystemUser
+
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": str(reseller_org.id),
+                    "integrationName": "minted_integration",
+                    "resources": ["calendar"],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["createSystemUserToken"]
+        assert result["systemUserId"] is not None
+        assert result["token"] is not None
+        assert len(result["token"]) > 0
+
+        # Verify the SystemUser was created in the DB
+        minted_user = SystemUser.objects.get(id=int(result["systemUserId"]))
+        assert minted_user.integration_name == "minted_integration"
+        assert minted_user.organization == reseller_org
+
+    def test_created_system_user_organization_equals_target_org(self):
+        """The created SystemUser's organization == the target org passed in organizationId."""
+        from public_api.models import SystemUser
+
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": str(child_org.id),
+                    "integrationName": "child_integration",
+                    "resources": ["user"],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        minted_id = int(data["data"]["createSystemUserToken"]["systemUserId"])
+        minted_user = SystemUser.objects.get(id=minted_id)
+        assert minted_user.organization == child_org
+
+    def test_requested_resource_access_rows_attached_exact_set(self):
+        """The exact requested ResourceAccess rows are attached to the minted SystemUser."""
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+        requested = ["calendar", "user", "organization"]
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": str(reseller_org.id),
+                    "integrationName": "multi_resource_integration",
+                    "resources": requested,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        minted_id = int(data["data"]["createSystemUserToken"]["systemUserId"])
+        attached = set(
+            ResourceAccess.objects.filter(system_user_id=minted_id).values_list(
+                "resource_name", flat=True
+            )
+        )
+        assert attached == set(requested)
+
+    def test_minted_token_cannot_set_can_invite_organizations_flag(self):
+        """Minting a token with ORGANIZATION scope does NOT flip can_invite_organizations.
+
+        This is the core no-flag-delegation invariant: a minted token may carry the ORGANIZATION
+        scope (so it can create child orgs) but it can never set the DB flag.
+        The target org's can_invite_organizations is unchanged by the token-mint operation.
+        """
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+        child_org = baker.make(
+            Organization, name="Child Org", parent=reseller_org, can_invite_organizations=False
+        )
+        flag_before = child_org.can_invite_organizations
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": str(child_org.id),
+                    "integrationName": "org_scoped_integration",
+                    "resources": ["organization"],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        # The target org's flag must not have changed
+        child_org.refresh_from_db()
+        assert child_org.can_invite_organizations == flag_before
+        assert child_org.can_invite_organizations is False
+
+    def test_off_subtree_target_rejected(self):
+        """A target org not in the acting org's subtree is rejected."""
+        _reseller_org, system_user, token, auth_service = self._setup_reseller()
+        unrelated_org = baker.make(Organization, name="Unrelated Org")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": str(unrelated_org.id),
+                    "integrationName": "off_subtree_integration",
+                    "resources": ["calendar"],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "subtree" in str(data["errors"]).lower()
+
+    def test_flag_off_acting_org_rejected_with_system_user_scope(self):
+        """Gate error: flag-off org is rejected even when the token has SYSTEM_USER scope."""
+        non_reseller_org = baker.make(Organization, name="Non-Reseller")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="flagoff_integration", organization=non_reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="system_user")
+
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": CREATE_SYSTEM_USER_TOKEN_MUTATION,
+                    "variables": {
+                        "input": {
+                            "organizationId": str(non_reseller_org.id),
+                            "integrationName": "should_fail",
+                            "resources": ["calendar"],
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "does not have permission to invite or create" in str(data["errors"]).lower()
+
+    def test_missing_system_user_scope_denied(self):
+        """A token without SYSTEM_USER scope cannot call createSystemUserToken."""
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="no_scope_integration", organization=reseller_org
+        )
+        # Grant calendar scope but not system_user
+        baker.make(ResourceAccess, system_user=system_user, resource_name="calendar")
+
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": CREATE_SYSTEM_USER_TOKEN_MUTATION,
+                    "variables": {
+                        "input": {
+                            "organizationId": str(reseller_org.id),
+                            "integrationName": "no_scope_minted",
+                            "resources": ["calendar"],
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_invalid_resource_returns_validation_error(self):
+        """Invalid resource name in resources list → GraphQL error."""
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": str(reseller_org.id),
+                    "integrationName": "invalid_resource_integration",
+                    "resources": ["not_a_valid_resource"],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "invalid resource" in str(data["errors"]).lower()
+
+    def test_empty_resources_returns_validation_error(self):
+        """Empty resources list → GraphQL error."""
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": str(reseller_org.id),
+                    "integrationName": "empty_resources_integration",
+                    "resources": [],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+    def test_cross_reseller_tree_target_rejected(self):
+        """R1 cannot mint a token for R2's child — cross-reseller isolation."""
+        r1_org = baker.make(Organization, name="Reseller1", can_invite_organizations=True)
+        r2_org = baker.make(Organization, name="Reseller2", can_invite_organizations=True)
+        r2_child = baker.make(Organization, name="R2Child", parent=r2_org)
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="r1_system_user_integration", organization=r1_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="system_user")
+
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": CREATE_SYSTEM_USER_TOKEN_MUTATION,
+                    "variables": {
+                        "input": {
+                            "organizationId": str(r2_child.id),
+                            "integrationName": "cross_reseller_integration",
+                            "resources": ["calendar"],
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "subtree" in str(data["errors"]).lower()
