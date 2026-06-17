@@ -62,7 +62,7 @@
 | **Self-managed invitations** | `createInvitation` takes `sendEmail: Boolean = true`. When `false` (gated by the flag), vinta sends no email and the mutation **returns the raw invitation token + a constructed invite URL once**, so the reseller renders the link in its own UI. The accept path is unchanged (`OrganizationService.accept_invitation(token, user)`); first themed social login still auto-joins. |
 | **Scope additions** | Add `MEMBERSHIP`, `INVITATION`, `BRANDING`, `CHILD_ORG_ANALYTICS` to `PublicAPIResources` ([public_api/constants.py](../public_api/constants.py)); `ORGANIZATION`, `USER`, `SYSTEM_USER` already exist. |
 | **Child analytics shape** | A `childOrganizations` query returns each child + point-in-time counts (`membershipCount`, `calendarCount`, `eventCount`, `calendarGroupCount`) via ORM annotations (subquery counts). If annotation perf degrades at scale, swap to a `vw_organization_child_metrics` Postgres view (noted, not built in v1). |
-| **User account semantics** | Passwordless / social-only: `createUser` makes a `User` + `Profile` with `set_unusable_password()`, email unverified. The user becomes usable only after the themed Google login (Google verifies the email) and the existing social-adapter invite auto-join. Vinta's email-verification posture is preserved, not bypassed. |
+| **User account semantics** | Passwordless / social-only: there is **no standalone `createUser` mutation** (removed 2026-06-17 — see Amendments). `createInvitation` creates-or-finds the `User` + `Profile` with `set_unusable_password()`, email unverified, as a side effect of inviting. The user becomes usable only after the themed Google login (Google verifies the email) and the existing social-adapter invite auto-join. Vinta's email-verification posture is preserved, not bypassed. |
 | **No rollout feature flag** | This repo has **no flag framework** and is pre-production. The `can_invite_organizations` column is a per-org **capability** switch, not an A/B rollout flag, and it defaults off, so every existing org is unchanged. Each behavior-touching change is additionally null-guarded (no branding row ⇒ vinta default). A flag-removal phase is therefore N/A. |
 | **Tenant isolation** | Reuses `OrganizationResourceAccess` + `SystemUser.organization` / `X-Public-Api-Organization-Id` unchanged. The acting org is the token's org (or the validated header). Every bundle mutation validates the target org is the acting org or a descendant of it. |
 
@@ -145,16 +145,18 @@ The acting org is the token's org (or the validated `X-Public-Api-Organization-I
 - Effect: `Organization` with `parent = acting_org`, `can_invite_organizations = False`. No membership created.
 - Returns: `{ organization { id name } }`.
 
-### 4.2 `createUser` — passwordless end-user (resource: `USER`, gated)
+### 4.2 `createUser` — **REMOVED 2026-06-17** (see Amendments)
 
-- Input: `{ email: String!, firstName: String, lastName: String }`. Idempotent on email.
-- Effect: `User` + `Profile`, `set_unusable_password()`, email unverified.
+Superseded: the standalone passwordless-user mutation was dropped. `createInvitation` (4.3) already
+creates-or-finds the `User` + `Profile` (`set_unusable_password()`, email unverified) as a side effect of
+inviting, so a separate `createUser` was redundant. Number retained to keep 4.3–4.7 stable.
 
 ### 4.3 `createInvitation` — link user → child org (resource: `INVITATION` + `MEMBERSHIP`, gated)
 
 - Input: `{ userEmail: String!, organizationId: ID!, role: OrgRole!, sendEmail: Boolean = true }`
   (`organizationId` must be the acting org or a descendant).
-- Effect: creates a pending `OrganizationInvitation`. If `sendEmail` ⇒ sends the **reseller-branded** email.
+- Effect: **creates-or-finds the `User` + `Profile`** (passwordless, email unverified) for `userEmail`, then
+  creates a pending `OrganizationInvitation`. If `sendEmail` ⇒ sends the **reseller-branded** email.
   If `!sendEmail` ⇒ no email; returns the **raw token + invite URL once** (self-managed invitations).
 - Returns: `{ invitation { id email expiresAt }, token: String, inviteUrl: String }` (token/url null when emailed).
 - Errors: user already a member of that org → typed `UserAlreadyHasMembershipError`.
@@ -245,27 +247,14 @@ Tests:
 
 Acceptance: a reseller creates a child org; a flag-off org (even fully scoped) is refused; children are never resellers.
 
-### Phase 2 — `createUser` (passwordless shell)
+### Phase 2 — `createUser` (passwordless shell) — **REMOVED 2026-06-17**
 
-**Goal**: A reseller can provision a passwordless end-user by email.
-
-**Feature flag**: none — net-new mutation, gated by the flag + `USER` scope.
-
-Changes:
-1. @public_api/mutations.py: `create_user` (gate + scope); `set_unusable_password()`, email unverified, idempotent on email.
-2. @public_api/types.py: input/result types.
-
-Spec use-case: Use-case 3 — Reseller provisions a passwordless end-user.
-
-Tests:
-- **Unit**: @public_api/tests/test_mutations.py — creates `User` + `Profile`, password unusable, email unverified; repeat email idempotent; flag-off denied.
-- **Integration**: @public_api/tests/test_provisioning_flow.py — provisioned user cannot password-login; no-`USER`-scope denied.
-
-**Suggested AI model**: Tier 2 — `claude-haiku-4-5` / `gpt-5-mini` / `gemini-2.5-flash`.
-
-**Reusable skills**: `graphql-public-query`; `write-tests`.
-
-Acceptance: GraphQL yields a membership-less, passwordless, unverified user; idempotent; gated.
+**Removed** (see Amendments). The invitation flow (Phase 3 `createInvitation` →
+`OrganizationService.invite_user_to_organization`) already creates-or-finds the `User` + `Profile`, so a
+standalone passwordless `createUser` mutation was redundant. Users now always enter via the invitation path
+(no orphan users with no membership). Phase numbers 3–5 are retained (they map to existing branches); there
+is no Phase 2 branch. Token delegation (Phase 5 `createSystemUserToken`) never depended on `createUser` — it
+mints a `SystemUser` via `PublicAPIAuthService.create_system_user`, not a regular `User`.
 
 ### Phase 3 — `createInvitation` (branded-email path)
 
@@ -282,7 +271,7 @@ Spec use-case: Use-case 4 — Reseller invites a user (branded-email path).
 
 Tests:
 - **Unit**: @public_api/tests/test_mutations.py — creates a pending invite addressed to the email; already-member → typed error; off-subtree `organizationId` → permission error; flag-off denied.
-- **Integration**: @public_api/tests/test_provisioning_flow.py — full chain createOrganization → createUser → createInvitation leaves a pending invite; simulated social login auto-joins it (reuses `provision_tenant_for_user`).
+- **Integration**: @public_api/tests/test_provisioning_flow.py — full chain createOrganization → createInvitation leaves a pending invite (the invitation creates the user); simulated social login auto-joins it (reuses `provision_tenant_for_user`).
 
 **Suggested AI model**: Tier 3 — `claude-sonnet-4-6` / `gpt-5` / `gemini-2.5-pro`. Mutation + invitation service + auto-join interplay.
 
@@ -567,9 +556,7 @@ Acceptance: a reseller-admin sets branding in the console and sees it in the liv
 - @public_api/mutations.py (edit — `create_organization`), @public_api/types.py
 - @public_api/tests/test_mutations.py, @public_api/tests/test_provisioning_flow.py
 
-**Phase 2** (backend)
-- @public_api/mutations.py (edit — `create_user`), @public_api/types.py
-- @public_api/tests/test_mutations.py
+**Phase 2** — REMOVED 2026-06-17 (createUser dropped; see Amendments)
 
 **Phase 3** (backend)
 - @public_api/mutations.py (edit — `create_invitation`), @public_api/types.py
@@ -618,3 +605,8 @@ Acceptance: a reseller-admin sets branding in the console and sees it in the liv
 - @src/app/(partner)/branding/page.tsx (new)
 - @src/components/branding/branding-form.tsx (new), @src/components/branding/branding-form.test.tsx (new)
 - @src/hooks/branding/use-update-branding.ts (new)
+
+## Amendments
+
+- **2026-06-17** — Inserted **Phase 10a — First-party REST branding endpoints** (backend) after Phase 9; repointed Phase 11b to consume it. Updated §5 ordering and §8 Touch List.
+- **2026-06-17** — **Removed Phase 2 (`createUser` standalone GraphQL mutation).** Rationale: Phase 3 `createInvitation` → `OrganizationService.invite_user_to_organization` already creates-or-finds the `User` + `Profile`, so a standalone passwordless `createUser` was redundant; users now always enter via the invitation path. Edited §2 "User account semantics", §4.2 (kept as a removed stub so 4.3–4.7 numbers stay stable), §4.3 effect (now states it creates-or-finds the user), the Phase 2 section, the Phase 3 integration chain (dropped the createUser step), and the §8 Touch List. Confirmed Phase 5 `createSystemUserToken` never depended on `createUser` (mints a `SystemUser`, not a `User`). Affected phases: 3, 5 (doc), and the whole 3→10a branch stack (rebased to drop the Phase 2 commits). Branches force-pushed: plan/whitelabel-api-provisioning/phase-3, phase-4, phase-5, phase-6, phase-7, phase-8, phase-9, phase-10a. PR #87 (phase-2) closed; phase-2 branch abandoned.
