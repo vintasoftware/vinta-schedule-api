@@ -1,2 +1,2 @@
 {% load i18n %}
-{% blocktrans %}You have been invited to join an organization at Vinta Schedule{% endblocktrans %}
+{% blocktrans with app_name=branding.app_name %}You have been invited to join an organization at {{ app_name }}{% endblocktrans %}

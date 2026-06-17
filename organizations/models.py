@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from django.conf import settings
+from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
 from django.db import models
 
@@ -86,9 +87,56 @@ class Organization(BaseModel):
     should_sync_rooms = models.BooleanField(
         default=False, help_text="Whether to sync rooms for this organization."
     )
+    parent = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="child_organizations",
+        help_text=(
+            "The parent organization if this is a child org. "
+            "A reseller with live children cannot be deleted."
+        ),
+    )
+    can_invite_organizations = models.BooleanField(
+        default=False,
+        help_text=(
+            "Whether this organization can invite/create other organizations. "
+            "DB/Django-admin only — never exposed via any API. "
+            "Enables the whole reseller capability bundle."
+        ),
+    )
+
+    class Meta:
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=["parent", "name"],
+                name="uniq_org_name_per_parent",
+            ),
+        ]
 
     def __str__(self):
         return self.name
+
+    def is_reseller(self) -> bool:
+        """Return True if this org can invite/create other organizations."""
+        return self.can_invite_organizations
+
+    def get_branding_root(self) -> Organization | None:
+        """
+        Walk up the parent chain to the nearest ancestor with can_invite_organizations=True.
+
+        Returns the reseller ancestor (which has branding), or None if no such ancestor exists.
+        The None case means this org (or its entire lineage) has no reseller, so vinta defaults apply.
+        """
+        seen: set[int] = set()
+        org: Organization | None = self
+        while org is not None and org.pk not in seen:
+            if org.can_invite_organizations:
+                return org
+            seen.add(org.pk)
+            org = org.parent
+        return None
 
 
 class SubscriptionPlan(BaseModel):
@@ -244,8 +292,19 @@ class OrganizationInvitation(BaseModel):
     )
     invited_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
         related_name="sent_organization_invitations",
+        null=True,
+        blank=True,
+    )
+    role = models.CharField(
+        max_length=20,
+        choices=OrganizationRole,
+        default=OrganizationRole.MEMBER,
+        help_text=(
+            "Role the invited user should receive on accepting the invitation. "
+            "Defaults to MEMBER. Admin invitations must be explicit."
+        ),
     )
     accepted_at = models.DateTimeField(null=True, blank=True)
     token_hash = models.TextField()
@@ -356,3 +415,84 @@ class OrganizationModel(BaseModel):
                     setattr(self, f"{field_name}_fk", foreign_object_field_value)
 
         return super().save(*args, **kwargs)
+
+
+class OrganizationBranding(models.Model):
+    """
+    Stores branding customization for a reseller organization.
+
+    A one-to-one relationship with an Organization (expected to be a reseller).
+    Child organizations resolve their branding by walking up the parent chain
+    to the nearest reseller ancestor and using its branding row. If no reseller
+    ancestor has a branding row, the vinta default is used.
+    """
+
+    organization = models.OneToOneField(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="branding",
+        help_text="The reseller organization this branding customizes.",
+    )
+    app_name = models.CharField(
+        max_length=120,
+        help_text="The display name of the white-labeled app (e.g., 'MyScheduler').",
+    )
+    logo_url = models.URLField(
+        blank=True,
+        default="",
+        help_text="URL to the reseller's logo image.",
+    )
+    primary_color = models.CharField(
+        max_length=9,
+        blank=True,
+        default="",
+        help_text="Primary color as hex code: #RRGGBB or #RRGGBBAA.",
+    )
+    secondary_color = models.CharField(
+        max_length=9,
+        blank=True,
+        default="",
+        help_text="Secondary color as hex code: #RRGGBB or #RRGGBBAA.",
+    )
+    support_email = models.EmailField(
+        blank=True,
+        default="",
+        help_text="Email address for the From/reply-to on branded transactional emails.",
+    )
+    return_url_allowlist = ArrayField(
+        models.URLField(),
+        default=list,
+        blank=True,
+        help_text="List of URLs that are allowed as return addresses after OAuth flows.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Organization Branding"
+        verbose_name_plural = "Organization Brandings"
+
+    def __str__(self):
+        return f"Branding for {self.organization.name}"
+
+
+def resolve_branding(org: Organization) -> OrganizationBranding | None:
+    """
+    Resolve branding for an organization, walking up the parent chain to the reseller.
+
+    If the organization itself is a reseller, returns its branding row (or None if unset).
+    Otherwise, walks up the parent chain to find the nearest reseller ancestor and
+    returns its branding row (or None if the reseller has no branding row).
+
+    If no reseller ancestor exists, returns None (vinta default branding applies).
+
+    Args:
+        org: The Organization instance to resolve branding for.
+
+    Returns:
+        The OrganizationBranding row of the reseller ancestor, or None if unset/no reseller.
+    """
+    branding_root = org.get_branding_root()
+    if branding_root is None:
+        return None
+    return getattr(branding_root, "branding", None)

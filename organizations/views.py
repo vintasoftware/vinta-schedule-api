@@ -6,7 +6,7 @@ from django.db import transaction
 
 from dependency_injector.wiring import Provide, inject
 from drf_spectacular.utils import OpenApiResponse, extend_schema
-from rest_framework import generics, status
+from rest_framework import generics, status, views
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
@@ -20,6 +20,7 @@ from common.utils.view_utils import (
     NoListVintaScheduleModelViewSet,
     NoUpdateVintaScheduleModelViewSet,
     ReadOnlyVintaScheduleModelViewSet,
+    TenantScopedViewMixin,
 )
 from organizations.exceptions import (
     DuplicateInvitationError,
@@ -34,6 +35,7 @@ from organizations.filtersets import (
 )
 from organizations.models import (
     Organization,
+    OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
@@ -49,6 +51,7 @@ from organizations.serializers import (
     CurrentMembershipSerializer,
     GoogleServiceAccountWriteSerializer,
     MyMembershipSerializer,
+    OrganizationBrandingSerializer,
     OrganizationInvitationSerializer,
     OrganizationMembershipSerializer,
     OrganizationSerializer,
@@ -851,3 +854,119 @@ class AcceptInvitationView(generics.CreateAPIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+@extend_schema(tags=["Branding"])
+class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
+    """Admin-only REST endpoint for managing a reseller organization's branding.
+
+    Reseller-admin gate: the acting org must itself be a reseller
+    (can_invite_organizations=True; a non-reseller returns 403) AND the caller
+    must be an org admin (IsOrganizationAdmin permission).
+
+    Operations: retrieve (GET) + upsert (PUT/PATCH) the **acting org's own**
+    branding. The endpoint operates on the request's organization only — it
+    cannot brand another org's tree. A GET with no row returns 404.
+
+    Round-trips: app_name, logo_url, primary_color, secondary_color,
+    support_email, return_url_allowlist. NEVER exposes can_invite_organizations
+    or makes organization writable.
+
+    Tenant-scoping: ``TenantScopedViewMixin`` resolves ``X-Organization-Id``
+    before any handler runs, so multi-org admins always operate on the
+    header-named org. Without the header a multi-org caller receives 400;
+    a header naming a non-member org receives 403 — identical to every other
+    org-scoped endpoint. ``TenantScopedViewMixin._is_active_org_resolution_optional``
+    uses ``getattr(self, "action", None)``, so the absent ``self.action`` attribute
+    (ViewSetMixin is not in the MRO) is safe — ``None`` is never in the default
+    ``active_org_optional_actions = ()`` tuple, so full 400/403 enforcement runs
+    on every HTTP method.
+    """
+
+    permission_classes = (IsOrganizationAdmin,)
+    serializer_class = OrganizationBrandingSerializer
+
+    def _check_reseller_status(self):
+        """Verify the acting org is a reseller. Raise 403 if not."""
+        membership = get_active_organization_membership(self.request.user)
+        if membership is None or not membership.organization.is_reseller():
+            raise PermissionDenied("Only reseller organizations may manage branding.")
+
+    def _get_branding_or_404(self):
+        """Get the acting org's branding, or raise 404 if not set."""
+        membership = get_active_organization_membership(self.request.user)
+        if membership is None:
+            raise PermissionDenied("No active organization membership.")
+
+        try:
+            return OrganizationBranding.objects.get(organization_id=membership.organization_id)
+        except OrganizationBranding.DoesNotExist as e:
+            raise NotFound("Branding not yet configured for this organization.") from e
+
+    @extend_schema(
+        summary="Retrieve the acting organization's branding",
+        responses={
+            200: OrganizationBrandingSerializer,
+            403: OpenApiResponse(description="Not a reseller or not an admin"),
+            404: OpenApiResponse(description="Branding not yet configured"),
+        },
+    )
+    def get(self, request, *args, **kwargs):
+        """GET /branding/ — retrieve the acting org's branding."""
+        self._check_reseller_status()
+        instance = self._get_branding_or_404()
+        serializer = OrganizationBrandingSerializer(instance)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Create or replace the acting organization's branding",
+        request=OrganizationBrandingSerializer,
+        responses={
+            201: OrganizationBrandingSerializer,
+            200: OrganizationBrandingSerializer,
+            400: OpenApiResponse(description="Invalid input (color format, URL validation)"),
+            403: OpenApiResponse(description="Not a reseller or not an admin"),
+        },
+    )
+    def put(self, request, *args, **kwargs):
+        """PUT /branding/ — create or replace the acting org's branding."""
+        self._check_reseller_status()
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            raise PermissionDenied("No active organization membership.")
+
+        serializer = OrganizationBrandingSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Create or update (upsert) the branding row for the acting org
+        instance, created = OrganizationBranding.objects.update_or_create(
+            organization_id=membership.organization_id,
+            defaults=serializer.validated_data,
+        )
+
+        status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        return Response(
+            OrganizationBrandingSerializer(instance).data,
+            status=status_code,
+        )
+
+    @extend_schema(
+        summary="Update the acting organization's branding (partial)",
+        request=OrganizationBrandingSerializer,
+        responses={
+            200: OrganizationBrandingSerializer,
+            400: OpenApiResponse(description="Invalid input (color format, URL validation)"),
+            403: OpenApiResponse(description="Not a reseller or not an admin"),
+            404: OpenApiResponse(description="Branding not yet configured"),
+        },
+    )
+    def patch(self, request, *args, **kwargs):
+        """PATCH /branding/ — update the acting org's branding (partial)."""
+        self._check_reseller_status()
+        instance = self._get_branding_or_404()
+
+        serializer = OrganizationBrandingSerializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(serializer.data, status=status.HTTP_200_OK)

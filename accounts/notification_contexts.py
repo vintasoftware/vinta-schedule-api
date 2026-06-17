@@ -11,6 +11,10 @@ def phone_verification_context(
 ) -> dict[str, Any]:
     """
     Provides a context for phone verification-related notifications.
+
+    Uses vinta defaults for phone verification — phone verification is typically
+    a secondary verification path and not tied to org invitations, so no clear
+    org context to brand from.
     """
     return {
         "user": user_context(user_id)["user"],
@@ -23,6 +27,10 @@ def phone_verification_context(
 def password_reset_context(user_id: str, password_reset_url: str) -> dict[str, Any]:
     """
     Provides a context for password reset-related notifications.
+
+    Uses vinta defaults for password reset emails — password resets are not part of
+    the invitation flow and typically occur after the user is already a member, so
+    there's no clear org context to brand from. Being conservative per Phase 8 guidance.
     """
     return {
         "user": user_context(user_id)["user"],
@@ -33,7 +41,10 @@ def password_reset_context(user_id: str, password_reset_url: str) -> dict[str, A
 @register_context("email_confirmation_context")
 def email_confirmation_context(user_id: str, **kwargs) -> dict[str, Any]:
     """
-    Provides a context for password reset-related notifications.
+    Provides a context for email confirmation notifications.
+
+    Uses vinta defaults (conservative approach — confirmation templates are not
+    tied to invitation flow and should remain unchanged from pre-phase-8).
     """
     code = kwargs.get("code")
     key = kwargs.get("key")

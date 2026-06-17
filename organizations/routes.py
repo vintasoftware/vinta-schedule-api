@@ -1,6 +1,9 @@
+from django.urls import path
+
 from common.types import RouteDict
 
 from .views import (
+    OrganizationBrandingView,
     OrganizationInvitationViewSet,
     OrganizationMembershipViewSet,
     OrganizationViewSet,
@@ -29,4 +32,9 @@ routes: list[RouteDict] = [
         "viewset": OrganizationInvitationViewSet,
         "basename": "OrganizationInvitations",
     },
+]
+
+# Non-viewset routes (APIViews) — URL patterns to register with Django URL conf
+extra_patterns = [
+    path("branding/", OrganizationBrandingView.as_view(), name="branding"),
 ]

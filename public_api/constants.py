@@ -30,3 +30,7 @@ class PublicAPIResources(TextChoices):
     ORGANIZATION = "organization", "Organization"
     CALENDAR_GROUP = "calendar_group", "Calendar Group"
     SYSTEM_USER = "system_user", "System User"
+    MEMBERSHIP = "membership", "Membership"
+    INVITATION = "invitation", "Invitation"
+    BRANDING = "branding", "Branding"
+    CHILD_ORG_ANALYTICS = "child_org_analytics", "Child Organization Analytics"

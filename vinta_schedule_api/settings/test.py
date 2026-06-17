@@ -5,6 +5,13 @@ from .base import *
 # and N+1 regressions fail the suite instead of only surfacing on the dev runtime.
 DEBUG = True
 
+# Add the invitation-accept URL so sendEmail=false tests receive a non-null inviteUrl.
+# The base settings omit this key; staging/production set it against FRONTEND_BASE_URL.
+HEADLESS_FRONTEND_URLS = {
+    **HEADLESS_FRONTEND_URLS,
+    "account_accept_invitation": "http://localhost:3000/auth/accept-invite/?token={token}",
+}
+
 SECRET_KEY = "test-secret-key-not-for-production-use-only-0123456789"  # nosec
 
 STATIC_ROOT = base_dir_join("staticfiles")

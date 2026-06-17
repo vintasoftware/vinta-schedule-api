@@ -2,7 +2,8 @@ import datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, cast
 
-from django.db.models import Value
+from django.db.models import Count as DjangoCount
+from django.db.models import OuterRef, Subquery, Value
 from django.db.models.functions import Concat
 
 import strawberry
@@ -33,11 +34,13 @@ from calendar_integration.models import (
     CalendarEvent,
     CalendarGroup,
 )
+from organizations.models import Organization, OrganizationMembership, resolve_branding
+from public_api.capabilities import assert_org_can_invite
 from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
 )
-from public_api.types import PublicApiHttpRequest
+from public_api.types import ChildOrganizationMetrics, PublicApiHttpRequest, PublicBrandingResult
 from users.graphql import UserGraphQLType
 from users.models import User
 
@@ -77,6 +80,21 @@ def _get_org(info: strawberry.Info):
     if not org:
         raise GraphQLError("Organization not found in request context")
     return org
+
+
+def _vinta_default_branding() -> PublicBrandingResult:
+    """Return the Vinta Schedule default branding sentinel.
+
+    Used for both missing tenants (no enumeration oracle) and unbranded
+    organizations, ensuring the response is identical for unknown vs unbranded
+    to prevent enumeration attacks.
+    """
+    return PublicBrandingResult(
+        app_name="Vinta Schedule",
+        logo_url="",
+        primary_color="",
+        secondary_color="",
+    )
 
 
 def _slice_qs[TQuerySet: QuerySet](qs: TQuerySet, offset: int, limit: int) -> TQuerySet:
@@ -518,3 +536,120 @@ class Query:
             group_id=group_id, start=start_datetime, end=end_datetime
         )
         return cast(list[CalendarEventGraphQLType], list(events))
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def child_organizations(
+        self,
+        info: strawberry.Info,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[ChildOrganizationMetrics]:
+        """List the acting reseller's direct child organizations with aggregate counts.
+
+        Counts (memberships, calendars, events, calendar groups) are computed as
+        ORM Subquery annotations to avoid join fan-out double-counting that arises
+        when multiple Count() calls are combined in a single annotate() call across
+        different related models.
+
+        Membership count includes ALL memberships (active + inactive) — the plan
+        says "memberships" with no active-only qualifier, so all rows are counted.
+
+        "Children" means DIRECT children (parent = acting_org). The plan says
+        "its child organizations"/"its children" — literal parent FK match.
+
+        Gate: acting org must have can_invite_organizations=True (assert_org_can_invite)
+        AND the token must carry CHILD_ORG_ANALYTICS scope (OrganizationResourceAccess).
+        """
+        org = _get_org(info)
+        assert_org_can_invite(org)
+
+        # Subquery-based counts to avoid join fan-out when multiple aggregates
+        # are applied over different relations in a single queryset.
+        membership_sq = (
+            OrganizationMembership.objects.filter(organization_id=OuterRef("pk"))
+            .values("organization_id")
+            .annotate(cnt=DjangoCount("id"))
+            .values("cnt")
+        )
+        calendar_sq = (
+            Calendar.original_manager.filter(organization_id=OuterRef("pk"))
+            .values("organization_id")
+            .annotate(cnt=DjangoCount("id"))
+            .values("cnt")
+        )
+        event_sq = (
+            CalendarEvent.original_manager.filter(organization_id=OuterRef("pk"))
+            .values("organization_id")
+            .annotate(cnt=DjangoCount("id"))
+            .values("cnt")
+        )
+        group_sq = (
+            CalendarGroup.original_manager.filter(organization_id=OuterRef("pk"))
+            .values("organization_id")
+            .annotate(cnt=DjangoCount("id"))
+            .values("cnt")
+        )
+
+        qs = (
+            Organization.objects.filter(parent=org)
+            .annotate(
+                membership_count=Subquery(membership_sq),
+                calendar_count=Subquery(calendar_sq),
+                event_count=Subquery(event_sq),
+                calendar_group_count=Subquery(group_sq),
+            )
+            .order_by("pk")
+        )
+        qs = _slice_qs(qs, offset, limit)
+
+        return [
+            ChildOrganizationMetrics(
+                id=child.id,
+                name=child.name,
+                created_at=child.created,
+                membership_count=child.membership_count or 0,
+                calendar_count=child.calendar_count or 0,
+                event_count=child.event_count or 0,
+                calendar_group_count=child.calendar_group_count or 0,
+            )
+            for child in qs
+        ]
+
+    @strawberry.field()
+    def branding_for_tenant(self, tenant_id: strawberry.ID) -> PublicBrandingResult:
+        """Get resolved branding for a tenant, or vinta default if unbranded.
+
+        This is an unauthenticated, rate-limited public query for frontend interstitials.
+        It returns the parent-walked branding for the given tenant ID, or the vinta
+        default when none. No enumeration oracle: unknown tenant ID returns the same
+        default as an unbranded subtree.
+
+        Args:
+            tenant_id: The ID of the organization to get branding for.
+
+        Returns:
+            PublicBrandingResult with app name, logo, and colors (no secrets).
+        """
+        try:
+            tenant_id_int = int(tenant_id)
+            org = Organization.objects.filter(id=tenant_id_int).first()
+        except (ValueError, TypeError):
+            org = None
+
+        if org is None:
+            # Unknown tenant ID returns the vinta default (no enumeration oracle)
+            return _vinta_default_branding()
+
+        # Resolve branding by walking up the parent chain to the nearest reseller
+        branding = resolve_branding(org)
+        if branding is None:
+            # Unbranded subtree returns the vinta default
+            return _vinta_default_branding()
+
+        # Return the resolved branding (no secrets exposed)
+        return PublicBrandingResult(
+            app_name=branding.app_name,
+            logo_url=branding.logo_url,
+            primary_color=branding.primary_color,
+            secondary_color=branding.secondary_color,
+        )
