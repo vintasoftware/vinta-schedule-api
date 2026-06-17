@@ -83,11 +83,19 @@ Inserted **Phase 10a — First-party REST branding endpoints** (backend) after P
 - **PROCESS NOTE**: implementer subagents have twice shipped false green gates / accidental deletions — ALWAYS re-run full `pytest -n auto` at the orchestrator (Layer 1) for remaining phases; do not trust the agent's summary count.
 - **Carry-forward**: `resolve_branding(org) -> OrganizationBranding | None` (organizations/models.py) — reuse for Phase 7 (public read; MUST hide allowlist+support_email), Phase 8 (emails), Phase 10a (REST). `OrganizationBranding.objects` keyed by org; fields known. BrandingResult (GraphQL) intentionally omits support_email + return_url_allowlist. organizations migrations now at 0011.
 
+### Phase 7 — brandingForTenant public read ✅
+- **Status**: PR #92 (https://github.com/vintasoftware/vinta-schedule-api/pull/92), base phase-6
+- **Branch**: plan/whitelabel-api-provisioning/phase-7 · Model: claude-haiku-4-5 (Tier 2) · implementer
+- **Commits**: d6f844f (feat) + 580a222 (dedup sentinel + rate-limit doc/test)
+- **Summary**: `brandingForTenant(tenantId)` → `PublicBrandingResult{appName,logoUrl,primaryColor,secondaryColor}` — UNAUTHENTICATED (no permission classes), parent-walked via resolve_branding. No-enumeration-oracle: missing/non-int/unbranded all return identical `_vinta_default_branding()` sentinel. No secrets. Extended OrganizationRateLimiter: anon requests keyed `anon:{client_ip}` (XFF-aware); authenticated path unchanged.
+- **Gate**: 1965 passed (orchestrator-verified full re-run); check --deploy + makemigrations clean.
+- **Review**: no BLOCKER — no-oracle + authenticated-limit-unchanged confirmed. ACCEPTED residual gap: anon rate-limit can't be exhaustion-tested (test settings zero the limits ⇒ limiter None ⇒ try_acquire unreached); correct-by-inspection, low-impact endpoint. Follow-up: rate-limit test infra. XFF-spoof/NAT accepted v1 (documented inline).
+- **Carry-forward**: `PublicBrandingResult` (secret-free) + `_vinta_default_branding()` in public_api/queries.py. resolve_branding is the shared resolution path.
+
 ## Current Phase
-Phase 7 — brandingForTenant public read (starting)
+Phase 8 — Reseller-branded transactional emails (starting)
 
 ## Remaining Phases
-- Phase 7 — brandingForTenant public read
 - Phase 8 — Reseller-branded emails
 - Phase 9 — childOrganizations analytics
 - Phase 10a — First-party REST branding endpoints (NEW, backend, depends on Phase 6)
