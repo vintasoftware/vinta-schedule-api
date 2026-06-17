@@ -62,17 +62,26 @@ None (capability switch `can_invite_organizations`, DB-only, default off — not
 - **Review**: no BLOCKER — all security invariants confirmed (no plaintext persistence; token validates; email truly suppressed; flag/scope/subtree gate holds on false path; true path returns null). Low-value test-convention SHOULD-FIX accepted as-is.
 - **Future hardening (noted, out of scope)**: `accept_invitation` scans invitations cross-org (email__iexact + per-row verify) — latent timing/DoS surface as volume grows.
 
+### Phase 5 — createSystemUserToken (token delegation) ✅
+- **Status**: PR #90 (https://github.com/vintasoftware/vinta-schedule-api/pull/90), base phase-4
+- **Branch**: plan/whitelabel-api-provisioning/phase-5 · Model: claude-sonnet-4-6 (Tier 3) · implementer
+- **Commits**: 2032ba7 (feat) + e91fd16 (fix atomic + tests)
+- **Summary**: `createSystemUserToken(input:{organizationId,integrationName,resources:[String!]!})` → `{systemUserId, token}` once. Gate SYSTEM_USER + assert_org_can_invite + `assert_target_in_subtree` (minted SystemUser pinned to target = acting org or descendant). Resources validated + deduped. Mint + ResourceAccess bulk_create in `transaction.atomic()`. Never touches the flag (ORGANIZATION-scoped minted tokens create only flag-false children).
+- **Gate**: 1944 passed; check --deploy + makemigrations clean.
+- **Review**: BLOCKER — mint+bulk_create not atomic ⇒ duplicate integration_name poisons txn / orphan SystemUser; FIXED (transaction.atomic + no-orphan regression). SHOULD-FIX — dedup test; rewrote toothless cross-tree integration test.
+
+## PLAN AMENDED (2026-06-17, per requester)
+Inserted **Phase 10a — First-party REST branding endpoints** (backend) after Phase 9. The first-party frontend edits branding over REST (project convention), distinct from Phase 6's public GraphQL `updateBranding` (reseller machine API); both write the same `OrganizationBranding` row. Phase 11b repointed to consume the REST endpoint. Phase 10a depends on Phase 6's model. Plan ordering + Touch List updated.
+
 ## Current Phase
-Phase 5 — createSystemUserToken (token delegation) (starting)
+Phase 6 — Branding storage + updateBranding (starting)
 
 ## Remaining Phases
-- Phase 3 — createInvitation (branded email)
-- Phase 4 — Self-managed invitations
-- Phase 5 — createSystemUserToken
 - Phase 6 — Branding storage + updateBranding
 - Phase 7 — brandingForTenant public read
 - Phase 8 — Reseller-branded emails
 - Phase 9 — childOrganizations analytics
+- Phase 10a — First-party REST branding endpoints (NEW, backend, depends on Phase 6)
 
 ## Deferred Phases
 - Phase 10b — Frontend themed OAuth interstitials (repo: vinta-schedule-frontend-web)
