@@ -11,7 +11,7 @@
   {% blocktrans %}Dear user,{% endblocktrans %}
 {% endif %}
 </p>
-{% blocktrans with invited_by_name=invitation.invited_by_name organization_name=invitation.organization_name %}You're receiving this email because you were invited by {{ invited_by_name }} to join the organization {{ organization_name }} in Vinta Schedule.
+{% blocktrans with invited_by_name=invitation.invited_by_name organization_name=invitation.organization_name app_name=branding.app_name %}You're receiving this email because you were invited by {{ invited_by_name }} to join the organization {{ organization_name }} in {{ app_name }}.
 Click the link below to join the organization.{% endblocktrans %}
 
 <p>
