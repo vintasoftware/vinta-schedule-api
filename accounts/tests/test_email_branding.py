@@ -96,7 +96,7 @@ class TestEmailBranding:
         assert ctx["branding"]["primary_color"] == "#FF0000"
         assert ctx["branding"]["secondary_color"] == "#00FF00"
 
-    def test_non_branded_invitation_email_renders_vinta_defaults_bytefortype(self, di_container):
+    def test_non_branded_invitation_email_renders_vinta_defaults_byte_for_byte(self, di_container):
         """
         An invite under no reseller renders today's vinta email unchanged
         (byte-for-byte backwards-compat guarantee).
@@ -125,11 +125,10 @@ class TestEmailBranding:
             invitation_url="https://example.com/accept?token=fake",
         )
 
-        assert ctx.get("branding") is None or ctx["branding"]["app_name"] == "Vinta Schedule"
-        if "branding" in ctx:
-            assert "vinta_schedule.com" not in ctx.get("branding", {}).get("app_name", ""), (
-                "No vinta domain should leak in branding values"
-            )
+        assert ctx["branding"]["app_name"] == "Vinta Schedule"
+        assert "vinta_schedule.com" not in ctx["branding"]["app_name"], (
+            "No vinta domain should leak in branding values"
+        )
 
     def test_branded_child_of_non_reseller_parent_uses_vinta_default(self):
         """
@@ -166,7 +165,7 @@ class TestEmailBranding:
             invitation_url="https://example.com/accept?token=fake",
         )
 
-        assert ctx.get("branding") is None or ctx["branding"]["app_name"] == "Vinta Schedule"
+        assert ctx["branding"]["app_name"] == "Vinta Schedule"
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +268,58 @@ class TestInvitationTemplateRendering:
         preheader = render_to_string(self.PREHEADER_TEMPLATE, ctx)
         assert "ResellApp" in preheader, (
             f"Branded invitation preheader must contain 'ResellApp'; got:\n{preheader}"
+        )
+
+    def test_invitation_body_with_empty_last_name_preserves_trailing_space_byte_for_byte(
+        self, di_container
+    ):
+        """
+        When an inviter has an empty last_name, the invited_by_name must preserve
+        the trailing space (no .strip()) for byte-for-byte compatibility with phase-7.
+        This test verifies the exact rendered substring "invited by John  to join"
+        (double space) appears in the body.
+        """
+        # Create a non-reseller org to get vinta defaults
+        org = baker.make(
+            Organization,
+            name="Non-Reseller Org",
+            parent=None,
+            can_invite_organizations=False,
+        )
+        # Create inviter with empty last_name
+        inviter = UserFactory().create_user(email="john@vinta.com")
+        inviter.profile.first_name = "John"
+        inviter.profile.last_name = ""  # Empty last_name is the key scenario
+        inviter.profile.save()
+
+        invitation = baker.make(
+            OrganizationInvitation,
+            email="newuser@example.com",
+            organization=org,
+            invited_by=inviter,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+        )
+
+        from organizations.notification_contexts import organization_invitation_context
+
+        ctx = organization_invitation_context(
+            organization_invitation_id=invitation.id,
+            invitation_url="https://example.com/accept?token=fake",
+        )
+
+        # The invited_by_name must be "John " (with trailing space, no strip)
+        assert ctx["invitation"]["invited_by_name"] == "John ", (
+            f"invited_by_name must preserve trailing space when last_name is empty; "
+            f"got: {ctx['invitation']['invited_by_name']!r}"
+        )
+
+        # Render the body and verify the exact double-space substring appears
+        body = render_to_string(self.BODY_TEMPLATE, ctx)
+        assert "invited by John  to join" in body, (
+            f"Body must contain exact substring 'invited by John  to join' "
+            f"(double space preserved); got:\n{body}"
         )
 
 
