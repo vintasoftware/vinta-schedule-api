@@ -206,10 +206,17 @@ class OrganizationService:
         organization: Organization,
         invited_by: User | None = None,
         role: str = OrganizationRole.MEMBER,
+        send_email: bool = True,
     ) -> OrganizationInvitation:
         """
         Invite a user to join the organization. if the invitation already exists, resets the token
         and the expiration date.
+
+        The raw token is attached to the returned invitation as ``invitation._raw_token`` (a
+        transient, non-persisted attribute) so callers that need it (e.g. the public-API
+        self-managed-invitation path) can surface it once without it ever being stored in
+        plaintext. Only ``token_hash`` is persisted.
+
         :param email: Email of the user to invite.
         :param organization: Organization the user is being invited to.
         :param invited_by: User who is sending the invitation. May be None when the invitation is
@@ -217,6 +224,10 @@ class OrganizationService:
             corresponding Django User.
         :param role: Role the invited user should receive on accepting the invitation. Defaults to
             MEMBER. Use OrganizationRole.ADMIN for admin invitations.
+        :param send_email: When True (default) the invitation email is dispatched via the
+            notification service. When False the email is suppressed — the caller is responsible
+            for delivering the invite link using the raw token attached to the returned instance
+            as ``_raw_token``.
         """
         token = generate_long_lived_token()
         token_hash = hash_long_lived_token(token)
@@ -252,27 +263,32 @@ class OrganizationService:
             invitation.membership = None
             invitation.save()
 
-        transaction.on_commit(
-            lambda: self.notification_service.create_one_off_notification(
-                email_or_phone=email,
-                first_name=first_name,
-                last_name=last_name,
-                notification_type=NotificationTypes.EMAIL.value,
-                title="Invitation to join organization",
-                body_template="organizations/emails/organization_invitation.body.html",
-                context_name="organization_invitation_context",
-                context_kwargs=NotificationContextDict(
-                    {
-                        "organization_invitation_id": invitation.id,
-                        "invitation_url": (getattr(settings, "HEADLESS_FRONTEND_URLS", {}))
-                        .get("account_accept_invitation", "")
-                        .format(token=token),
-                    }
-                ),
-                subject_template="organizations/emails/organization_invitation.subject.txt",
-                preheader_template="organizations/emails/organization_invitation.pre_header.txt",
+        # Attach the raw token as a transient attribute so the caller can surface it once.
+        # It is never persisted — only token_hash is stored in the DB row.
+        invitation._raw_token = token  # type: ignore[attr-defined]
+
+        if send_email:
+            transaction.on_commit(
+                lambda: self.notification_service.create_one_off_notification(
+                    email_or_phone=email,
+                    first_name=first_name,
+                    last_name=last_name,
+                    notification_type=NotificationTypes.EMAIL.value,
+                    title="Invitation to join organization",
+                    body_template="organizations/emails/organization_invitation.body.html",
+                    context_name="organization_invitation_context",
+                    context_kwargs=NotificationContextDict(
+                        {
+                            "organization_invitation_id": invitation.id,
+                            "invitation_url": (getattr(settings, "HEADLESS_FRONTEND_URLS", {}))
+                            .get("account_accept_invitation", "")
+                            .format(token=token),
+                        }
+                    ),
+                    subject_template="organizations/emails/organization_invitation.subject.txt",
+                    preheader_template="organizations/emails/organization_invitation.pre_header.txt",
+                )
             )
-        )
         return invitation
 
     def accept_invitation(self, token: str, user: User) -> OrganizationMembership:

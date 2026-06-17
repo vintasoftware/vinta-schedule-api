@@ -753,3 +753,211 @@ class TestCreateInvitationMutation:
         assert not OrganizationInvitation.objects.filter(
             email=target_email, organization=r2_child
         ).exists()
+
+    # -------------------------------------------------------------------------
+    # Phase 4: self-managed invitations (sendEmail=false path)
+    # -------------------------------------------------------------------------
+
+    def test_send_email_false_no_email_sent_returns_token_and_invite_url(self):
+        """sendEmail=false sends no email and returns a non-null token + inviteUrl.
+
+        This is the core Phase-4 happy path: the reseller opts out of vinta's invitation
+        email and receives the raw token + invite URL once so it can render the link in
+        its own UI.
+
+        Asserts:
+        - transaction.on_commit is NOT called (no email scheduled).
+        - token and inviteUrl are non-null in the response.
+        - inviteUrl contains the raw token.
+        """
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+        user_email = "self_managed@example.com"
+
+        from di_core.containers import container
+
+        with (
+            container.public_api_auth_service.override(auth_service),
+            patch("organizations.services.transaction.on_commit") as mock_on_commit,
+        ):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": CREATE_INVITATION_MUTATION,
+                    "variables": {
+                        "input": {
+                            "userEmail": user_email,
+                            "organizationId": str(child_org.id),
+                            "sendEmail": False,
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        # token and invite_url must be non-null in the sendEmail=false path
+        returned_token = data["data"]["createInvitation"]["token"]
+        invite_url = data["data"]["createInvitation"]["inviteUrl"]
+        assert returned_token is not None, "token must be non-null when sendEmail=false"
+        assert invite_url is not None, "inviteUrl must be non-null when sendEmail=false"
+        # inviteUrl must embed the raw token
+        assert returned_token in invite_url
+
+        # transaction.on_commit must NOT have been called — no email was scheduled
+        mock_on_commit.assert_not_called()
+
+    def test_send_email_false_returned_token_validates_via_accept_invitation(self):
+        """The raw token returned when sendEmail=false must be usable with accept_invitation.
+
+        This is the security-critical proof: the plaintext token the mutation returned
+        matches the stored hash and drives a successful accept → active membership.
+
+        Asserts:
+        - Calling OrganizationService.accept_invitation(returned_token, user) succeeds.
+        - An active OrganizationMembership is created for the user in the target org.
+        """
+        from common.utils.authentication_utils import verify_long_lived_token
+        from di_core.containers import container
+        from organizations.services import OrganizationService
+
+        reseller_org, system_user, api_token, auth_service = self._setup_reseller()
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+        user_email = "token_validate@example.com"
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": CREATE_INVITATION_MUTATION,
+                    "variables": {
+                        "input": {
+                            "userEmail": user_email,
+                            "organizationId": str(child_org.id),
+                            "sendEmail": False,
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{api_token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        returned_token = data["data"]["createInvitation"]["token"]
+        assert returned_token is not None
+
+        # Retrieve the DB row and verify the plaintext was NOT persisted
+        invitation = OrganizationInvitation.objects.get(email=user_email, organization=child_org)
+        assert invitation.token_hash != returned_token, (
+            "Plaintext token must not equal the stored hash — only the hash is persisted"
+        )
+        # Confirm the hash matches the returned token (proves token_hash is derived from token)
+        assert verify_long_lived_token(returned_token, invitation.token_hash), (
+            "The returned token must verify against the stored hash"
+        )
+
+        # Accept the invitation using the raw token — proves end-to-end correctness
+        user_model = get_user_model()
+        accepting_user = user_model.objects.create(email=user_email)
+
+        org_service = OrganizationService()
+        membership = org_service.accept_invitation(returned_token, accepting_user)
+
+        assert membership is not None
+        assert membership.organization == child_org
+        assert OrganizationMembership.objects.filter(
+            user=accepting_user, organization=child_org
+        ).exists()
+
+    def test_send_email_false_no_plaintext_in_db(self):
+        """No plaintext token is stored in the OrganizationInvitation row.
+
+        The raw token returned by sendEmail=false must not appear verbatim in any
+        DB column — only the derived token_hash is stored.
+        """
+        from di_core.containers import container
+
+        reseller_org, system_user, api_token, auth_service = self._setup_reseller()
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+        user_email = "no_plaintext@example.com"
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": CREATE_INVITATION_MUTATION,
+                    "variables": {
+                        "input": {
+                            "userEmail": user_email,
+                            "organizationId": str(child_org.id),
+                            "sendEmail": False,
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{api_token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        returned_token = data["data"]["createInvitation"]["token"]
+        assert returned_token is not None
+
+        invitation = OrganizationInvitation.objects.get(email=user_email, organization=child_org)
+
+        # The plaintext token must not appear in any DB-backed field
+        assert invitation.token_hash != returned_token
+        # email, first_name, last_name, role are unrelated; verify the hash column is distinct
+        assert returned_token not in (
+            invitation.token_hash,
+            invitation.email,
+            invitation.first_name,
+            invitation.last_name,
+        )
+
+    def test_send_email_false_flag_off_acting_org_rejected(self):
+        """sendEmail=false is denied when the acting org's can_invite_organizations flag is off.
+
+        The flag gate applies regardless of the sendEmail value; a non-reseller cannot
+        suppress the email to bypass any constraint.
+        """
+        from di_core.containers import container
+
+        non_reseller_org = baker.make(Organization, name="Non-Reseller")
+        auth_service = PublicAPIAuthService()
+        system_user, api_token = auth_service.create_system_user(
+            integration_name="test_integration", organization=non_reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="invitation")
+
+        child_org = baker.make(Organization, name="Child Org")
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": CREATE_INVITATION_MUTATION,
+                    "variables": {
+                        "input": {
+                            "userEmail": "someone@example.com",
+                            "organizationId": str(child_org.id),
+                            "sendEmail": False,
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{api_token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "does not have permission to invite or create" in str(data["errors"]).lower()

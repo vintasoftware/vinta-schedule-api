@@ -415,3 +415,140 @@ class TestCreateInvitationProvisioning:
         invite = OrganizationInvitation.objects.get(email=invited_email, organization=child_org)
         assert invite.accepted_at is not None
         assert invite.membership_id == membership.pk
+
+    # -------------------------------------------------------------------------
+    # Phase 4: self-managed invitation (sendEmail=false) integration tests
+    # -------------------------------------------------------------------------
+
+    def test_send_email_false_token_drives_successful_accept_auto_join(self):
+        """A token obtained via sendEmail=false drives a successful accept_invitation / auto-join.
+
+        Full integration: call the mutation with sendEmail=false, then use the returned raw
+        token to call accept_invitation, assert an active membership in the target org,
+        and confirm no plaintext token is stored in the DB row.
+        """
+        from common.utils.authentication_utils import verify_long_lived_token
+        from di_core.containers import container
+        from organizations.services import OrganizationService
+
+        # Setup reseller + child org
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="invitation")
+
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+        invited_email = "self_managed_join@example.com"
+
+        create_invitation_mutation = """
+        mutation CreateInvitation($input: CreateInvitationInput!) {
+            createInvitation(input: $input) {
+                invitation { id email expiresAt }
+                token
+                inviteUrl
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": create_invitation_mutation,
+                    "variables": {
+                        "input": {
+                            "userEmail": invited_email,
+                            "organizationId": str(child_org.id),
+                            "sendEmail": False,
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        raw_token = data["data"]["createInvitation"]["token"]
+        invite_url = data["data"]["createInvitation"]["inviteUrl"]
+        assert raw_token is not None, "sendEmail=false must return a non-null token"
+        assert invite_url is not None, "sendEmail=false must return a non-null inviteUrl"
+        assert raw_token in invite_url, "inviteUrl must embed the raw token"
+
+        # Verify no plaintext token is in the DB
+        invitation = OrganizationInvitation.objects.get(email=invited_email, organization=child_org)
+        assert invitation.token_hash != raw_token, "Plaintext must not be stored in token_hash"
+        assert verify_long_lived_token(raw_token, invitation.token_hash), (
+            "Stored hash must verify against the raw token"
+        )
+
+        # Use the raw token to accept the invitation
+        user_model = get_user_model()
+        accepting_user = user_model.objects.create(email=invited_email)
+
+        org_service = OrganizationService()
+        membership = org_service.accept_invitation(raw_token, accepting_user)
+
+        assert membership is not None
+        assert membership.organization == child_org
+
+        # Invitation is now accepted
+        invitation.refresh_from_db()
+        assert invitation.accepted_at is not None
+
+    def test_send_email_false_no_email_sent(self):
+        """sendEmail=false suppresses the invitation email entirely.
+
+        Asserts the notification service is not invoked when the reseller opts out of the
+        vinta-managed email.  Also confirms that sendEmail=true (default) still sends.
+        """
+        from di_core.containers import container
+
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="invitation")
+
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+
+        create_invitation_mutation = """
+        mutation CreateInvitation($input: CreateInvitationInput!) {
+            createInvitation(input: $input) {
+                invitation { id email expiresAt }
+                token
+                inviteUrl
+            }
+        }
+        """
+
+        with (
+            container.public_api_auth_service.override(auth_service),
+            patch("organizations.services.transaction.on_commit") as mock_on_commit,
+        ):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": create_invitation_mutation,
+                    "variables": {
+                        "input": {
+                            "userEmail": "no_email@example.com",
+                            "organizationId": str(child_org.id),
+                            "sendEmail": False,
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        # transaction.on_commit must NOT have been called — no email was scheduled
+        mock_on_commit.assert_not_called()

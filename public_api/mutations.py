@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Annotated, cast
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.utils import timezone
@@ -228,6 +229,9 @@ class Mutation(CalendarGroupMutations):
         # invited_by=None because the public-API caller is a SystemUser, not a Django User.
         # first_name/last_name are empty strings — invite_user_to_organization creates (or
         # reuses) the user and stores names for email rendering only.
+        #
+        # Phase 4: when send_email=False the service suppresses the email and attaches the raw
+        # token as invitation._raw_token (transient, never persisted in plaintext).
         invitation = deps.organization_service.invite_user_to_organization(
             email=input.user_email,
             first_name="",
@@ -235,11 +239,23 @@ class Mutation(CalendarGroupMutations):
             organization=target_org,
             invited_by=None,
             role=input.role.to_model_role(),
+            send_email=input.send_email,
         )
 
-        # Phase 4: sendEmail=false returns raw token. For now (Phase 3), sendEmail is always true
-        # and the invitation email is sent by invite_user_to_organization above.
-        # token and invite_url remain null in the sendEmail=true path.
+        raw_token: str | None = None
+        invite_url: str | None = None
+
+        if not input.send_email:
+            # The service always attaches _raw_token; retrieve it once so it is not
+            # inadvertently retained beyond this scope.
+            raw_token = invitation._raw_token  # type: ignore[attr-defined]
+            # Build the invite URL using the same template the branded email uses.
+            # Phase 6+ may refine this URL from the reseller's return_url_allowlist once
+            # OrganizationBranding is available; for now we use the same base as the email.
+            url_template: str = getattr(settings, "HEADLESS_FRONTEND_URLS", {}).get(
+                "account_accept_invitation", ""
+            )
+            invite_url = url_template.format(token=raw_token) if url_template else None
 
         return CreateInvitationResult(
             invitation=InvitationResult(
@@ -247,6 +263,6 @@ class Mutation(CalendarGroupMutations):
                 email=invitation.email,
                 expires_at=invitation.expires_at,
             ),
-            token=None,
-            invite_url=None,
+            token=raw_token,
+            invite_url=invite_url,
         )
