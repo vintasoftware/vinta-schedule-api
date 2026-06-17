@@ -14,6 +14,7 @@ from strawberry.django.views import GraphQLView
 
 from calendar_integration.routes import routes as calendar_integration_routes
 from notifications.routes import routes as notifications_routes
+from organizations.routes import extra_patterns as organizations_extra_patterns
 from organizations.routes import routes as organizations_routes
 from organizations.views import AcceptInvitationView
 from payments.routes import routes as payments_routes
@@ -53,6 +54,7 @@ urlpatterns = [
     path("auth/", include("allauth.socialaccount.providers.google.urls")),
     path("auth/", include("allauth.headless.urls")),
     path("", include((router.urls, "api")), name="api"),
+    path("api/", include(organizations_extra_patterns)),
     path("public/", include("calendar_integration.token_urls")),
     path("api/", include("calendar_integration.webhook_urls")),
     path(

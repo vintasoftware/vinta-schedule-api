@@ -4,6 +4,109 @@ info:
   version: 1.0.0
   description: API for vinta-schedule-api project
 paths:
+  /api/branding/:
+    get:
+      operationId: api_branding_retrieve
+      description: GET /branding/ — retrieve the acting org's branding.
+      summary: Retrieve the acting organization's branding
+      tags:
+      - Branding
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationBranding'
+          description: ''
+        '403':
+          description: Not a reseller or not an admin
+        '404':
+          description: Branding not yet configured
+    put:
+      operationId: api_branding_update
+      description: PUT /branding/ — create or replace the acting org's branding.
+      summary: Create or replace the acting organization's branding
+      tags:
+      - Branding
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationBranding'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationBranding'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationBranding'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationBranding'
+          description: ''
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationBranding'
+          description: ''
+        '400':
+          description: Invalid input (color format, URL validation)
+        '403':
+          description: Not a reseller or not an admin
+    patch:
+      operationId: api_branding_partial_update
+      description: PATCH /branding/ — update the acting org's branding (partial).
+      summary: Update the acting organization's branding (partial)
+      tags:
+      - Branding
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedOrganizationBranding'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedOrganizationBranding'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedOrganizationBranding'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationBranding'
+          description: ''
+        '400':
+          description: Invalid input (color format, URL validation)
+        '403':
+          description: Not a reseller or not an admin
+        '404':
+          description: Branding not yet configured
+    delete:
+      operationId: api_branding_destroy
+      description: DELETE not allowed.
+      tags:
+      - Branding
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /available-times/:
     get:
       operationId: available_times_list
@@ -11851,6 +11954,52 @@ components:
       - id
       - modified
       - name
+    OrganizationBranding:
+      type: object
+      description: |-
+        Serializer for OrganizationBranding (reseller-admin REST endpoints).
+
+        Exposes app_name, logo_url, primary_color, secondary_color, support_email,
+        and return_url_allowlist. NEVER exposes can_invite_organizations or makes
+        organization writable (the org is set from the acting org in the view).
+
+        Validates:
+        - Color format: #RRGGBB or #RRGGBBAA (regex).
+        - Each return_url_allowlist entry is a valid URL (URLValidator).
+      properties:
+        app_name:
+          type: string
+          description: The display name of the white-labeled app (e.g., 'MyScheduler').
+          maxLength: 120
+        logo_url:
+          type: string
+          format: uri
+          description: URL to the reseller's logo image.
+          maxLength: 200
+        primary_color:
+          type: string
+          description: 'Primary color as hex code: #RRGGBB or #RRGGBBAA.'
+          maxLength: 9
+        secondary_color:
+          type: string
+          description: 'Secondary color as hex code: #RRGGBB or #RRGGBBAA.'
+          maxLength: 9
+        support_email:
+          type: string
+          format: email
+          description: Email address for the From/reply-to on branded transactional
+            emails.
+          maxLength: 254
+        return_url_allowlist:
+          type: array
+          items:
+            type: string
+            format: uri
+            maxLength: 200
+          description: List of URLs that are allowed as return addresses after OAuth
+            flows.
+      required:
+      - app_name
     OrganizationBrief:
       type: object
       description: |-
@@ -12664,6 +12813,50 @@ components:
           type: string
           format: date-time
           readOnly: true
+    PatchedOrganizationBranding:
+      type: object
+      description: |-
+        Serializer for OrganizationBranding (reseller-admin REST endpoints).
+
+        Exposes app_name, logo_url, primary_color, secondary_color, support_email,
+        and return_url_allowlist. NEVER exposes can_invite_organizations or makes
+        organization writable (the org is set from the acting org in the view).
+
+        Validates:
+        - Color format: #RRGGBB or #RRGGBBAA (regex).
+        - Each return_url_allowlist entry is a valid URL (URLValidator).
+      properties:
+        app_name:
+          type: string
+          description: The display name of the white-labeled app (e.g., 'MyScheduler').
+          maxLength: 120
+        logo_url:
+          type: string
+          format: uri
+          description: URL to the reseller's logo image.
+          maxLength: 200
+        primary_color:
+          type: string
+          description: 'Primary color as hex code: #RRGGBB or #RRGGBBAA.'
+          maxLength: 9
+        secondary_color:
+          type: string
+          description: 'Secondary color as hex code: #RRGGBB or #RRGGBBAA.'
+          maxLength: 9
+        support_email:
+          type: string
+          format: email
+          description: Email address for the From/reply-to on branded transactional
+            emails.
+          maxLength: 254
+        return_url_allowlist:
+          type: array
+          items:
+            type: string
+            format: uri
+            maxLength: 200
+          description: List of URLs that are allowed as return addresses after OAuth
+            flows.
     PatchedProfile:
       type: object
       properties:

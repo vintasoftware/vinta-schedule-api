@@ -1,4 +1,8 @@
+import re
 from typing import Annotated
+
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import URLValidator
 
 from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
@@ -7,6 +11,7 @@ from calendar_integration.models import GoogleCalendarServiceAccount
 from common.utils.serializer_utils import VirtualModelSerializer
 from organizations.models import (
     Organization,
+    OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
@@ -326,3 +331,55 @@ class AcceptInvitationSerializer(serializers.Serializer):
         token = validated_data["token"]
 
         return self.organization_service.accept_invitation(token=token, user=user)
+
+
+class OrganizationBrandingSerializer(serializers.ModelSerializer):
+    """Serializer for OrganizationBranding (reseller-admin REST endpoints).
+
+    Exposes app_name, logo_url, primary_color, secondary_color, support_email,
+    and return_url_allowlist. NEVER exposes can_invite_organizations or makes
+    organization writable (the org is set from the acting org in the view).
+
+    Validates:
+    - Color format: #RRGGBB or #RRGGBBAA (regex).
+    - Each return_url_allowlist entry is a valid URL (URLValidator).
+    """
+
+    class Meta:
+        model = OrganizationBranding
+        fields = (
+            "app_name",
+            "logo_url",
+            "primary_color",
+            "secondary_color",
+            "support_email",
+            "return_url_allowlist",
+        )
+
+    def validate_primary_color(self, value: str) -> str:
+        """Validate primary_color hex format: #RRGGBB or #RRGGBBAA."""
+        if value and not re.match(r"^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", value):
+            raise serializers.ValidationError(
+                "Invalid color format. Expected #RRGGBB or #RRGGBBAA."
+            )
+        return value
+
+    def validate_secondary_color(self, value: str) -> str:
+        """Validate secondary_color hex format: #RRGGBB or #RRGGBBAA."""
+        if value and not re.match(r"^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", value):
+            raise serializers.ValidationError(
+                "Invalid color format. Expected #RRGGBB or #RRGGBBAA."
+            )
+        return value
+
+    def validate_return_url_allowlist(self, value: list) -> list:
+        """Validate that each return_url_allowlist entry is a valid URL."""
+        validator = URLValidator()
+        for url in value:
+            try:
+                validator(url)
+            except DjangoValidationError as e:
+                raise serializers.ValidationError(
+                    f"Invalid URL in return_url_allowlist: {url}"
+                ) from e
+        return value
