@@ -4,6 +4,8 @@ from typing import Annotated, cast
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import URLValidator
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
@@ -33,6 +35,11 @@ from public_api.types import (
     UpdateBrandingInput,
     UpdateBrandingResult,
 )
+
+
+# Module-scope constants for validation
+HEX_COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
+_url_validator = URLValidator(schemes=["http", "https"])
 
 
 @dataclass
@@ -361,10 +368,11 @@ class Mutation(CalendarGroupMutations):
 
         The mutation:
         1. Checks that the acting org has can_invite_organizations (via assert_org_can_invite).
-        2. Validates primary_color and secondary_color format (#RRGGBB or #RRGGBBAA).
-        3. Validates each entry in return_url_allowlist is a valid URL.
-        4. Upserts OrganizationBranding on the acting org only (always keyed to acting_org).
-        5. Returns the upserted branding row (without internal fields like support_email/allowlist).
+        2. Validates app_name: non-empty and max 120 characters.
+        3. Validates primary_color and secondary_color format (#RRGGBB or #RRGGBBAA).
+        4. Validates each entry in return_url_allowlist is a valid URL using Django's URLValidator.
+        5. Upserts OrganizationBranding on the acting org only (always keyed to acting_org).
+        6. Returns the upserted branding row (without internal fields like support_email/allowlist).
 
         The token's OrganizationResourceAccess must include the BRANDING resource.
         """
@@ -375,30 +383,35 @@ class Mutation(CalendarGroupMutations):
         # Gate: check the org can invite before proceeding
         assert_org_can_invite(acting_org)
 
-        # Validate color format: #RRGGBB or #RRGGBBAA (6 or 8 hex chars after #)
-        hex_pattern = re.compile(r"^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
+        # Validate app_name: must be non-empty and at most 120 characters
+        if input.app_name:
+            if not input.app_name.strip():
+                raise GraphQLError("app_name must not be empty or whitespace-only.")
+            if len(input.app_name) > 120:
+                raise GraphQLError("app_name must be 120 characters or fewer.")
 
-        if input.primary_color and not hex_pattern.match(input.primary_color):
+        # Validate color format: #RRGGBB or #RRGGBBAA (6 or 8 hex chars after #)
+        if input.primary_color and not HEX_COLOR_PATTERN.match(input.primary_color):
             raise GraphQLError(
                 f"Invalid primary_color format: '{input.primary_color}'. "
                 "Expected #RRGGBB or #RRGGBBAA."
             )
 
-        if input.secondary_color and not hex_pattern.match(input.secondary_color):
+        if input.secondary_color and not HEX_COLOR_PATTERN.match(input.secondary_color):
             raise GraphQLError(
                 f"Invalid secondary_color format: '{input.secondary_color}'. "
                 "Expected #RRGGBB or #RRGGBBAA."
             )
 
-        # Validate return_url_allowlist entries are URLs
+        # Validate return_url_allowlist entries are valid URLs using Django's URLValidator
         allowlist = input.return_url_allowlist or []
         for url in allowlist:
-            # Simple URL validation: must start with http:// or https://
-            if not (url.startswith("http://") or url.startswith("https://")):
+            try:
+                _url_validator(url)
+            except DjangoValidationError as e:
                 raise GraphQLError(
-                    f"Invalid URL in return_url_allowlist: '{url}'. "
-                    "URLs must start with http:// or https://."
-                )
+                    f"Invalid URL in return_url_allowlist: '{url}'. Must be a valid http(s) URL."
+                ) from e
 
         # Upsert branding on the acting org (always acts on acting org, never another org)
         branding, _ = OrganizationBranding.objects.update_or_create(

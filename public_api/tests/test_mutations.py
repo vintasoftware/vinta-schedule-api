@@ -1713,3 +1713,125 @@ class TestUpdateBranding:
         from organizations.models import OrganizationBranding
 
         assert OrganizationBranding.objects.filter(organization=reseller_org).count() == 1
+
+    def test_update_branding_isolation_reseller_a_and_b(self):
+        """Isolation regression test: reseller A's branding is never touched by reseller B.
+
+        Reseller A creates branding via updateBranding. Then reseller B (separate org,
+        can_invite_organizations=True, separate token + BRANDING scope) calls updateBranding.
+
+        Asserts:
+        - Reseller B gets its own OrganizationBranding row.
+        - Reseller A's branding row is completely untouched (same values, still exactly one row).
+        """
+        from di_core.containers import container
+        from organizations.models import OrganizationBranding
+
+        # Create two independent reseller organizations
+        reseller_a = baker.make(Organization, name="Reseller A", can_invite_organizations=True)
+        reseller_b = baker.make(Organization, name="Reseller B", can_invite_organizations=True)
+
+        # System user + token for Reseller A
+        auth_service_a = PublicAPIAuthService()
+        system_user_a, token_a = auth_service_a.create_system_user(
+            integration_name="reseller_a_integration", organization=reseller_a
+        )
+        baker.make(ResourceAccess, system_user=system_user_a, resource_name="branding")
+
+        # System user + token for Reseller B
+        auth_service_b = PublicAPIAuthService()
+        system_user_b, token_b = auth_service_b.create_system_user(
+            integration_name="reseller_b_integration", organization=reseller_b
+        )
+        baker.make(ResourceAccess, system_user=system_user_b, resource_name="branding")
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                    appName
+                    primaryColor
+                }
+            }
+        }
+        """
+
+        # Reseller A creates branding
+        with container.public_api_auth_service.override(auth_service_a):
+            response_a = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "appName": "App A",
+                            "primaryColor": "#FF0000",
+                            "supportEmail": "support_a@example.com",
+                            "returnUrlAllowlist": ["https://a.example.com"],
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user_a.id}:{token_a}"},
+            )
+
+        assert response_a.status_code == 200
+        data_a = response_a.json()
+        assert "errors" not in data_a or len(data_a.get("errors", [])) == 0
+        branding_id_a = data_a["data"]["updateBranding"]["branding"]["id"]
+
+        # Verify A's branding row exists with correct values
+        branding_row_a = OrganizationBranding.objects.get(id=branding_id_a)
+        assert branding_row_a.organization == reseller_a
+        assert branding_row_a.app_name == "App A"
+        assert branding_row_a.primary_color == "#FF0000"
+        assert branding_row_a.support_email == "support_a@example.com"
+        assert "https://a.example.com" in branding_row_a.return_url_allowlist
+
+        # Reseller B creates branding
+        with container.public_api_auth_service.override(auth_service_b):
+            response_b = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "appName": "App B",
+                            "primaryColor": "#0000FF",
+                            "supportEmail": "support_b@example.com",
+                            "returnUrlAllowlist": ["https://b.example.com"],
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user_b.id}:{token_b}"},
+            )
+
+        assert response_b.status_code == 200
+        data_b = response_b.json()
+        assert "errors" not in data_b or len(data_b.get("errors", [])) == 0
+        branding_id_b = data_b["data"]["updateBranding"]["branding"]["id"]
+
+        # Verify B's branding row exists and is different from A
+        assert branding_id_b != branding_id_a, "B must get its own branding row, not A's"
+        branding_row_b = OrganizationBranding.objects.get(id=branding_id_b)
+        assert branding_row_b.organization == reseller_b
+        assert branding_row_b.app_name == "App B"
+        assert branding_row_b.primary_color == "#0000FF"
+
+        # Verify A's row is completely untouched
+        branding_row_a.refresh_from_db()
+        assert branding_row_a.app_name == "App A", "A's app_name must not change"
+        assert branding_row_a.primary_color == "#FF0000", "A's primary_color must not change"
+        assert branding_row_a.support_email == "support_a@example.com", (
+            "A's support_email must not change"
+        )
+        assert "https://a.example.com" in branding_row_a.return_url_allowlist, (
+            "A's allowlist must not change"
+        )
+
+        # Verify there is exactly one branding row for A
+        assert OrganizationBranding.objects.filter(organization=reseller_a).count() == 1
+        # Verify there is exactly one branding row for B
+        assert OrganizationBranding.objects.filter(organization=reseller_b).count() == 1
