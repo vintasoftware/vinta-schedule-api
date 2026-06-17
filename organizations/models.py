@@ -86,9 +86,46 @@ class Organization(BaseModel):
     should_sync_rooms = models.BooleanField(
         default=False, help_text="Whether to sync rooms for this organization."
     )
+    parent = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="child_organizations",
+        help_text=(
+            "The parent organization if this is a child org. "
+            "A reseller with live children cannot be deleted."
+        ),
+    )
+    can_invite_organizations = models.BooleanField(
+        default=False,
+        help_text=(
+            "Whether this organization can invite/create other organizations. "
+            "DB/Django-admin only — never exposed via any API. "
+            "Enables the whole reseller capability bundle."
+        ),
+    )
 
     def __str__(self):
         return self.name
+
+    def is_reseller(self) -> bool:
+        """Return True if this org can invite/create other organizations."""
+        return self.can_invite_organizations
+
+    def get_branding_root(self) -> Organization | None:
+        """
+        Walk up the parent chain to the nearest ancestor with can_invite_organizations=True.
+
+        Returns the reseller ancestor (which has branding), or None if no such ancestor exists.
+        The None case means this org (or its entire lineage) has no reseller, so vinta defaults apply.
+        """
+        org: Organization | None = self
+        while org is not None:
+            if org.can_invite_organizations:
+                return org
+            org = org.parent
+        return None
 
 
 class SubscriptionPlan(BaseModel):

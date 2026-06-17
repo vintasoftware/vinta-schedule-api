@@ -10638,6 +10638,10 @@ components:
       - organization
       - calendar_group
       - system_user
+      - membership
+      - invitation
+      - branding
+      - child_org_analytics
       type: string
       description: |-
         * `calendar_event` - Calendar Event
@@ -10658,6 +10662,10 @@ components:
         * `organization` - Organization
         * `calendar_group` - Calendar Group
         * `system_user` - System User
+        * `membership` - Membership
+        * `invitation` - Invitation
+        * `branding` - Branding
+        * `child_org_analytics` - Child Organization Analytics
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.
