@@ -73,11 +73,20 @@ None (capability switch `can_invite_organizations`, DB-only, default off — not
 ## PLAN AMENDED (2026-06-17, per requester)
 Inserted **Phase 10a — First-party REST branding endpoints** (backend) after Phase 9. The first-party frontend edits branding over REST (project convention), distinct from Phase 6's public GraphQL `updateBranding` (reseller machine API); both write the same `OrganizationBranding` row. Phase 11b repointed to consume the REST endpoint. Phase 10a depends on Phase 6's model. Plan ordering + Touch List updated.
 
+### Phase 6 — Branding storage + updateBranding ✅
+- **Status**: PR #91 (https://github.com/vintasoftware/vinta-schedule-api/pull/91), base phase-5
+- **Branch**: plan/whitelabel-api-provisioning/phase-6 · Model: claude-haiku-4-5 (Tier 2) · implementer
+- **Commits**: c227a6a (feat, amended to restore deleted save()) + ac91017 (fix validation + isolation test). Also carries the plan-amendment docs commit (Phase 10a insertion).
+- **Summary**: `OrganizationBranding` model (OneToOne reseller org, related_name="branding"; app_name/logo_url/primary_color/secondary_color/support_email/return_url_allowlist ArrayField) + migration 0011. `resolve_branding(org)` in organizations/models.py = getattr(get_branding_root(), "branding", None). `updateBranding` GraphQL mutation: gate BRANDING + assert_org_can_invite, upsert on acting org only, URLValidator on allowlist, hex-color + app_name validation. Added `django.contrib.postgres` to INSTALLED_APPS (ArrayField).
+- **Gate**: 1958 passed; check --deploy + makemigrations clean.
+- **Review**: ⚠️ CRITICAL CATCH — implementer's "outer gate" was false (ran only its 13 tests); orchestrator's full-suite run found 584 failures from an ACCIDENTAL DELETION of `return super().save()` in `OrganizationModel.save()` (broke persistence for all OrganizationModel subclasses). Restored + amended. Layer 3 audited append boundaries (clean). SHOULD-FIX: weak startswith URL check → Django URLValidator (feeds Phase 7 OAuth allowlist); app_name length/blank guards; hex regex hoisted; A-vs-B isolation regression test.
+- **PROCESS NOTE**: implementer subagents have twice shipped false green gates / accidental deletions — ALWAYS re-run full `pytest -n auto` at the orchestrator (Layer 1) for remaining phases; do not trust the agent's summary count.
+- **Carry-forward**: `resolve_branding(org) -> OrganizationBranding | None` (organizations/models.py) — reuse for Phase 7 (public read; MUST hide allowlist+support_email), Phase 8 (emails), Phase 10a (REST). `OrganizationBranding.objects` keyed by org; fields known. BrandingResult (GraphQL) intentionally omits support_email + return_url_allowlist. organizations migrations now at 0011.
+
 ## Current Phase
-Phase 6 — Branding storage + updateBranding (starting)
+Phase 7 — brandingForTenant public read (starting)
 
 ## Remaining Phases
-- Phase 6 — Branding storage + updateBranding
 - Phase 7 — brandingForTenant public read
 - Phase 8 — Reseller-branded emails
 - Phase 9 — childOrganizations analytics
