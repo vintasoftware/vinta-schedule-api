@@ -54,7 +54,7 @@ urlpatterns = [
     path("auth/", include("allauth.socialaccount.providers.google.urls")),
     path("auth/", include("allauth.headless.urls")),
     path("", include((router.urls, "api")), name="api"),
-    path("api/", include(organizations_extra_patterns)),
+    path("", include(organizations_extra_patterns)),
     path("public/", include("calendar_integration.token_urls")),
     path("api/", include("calendar_integration.webhook_urls")),
     path(

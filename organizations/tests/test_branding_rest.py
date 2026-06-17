@@ -17,7 +17,7 @@ from organizations.models import (
 
 User = get_user_model()
 
-BRANDING_URL = "/api/branding/"
+BRANDING_URL = "/branding/"
 
 
 def assert_response_status_code(response, expected_status_code):
