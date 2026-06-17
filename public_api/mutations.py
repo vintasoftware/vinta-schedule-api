@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Annotated, cast
 
+from django.db import IntegrityError
 from django.utils import timezone
 
 import strawberry
@@ -136,11 +137,16 @@ class Mutation(CalendarGroupMutations):
             )
 
         # Create the child org with parent=acting_org and can_invite_organizations=False
-        child_org = Organization.objects.create(
-            name=input.name,
-            parent=acting_org,
-            can_invite_organizations=False,
-        )
+        try:
+            child_org = Organization.objects.create(
+                name=input.name,
+                parent=acting_org,
+                can_invite_organizations=False,
+            )
+        except IntegrityError as e:
+            raise GraphQLError(
+                f"An organization with name '{input.name}' already exists under this parent."
+            ) from e
 
         return CreateOrganizationResult(
             organization=OrganizationResult(id=child_org.id, name=child_org.name)

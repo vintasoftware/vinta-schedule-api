@@ -10,7 +10,7 @@ def assert_org_can_invite(acting_org: Organization) -> None:
     Gate: raise PermissionDenied unless the acting org can invite/create other orgs.
 
     Every reseller-bundle operation checks both this gate and the token's OrganizationResourceAccess
-    scope. The DB flag is the operator's switch; the scope is the reseller's lease-privilege control
+    scope. The DB flag is the operator's switch; the scope is the reseller's least-privilege control
     over its own tokens.
 
     Args:

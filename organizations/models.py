@@ -106,6 +106,14 @@ class Organization(BaseModel):
         ),
     )
 
+    class Meta:
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=["parent", "name"],
+                name="uniq_org_name_per_parent",
+            ),
+        ]
+
     def __str__(self):
         return self.name
 

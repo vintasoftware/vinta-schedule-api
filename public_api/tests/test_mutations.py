@@ -116,6 +116,9 @@ class TestGraphQLMutations:
         assert child_org.parent_id == reseller_org.id
         assert child_org.can_invite_organizations is False
 
+        # Verify no membership was created for the child
+        assert not OrganizationMembership.objects.filter(organization=child_org).exists()
+
     def test_create_organization_fails_flag_off(self):
         """Test that createOrganization fails when acting org has flag off."""
         from di_core.containers import container
@@ -158,9 +161,14 @@ class TestGraphQLMutations:
 
         assert response.status_code == 200
         response_data = response.json()
-        # Should get a GraphQL error
+        # Should get a GraphQL error with the permission message
         assert "errors" in response_data
         assert len(response_data["errors"]) > 0
+        assert (
+            "does not have permission to invite or create" in str(response_data["errors"]).lower()
+        )
+        # Verify no organization with the attempted name was created
+        assert not Organization.objects.filter(name="Child Org").exists()
 
     def test_create_organization_fails_no_scope(self):
         """Test that createOrganization fails without ORGANIZATION scope."""
@@ -203,6 +211,10 @@ class TestGraphQLMutations:
         # Should get a GraphQL error for permission denied
         assert "errors" in response_data
         assert len(response_data["errors"]) > 0
+        # Verify the OrganizationResourceAccess permission message
+        assert "don't have access" in str(response_data["errors"]).lower()
+        # Verify no organization was created
+        assert not Organization.objects.filter(name="Child Org").exists()
 
     def test_create_organization_duplicate_name_under_parent(self):
         """Test that duplicate child names under the same parent are rejected."""

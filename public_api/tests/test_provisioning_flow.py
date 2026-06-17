@@ -119,7 +119,9 @@ class TestCreateOrganizationProvisioning:
         )
         baker.make(ResourceAccess, system_user=system_user, resource_name="organization")
 
-        mutation = """
+        # Attempt to pass can_invite_organizations: true in the input
+        # The GraphQL schema should reject this as an unknown field
+        mutation_with_flag_attempt = """
         mutation CreateOrganization($input: CreateOrganizationInput!) {
             createOrganization(input: $input) {
                 organization {
@@ -130,31 +132,32 @@ class TestCreateOrganizationProvisioning:
         }
         """
 
-        # Even if we try to pass can_invite_organizations in input
-        # (which the GraphQL schema shouldn't allow), the created child
-        # should always have it as False
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
                 "/graphql/",
                 data={
-                    "query": mutation,
-                    "variables": {"input": {"name": "Child Org"}},
+                    "query": mutation_with_flag_attempt,
+                    "variables": {"input": {"name": "Child Org", "canInviteOrganizations": True}},
                 },
                 format="json",
                 headers={"authorization": f"Bearer {system_user.id}:{token}"},
             )
 
         assert response.status_code == 200
-        data = response.json()
-        assert "data" in data
+        response_data = response.json()
 
-        # Verify the created child has flag False
-        child_org = Organization.objects.get(name="Child Org")
-        assert child_org.can_invite_organizations is False
-
-        # Verify CreateOrganizationInput doesn't include can_invite_organizations field
-        # by checking that the input type doesn't expose it
-        # (This is ensured by not including it in the CreateOrganizationInput dataclass)
+        # The GraphQL schema should reject unknown input fields at validation time
+        # This should produce a validation error
+        if "errors" in response_data:
+            # We got a validation error about the unknown field, which is the desired behavior
+            # Verify that no child org was created
+            assert not Organization.objects.filter(name="Child Org", parent=reseller_org).exists()
+        else:
+            # If no validation error (e.g., the field was silently ignored),
+            # verify that the created child has flag False despite the attempt
+            assert "data" in response_data
+            child_org = Organization.objects.get(name="Child Org", parent=reseller_org)
+            assert child_org.can_invite_organizations is False
 
     def test_multiple_children_same_reseller_different_names(self):
         """Test that a reseller can create multiple children with different names."""
