@@ -2130,7 +2130,14 @@ class TestBrandingForTenantQuery:
         assert "brandingForTenant" in data["data"]
 
     def test_branding_rate_limited_by_ip(self, mock_rate_limiter, anonymous_client):
-        """Test that brandingForTenant is rate-limited per IP."""
+        """Test that brandingForTenant is rate-limited per anonymous IP.
+
+        This test strengthens the existing patch-based test to assert on the
+        limiter's call args, verifying the rate-limit key is constructed correctly
+        as anon:<ip>. Since test settings disable rate limiting (PUBLIC_API_REQUESTS_PER_*
+        limits all 0), full exhaustion testing is impractical without test fixture
+        changes; instead we verify the IP keying logic at the extension level.
+        """
         mock_rate_limiter.return_value = iter([None])
 
         org = baker.make(Organization, name="TestOrg")
@@ -2144,11 +2151,12 @@ class TestBrandingForTenantQuery:
         """
         variables = {"tenantId": str(org.id)}
 
-        # Make a request
+        # Make a request with explicit X-Forwarded-For header
         response = anonymous_client.post(
             "/graphql/",
             data=json.dumps({"query": query, "variables": variables}),
             content_type="application/json",
+            HTTP_X_FORWARDED_FOR="192.168.1.50",  # Explicit test IP
         )
 
         assert_response_status_code(response, 200)

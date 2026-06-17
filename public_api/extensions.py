@@ -109,6 +109,15 @@ class OrganizationRateLimiter(SchemaExtension):
             rate_limit_key = str(organization_id)
         else:
             # Get client IP from headers (respects X-Forwarded-For behind proxy)
+            # NAT/XFF Tradeoff (v1):
+            # - Clients behind shared NAT or a CDN that doesn't forward per-client XFF
+            #   will share one anon rate-limit bucket (reduces granularity but acceptable
+            #   for public branding endpoint with vinta-default fallback).
+            # - XFF is client-controlled and spoofable, so anon-limit evasion/forgery
+            #   is accepted in v1 (impact is low: the endpoint returns only public branding
+            #   with a vinta-default fallback, so unauthorized access doesn't expose secrets).
+            # - Trusted-proxy-count-aware IP derivation is deferred (requires ops input
+            #   on real proxy topology).
             client_ip = request.headers.get("X-Forwarded-For", "").split(",")[
                 0
             ].strip() or request.META.get("REMOTE_ADDR", "")

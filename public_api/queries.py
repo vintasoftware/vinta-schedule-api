@@ -80,6 +80,21 @@ def _get_org(info: strawberry.Info):
     return org
 
 
+def _vinta_default_branding() -> PublicBrandingResult:
+    """Return the Vinta Schedule default branding sentinel.
+
+    Used for both missing tenants (no enumeration oracle) and unbranded
+    organizations, ensuring the response is identical for unknown vs unbranded
+    to prevent enumeration attacks.
+    """
+    return PublicBrandingResult(
+        app_name="Vinta Schedule",
+        logo_url="",
+        primary_color="",
+        secondary_color="",
+    )
+
+
 def _slice_qs[TQuerySet: QuerySet](qs: TQuerySet, offset: int, limit: int) -> TQuerySet:
     if offset < 0:
         raise GraphQLError("Offset must be non-negative")
@@ -543,23 +558,13 @@ class Query:
 
         if org is None:
             # Unknown tenant ID returns the vinta default (no enumeration oracle)
-            return PublicBrandingResult(
-                app_name="Vinta Schedule",
-                logo_url="",
-                primary_color="",
-                secondary_color="",
-            )
+            return _vinta_default_branding()
 
         # Resolve branding by walking up the parent chain to the nearest reseller
         branding = resolve_branding(org)
         if branding is None:
             # Unbranded subtree returns the vinta default
-            return PublicBrandingResult(
-                app_name="Vinta Schedule",
-                logo_url="",
-                primary_color="",
-                secondary_color="",
-            )
+            return _vinta_default_branding()
 
         # Return the resolved branding (no secrets exposed)
         return PublicBrandingResult(
