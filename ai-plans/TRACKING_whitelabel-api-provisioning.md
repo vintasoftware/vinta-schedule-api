@@ -92,11 +92,19 @@ Inserted **Phase 10a — First-party REST branding endpoints** (backend) after P
 - **Review**: no BLOCKER — no-oracle + authenticated-limit-unchanged confirmed. ACCEPTED residual gap: anon rate-limit can't be exhaustion-tested (test settings zero the limits ⇒ limiter None ⇒ try_acquire unreached); correct-by-inspection, low-impact endpoint. Follow-up: rate-limit test infra. XFF-spoof/NAT accepted v1 (documented inline).
 - **Carry-forward**: `PublicBrandingResult` (secret-free) + `_vinta_default_branding()` in public_api/queries.py. resolve_branding is the shared resolution path.
 
+### Phase 8 — Reseller-branded transactional emails ✅
+- **Status**: PR #93 (https://github.com/vintasoftware/vinta-schedule-api/pull/93), base phase-7
+- **Branch**: plan/whitelabel-api-provisioning/phase-8 · Model: claude-haiku-4-5 (Tier 2) · implementer
+- **Commits**: b3f0d18 (feat) + 4c1de5f (fix confirmations/invited_by/render-tests) + 87dec7c (fix strip byte-for-byte + drop dead code)
+- **Summary**: Invitation templates use `{{ app_name }}` (default "Vinta Schedule") from `resolve_branding(invitation.organization)`; non-reseller renders byte-for-byte. Invitation context handles `invited_by=None` (public-API reseller invite) by falling back to org name as inviter (no longer raises). support_email carried in context.
+- **Gate**: 1979 passed (orchestrator-verified); check --deploy + makemigrations clean.
+- **Review**: ⚠️ 3 BLOCKERs caught — (1) confirmation templates wrongly substituted app_name for the domain URL (byte-for-byte break) → reverted (account emails stay vinta default); (2) context RAISED for invited_by=None → killed the marquee branded-invite path → made graceful; (3) `.strip()` on invited_by_name changed blank-last-name spacing → reverted. Dead per-email branding queries removed from accounts. Tests now RENDER templates.
+- **DEFERRED**: From/reply-to = support_email — vintasend DjangoEmailNotificationAdapter has no per-notification from_email hook; TODO at send site (organizations/services.py). Needs adapter extension; follow-up.
+
 ## Current Phase
-Phase 8 — Reseller-branded transactional emails (starting)
+Phase 9 — childOrganizations analytics (starting)
 
 ## Remaining Phases
-- Phase 8 — Reseller-branded emails
 - Phase 9 — childOrganizations analytics
 - Phase 10a — First-party REST branding endpoints (NEW, backend, depends on Phase 6)
 
