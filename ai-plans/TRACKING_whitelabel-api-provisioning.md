@@ -31,11 +31,20 @@ None (capability switch `can_invite_organizations`, DB-only, default off — not
   - Branding resolution entry point: `org.get_branding_root() -> Organization | None` (None ⇒ vinta default). **Deferred perf note**: walk is lazy FK, one query per hop (N+1 on deep chains) — Phase 6 (`resolve_branding`) should add `select_related` / depth cap if needed.
   - New scopes already in `PublicAPIResources`; map fields to them via `OrganizationResourceAccess.FIELD_TO_RESOURCE_MAPPING` in each phase.
 
+### Phase 1 — createOrganization (gated child provisioning) ✅
+- **Status**: PR #86 (https://github.com/vintasoftware/vinta-schedule-api/pull/86), base phase-0
+- **Branch**: plan/whitelabel-api-provisioning/phase-1
+- **Model**: claude-haiku-4-5 (Tier 2) · agent implementer
+- **Commits**: 3c5cdfc (feat) + ea80bf4 (fix race + harden tests)
+- **Summary**: `createOrganization(input:{name})` GraphQL mutation. Dual gate — `OrganizationResourceAccess('ORGANIZATION')` permission class (pre-resolver scope) + `assert_org_can_invite(acting_org)` (in-resolver DB flag). Child created with `parent=acting_org`, `can_invite_organizations=False` hardcoded (never from input). Acting org from `request.public_api_organization`. Dup sibling name blocked by `UniqueConstraint(parent,name)` (migration 0009, NULL-distinct) + IntegrityError backstop + friendly message. No membership created.
+- **Gate**: 1896 passed; check --deploy + makemigrations --check clean.
+- **Review**: no BLOCKER; SHOULD-FIX (TOCTOU race → unique constraint; weak security asserts → specific gate/scope message + no-creation; flag-injection test behavioral) all fixed.
+- **Carry-forward**: gated-public-mutation pattern — register field in `FIELD_TO_RESOURCE_MAPPING` (public_api/permissions.py), permission_classes=[IsAuthenticated, OrganizationResourceAccess], acting org via `info.context.request.public_api_organization`, `assert_org_can_invite` in-resolver after scope. Types in public_api/types.py. organizations migrations now at 0009.
+
 ## Current Phase
-Phase 1 — createOrganization (starting)
+Phase 2 — createUser (starting)
 
 ## Remaining Phases
-- Phase 2 — createUser
 - Phase 3 — createInvitation (branded email)
 - Phase 4 — Self-managed invitations
 - Phase 5 — createSystemUserToken
