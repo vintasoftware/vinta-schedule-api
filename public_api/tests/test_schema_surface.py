@@ -8,6 +8,24 @@ from rest_framework import serializers
 from organizations.models import Organization
 
 
+def collect_all_graphql_field_names() -> set[str]:
+    """Introspect the fully-built Strawberry schema's graphql-core type map.
+
+    Enumerates every input and output type and all their fields to ensure
+    comprehensive field discovery across all GraphQL types.
+    """
+    from public_api.schema import schema
+
+    names: set[str] = set()
+    for gql_type in schema._schema.type_map.values():
+        fields = getattr(gql_type, "fields", None)
+        if not fields:
+            continue
+        for field_name in fields:  # dict keyed by field name
+            names.add(field_name.lower())
+    return names
+
+
 @pytest.mark.django_db
 class TestCanInviteOrganizationsNotExposed:
     """Guard tests to ensure can_invite_organizations is not reachable via API."""
@@ -18,31 +36,16 @@ class TestCanInviteOrganizationsNotExposed:
         This test introspects the public GraphQL schema to ensure the flag is not
         exposed as a queryable/mutable field in any Input or Output type.
         """
-        from strawberry.utils.str_converters import to_camel_case
+        # Collect all field names from the fully-built GraphQL schema
+        field_names = collect_all_graphql_field_names()
 
-        from public_api.mutations import Mutation
-        from public_api.queries import Query
-
-        # Collect all field names from Query and Mutation types
-        field_names = set()
-
-        # Check Query fields
-        if hasattr(Query, "_type_definition"):
-            for field in Query._type_definition.fields:
-                field_names.add(field.name.lower())
-                field_names.add(to_camel_case(field.name).lower())
-
-        # Check Mutation fields
-        if hasattr(Mutation, "_type_definition"):
-            for field in Mutation._type_definition.fields:
-                field_names.add(field.name.lower())
-                field_names.add(to_camel_case(field.name).lower())
+        # Verify introspection actually found fields (anti-vacuity check)
+        assert field_names, "schema introspection returned no fields — guard would be vacuous"
 
         # canInviteOrganizations should not appear in any form
         forbidden_variations = [
             "caninviteorganizations",
             "can_invite_organizations",
-            "canInviteOrganizations",
         ]
         for variation in forbidden_variations:
             assert variation not in field_names, (
