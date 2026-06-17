@@ -433,6 +433,9 @@ class TestGraphQLMutations:
         assert email_address.verified is False
         assert email_address.primary is True
 
+        # Verify the user is membership-less (no organization membership)
+        assert not OrganizationMembership.objects.filter(user=created_user).exists()
+
     def test_create_user_idempotent_on_email(self):
         """Test that createUser is idempotent on email (returns existing user)."""
         from di_core.containers import container
@@ -676,3 +679,89 @@ class TestGraphQLMutations:
         # Names should be None when not provided
         assert data["data"]["createUser"]["user"]["firstName"] is None
         assert data["data"]["createUser"]["user"]["lastName"] is None
+
+    def test_create_user_idempotent_on_existing_profileless_user(self):
+        """Test that createUser handles existing users without a Profile (regression test for BLOCKER)."""
+        from allauth.account.models import EmailAddress
+
+        from di_core.containers import container
+
+        # Create a reseller org
+        reseller_org = baker.make(Organization, name="Reseller Org", can_invite_organizations=True)
+
+        # Create a system user with USER resource access
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=reseller_org
+        )
+        baker.make(
+            ResourceAccess,
+            system_user=system_user,
+            resource_name="user",
+        )
+
+        # Create a User without a Profile (mimic a user created by another path)
+        user_model = get_user_model()
+        pre_existing_user = user_model.objects.create(email="profileless@example.com")
+        # Set unusable password to mimic an existing user from another auth pathway
+        pre_existing_user.set_unusable_password()
+        pre_existing_user.save(update_fields=["password"])
+
+        # Verify the pre-existing user has no Profile and no EmailAddress
+        from django.core.exceptions import ObjectDoesNotExist
+
+        try:
+            _ = pre_existing_user.profile
+            has_profile = True
+        except ObjectDoesNotExist:
+            has_profile = False
+        assert not has_profile
+        assert EmailAddress.objects.filter(user=pre_existing_user).count() == 0
+
+        mutation = """
+        mutation CreateUser($input: CreateUserInput!) {
+            createUser(input: $input) {
+                user {
+                    id
+                    email
+                    firstName
+                    lastName
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "email": "profileless@example.com",
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        # Should succeed with no GraphQL errors
+        assert response.status_code == 200
+        data = response.json()
+        assert "data" in data
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        # Verify the returned user has the pre-existing user's id
+        returned_user_id = data["data"]["createUser"]["user"]["id"]
+        assert int(returned_user_id) == pre_existing_user.id
+
+        # Verify exactly one User with this email exists
+        assert user_model.objects.filter(email="profileless@example.com").count() == 1
+
+        # Verify no EmailAddress was created (idempotent path must not create one)
+        assert EmailAddress.objects.filter(user=pre_existing_user).count() == 0
+
+        # Verify the user still has no usable password
+        pre_existing_user.refresh_from_db()
+        assert pre_existing_user.has_usable_password() is False

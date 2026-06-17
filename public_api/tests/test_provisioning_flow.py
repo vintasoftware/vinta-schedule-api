@@ -1,4 +1,6 @@
-"""Integration tests for the provisioning flow (Phase 1: createOrganization)."""
+"""Integration tests for the provisioning flow (Phase 1: createOrganization; Phase 2: createUser)."""
+
+from django.contrib.auth import authenticate, get_user_model
 
 import pytest
 from model_bakery import baker
@@ -222,3 +224,122 @@ class TestCreateOrganizationProvisioning:
         assert child_a.parent_id == reseller_org.id
         assert child_b.parent_id == reseller_org.id
         assert child_a.id != child_b.id
+
+
+@pytest.mark.django_db
+class TestCreateUserProvisioning:
+    """Integration tests for the createUser mutation in the provisioning flow (Phase 2)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def test_provisioned_user_cannot_password_authenticate(self):
+        """Test that a provisioned user cannot password-authenticate (behavioral test)."""
+        from di_core.containers import container
+
+        # Create a reseller org
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+
+        # Create a system user for the reseller with USER scope
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="reseller_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="user")
+
+        mutation = """
+        mutation CreateUser($input: CreateUserInput!) {
+            createUser(input: $input) {
+                user {
+                    id
+                    email
+                }
+            }
+        }
+        """
+
+        user_email = "provisioned@example.com"
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "email": user_email,
+                            "firstName": "Provisioned",
+                            "lastName": "User",
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "data" in data
+        assert data["data"]["createUser"]["user"]["email"] == user_email
+
+        # Get the provisioned user
+        user_model = get_user_model()
+        provisioned_user = user_model.objects.get(email=user_email)
+
+        # Assert user has no usable password
+        assert provisioned_user.has_usable_password() is False
+
+        # Behaviorally assert the user cannot password-authenticate
+        # The USERNAME_FIELD for User is "email"
+        authenticated_user = authenticate(username=user_email, password="anything")
+        assert authenticated_user is None
+
+    def test_token_without_user_scope_is_denied(self):
+        """Test that a token without USER scope cannot call createUser."""
+        from di_core.containers import container
+
+        # Create a reseller org
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+
+        # Create a system user WITHOUT USER scope
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="reseller_integration", organization=reseller_org
+        )
+        # Grant a different resource instead (e.g., ORGANIZATION)
+        baker.make(ResourceAccess, system_user=system_user, resource_name="organization")
+
+        mutation = """
+        mutation CreateUser($input: CreateUserInput!) {
+            createUser(input: $input) {
+                user {
+                    id
+                    email
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "email": "denied@example.com",
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        response_data = response.json()
+        # Should get permission denied
+        assert "errors" in response_data
+        assert len(response_data["errors"]) > 0
+
+        # Verify no user was created
+        user_model = get_user_model()
+        assert not user_model.objects.filter(email="denied@example.com").exists()

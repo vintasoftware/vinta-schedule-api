@@ -194,13 +194,15 @@ class Mutation(CalendarGroupMutations):
             defaults={},
         )
 
+        # Guarantee a Profile exists (handles both newly created and profile-less existing users)
+        profile, _ = Profile.objects.get_or_create(user=user)
+
         if created:
-            # Only set unusable password and create profile if the user is newly created
+            # Only set unusable password and email if the user is newly created
             user.set_unusable_password()
             user.save(update_fields=["password"])
 
-            # Create the associated Profile with first_name and last_name
-            profile, _ = Profile.objects.get_or_create(user=user)
+            # Set first_name and last_name on the Profile for the new user
             if input.first_name is not None:
                 profile.first_name = input.first_name
             if input.last_name is not None:
@@ -219,7 +221,7 @@ class Mutation(CalendarGroupMutations):
             user=UserResult(
                 id=user.id,
                 email=user.email,
-                first_name=user.profile.first_name or None,
-                last_name=user.profile.last_name or None,
+                first_name=profile.first_name or None,
+                last_name=profile.last_name or None,
             )
         )
