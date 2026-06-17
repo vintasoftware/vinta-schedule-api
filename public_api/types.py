@@ -164,3 +164,20 @@ class PublicBrandingResult:
     logo_url: str
     primary_color: str
     secondary_color: str
+
+
+@strawberry.type
+class ChildOrganizationMetrics:
+    """Point-in-time aggregate counts for a child organization.
+
+    Returned by the childOrganizations analytics query (resource: CHILD_ORG_ANALYTICS).
+    Counts are computed via ORM subqueries to avoid join fan-out double-counting.
+    """
+
+    id: int
+    name: str
+    created_at: datetime.datetime
+    membership_count: int
+    calendar_count: int
+    event_count: int
+    calendar_group_count: int

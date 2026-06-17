@@ -8,7 +8,13 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarEvent
+from calendar_integration.models import (
+    AvailableTime,
+    BlockedTime,
+    Calendar,
+    CalendarEvent,
+    CalendarGroup,
+)
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     BlockedTimeData,
@@ -2165,3 +2171,335 @@ class TestBrandingForTenantQuery:
         assert mock_rate_limiter.called, (
             "Rate limiter should be called for unauthenticated requests"
         )
+
+
+# ---------------------------------------------------------------------------
+# childOrganizations analytics query tests
+# ---------------------------------------------------------------------------
+
+_CHILD_ORG_ANALYTICS_QUERY = """
+    query GetChildOrganizations($offset: Int, $limit: Int) {
+        childOrganizations(offset: $offset, limit: $limit) {
+            id
+            name
+            createdAt
+            membershipCount
+            calendarCount
+            eventCount
+            calendarGroupCount
+        }
+    }
+"""
+
+
+def _make_reseller_client(reseller: Organization):
+    """Create an authenticated API client for a reseller org with CHILD_ORG_ANALYTICS scope."""
+    auth_service = PublicAPIAuthService()
+    system_user, token = auth_service.create_system_user(
+        integration_name="reseller_analytics", organization=reseller
+    )
+    baker.make(
+        ResourceAccess,
+        system_user=system_user,
+        resource_name=PublicAPIResources.CHILD_ORG_ANALYTICS,
+    )
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+    return client
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestChildOrganizationsQuery:
+    """Tests for the childOrganizations gated analytics query."""
+
+    def test_exact_aggregate_counts_per_child(self, mock_rate_limiter):
+        """Counts are exact per child; distinct metrics detect join fan-out.
+
+        Seeds a child with intentionally different values for each metric
+        (3 memberships, 2 calendars, 5 events, 1 group) so that any
+        join-based multi-relation fan-out would produce obviously wrong numbers.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        child = baker.make(Organization, name="ChildA", parent=reseller)
+        client = _make_reseller_client(reseller)
+
+        # 3 memberships
+        for i in range(3):
+            user = baker.make("users.User", email=f"user{i}@childA.test")
+            baker.make(OrganizationMembership, user=user, organization=child)
+
+        # 2 calendars
+        for i in range(2):
+            baker.make(Calendar, organization=child, external_id=f"cal-{i}")
+
+        # 5 events — all belong directly to the child org
+        for i in range(5):
+            baker.make(
+                CalendarEvent,
+                organization=child,
+                external_id=f"ev-{i}",
+                timezone="UTC",
+            )
+
+        # 1 calendar group
+        baker.make(CalendarGroup, organization=child)
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CHILD_ORG_ANALYTICS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        children = data["childOrganizations"]
+        assert len(children) == 1
+
+        row = children[0]
+        assert row["id"] == child.id
+        assert row["name"] == "ChildA"
+        assert row["membershipCount"] == 3, f"expected 3, got {row['membershipCount']}"
+        assert row["calendarCount"] == 2, f"expected 2, got {row['calendarCount']}"
+        assert row["eventCount"] == 5, f"expected 5, got {row['eventCount']}"
+        assert row["calendarGroupCount"] == 1, f"expected 1, got {row['calendarGroupCount']}"
+
+    def test_multiple_children_counted_independently(self, mock_rate_limiter):
+        """Each child's counts are independent (no cross-child leakage)."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = baker.make(Organization, name="Reseller2", can_invite_organizations=True)
+        child1 = baker.make(Organization, name="Child1", parent=reseller)
+        child2 = baker.make(Organization, name="Child2", parent=reseller)
+        client = _make_reseller_client(reseller)
+
+        # child1: 2 memberships, 1 calendar, 0 events, 0 groups
+        for i in range(2):
+            u = baker.make("users.User", email=f"mc1-{i}@test.com")
+            baker.make(OrganizationMembership, user=u, organization=child1)
+        baker.make(Calendar, organization=child1, external_id="c1-cal")
+
+        # child2: 0 memberships, 0 calendars, 3 events, 2 groups
+        for i in range(3):
+            baker.make(CalendarEvent, organization=child2, external_id=f"c2-ev-{i}", timezone="UTC")
+        for i in range(2):
+            baker.make(CalendarGroup, organization=child2, name=f"grp-{i}")
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CHILD_ORG_ANALYTICS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        children = {c["id"]: c for c in data["childOrganizations"]}
+
+        assert children[child1.id]["membershipCount"] == 2
+        assert children[child1.id]["calendarCount"] == 1
+        assert children[child1.id]["eventCount"] == 0
+        assert children[child1.id]["calendarGroupCount"] == 0
+
+        assert children[child2.id]["membershipCount"] == 0
+        assert children[child2.id]["calendarCount"] == 0
+        assert children[child2.id]["eventCount"] == 3
+        assert children[child2.id]["calendarGroupCount"] == 2
+
+    def test_no_cross_reseller_leak(self, mock_rate_limiter):
+        """Only the acting reseller's own children are returned (no cross-reseller data)."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller_a = baker.make(Organization, name="ResellerA", can_invite_organizations=True)
+        reseller_b = baker.make(Organization, name="ResellerB", can_invite_organizations=True)
+        child_a = baker.make(Organization, name="ChildOfA", parent=reseller_a)
+        child_b = baker.make(Organization, name="ChildOfB", parent=reseller_b)
+
+        # Client for reseller_a
+        client = _make_reseller_client(reseller_a)
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CHILD_ORG_ANALYTICS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        children = data["childOrganizations"]
+        returned_ids = {c["id"] for c in children}
+
+        assert child_a.id in returned_ids, "reseller_a's child must be present"
+        assert child_b.id not in returned_ids, "reseller_b's child must NOT appear"
+        assert reseller_b.id not in returned_ids, "reseller_b itself must NOT appear"
+
+    def test_flag_off_acting_org_returns_permission_error(self, mock_rate_limiter):
+        """A non-reseller org (flag off) is denied even if it holds the scope."""
+        mock_rate_limiter.return_value = iter([None])
+
+        non_reseller = baker.make(Organization, name="NotAReseller", can_invite_organizations=False)
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=non_reseller
+        )
+        baker.make(
+            ResourceAccess,
+            system_user=system_user,
+            resource_name=PublicAPIResources.CHILD_ORG_ANALYTICS,
+        )
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CHILD_ORG_ANALYTICS_QUERY}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+        error_text = str(response_data["errors"])
+        assert "permission" in error_text.lower() or "invite" in error_text.lower(), (
+            f"Expected a permission-related error, got: {error_text}"
+        )
+
+    def test_missing_child_org_analytics_scope_returns_denied(self, mock_rate_limiter):
+        """A reseller token without CHILD_ORG_ANALYTICS scope is denied at the permission layer."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = baker.make(Organization, name="ResellerNoScope", can_invite_organizations=True)
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="no_scope_integration", organization=reseller
+        )
+        # Intentionally do NOT grant CHILD_ORG_ANALYTICS scope
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CHILD_ORG_ANALYTICS_QUERY}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+
+    def test_pagination_offset_and_limit(self, mock_rate_limiter):
+        """Pagination returns the correct slice of children in stable order."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = baker.make(Organization, name="ResellerPaging", can_invite_organizations=True)
+        client = _make_reseller_client(reseller)
+
+        # Create 5 children
+        children = [
+            baker.make(Organization, name=f"PagChild-{i}", parent=reseller) for i in range(5)
+        ]
+        children_by_id = sorted(children, key=lambda c: c.id)
+
+        # Request only first 2
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {
+                    "query": _CHILD_ORG_ANALYTICS_QUERY,
+                    "variables": {"offset": 0, "limit": 2},
+                }
+            ),
+            content_type="application/json",
+        )
+        data = assert_graphql_success(response)
+        page1 = data["childOrganizations"]
+        assert len(page1) == 2
+        assert page1[0]["id"] == children_by_id[0].id
+        assert page1[1]["id"] == children_by_id[1].id
+
+        # Next page: offset=2, limit=2
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {
+                    "query": _CHILD_ORG_ANALYTICS_QUERY,
+                    "variables": {"offset": 2, "limit": 2},
+                }
+            ),
+            content_type="application/json",
+        )
+        data = assert_graphql_success(response)
+        page2 = data["childOrganizations"]
+        assert len(page2) == 2
+        assert page2[0]["id"] == children_by_id[2].id
+        assert page2[1]["id"] == children_by_id[3].id
+
+    def test_zero_counts_for_empty_child(self, mock_rate_limiter):
+        """A child with no members / calendars / events / groups returns zero counts."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = baker.make(Organization, name="ResellerEmpty", can_invite_organizations=True)
+        child = baker.make(Organization, name="EmptyChild", parent=reseller)
+        client = _make_reseller_client(reseller)
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CHILD_ORG_ANALYTICS_QUERY}),
+            content_type="application/json",
+        )
+        data = assert_graphql_success(response)
+        children = data["childOrganizations"]
+        assert len(children) == 1
+        row = children[0]
+        assert row["id"] == child.id
+        assert row["membershipCount"] == 0
+        assert row["calendarCount"] == 0
+        assert row["eventCount"] == 0
+        assert row["calendarGroupCount"] == 0
+
+    def test_only_direct_children_returned(self, mock_rate_limiter):
+        """Only direct children (parent=reseller) are returned; grandchildren are excluded."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = baker.make(Organization, name="ResellerDirect", can_invite_organizations=True)
+        direct_child = baker.make(Organization, name="DirectChild", parent=reseller)
+        # grandchild — NOT a direct child of reseller
+        grandchild = baker.make(Organization, name="GrandChild", parent=direct_child)
+        client = _make_reseller_client(reseller)
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CHILD_ORG_ANALYTICS_QUERY}),
+            content_type="application/json",
+        )
+        data = assert_graphql_success(response)
+        children = data["childOrganizations"]
+        returned_ids = {c["id"] for c in children}
+
+        assert direct_child.id in returned_ids, "direct child must be listed"
+        assert grandchild.id not in returned_ids, "grandchild must NOT be listed"
+
+    def test_membership_count_includes_inactive(self, mock_rate_limiter):
+        """membership_count includes ALL memberships (active=True and active=False).
+
+        The plan spec says 'memberships' with no active-only qualifier.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = baker.make(Organization, name="ResellerInactive", can_invite_organizations=True)
+        child = baker.make(Organization, name="ChildInactive", parent=reseller)
+        client = _make_reseller_client(reseller)
+
+        user_active = baker.make("users.User", email="active@example.com")
+        user_inactive = baker.make("users.User", email="inactive@example.com")
+        baker.make(OrganizationMembership, user=user_active, organization=child, is_active=True)
+        baker.make(OrganizationMembership, user=user_inactive, organization=child, is_active=False)
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CHILD_ORG_ANALYTICS_QUERY}),
+            content_type="application/json",
+        )
+        data = assert_graphql_success(response)
+        children = data["childOrganizations"]
+        assert len(children) == 1
+        # Both memberships (active + inactive) are counted
+        assert children[0]["membershipCount"] == 2
