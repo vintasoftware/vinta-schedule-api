@@ -41,8 +41,19 @@ None (capability switch `can_invite_organizations`, DB-only, default off — not
 - **Review**: no BLOCKER; SHOULD-FIX (TOCTOU race → unique constraint; weak security asserts → specific gate/scope message + no-creation; flag-injection test behavioral) all fixed.
 - **Carry-forward**: gated-public-mutation pattern — register field in `FIELD_TO_RESOURCE_MAPPING` (public_api/permissions.py), permission_classes=[IsAuthenticated, OrganizationResourceAccess], acting org via `info.context.request.public_api_organization`, `assert_org_can_invite` in-resolver after scope. Types in public_api/types.py. organizations migrations now at 0009.
 
+### Phase 3 — createInvitation (branded-email path) ✅
+- **Status**: PR #88 (https://github.com/vintasoftware/vinta-schedule-api/pull/88), base phase-2
+- **Branch**: plan/whitelabel-api-provisioning/phase-3
+- **Model**: claude-sonnet-4-6 (Tier 3) · implementer (2 socket deaths mid-run; orchestrator finished enum/lint + drove fixer)
+- **Commits**: f181281 (single — feat, includes orchestrator enum/lint recovery + fixer BLOCKER/test work)
+- **Summary**: `createInvitation(input:{userEmail,organizationId,role=MEMBER,sendEmail=true})` → `{invitation{id email expiresAt}, token, inviteUrl}` (token/url null — email path only; sendEmail=false is Phase 4). Gate INVITATION + assert_org_can_invite. `OrganizationInvitation` gains `role` (default MEMBER); `invited_by` now nullable+SET_NULL (caller is SystemUser). migration 0010. Role propagates on accept via BOTH `accept_invitation` (token) and `provision_tenant_for_user` (social). Already-active-member → UserAlreadyHasMembershipError.
+- **Gate**: 1923 passed; check --deploy + makemigrations --check clean.
+- **Review**: BLOCKER — `accept_invitation` (token path) created membership without role= ⇒ ADMIN silently downgraded to MEMBER (only social path updated); FIXED both paths + ADMIN-accept regression test. SHOULD-FIX — thin subtree tests → added grandchild-accept/cross-reseller-reject/cycle-terminates + direct `assert_target_in_subtree` unit tests.
+- **DEVIATION (acknowledged)**: plan 4.3 named INVITATION+MEMBERSHIP; `FIELD_TO_RESOURCE_MAPPING` is one-resource-per-field by design — gated on INVITATION + DB flag, MEMBERSHIP implied. Not re-architected (out of scope). Documented in PR #88.
+- **Carry-forward**: `assert_target_in_subtree(acting_org, target_org)` in public_api/capabilities.py — reuse for Phases 5 & 9 (raises GraphQLError, cycle-guarded). `OrganizationService.invite_user_to_organization(email,first_name,last_name,organization,invited_by=None,role=...)` DI-injected via `organization_service` provider (now a required dep in get_mutation_dependencies). OrgRole strawberry enum (`@strawberry.enum class OrgRole(enum.Enum)`, `.to_model_role()`) in public_api/types.py. organizations migrations now at 0010.
+
 ## Current Phase
-Phase 2 — createUser (starting)
+Phase 4 — Self-managed invitations (email suppression + token return) (starting)
 
 ## Remaining Phases
 - Phase 3 — createInvitation (branded email)
