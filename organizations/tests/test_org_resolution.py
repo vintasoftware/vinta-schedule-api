@@ -329,6 +329,9 @@ class TestCalendarViewSetOrgScoping:
 
         cal_a = CalendarIntegrationTestFactory.create_calendar(organization=org_a)
         cal_b = CalendarIntegrationTestFactory.create_calendar(organization=org_b)
+        # Non-admin members only list calendars they own (owner-scoping).
+        CalendarIntegrationTestFactory.create_calendar_ownership(two_org_user, cal_a)
+        CalendarIntegrationTestFactory.create_calendar_ownership(two_org_user, cal_b)
 
         client = _auth_client_for(two_org_user)
         url = reverse("api:Calendars-list")
@@ -355,6 +358,9 @@ class TestCalendarViewSetOrgScoping:
 
         cal_a = CalendarIntegrationTestFactory.create_calendar(organization=org_a)
         cal_b = CalendarIntegrationTestFactory.create_calendar(organization=org_b)
+        # Non-admin members only list calendars they own (owner-scoping).
+        CalendarIntegrationTestFactory.create_calendar_ownership(two_org_user, cal_a)
+        CalendarIntegrationTestFactory.create_calendar_ownership(two_org_user, cal_b)
 
         client = _auth_client_for(two_org_user)
         url = reverse("api:Calendars-list")

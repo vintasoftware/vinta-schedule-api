@@ -117,10 +117,12 @@ class TestInactiveMembershipGating:
 
     def test_active_membership_sees_calendars(self):
         """An active member can see their organization's calendars."""
-        from calendar_integration.models import Calendar
+        from calendar_integration.models import Calendar, CalendarOwnership
 
-        _user, org, client = self._make_active_member_client()
-        baker.make(Calendar, organization=org)
+        user, org, client = self._make_active_member_client()
+        calendar = baker.make(Calendar, organization=org)
+        # Non-admin members only list calendars they own (owner-scoping).
+        CalendarOwnership.objects.create(organization=org, calendar=calendar, user=user)
 
         url = reverse("api:Calendars-list")
         response = client.get(url)
@@ -146,10 +148,12 @@ class TestInactiveMembershipGating:
         user object does not carry a stale cached membership (Django caches the
         reverse OneToOne result on the user instance).
         """
-        from calendar_integration.models import Calendar
+        from calendar_integration.models import Calendar, CalendarOwnership
 
         user, org, client = self._make_inactive_member_client()
-        baker.make(Calendar, organization=org)
+        calendar = baker.make(Calendar, organization=org)
+        # Non-admin members only list calendars they own (owner-scoping).
+        CalendarOwnership.objects.create(organization=org, calendar=calendar, user=user)
 
         # Verify inactive = empty
         url = reverse("api:Calendars-list")
