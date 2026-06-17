@@ -666,55 +666,51 @@ class TestCreateSystemUserTokenProvisioning:
         assert child_org.can_invite_organizations is False
 
     def test_minted_token_cannot_reach_another_resellers_tree(self):
-        """A token minted for reseller R1 cannot create a child under reseller R2's tree.
+        """createSystemUserToken with organizationId in R2's tree is rejected when acting as R1.
 
-        Cross-reseller isolation: the acting org of the minted token is R1, and R2's org
-        is outside R1's subtree — the mutation must be rejected with a subtree error.
+        Phase 5 subtree guard: R1's SYSTEM_USER-scoped token must not be able to mint a
+        delegated token whose target org belongs to R2's tree.
+
+        Asserts:
+        - The mutation returns a GraphQL error referencing 'subtree'.
+        - No SystemUser with the attempted integration_name is created.
         """
+        from public_api.models import SystemUser
+
         r1_org = baker.make(Organization, name="Reseller1", can_invite_organizations=True)
         r2_org = baker.make(Organization, name="Reseller2", can_invite_organizations=True)
         r2_child = baker.make(Organization, name="R2Child", parent=r2_org)
 
         auth_service = PublicAPIAuthService()
-        # Mint a token for R1 with ORGANIZATION scope (acting org = R1)
+        # R1 system user with SYSTEM_USER scope
         r1_su, r1_token = auth_service.create_system_user(
-            integration_name="r1_delegated_integration", organization=r1_org
+            integration_name="r1_system_user_integration", organization=r1_org
         )
-        baker.make(ResourceAccess, system_user=r1_su, resource_name="organization")
+        baker.make(ResourceAccess, system_user=r1_su, resource_name="system_user")
 
-        # Attempt to use the R1 minted token to create a child under R2's child (off-subtree)
-        # The acting org for this token is R1, but the target is R2's child
-        r1_new_child_name = "Attempted Cross-Reseller Child"
-        response = self.client.post(
-            "/graphql/",
-            data={
-                "query": CREATE_ORGANIZATION_MUTATION,
-                "variables": {"input": {"name": r1_new_child_name}},
+        attempted_integration_name = "cross_reseller_minted"
+        response = self._post(
+            r1_su,
+            r1_token,
+            auth_service,
+            CREATE_SYSTEM_USER_TOKEN_MUTATION,
+            {
+                "input": {
+                    "organizationId": str(r2_child.id),
+                    "integrationName": attempted_integration_name,
+                    "resources": ["calendar"],
+                }
             },
-            format="json",
-            # We use the minted token authenticated as R1's system user;
-            # createOrganization always creates children under the acting org's reseller tree,
-            # so R1's minted token can only create children under R1.
-            headers={"authorization": f"Bearer {r1_su.id}:{r1_token}"},
         )
 
-        # The child created will be under R1, not R2 — R2's child is untouched
         assert response.status_code == 200
         d = response.json()
+        assert "errors" in d
+        assert len(d["errors"]) > 0
+        assert "subtree" in str(d["errors"]).lower()
 
-        if "errors" not in d or len(d.get("errors", [])) == 0:
-            # If it succeeded, it created a child under R1 (not R2) — verify isolation
-            created_org = Organization.objects.get(name=r1_new_child_name)
-            # The created child's parent must be R1, never R2's child
-            assert created_org.parent == r1_org
-            assert created_org.parent != r2_child
-            assert not Organization.objects.filter(name=r1_new_child_name, parent=r2_child).exists()
-        else:
-            # Got an error — which is also acceptable (permission/flag gate)
-            pass
-
-        # The key invariant: R2's child org is untouched — no new children under it
-        assert not Organization.objects.filter(parent=r2_child).exists()
+        # No SystemUser must have been created for the attempted integration_name
+        assert not SystemUser.objects.filter(integration_name=attempted_integration_name).exists()
 
     def test_child_created_by_minted_token_cannot_grant_itself_reseller_flag(self):
         """A child org created by a minted token has can_invite_organizations=False.

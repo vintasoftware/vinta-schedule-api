@@ -1266,6 +1266,107 @@ class TestCreateSystemUserTokenMutation:
         assert "errors" in data
         assert len(data["errors"]) > 0
 
+    def test_duplicate_integration_name_returns_error_and_no_orphan(self):
+        """Minting a second token with the same integration_name returns a GraphQL error.
+
+        Asserts:
+        - The mutation returns a GraphQL error mentioning 'integration_name'.
+        - Exactly ONE SystemUser with that integration_name exists in the DB (the first one).
+        - The ResourceAccess count did not grow from the failed attempt.
+        """
+        from public_api.models import SystemUser
+
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+
+        # First call — must succeed
+        r1 = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": str(reseller_org.id),
+                    "integrationName": "dup",
+                    "resources": ["calendar"],
+                }
+            },
+        )
+        assert r1.status_code == 200
+        d1 = r1.json()
+        assert "errors" not in d1 or len(d1.get("errors", [])) == 0
+
+        # Snapshot counts after the successful first call
+        su_count_after_first = SystemUser.objects.filter(
+            integration_name="dup", organization=reseller_org
+        ).count()
+        ra_count_after_first = ResourceAccess.objects.filter(
+            system_user__integration_name="dup", system_user__organization=reseller_org
+        ).count()
+        assert su_count_after_first == 1
+
+        # Second call with the same integration_name — must fail
+        r2 = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": str(reseller_org.id),
+                    "integrationName": "dup",
+                    "resources": ["calendar"],
+                }
+            },
+        )
+        assert r2.status_code == 200
+        d2 = r2.json()
+        assert "errors" in d2
+        assert len(d2["errors"]) > 0
+        assert "integration_name" in str(d2["errors"]).lower()
+
+        # No orphan SystemUser — still exactly one with that integration_name
+        assert (
+            SystemUser.objects.filter(integration_name="dup", organization=reseller_org).count()
+            == su_count_after_first
+        )
+        # ResourceAccess count must not have grown
+        assert (
+            ResourceAccess.objects.filter(
+                system_user__integration_name="dup", system_user__organization=reseller_org
+            ).count()
+            == ra_count_after_first
+        )
+
+    def test_duplicate_resources_in_list_creates_single_resource_access_row(self):
+        """Duplicate resource names in the resources list produce exactly one ResourceAccess row.
+
+        Asserts no crash, no unique-constraint violation, and exactly one ResourceAccess row
+        per deduplicated resource value.
+        """
+        reseller_org, system_user, token, auth_service = self._setup_reseller()
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": str(reseller_org.id),
+                    "integrationName": "dedup_integration",
+                    "resources": ["calendar", "calendar"],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        minted_id = int(data["data"]["createSystemUserToken"]["systemUserId"])
+        calendar_rows = ResourceAccess.objects.filter(
+            system_user_id=minted_id, resource_name="calendar"
+        ).count()
+        assert calendar_rows == 1
+
     def test_cross_reseller_tree_target_rejected(self):
         """R1 cannot mint a token for R2's child — cross-reseller isolation."""
         r1_org = baker.make(Organization, name="Reseller1", can_invite_organizations=True)

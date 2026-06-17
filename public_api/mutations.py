@@ -3,7 +3,7 @@ from typing import Annotated, cast
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 import strawberry
@@ -324,17 +324,18 @@ class Mutation(CalendarGroupMutations):
 
         # Mint the system user and persist ResourceAccess rows (mirrors REST create)
         try:
-            system_user, plaintext_token = deps.public_api_auth_service.create_system_user(
-                integration_name=input.integration_name,
-                organization=target_org,
-            )
-            # dict.fromkeys dedupes while preserving order; prevents constraint violations
-            ResourceAccess.objects.bulk_create(
-                [
-                    ResourceAccess(system_user=system_user, resource_name=resource_name)
-                    for resource_name in dict.fromkeys(input.resources)
-                ]
-            )
+            with transaction.atomic():
+                system_user, plaintext_token = deps.public_api_auth_service.create_system_user(
+                    integration_name=input.integration_name,
+                    organization=target_org,
+                )
+                # dict.fromkeys dedupes while preserving order; prevents constraint violations
+                ResourceAccess.objects.bulk_create(
+                    [
+                        ResourceAccess(system_user=system_user, resource_name=resource_name)
+                        for resource_name in dict.fromkeys(input.resources)
+                    ]
+                )
         except IntegrityError as e:
             raise GraphQLError(
                 f"A token with integration_name '{input.integration_name}' already exists."
