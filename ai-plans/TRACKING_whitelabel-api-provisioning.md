@@ -101,12 +101,20 @@ Inserted **Phase 10a — First-party REST branding endpoints** (backend) after P
 - **Review**: ⚠️ 3 BLOCKERs caught — (1) confirmation templates wrongly substituted app_name for the domain URL (byte-for-byte break) → reverted (account emails stay vinta default); (2) context RAISED for invited_by=None → killed the marquee branded-invite path → made graceful; (3) `.strip()` on invited_by_name changed blank-last-name spacing → reverted. Dead per-email branding queries removed from accounts. Tests now RENDER templates.
 - **DEFERRED**: From/reply-to = support_email — vintasend DjangoEmailNotificationAdapter has no per-notification from_email hook; TODO at send site (organizations/services.py). Needs adapter extension; follow-up.
 
+### Phase 9 — childOrganizations analytics ✅
+- **Status**: PR #94 (https://github.com/vintasoftware/vinta-schedule-api/pull/94), base phase-8
+- **Branch**: plan/whitelabel-api-provisioning/phase-9 · Model: claude-sonnet-4-6 (Tier 3) · implementer
+- **Commits**: f93b6e6 (feat)
+- **Summary**: `childOrganizations(offset,limit)` → `[{id,name,createdAt,membershipCount,calendarCount,eventCount,calendarGroupCount}]`. Direct children (parent=acting_org) only; gate CHILD_ORG_ANALYTICS + assert_org_can_invite. Counts via 4 independent correlated Subquery annotations (fan-out-safe), using `.original_manager` to bypass org-scoping for child data. CalendarEvent has direct organization_id (RecurringMixin→OrganizationModel). membership counts all (active+inactive).
+- **Gate**: 1988 passed (orchestrator-verified); check --deploy + makemigrations clean.
+- **Review**: no BLOCKER / no SHOULD-FIX. Fan-out avoidance + cross-reseller isolation confirmed (tests seed distinct 3/2/5/1 metrics + a second reseller for leak check). NITs (accepted): no direct createdAt assertion; subquery helper dedup.
+- **Carry-forward**: all 6 bundle scopes now mapped in FIELD_TO_RESOURCE_MAPPING. GraphQL provisioning bundle COMPLETE (createOrganization/createUser/createInvitation/createSystemUserToken/updateBranding + brandingForTenant + childOrganizations).
+
 ## Current Phase
-Phase 9 — childOrganizations analytics (starting)
+Phase 10a — First-party REST branding endpoints (NEW, backend) (starting)
 
 ## Remaining Phases
-- Phase 9 — childOrganizations analytics
-- Phase 10a — First-party REST branding endpoints (NEW, backend, depends on Phase 6)
+- Phase 10a — First-party REST branding endpoints (depends on Phase 6 OrganizationBranding model — present)
 
 ## Deferred Phases
 - Phase 10b — Frontend themed OAuth interstitials (repo: vinta-schedule-frontend-web)
