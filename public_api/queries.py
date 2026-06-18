@@ -43,6 +43,8 @@ from public_api.permissions import (
 from public_api.types import ChildOrganizationMetrics, PublicApiHttpRequest, PublicBrandingResult
 from users.graphql import UserGraphQLType
 from users.models import User
+from webhooks.graphql import WebhookConfigurationGraphQLType
+from webhooks.models import WebhookConfiguration
 
 
 if TYPE_CHECKING:
@@ -614,6 +616,25 @@ class Query:
             )
             for child in qs
         ]
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def webhook_configurations(
+        self,
+        info: strawberry.Info,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[WebhookConfigurationGraphQLType]:
+        """List outgoing webhook configurations for the caller's organization."""
+        org = _get_org(info)
+        qs = (
+            WebhookConfiguration.objects.filter_by_organization(org.id)
+            .filter(deleted_at__isnull=True)
+            .order_by("pk")
+        )
+        return cast(
+            list[WebhookConfigurationGraphQLType],
+            list(_slice_qs(qs, offset, limit)),
+        )
 
     @strawberry.field()
     def branding_for_tenant(self, tenant_id: strawberry.ID) -> PublicBrandingResult:

@@ -10767,6 +10767,7 @@ components:
       - invitation
       - branding
       - child_org_analytics
+      - webhook_configuration
       type: string
       description: |-
         * `calendar_event` - Calendar Event
@@ -10791,6 +10792,7 @@ components:
         * `invitation` - Invitation
         * `branding` - Branding
         * `child_org_analytics` - Child Organization Analytics
+        * `webhook_configuration` - Webhook Configuration
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.

@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -35,6 +35,13 @@ from public_api.types import (
     UpdateBrandingInput,
     UpdateBrandingResult,
 )
+from webhooks.constants import WebhookEventType
+from webhooks.graphql import WebhookConfigurationGraphQLType
+from webhooks.models import WebhookConfiguration
+
+
+if TYPE_CHECKING:
+    from webhooks.services.webhook_service import WebhookService
 
 
 # Module-scope constants for validation
@@ -46,6 +53,7 @@ _url_validator = URLValidator(schemes=["http", "https"])
 class MutationDependencies:
     public_api_auth_service: PublicAPIAuthService
     organization_service: OrganizationService
+    webhook_service: "WebhookService"
 
 
 @inject
@@ -56,8 +64,9 @@ def get_mutation_dependencies(
     organization_service: Annotated[
         OrganizationService | None, Provide["organization_service"]
     ] = None,
+    webhook_service: Annotated["WebhookService | None", Provide["webhook_service"]] = None,
 ) -> MutationDependencies:
-    required_dependencies = [public_api_auth_service, organization_service]
+    required_dependencies = [public_api_auth_service, organization_service, webhook_service]
     if any(dep is None for dep in required_dependencies):
         raise GraphQLError(
             f"Missing required dependency {', '.join([str(dep) for dep in required_dependencies if dep is None])}"
@@ -66,12 +75,68 @@ def get_mutation_dependencies(
     return MutationDependencies(
         public_api_auth_service=cast(PublicAPIAuthService, public_api_auth_service),
         organization_service=cast(OrganizationService, organization_service),
+        webhook_service=cast("WebhookService", webhook_service),
     )
 
 
 @strawberry.type
 class AuthPayload:
     token_valid: bool
+
+
+# ---------------------------------------------------------------------------
+# WebhookConfiguration CRUD input/result types
+# ---------------------------------------------------------------------------
+
+
+@strawberry.input
+class CreateWebhookConfigurationInput:
+    """Input for creating a new outgoing webhook configuration."""
+
+    event_type: str
+    url: str
+    headers: strawberry.scalars.JSON = strawberry.field(default=None)  # type: ignore[assignment]
+
+
+@strawberry.type
+class CreateWebhookConfigurationResult:
+    """Result of creating a webhook configuration."""
+
+    configuration: WebhookConfigurationGraphQLType | None = None
+    error_message: str | None = None
+
+
+@strawberry.input
+class UpdateWebhookConfigurationInput:
+    """Input for partially updating an outgoing webhook configuration."""
+
+    id: int  # noqa: A003
+    event_type: str | None = None
+    url: str | None = None
+    headers: strawberry.scalars.JSON | None = None  # type: ignore[assignment]
+
+
+@strawberry.type
+class UpdateWebhookConfigurationResult:
+    """Result of updating a webhook configuration."""
+
+    configuration: WebhookConfigurationGraphQLType | None = None
+    error_message: str | None = None
+
+
+@strawberry.input
+class DeleteWebhookConfigurationInput:
+    """Input for soft-deleting an outgoing webhook configuration."""
+
+    id: int  # noqa: A003
+
+
+@strawberry.type
+class DeleteWebhookConfigurationResult:
+    """Result of deleting a webhook configuration."""
+
+    success: bool
+    error_message: str | None = None
 
 
 @strawberry.input
@@ -436,3 +501,162 @@ class Mutation(CalendarGroupMutations):
         )
 
         return UpdateBrandingResult(branding=branding_result)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_webhook_configuration(
+        self,
+        info: strawberry.Info,
+        input: CreateWebhookConfigurationInput,  # noqa: A002
+    ) -> CreateWebhookConfigurationResult:
+        """Create an outgoing webhook configuration for the caller's organization.
+
+        The mutation:
+        1. Validates that event_type is a known WebhookEventType value.
+        2. Validates that url is a non-empty http(s) URL.
+        3. Creates the configuration scoped to the acting organization.
+        4. Returns the created configuration.
+
+        The token's OrganizationResourceAccess must include the WEBHOOK_CONFIGURATION resource.
+        """
+        deps = get_mutation_dependencies()
+
+        org = info.context.request.public_api_organization
+        if not org:
+            return CreateWebhookConfigurationResult(
+                error_message="Organization not found",
+            )
+
+        # Validate event_type is a known WebhookEventType value
+        valid_event_types = {et.value for et in WebhookEventType}
+        if input.event_type not in valid_event_types:
+            raise GraphQLError(
+                f"Invalid event_type '{input.event_type}'. "
+                f"Valid values are: {', '.join(sorted(valid_event_types))}."
+            )
+
+        # Validate url is a non-empty http(s) URL
+        if not input.url:
+            raise GraphQLError("url must not be empty.")
+        try:
+            _url_validator(input.url)
+        except DjangoValidationError as e:
+            raise GraphQLError(f"Invalid url '{input.url}'. Must be a valid http(s) URL.") from e
+
+        headers: dict = cast(dict, input.headers) if input.headers is not None else {}
+
+        configuration = deps.webhook_service.create_configuration(
+            organization=org,
+            event_type=WebhookEventType(input.event_type),
+            url=input.url,
+            headers=headers,
+        )
+
+        return CreateWebhookConfigurationResult(configuration=configuration)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def update_webhook_configuration(
+        self,
+        info: strawberry.Info,
+        input: UpdateWebhookConfigurationInput,  # noqa: A002
+    ) -> UpdateWebhookConfigurationResult:
+        """Partially update an outgoing webhook configuration (org-scoped).
+
+        The mutation:
+        1. Looks up the configuration by id, acting org, and non-deleted status.
+        2. Returns a not-found error if missing or belonging to another org.
+        3. Applies partial updates to event_type, url, and/or headers.
+        4. Validates any provided event_type or url values before saving.
+        5. Returns the updated configuration.
+
+        The token's OrganizationResourceAccess must include the WEBHOOK_CONFIGURATION resource.
+        """
+        deps = get_mutation_dependencies()
+
+        org = info.context.request.public_api_organization
+        if not org:
+            return UpdateWebhookConfigurationResult(
+                error_message="Organization not found",
+            )
+
+        # Tenant-scoped lookup: id + org + not-deleted
+        try:
+            configuration = WebhookConfiguration.objects.filter_by_organization(org.id).get(
+                id=input.id,
+                deleted_at__isnull=True,
+            )
+        except WebhookConfiguration.DoesNotExist:
+            return UpdateWebhookConfigurationResult(
+                error_message="Webhook configuration not found.",
+            )
+
+        # Resolve final values (partial update — fall back to current values)
+        new_event_type_str = (
+            input.event_type if input.event_type is not None else configuration.event_type
+        )
+        new_url = input.url if input.url is not None else configuration.url
+        new_headers: dict = (
+            cast(dict, input.headers) if input.headers is not None else configuration.headers
+        )
+
+        # Validate event_type if provided
+        valid_event_types = {et.value for et in WebhookEventType}
+        if new_event_type_str not in valid_event_types:
+            raise GraphQLError(
+                f"Invalid event_type '{new_event_type_str}'. "
+                f"Valid values are: {', '.join(sorted(valid_event_types))}."
+            )
+
+        # Validate url if provided
+        if not new_url:
+            raise GraphQLError("url must not be empty.")
+        try:
+            _url_validator(new_url)
+        except DjangoValidationError as e:
+            raise GraphQLError(f"Invalid url '{new_url}'. Must be a valid http(s) URL.") from e
+
+        updated = deps.webhook_service.update_configuration(
+            configuration=configuration,
+            event_type=WebhookEventType(new_event_type_str),
+            url=new_url,
+            headers=new_headers,
+        )
+
+        return UpdateWebhookConfigurationResult(configuration=updated)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def delete_webhook_configuration(
+        self,
+        info: strawberry.Info,
+        input: DeleteWebhookConfigurationInput,  # noqa: A002
+    ) -> DeleteWebhookConfigurationResult:
+        """Soft-delete an outgoing webhook configuration (org-scoped).
+
+        The mutation:
+        1. Looks up the configuration by id, acting org, and non-deleted status.
+        2. Returns a not-found error if missing or belonging to another org.
+        3. Sets deleted_at on the configuration (soft delete).
+        4. Returns success=True.
+
+        The token's OrganizationResourceAccess must include the WEBHOOK_CONFIGURATION resource.
+        """
+        deps = get_mutation_dependencies()
+
+        org = info.context.request.public_api_organization
+        if not org:
+            return DeleteWebhookConfigurationResult(
+                success=False, error_message="Organization not found"
+            )
+
+        # Tenant-scoped lookup: id + org + not-deleted
+        try:
+            configuration = WebhookConfiguration.objects.filter_by_organization(org.id).get(
+                id=input.id,
+                deleted_at__isnull=True,
+            )
+        except WebhookConfiguration.DoesNotExist:
+            return DeleteWebhookConfigurationResult(
+                success=False, error_message="Webhook configuration not found."
+            )
+
+        deps.webhook_service.delete_configuration(configuration)
+        return DeleteWebhookConfigurationResult(success=True)
