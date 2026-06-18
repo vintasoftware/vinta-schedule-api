@@ -9552,6 +9552,8 @@ class TestUpdateBlockedTimeService:
 
     def _make_blocked_time(self, calendar: Calendar, organization: Organization) -> BlockedTime:
         """Create a blocked time on the given calendar."""
+        import uuid
+
         return BlockedTime.objects.create(
             calendar=calendar,
             organization_id=organization.id,
@@ -9559,7 +9561,7 @@ class TestUpdateBlockedTimeService:
             end_time_tz_unaware=datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC),
             timezone="UTC",
             reason="Original reason",
-            external_id="manual-update-test",
+            external_id=f"manual-update-test-{uuid.uuid4()}",
         )
 
     @pytest.mark.django_db
@@ -9678,3 +9680,22 @@ class TestUpdateBlockedTimeService:
                 calendar=my_calendar,
                 blocked_time_id=other_blocked_time.id,
             )
+
+    @pytest.mark.django_db
+    def test_update_rrule_string_creates_recurrence_rule(self, organization):
+        """Supplying rrule_string creates a RecurrenceRule and attaches it to the blocked time."""
+        calendar = self._make_calendar(organization)
+        blocked_time = self._make_blocked_time(calendar, organization)
+        assert blocked_time.recurrence_rule is None
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        updated = service.update_blocked_time(
+            calendar=calendar,
+            blocked_time_id=blocked_time.id,
+            rrule_string="FREQ=WEEKLY;BYDAY=MO",
+        )
+
+        updated.refresh_from_db()
+        assert updated.recurrence_rule is not None
