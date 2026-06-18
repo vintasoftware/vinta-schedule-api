@@ -19,6 +19,18 @@ class SystemUser(BaseModel):
         null=True,
         blank=True,
     )
+    scoped_to_user = models.ForeignKey(
+        "users.User",
+        related_name="scoped_system_users",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=(
+            "When set, this token may only read/write data belonging to calendars "
+            "owned by this user. NULL = organization-wide token (legacy default)."
+        ),
+    )
     integration_name = models.CharField(max_length=150, unique=True, db_index=True)
     long_lived_token_hash = models.CharField(
         max_length=255,

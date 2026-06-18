@@ -34,3 +34,15 @@ class PublicAPIResources(TextChoices):
     INVITATION = "invitation", "Invitation"
     BRANDING = "branding", "Branding"
     CHILD_ORG_ANALYTICS = "child_org_analytics", "Child Organization Analytics"
+
+
+PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
+    [
+        PublicAPIResources.AVAILABLE_TIME,
+        PublicAPIResources.BLOCKED_TIME,
+        PublicAPIResources.CALENDAR_EVENT,
+        PublicAPIResources.AVAILABILITY_WINDOWS,
+        PublicAPIResources.UNAVAILABLE_WINDOWS,
+        PublicAPIResources.CALENDAR,
+    ]
+)

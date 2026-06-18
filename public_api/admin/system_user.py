@@ -31,11 +31,25 @@ class SystemUserAdmin(admin.ModelAdmin):
     list_display = ("organization", "integration_name", "is_active", "created", "modified")
     search_fields = ("integration_name", "organization__name")
     list_filter = ("organization", "created", "modified")
-    readonly_fields = ("long_lived_token_hash", "created", "modified", "is_active")
+    readonly_fields = (
+        "long_lived_token_hash",
+        "created",
+        "modified",
+        "is_active",
+        "scoped_to_user",
+    )
     fieldsets = (
         (
             None,
-            {"fields": ("organization", "integration_name", "long_lived_token_hash", "is_active")},
+            {
+                "fields": (
+                    "organization",
+                    "integration_name",
+                    "scoped_to_user",
+                    "long_lived_token_hash",
+                    "is_active",
+                )
+            },
         ),
         ("Timestamps", {"fields": ("created", "modified"), "classes": ("collapse",)}),
     )
