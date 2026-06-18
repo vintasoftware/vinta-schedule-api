@@ -51,6 +51,7 @@ class OrganizationResourceAccess(BasePermission):
         "createResourceCalendar": PublicAPIResources.CREATE_RESOURCE_CALENDAR,
         "disableResourceCalendar": PublicAPIResources.DISABLE_RESOURCE_CALENDAR,
         "importResourceCalendars": PublicAPIResources.IMPORT_RESOURCE_CALENDARS,
+        "createAvailabilityWindow": PublicAPIResources.CREATE_AVAILABILITY_WINDOW,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore

@@ -15,7 +15,7 @@ from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
 from calendar_integration.exceptions import CalendarIntegrationError
-from calendar_integration.graphql import CalendarGraphQLType
+from calendar_integration.graphql import AvailableTimeGraphQLType, CalendarGraphQLType
 from calendar_integration.models import Calendar
 from calendar_integration.mutations import CalendarGroupMutations
 from organizations.exceptions import NoServiceAccountConfiguredError, UserAlreadyHasMembershipError
@@ -197,6 +197,27 @@ class ImportResourceCalendarsResult:
 
     success: bool
     error_message: str | None = None
+
+
+@strawberry.input
+class CreateAvailableTimeInput:
+    """Input for creating a single (optionally recurring) available time on a calendar."""
+
+    organization_id: int
+    calendar_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+    rrule_string: str | None = None
+
+
+@strawberry.type
+class CreateAvailabilityWindowResult:
+    """Result of the createAvailabilityWindow mutation."""
+
+    success: bool
+    error_message: str | None = None
+    available_time: AvailableTimeGraphQLType | None = None
 
 
 @strawberry.type
@@ -651,3 +672,45 @@ class Mutation(CalendarGroupMutations):
             return ImportResourceCalendarsResult(success=False, error_message=str(e))
 
         return ImportResourceCalendarsResult(success=True)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_availability_window(
+        self,
+        info: strawberry.Info,
+        input: CreateAvailableTimeInput,  # noqa: A002
+    ) -> CreateAvailabilityWindowResult:
+        """Create a single (optionally recurring) available time on a calendar.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Delegates to CalendarService.create_available_time with the supplied parameters.
+        4. Returns the created AvailableTime on success, or success=False + errorMessage on failure.
+           Note: the service raises ValueError if calendar.manage_available_windows is False.
+
+        The token's OrganizationResourceAccess must include the CREATE_AVAILABILITY_WINDOW resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return CreateAvailabilityWindowResult(
+                success=False, error_message="Calendar not found."
+            )
+
+        try:
+            available_time = calendar_service.create_available_time(
+                calendar=calendar,
+                start_time=input.start_time,
+                end_time=input.end_time,
+                timezone=input.timezone,
+                rrule_string=input.rrule_string,
+            )
+        except (ValueError, DjangoValidationError, CalendarIntegrationError) as e:
+            return CreateAvailabilityWindowResult(success=False, error_message=str(e))
+
+        return CreateAvailabilityWindowResult(
+            success=True,
+            available_time=available_time,  # type: ignore[arg-type]
+        )
