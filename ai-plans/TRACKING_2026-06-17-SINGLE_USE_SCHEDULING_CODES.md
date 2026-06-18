@@ -49,11 +49,20 @@
 - **Summary**: `createCalendarRescheduleBookingCode` / `createCalendarGroupRescheduleBookingCode` (RESCHEDULE) + `createCalendarCancellationBookingCode` / `createCalendarGroupCancellationBookingCode` (CANCEL), event-bound. Validates event∈org AND event.calendar_fk_id==calendarId (calendar variants additionally require calendar_group_fk_id IS NULL → no grouped events) / event.calendar_group_fk_id==groupId (group variants). Uniform "Not found." INVALID_CODE on all failures. Shared inputs CreateEventCodeInput / CreateGroupEventCodeInput. Permission-swap guard + grouped-event-rejection tests.
 - **PR**: pending (filled after push).
 
+### Phase 3 — Revoke codes ✅
+- **Status**: complete, reviewed (Layers 1–3; no BLOCKERs/SHOULD-FIX, only test-cosmetic NITs noted).
+- **Model/tier**: implementer / Haiku (Tier 1 — succeeded on this small phase).
+- **Branch**: plan/single-use-scheduling-codes/phase-3 (base: phase-2).
+- **Commits**: dbc0f12 (revoke mutation + service method).
+- **Outer gate**: `pytest -n auto` 2072 passed; check --deploy clean; makemigrations clean; ruff clean.
+- **Summary**: `CalendarPermissionService.revoke_token(org_id, token_id)` — org-scoped fetch, InvalidTokenError if absent, idempotent `revoked_at` set. `revokeBookingCode(input{organizationId,id})` mutation org-gated; unknown/cross-org/mismatch → uniform "Not found." INVALID_CODE; success returns BookingCodeResult(success=True) with NO code. Reviewer confirmed revoke sets the same `revoked_at` that consume/active/get_token_error_code check. 6 tests, DB-verified.
+- **Open NITs (deferred, cosmetic)**: idempotency test docstring wording; tighten timestamp assertion to equality; late imports in test.
+- **PR**: pending (filled after push).
+
 ## Current phase
-Phase 3 — Revoke codes (next).
+Phase 4 — Code-gated availability reads (next).
 
 ## Remaining phases
-- Phase 3 — Revoke codes
 - Phase 4 — Code-gated availability reads
 - Phase 5a — Book single-calendar event with code
 - Phase 5b — Book calendar-group event with code

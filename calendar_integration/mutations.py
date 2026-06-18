@@ -8,7 +8,7 @@ import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
-from calendar_integration.exceptions import CalendarGroupError
+from calendar_integration.exceptions import CalendarGroupError, InvalidTokenError
 from calendar_integration.graphql import (
     BookingCodeErrorCode,
     BookingCodeResult,
@@ -452,6 +452,14 @@ class CreateGroupEventCodeInput:
     calendar_group_id: int
     event_id: int
     expires_at: datetime.datetime | None = None
+
+
+@strawberry.input
+class RevokeBookingCodeInput:
+    """Input for revoking a single-use booking code."""
+
+    organization_id: int
+    id: int  # noqa: A002
 
 
 @strawberry.type
@@ -908,3 +916,42 @@ class CalendarGroupMutations:
             event_id=input.event_id,
         )
         return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def revoke_booking_code(
+        self,
+        info: strawberry.Info,
+        input: RevokeBookingCodeInput,  # noqa: A002
+    ) -> BookingCodeResult:
+        """Revoke a single-use booking code by its opaque id.
+
+        The code becomes invalid immediately and cannot be used for any
+        subsequent operations (reads or writes). Revoke is idempotent:
+        revoking an already-revoked code returns success without error.
+        """
+        org = info.context.request.public_api_organization
+        if org is None:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Not found.",
+            )
+
+        if input.organization_id != org.id:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Not found.",
+            )
+
+        deps = get_booking_code_mutation_dependencies()
+        try:
+            deps.calendar_permission_service.revoke_token(organization_id=org.id, token_id=input.id)
+        except InvalidTokenError:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Not found.",
+            )
+
+        return BookingCodeResult(success=True)
