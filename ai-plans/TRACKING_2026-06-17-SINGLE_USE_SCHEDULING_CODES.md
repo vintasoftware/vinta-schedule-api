@@ -88,11 +88,20 @@
 - **Summary**: unauthenticated `createCalendarGroupEventWithCode`. Required extending `can_perform_scheduling` with a GROUP-scoped branch (token group-scoped + CREATE + calendar is a member of the group's slots, org-scoped via CalendarGroupSlotMembership) — because `create_grouped_event` books on the primary calendar and a group code has calendar_fk_id=None. Mutation: resolve_code → require CREATE + group scope → atomic { calendar_service.initialize_without_provider(user_or_token=code) → wire group_service.calendar_service=calendar_service → group_service.initialize → create_grouped_event → consume_code }. Real restricted-primary-calendar tests + real cross-org isolation (org-A code can't book org-B calendar → SLOT_UNAVAILABLE, not consumed). Shared `_client_ip_from_request` helper. 17+ tests.
 - **PR**: pending (filled after push).
 
+### Phase 6a — Reschedule single-calendar event with code ✅
+- **Status**: complete, reviewed (Layers 1–3 + fix loop; no BLOCKERs).
+- **Model/tier**: implementer / Sonnet (Tier 3).
+- **Branch**: plan/single-use-scheduling-codes/phase-6a (base: phase-5b).
+- **Commits**: a787454 (reschedule-with-code mutation + GeneratedField fix) + ef29b50 (scope availability check to code path).
+- **Outer gate**: `pytest -n auto` 2146 passed; check --deploy clean; makemigrations clean; ruff clean.
+- **Summary**: unauthenticated `rescheduleCalendarEventWithCode`. resolve_code → require RESCHEDULE + event scope + single-calendar (token.calendar_group is None → group codes route to 6b). calendar_id/event_id strictly from token. Rebuilds CalendarEventInputData PRESERVING title/description/attendances/external_attendances (so can_perform_update requires only {RESCHEDULE}, not UPDATE_DETAILS/ATTENDEES), overriding only times. Atomic update→consume. Availability pre-check in the mutation (scoped to code path).
+- **Notable**: found + fixed a genuine pre-existing bug — `update_event` assigned to `start_time`/`end_time` which are read-only GeneratedFields (db-derived), so reschedules never persisted; fix writes `*_tz_unaware`+`timezone` (kept in shared update_event, matches create_event). A reviewer-flagged availability check that was added to shared update_event (would regress REST/bundle updates) was MOVED into the mutation.
+- **PR**: pending (filled after push).
+
 ## Current phase
-Phase 6a — Reschedule single-calendar event with code (next).
+Phase 6b — Reschedule calendar-group event with code (next).
 
 ## Remaining phases
-- Phase 6a — Reschedule single-calendar event with code
 - Phase 6b — Reschedule calendar-group event with code
 - Phase 6c — Cancel event with code
 
