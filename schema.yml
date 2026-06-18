@@ -13296,11 +13296,14 @@ components:
 
         Exposes ``id``, ``integration_name``, ``is_active``, ``available_resources``
         (list of resource_name strings from the related ``ResourceAccess`` rows), and
-        ``scoped_to_user`` (FK id, null for org-wide tokens).
+        ``scoped_to_user`` (the owner's User id derived from the membership FK, null for
+        org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API stability;
+        the value is resolved via ``scoped_to_membership_fk.user_id``.
         Never exposes ``long_lived_token_hash`` or ``token``.
 
-        Optimized for list queries: uses prefetched ``available_resources`` from
-        the viewset's ``get_queryset`` to avoid N+1 queries.
+        Optimized for list queries: uses prefetched ``available_resources`` and
+        ``select_related("scoped_to_membership_fk")`` from the viewset's ``get_queryset``
+        to avoid N+1 queries.
       properties:
         id:
           type: integer
@@ -13321,8 +13324,10 @@ components:
           readOnly: true
         scoped_to_user:
           type: integer
-          readOnly: true
           nullable: true
+          description: Return the owner's User id derived from the stored membership
+            FK, or None.
+          readOnly: true
       required:
       - available_resources
       - id
@@ -13366,7 +13371,9 @@ components:
 
         Includes the write-once ``token`` field (sourced from the view) and
         ``available_resources`` (derived from the related ``ResourceAccess`` rows).
-        Exposes ``scoped_to_user`` as the FK id (null for org-wide tokens).
+        Exposes ``scoped_to_user`` as the owner's User id derived from the stored membership FK
+        (null for org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API
+        stability; the value is resolved via ``scoped_to_membership_fk.user_id``.
         Never exposes ``long_lived_token_hash``.
       properties:
         id:
@@ -13388,8 +13395,10 @@ components:
           readOnly: true
         scoped_to_user:
           type: integer
-          readOnly: true
           nullable: true
+          description: Return the owner's User id derived from the stored membership
+            FK, or None.
+          readOnly: true
         token:
           type: string
           readOnly: true
