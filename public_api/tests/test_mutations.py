@@ -2519,3 +2519,238 @@ class TestImportResourceCalendarsMutation:
         data = response.json()
         assert "errors" in data
         assert len(data["errors"]) > 0
+
+
+CREATE_AVAILABILITY_WINDOW_MUTATION = """
+mutation CreateAvailabilityWindow($input: CreateAvailableTimeInput!) {
+    createAvailabilityWindow(input: $input) {
+        success
+        errorMessage
+        availableTime {
+            id
+            startTime
+            endTime
+        }
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestCreateAvailabilityWindowMutation:
+    """Tests for the createAvailabilityWindow mutation (Phase 3a)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_org_and_token(self, resources: list[str] | None = None):
+        """Create an org + system user with the given resource scopes."""
+        if resources is None:
+            resources = [PublicAPIResources.CREATE_AVAILABILITY_WINDOW]
+        org = baker.make(Organization, name="Test Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": CREATE_AVAILABILITY_WINDOW_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def test_create_availability_window_happy_path(self):
+        """A granted token creates an available time on a managing calendar; DB row + availableTime returned."""
+        import datetime
+
+        from calendar_integration.constants import CalendarType
+        from calendar_integration.models import AvailableTime
+        from calendar_integration.services.calendar_service import CalendarService
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a resource calendar with manage_available_windows=True via the service
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        managing_calendar = calendar_service.create_resource_calendar(
+            name="Availability Room",
+            description="",
+            manage_available_windows=True,
+        )
+        assert managing_calendar.calendar_type == CalendarType.RESOURCE
+        assert managing_calendar.manage_available_windows is True
+
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": managing_calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createAvailabilityWindow"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+        assert result["availableTime"] is not None
+        available_time_id = int(result["availableTime"]["id"])
+
+        # Verify DB row was created and is org-scoped
+        at = AvailableTime.objects.filter_by_organization(org.id).get(id=available_time_id)
+        assert at.calendar_fk_id == managing_calendar.id
+
+    def test_create_availability_window_non_managing_calendar_returns_failure(self):
+        """A calendar with manage_available_windows=False → success=False with service message."""
+        import datetime
+
+        from calendar_integration.constants import CalendarType
+        from calendar_integration.services.calendar_service import CalendarService
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a resource calendar without manage_available_windows flag
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        non_managing_calendar = calendar_service.create_resource_calendar(
+            name="Non-Managing Room",
+            description="",
+            manage_available_windows=False,
+        )
+        assert non_managing_calendar.calendar_type == CalendarType.RESOURCE
+        assert non_managing_calendar.manage_available_windows is False
+
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": non_managing_calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createAvailabilityWindow"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert result["availableTime"] is None
+
+    def test_create_availability_window_cross_org_calendar_rejected(self):
+        """A calendar belonging to a different org → success=False 'Calendar not found'."""
+        import datetime
+
+        from calendar_integration.constants import CalendarType
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a managing calendar in a DIFFERENT org
+        other_org = baker.make(Organization, name="Other Org")
+        other_calendar = baker.make(
+            "calendar_integration.Calendar",
+            organization=other_org,
+            calendar_type=CalendarType.RESOURCE,
+            manage_available_windows=True,
+        )
+
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": other_calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createAvailabilityWindow"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "calendar not found" in result["errorMessage"].lower()
+
+    def test_create_availability_window_permission_denied_without_grant(self):
+        """A token without CREATE_AVAILABILITY_WINDOW grant is denied."""
+        import datetime
+
+        from calendar_integration.constants import CalendarType
+
+        # Grant CALENDAR scope instead, NOT CREATE_AVAILABILITY_WINDOW
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[PublicAPIResources.CALENDAR]
+        )
+
+        other_calendar = baker.make(
+            "calendar_integration.Calendar",
+            organization=org,
+            calendar_type=CalendarType.RESOURCE,
+            manage_available_windows=True,
+        )
+
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": other_calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
