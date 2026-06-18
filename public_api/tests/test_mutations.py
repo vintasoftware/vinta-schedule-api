@@ -1,3 +1,4 @@
+import datetime
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
@@ -7,6 +8,9 @@ from graphql import GraphQLError
 from model_bakery import baker
 from rest_framework.test import APIClient
 
+from calendar_integration.constants import CalendarType
+from calendar_integration.models import AvailableTime
+from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import (
     Organization,
     OrganizationInvitation,
@@ -2569,11 +2573,6 @@ class TestCreateAvailabilityWindowMutation:
 
     def test_create_availability_window_happy_path(self):
         """A granted token creates an available time on a managing calendar; DB row + availableTime returned."""
-        import datetime
-
-        from calendar_integration.constants import CalendarType
-        from calendar_integration.models import AvailableTime
-        from calendar_integration.services.calendar_service import CalendarService
         from di_core.containers import container
 
         org, system_user, token, auth_service = self._setup_org_and_token()
@@ -2617,16 +2616,16 @@ class TestCreateAvailabilityWindowMutation:
         assert result["availableTime"] is not None
         available_time_id = int(result["availableTime"]["id"])
 
+        # Verify startTime and endTime in the response match the supplied inputs (ISO-normalized)
+        assert result["availableTime"]["startTime"] == start.isoformat()
+        assert result["availableTime"]["endTime"] == end.isoformat()
+
         # Verify DB row was created and is org-scoped
         at = AvailableTime.objects.filter_by_organization(org.id).get(id=available_time_id)
         assert at.calendar_fk_id == managing_calendar.id
 
     def test_create_availability_window_non_managing_calendar_returns_failure(self):
         """A calendar with manage_available_windows=False → success=False with service message."""
-        import datetime
-
-        from calendar_integration.constants import CalendarType
-        from calendar_integration.services.calendar_service import CalendarService
         from di_core.containers import container
 
         org, system_user, token, auth_service = self._setup_org_and_token()
@@ -2671,10 +2670,6 @@ class TestCreateAvailabilityWindowMutation:
 
     def test_create_availability_window_cross_org_calendar_rejected(self):
         """A calendar belonging to a different org → success=False 'Calendar not found'."""
-        import datetime
-
-        from calendar_integration.constants import CalendarType
-
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         # Create a managing calendar in a DIFFERENT org
@@ -2715,10 +2710,6 @@ class TestCreateAvailabilityWindowMutation:
 
     def test_create_availability_window_permission_denied_without_grant(self):
         """A token without CREATE_AVAILABILITY_WINDOW grant is denied."""
-        import datetime
-
-        from calendar_integration.constants import CalendarType
-
         # Grant CALENDAR scope instead, NOT CREATE_AVAILABILITY_WINDOW
         org, system_user, token, auth_service = self._setup_org_and_token(
             resources=[PublicAPIResources.CALENDAR]
@@ -2754,3 +2745,78 @@ class TestCreateAvailabilityWindowMutation:
         assert "errors" in data
         assert len(data["errors"]) > 0
         assert "don't have access" in str(data["errors"]).lower()
+
+    def test_create_availability_window_unauthenticated_denied(self):
+        """An unauthenticated call (no Authorization header) is denied."""
+        response = self.client.post(
+            "/graphql/",
+            data={
+                "query": CREATE_AVAILABILITY_WINDOW_MUTATION,
+                "variables": {
+                    "input": {
+                        "organizationId": 1,
+                        "calendarId": 1,
+                        "startTime": "2026-09-01T09:00:00Z",
+                        "endTime": "2026-09-01T17:00:00Z",
+                        "timezone": "UTC",
+                    }
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+    def test_create_availability_window_recurring_rrule_creates_recurrence_rule(self):
+        """Supplying rruleString on a managing calendar creates an AvailableTime with a recurrence_rule."""
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a managing resource calendar via the service
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        managing_calendar = calendar_service.create_resource_calendar(
+            name="Recurring Availability Room",
+            description="",
+            manage_available_windows=True,
+        )
+        assert managing_calendar.manage_available_windows is True
+
+        start = datetime.datetime(2026, 9, 7, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 7, 17, 0, 0, tzinfo=datetime.UTC)
+        rrule = "FREQ=WEEKLY;BYDAY=MO"
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": managing_calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                    "rruleString": rrule,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createAvailabilityWindow"]
+        assert result["success"] is True
+        assert result["availableTime"] is not None
+        available_time_id = int(result["availableTime"]["id"])
+
+        # Verify the DB row has a non-null recurrence_rule
+        at = AvailableTime.objects.filter_by_organization(org.id).get(id=available_time_id)
+        assert at.recurrence_rule is not None, (
+            "AvailableTime must have a non-null recurrence_rule when rruleString is supplied"
+        )

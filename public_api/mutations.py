@@ -707,7 +707,7 @@ class Mutation(CalendarGroupMutations):
                 timezone=input.timezone,
                 rrule_string=input.rrule_string,
             )
-        except (ValueError, DjangoValidationError) as e:
+        except (ValueError, DjangoValidationError, CalendarIntegrationError) as e:
             return CreateAvailabilityWindowResult(success=False, error_message=str(e))
 
         return CreateAvailabilityWindowResult(
