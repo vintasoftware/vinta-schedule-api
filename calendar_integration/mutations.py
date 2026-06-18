@@ -16,7 +16,12 @@ from calendar_integration.graphql import (
     CalendarGroupGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
 )
-from calendar_integration.models import Calendar, CalendarGroup, EventManagementPermissions
+from calendar_integration.models import (
+    Calendar,
+    CalendarEvent,
+    CalendarGroup,
+    EventManagementPermissions,
+)
 from calendar_integration.services.dataclasses import (
     CalendarGroupEventInputData,
     CalendarGroupInputData,
@@ -429,6 +434,26 @@ class CreateGroupBookingCodeInput:
     expires_at: datetime.datetime | None = None
 
 
+@strawberry.input
+class CreateEventCodeInput:
+    """Input for minting a single-use reschedule or cancel code scoped to a calendar + event."""
+
+    organization_id: int
+    calendar_id: int
+    event_id: int
+    expires_at: datetime.datetime | None = None
+
+
+@strawberry.input
+class CreateGroupEventCodeInput:
+    """Input for minting a single-use reschedule or cancel code scoped to a calendar group + event."""
+
+    organization_id: int
+    calendar_group_id: int
+    event_id: int
+    expires_at: datetime.datetime | None = None
+
+
 @strawberry.type
 class CalendarGroupMutations:
     """GraphQL mutations for CalendarGroup CRUD and grouped event booking."""
@@ -635,5 +660,249 @@ class CalendarGroupMutations:
             expires_at=input.expires_at,
             minted_by=minted_by,
             calendar_group_id=input.calendar_group_id,
+        )
+        return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_calendar_reschedule_booking_code(
+        self,
+        info: strawberry.Info,
+        input: CreateEventCodeInput,  # noqa: A002
+    ) -> BookingCodeResult:
+        """Mint a single-use reschedule code bound to a specific event on a calendar.
+
+        The token grants RESCHEDULE permission for the bound event only.  The
+        code is returned once in plaintext — only its hash is persisted.
+        """
+        org = info.context.request.public_api_organization
+        if org is None:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Organization not found.",
+            )
+
+        if input.organization_id != org.id:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Organization not found.",
+            )
+
+        # Verify the calendar belongs to the authenticated org.
+        try:
+            Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Calendar or event not found.",
+            )
+
+        # Verify the event belongs to this org AND to the named calendar.
+        try:
+            CalendarEvent.objects.filter_by_organization(org.id).get(
+                id=input.event_id,
+                calendar_fk_id=input.calendar_id,
+            )
+        except CalendarEvent.DoesNotExist:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Calendar or event not found.",
+            )
+
+        minted_by = getattr(info.context.request, "public_api_system_user", None)
+        deps = get_booking_code_mutation_dependencies()
+        token, plaintext_code = deps.calendar_permission_service.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.RESCHEDULE],
+            expires_at=input.expires_at,
+            minted_by=minted_by,
+            calendar_id=input.calendar_id,
+            event_id=input.event_id,
+        )
+        return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_calendar_group_reschedule_booking_code(
+        self,
+        info: strawberry.Info,
+        input: CreateGroupEventCodeInput,  # noqa: A002
+    ) -> BookingCodeResult:
+        """Mint a single-use reschedule code bound to a specific event on a calendar group.
+
+        The token grants RESCHEDULE permission for the bound event only.  The
+        code is returned once in plaintext — only its hash is persisted.
+        """
+        org = info.context.request.public_api_organization
+        if org is None:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Organization not found.",
+            )
+
+        if input.organization_id != org.id:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Organization not found.",
+            )
+
+        # Verify the calendar group belongs to the authenticated org.
+        try:
+            CalendarGroup.objects.filter_by_organization(org.id).get(id=input.calendar_group_id)
+        except CalendarGroup.DoesNotExist:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Calendar group or event not found.",
+            )
+
+        # Verify the event belongs to this org AND to the named calendar group.
+        try:
+            CalendarEvent.objects.filter_by_organization(org.id).get(
+                id=input.event_id,
+                calendar_group_fk_id=input.calendar_group_id,
+            )
+        except CalendarEvent.DoesNotExist:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Calendar group or event not found.",
+            )
+
+        minted_by = getattr(info.context.request, "public_api_system_user", None)
+        deps = get_booking_code_mutation_dependencies()
+        token, plaintext_code = deps.calendar_permission_service.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.RESCHEDULE],
+            expires_at=input.expires_at,
+            minted_by=minted_by,
+            calendar_group_id=input.calendar_group_id,
+            event_id=input.event_id,
+        )
+        return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_calendar_cancellation_booking_code(
+        self,
+        info: strawberry.Info,
+        input: CreateEventCodeInput,  # noqa: A002
+    ) -> BookingCodeResult:
+        """Mint a single-use cancellation code bound to a specific event on a calendar.
+
+        The token grants CANCEL permission for the bound event only.  The code
+        is returned once in plaintext — only its hash is persisted.
+        """
+        org = info.context.request.public_api_organization
+        if org is None:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Organization not found.",
+            )
+
+        if input.organization_id != org.id:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Organization not found.",
+            )
+
+        # Verify the calendar belongs to the authenticated org.
+        try:
+            Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Calendar or event not found.",
+            )
+
+        # Verify the event belongs to this org AND to the named calendar.
+        try:
+            CalendarEvent.objects.filter_by_organization(org.id).get(
+                id=input.event_id,
+                calendar_fk_id=input.calendar_id,
+            )
+        except CalendarEvent.DoesNotExist:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Calendar or event not found.",
+            )
+
+        minted_by = getattr(info.context.request, "public_api_system_user", None)
+        deps = get_booking_code_mutation_dependencies()
+        token, plaintext_code = deps.calendar_permission_service.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.CANCEL],
+            expires_at=input.expires_at,
+            minted_by=minted_by,
+            calendar_id=input.calendar_id,
+            event_id=input.event_id,
+        )
+        return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_calendar_group_cancellation_booking_code(
+        self,
+        info: strawberry.Info,
+        input: CreateGroupEventCodeInput,  # noqa: A002
+    ) -> BookingCodeResult:
+        """Mint a single-use cancellation code bound to a specific event on a calendar group.
+
+        The token grants CANCEL permission for the bound event only.  The code
+        is returned once in plaintext — only its hash is persisted.
+        """
+        org = info.context.request.public_api_organization
+        if org is None:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Organization not found.",
+            )
+
+        if input.organization_id != org.id:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Organization not found.",
+            )
+
+        # Verify the calendar group belongs to the authenticated org.
+        try:
+            CalendarGroup.objects.filter_by_organization(org.id).get(id=input.calendar_group_id)
+        except CalendarGroup.DoesNotExist:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Calendar group or event not found.",
+            )
+
+        # Verify the event belongs to this org AND to the named calendar group.
+        try:
+            CalendarEvent.objects.filter_by_organization(org.id).get(
+                id=input.event_id,
+                calendar_group_fk_id=input.calendar_group_id,
+            )
+        except CalendarEvent.DoesNotExist:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Calendar group or event not found.",
+            )
+
+        minted_by = getattr(info.context.request, "public_api_system_user", None)
+        deps = get_booking_code_mutation_dependencies()
+        token, plaintext_code = deps.calendar_permission_service.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.CANCEL],
+            expires_at=input.expires_at,
+            minted_by=minted_by,
+            calendar_group_id=input.calendar_group_id,
+            event_id=input.event_id,
         )
         return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
