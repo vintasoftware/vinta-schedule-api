@@ -2,8 +2,15 @@ import datetime
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from django.db import transaction
 from django.utils import timezone
 
+from calendar_integration.exceptions import (
+    InvalidTokenError,
+    TokenAlreadyUsedError,
+    TokenExpiredError,
+    TokenRevokedError,
+)
 from calendar_integration.querysets import (
     CalendarEventGroupSelectionQuerySet,
     CalendarEventQuerySet,
@@ -247,49 +254,51 @@ class CalendarManagementTokenManager(BaseOrganizationModelManager):
     def consume(self, token: "CalendarManagementToken", source_ip: str) -> None:
         """Atomically consume *token* by setting used_at + consumed_source_ip.
 
-        Must be called inside a transaction (ATOMIC_REQUESTS guarantees this for
-        request-scoped callers). Uses SELECT FOR UPDATE to serialise concurrent
-        consume attempts — the first caller wins; subsequent callers receive
-        TokenAlreadyUsedError.
+        Wraps the lock + re-check + save in ``transaction.atomic()`` so the
+        SELECT FOR UPDATE lock is always acquired inside a transaction,
+        regardless of the caller's ambient context (request, Celery task, or
+        management command). ``atomic()`` is reentrant — it is a no-op when a
+        request transaction (ATOMIC_REQUESTS) already exists. Uses SELECT FOR
+        UPDATE to serialise concurrent consume attempts — the first caller wins;
+        subsequent callers receive TokenAlreadyUsedError.
 
         Args:
             token: The CalendarManagementToken instance to consume.
             source_ip: The IP address of the consuming client.
 
         Raises:
+            InvalidTokenError: If no token resolves for (organization_id, pk).
             TokenExpiredError: If the token has expired.
             TokenAlreadyUsedError: If the token was already used (including by a
                 concurrent transaction that committed first).
             TokenRevokedError: If the token has been revoked.
         """
-        from calendar_integration.exceptions import (
-            TokenAlreadyUsedError,
-            TokenExpiredError,
-            TokenRevokedError,
-        )
+        with transaction.atomic():
+            # Re-fetch under a row-level lock to serialise concurrent consume calls.
+            try:
+                locked = (
+                    self.get_queryset()
+                    .filter(organization_id=token.organization_id)
+                    .select_for_update()
+                    .get(pk=token.pk)
+                )
+            except self.model.DoesNotExist as exc:
+                raise InvalidTokenError() from exc
 
-        # Re-fetch under a row-level lock to serialise concurrent consume calls.
-        locked = (
-            self.get_queryset()
-            .filter(organization_id=token.organization_id)
-            .select_for_update()
-            .get(pk=token.pk)
-        )
+            now = timezone.now()
 
-        now = timezone.now()
+            if locked.revoked_at is not None:
+                raise TokenRevokedError()
 
-        if locked.revoked_at is not None:
-            raise TokenRevokedError()
+            if locked.used_at is not None:
+                raise TokenAlreadyUsedError()
 
-        if locked.used_at is not None:
-            raise TokenAlreadyUsedError()
+            if locked.expires_at is not None and locked.expires_at <= now:
+                raise TokenExpiredError()
 
-        if locked.expires_at is not None and locked.expires_at <= now:
-            raise TokenExpiredError()
-
-        locked.used_at = now
-        locked.consumed_source_ip = source_ip
-        locked.save(update_fields=["used_at", "consumed_source_ip"])
+            locked.used_at = now
+            locked.consumed_source_ip = source_ip
+            locked.save(update_fields=["used_at", "consumed_source_ip"])
 
     def get_token_error_code(self, token: "CalendarManagementToken") -> str | None:
         """Return a machine-readable error code if the token is in a terminal state.

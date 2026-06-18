@@ -4,13 +4,16 @@ Covers:
 - active() queryset filtering (used / revoked / expired / live)
 - consume() setting used_at + consumed_source_ip exactly once
 - consume() raising the correct error on a second call (ALREADY_USED)
-- Concurrency: re-check-after-lock rejects a second consume attempt with
-  TokenAlreadyUsedError (verifies the guard path without OS threads, which
-  are impractical in a transactional test harness).
+- Concurrency: re-check-after-lock rejects a second (in-memory stale) consume
+  attempt with TokenAlreadyUsedError.
+- Concurrency: two genuinely concurrent transactions (separate connections in
+  separate threads) serialise via SELECT FOR UPDATE — exactly one wins.
 """
 
 import datetime
+import threading
 
+from django.db import connection, transaction
 from django.utils import timezone
 
 import pytest
@@ -241,6 +244,64 @@ def test_consume_recheck_after_lock_rejects_stale_token(org, live_token):
     # request would arrive with such a stale in-memory token.
     with pytest.raises(TokenAlreadyUsedError):
         CalendarManagementToken.objects.consume(live_token, "10.0.0.2")
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: genuine two-connection / two-thread serialisation
+#
+# This test proves the plan's "atomic single-use under concurrency" acceptance:
+# two CONCURRENT transactions (each on its own DB connection in its own thread)
+# call consume() on the same token, and exactly one wins while the other raises
+# TokenAlreadyUsedError.  We use transaction=True so the committed token row is
+# visible across connections, and a barrier so both threads are inside consume()
+# (one holding the SELECT FOR UPDATE lock, one blocked on it) before either
+# commits.  The loser only observes used_at IS NOT NULL after the winner commits
+# and its own SELECT FOR UPDATE unblocks, which validates real row-lock
+# serialisation rather than the in-memory re-check shortcut above.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db(transaction=True)
+def test_consume_serialises_two_concurrent_transactions(org):
+    """Two concurrent consume() calls on separate connections: exactly one
+    succeeds, the other raises TokenAlreadyUsedError."""
+    token = _make_token(org)
+
+    start_barrier = threading.Barrier(2)
+    results: list[str] = []
+    results_lock = threading.Lock()
+
+    def worker(source_ip: str) -> None:
+        # Ensure both threads are running before either acquires the lock,
+        # maximising the chance they contend for the same row.
+        start_barrier.wait(timeout=10)
+        try:
+            with transaction.atomic():
+                CalendarManagementToken.objects.consume(token, source_ip)
+            outcome = "success"
+        except TokenAlreadyUsedError:
+            outcome = "already_used"
+        finally:
+            # Each thread uses its own connection; close it to avoid leaking
+            # connections into the test runner's pool.
+            connection.close()
+        with results_lock:
+            results.append(outcome)
+
+    threads = [
+        threading.Thread(target=worker, args=("10.0.0.1",)),
+        threading.Thread(target=worker, args=("10.0.0.2",)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert sorted(results) == ["already_used", "success"], results
+
+    token.refresh_from_db()
+    assert token.used_at is not None
+    assert token.consumed_source_ip in {"10.0.0.1", "10.0.0.2"}
 
 
 # ---------------------------------------------------------------------------

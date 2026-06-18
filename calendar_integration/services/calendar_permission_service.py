@@ -568,7 +568,6 @@ class CalendarPermissionService:
 
         token.save()
 
-        token.permissions.all().delete()
         for perm in permissions:
             token.permissions.create(permission=perm, organization_id=organization_id)
 
