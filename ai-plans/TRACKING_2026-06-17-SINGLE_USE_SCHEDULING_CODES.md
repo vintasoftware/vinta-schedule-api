@@ -1,0 +1,49 @@
+# Tracking — Single-Use Scheduling Codes
+
+- **Plan**: ai-plans/2026-06-17-SINGLE_USE_SCHEDULING_CODES_IMPLEMENTATION_PLAN.md
+- **Started**: 2026-06-17
+- **Last updated**: 2026-06-18
+- **Feature flag**: none (purely additive surface)
+
+## Run options
+- pause_between_phases: false
+- generate_inline_comments: true
+- use_worktree: true
+- worktree_path: .claude/worktrees/plan-single-use-scheduling-codes
+- worktree_branch: plan/single-use-scheduling-codes/wt-base
+- worktree_summary: .vinta-ai-workflows/worktrees/plan-single-use-scheduling-codes.yaml
+- commit_strategy_resolved: stacked-branches
+- pr_creation: agents-create
+- execution_model: docker-compose-in-container (`docker compose run --rm api uv run …`, COMPOSE_PROJECT_NAME=vinta-schedule)
+
+## Notes
+- Worktree rebased onto local `main` (docker-compose skill updates 868627d / af97bfa / 87fe363).
+- All gates run in-container against docker postgres. Host has no `uv`; subagents commit `--no-verify`, orchestrator verifies equivalents in-container (ruff, makemigrations --check, check --deploy, full pytest, schema drift).
+
+## Completed phases
+
+### Phase 0 — Token lifecycle foundation ✅
+- **Status**: complete, reviewed (Layers 1–3 + fix loop), outer gate green.
+- **Model/tier**: migration-author / Sonnet (Tier 3).
+- **Branch**: plan/single-use-scheduling-codes/phase-0 (base: wt-base).
+- **Commits**: 5b71502 (foundation) + 96c52bf (review fixes).
+- **Outer gate**: `check --deploy` 5 pre-existing warnings/0 errors; `pytest -n auto` 2032 passed; ruff clean; makemigrations clean; schema no drift.
+- **Summary**: Added `expires_at` / `minted_by_system_user` (FK→SystemUser, SET_NULL) / `consumed_source_ip` / `calendar_group` (OrganizationForeignKey) to `CalendarManagementToken`; `CalendarManagementTokenManager` with `active()`, atomic `consume()` (transaction.atomic + select_for_update + re-check, raises domain errors), `get_token_error_code()`. `CalendarPermissionService.create_booking_token` / `validate_code` / `consume_code`. New exceptions TokenExpired/AlreadyUsed/Revoked. `PublicAPIResources.CALENDAR_BOOKING_CODE` + 7 mint/revoke field mappings. Strawberry `BookingCodeErrorCode` + `BookingCodeResult` + `CodeEventResult` (defined, not yet wired). Migrations calendar_integration/0020 + public_api/0007. Real two-thread concurrency test proves first-write-wins.
+- **Key decisions**: `calendar_group` FK added (group booking codes need group binding; mirrors existing calendar/event composite-FK pattern). consume() wraps in reentrant `transaction.atomic()` so non-request callers (Celery/commands) are safe regardless of ATOMIC_REQUESTS.
+
+## Current phase
+Phase 1 — Mint booking codes (next).
+
+## Remaining phases
+- Phase 1 — Mint booking codes
+- Phase 2 — Mint reschedule & cancel codes
+- Phase 3 — Revoke codes
+- Phase 4 — Code-gated availability reads
+- Phase 5a — Book single-calendar event with code
+- Phase 5b — Book calendar-group event with code
+- Phase 6a — Reschedule single-calendar event with code
+- Phase 6b — Reschedule calendar-group event with code
+- Phase 6c — Cancel event with code
+
+## Deferred phases
+_None (no cross-repo, no flag-removal)._
