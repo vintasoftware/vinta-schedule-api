@@ -98,11 +98,20 @@
 - **Notable**: found + fixed a genuine pre-existing bug — `update_event` assigned to `start_time`/`end_time` which are read-only GeneratedFields (db-derived), so reschedules never persisted; fix writes `*_tz_unaware`+`timezone` (kept in shared update_event, matches create_event). A reviewer-flagged availability check that was added to shared update_event (would regress REST/bundle updates) was MOVED into the mutation.
 - **PR**: pending (filled after push).
 
+### Phase 6b — Reschedule calendar-group event with code ✅
+- **Status**: complete, reviewed (Layers 1–3 + fix loop). Layer 3 caught a tz BLOCKER — fixed.
+- **Model/tier**: implementer / Sonnet (Tier 3).
+- **Branch**: plan/single-use-scheduling-codes/phase-6b (base: phase-6a).
+- **Commits**: 0434b01 (reschedule-group-with-code + reschedule_grouped_event) + 52c7d06 (align blocked-time tz storage on create+reschedule).
+- **Outer gate**: `pytest -n auto` 2161 passed; check --deploy clean; makemigrations clean; ruff clean.
+- **Summary**: unauthenticated `rescheduleCalendarGroupEventWithCode`. New `CalendarGroupService.reschedule_grouped_event(event_id, times)` updates the primary event (details-preserved → only RESCHEDULE required) + the linked non-primary BlockedTimes (`external_id` LIKE `group-event-{id}-cal-`), preserving the event id (Building Blocks linkage). Mutation: resolve_code → require RESCHEDULE + event + GROUP scope (calendar-only codes → 6a) → availability pre-check (code path) → atomic update→consume (wires group_service.calendar_service to the code-bearing instance). Time-only v1; slot re-selection deferred (Open Question 3).
+- **BLOCKER caught + fixed**: tz storage divergence — `_create_non_primary_blocked_times` wrote blocked-time `*_tz_unaware` RAW (UTC wall-clock) while the primary event + reschedule write CONVERTED (local wall-clock), so non-primary blocked times drifted off the primary event for non-UTC zones (pre-existing create bug). Fixed create to convert; added a non-UTC (America/Recife) regression test asserting primary event + blocked times stay aligned.
+- **PR**: pending (filled after push).
+
 ## Current phase
-Phase 6b — Reschedule calendar-group event with code (next).
+Phase 6c — Cancel event with code (next, final implementable phase).
 
 ## Remaining phases
-- Phase 6b — Reschedule calendar-group event with code
 - Phase 6c — Cancel event with code
 
 ## Deferred phases
