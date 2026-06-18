@@ -576,27 +576,29 @@ class CalendarPermissionService:
 
         return token, plaintext_code
 
-    def validate_code(self, code: str, organization_id: int) -> CalendarManagementToken:
-        """Decode and validate a booking code, returning the active token.
+    def resolve_code(self, code: str) -> CalendarManagementToken:
+        """Decode and validate a booking code WITHOUT a known organization.
 
-        Performs the same decode/hash/lookup as ``initialize_with_token`` but
-        additionally enforces that the token is still active (not used, not
-        revoked, not expired).
+        This method is for unauthenticated reads where the org is derived FROM
+        the code itself.  It performs the same decode/hash/verify logic as
+        ``validate_code`` but looks up the token by id alone (no org filter).
+        The org is safe to derive from the returned token's ``organization_id``
+        because the secret-hash verification gates access to the token data.
 
         Args:
             code: The base64-encoded plaintext code as returned by
                 ``create_booking_token``.
-            organization_id: Tenant scope.  The token must belong to this org.
 
         Returns:
             The active ``CalendarManagementToken`` instance, with
-            ``permissions`` and ``calendar``/``event`` pre-fetched.
+            ``permissions``, ``calendar``, ``calendar_group``, and ``event``
+            pre-fetched.
 
         Raises:
             InvalidTokenError: If the code is malformed or does not match any token.
-            TokenExpiredError: If the token's ``expires_at`` has passed.
-            TokenAlreadyUsedError: If the token was already consumed.
             TokenRevokedError: If the token was revoked.
+            TokenAlreadyUsedError: If the token was already consumed.
+            TokenExpiredError: If the token's ``expires_at`` has passed.
         """
         try:
             token_full_str = base64.b64decode(code).decode("utf-8")
@@ -609,10 +611,22 @@ class CalendarPermissionService:
             raise InvalidTokenError("Invalid booking code format") from e
 
         try:
+            # Look up by id alone — no org filter.  This is safe because:
+            #   1. The integer id alone is useless without the secret token string.
+            #   2. The constant-time hash verify below is the actual gate.
+            # We use ``original_manager`` (the plain Django Manager defined on
+            # OrganizationModel) to bypass the tenant-required guard that
+            # CalendarManagementToken.objects enforces — the org is derived FROM
+            # the token, not passed in.
             token = (
-                CalendarManagementToken.objects.prefetch_related("permissions")
-                .select_related("calendar", "event", "calendar_group")
-                .filter(organization_id=organization_id)
+                CalendarManagementToken.original_manager.select_related(
+                    "calendar",
+                    "event",
+                    "calendar_group",
+                    "event__calendar",
+                    "event__calendar_group",
+                )
+                .prefetch_related("permissions")
                 .get(id=token_id)
             )
         except CalendarManagementToken.DoesNotExist as e:
@@ -621,7 +635,7 @@ class CalendarPermissionService:
         if not verify_long_lived_token(token_str, token.token_hash):
             raise InvalidTokenError("Invalid booking code") from None
 
-        # Check terminal lifecycle states in priority order.
+        # Check terminal lifecycle states in priority order (same as validate_code).
         if token.revoked_at is not None:
             raise TokenRevokedError()
 
@@ -630,6 +644,39 @@ class CalendarPermissionService:
 
         if token.expires_at is not None and token.expires_at <= timezone.now():
             raise TokenExpiredError()
+
+        return token
+
+    def validate_code(self, code: str, organization_id: int) -> CalendarManagementToken:
+        """Decode and validate a booking code, returning the active token.
+
+        Performs the same decode/hash/lookup as ``initialize_with_token`` but
+        additionally enforces that the token is still active (not used, not
+        revoked, not expired), and that the token belongs to the given org.
+
+        Delegates decode/verify/lifecycle to ``resolve_code`` then asserts the
+        org matches.
+
+        Args:
+            code: The base64-encoded plaintext code as returned by
+                ``create_booking_token``.
+            organization_id: Tenant scope.  The token must belong to this org.
+
+        Returns:
+            The active ``CalendarManagementToken`` instance, with
+            ``permissions`` and ``calendar``/``event`` pre-fetched.
+
+        Raises:
+            InvalidTokenError: If the code is malformed, does not match any
+                token, or belongs to a different organization.
+            TokenExpiredError: If the token's ``expires_at`` has passed.
+            TokenAlreadyUsedError: If the token was already consumed.
+            TokenRevokedError: If the token was revoked.
+        """
+        token = self.resolve_code(code)
+
+        if token.organization_id != organization_id:
+            raise InvalidTokenError("Invalid booking code") from None
 
         return token
 
