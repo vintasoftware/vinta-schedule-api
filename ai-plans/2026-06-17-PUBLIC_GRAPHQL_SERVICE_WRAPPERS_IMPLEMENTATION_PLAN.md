@@ -9,7 +9,10 @@ Thin Public GraphQL wrappers over already-existing calendar/availability/bundle 
 3. Add the small service methods the wrappers require but that do **not** exist today: `disable_resource_calendar`, `disable_bundle_calendar`, `update_blocked_time`, `delete_blocked_time`, and `reschedule_grouped_event`.
 4. Add a `CalendarBundleGraphQLType` + `calendarBundles` query so bundles (Calendars with `calendar_type=BUNDLE`) become a first-class Public API read surface.
 
+**Scope change (2026-06-18):** Phases 1a/1b/1c (single-calendar event create / reschedule / cancel) are **DROPPED**. `CalendarEventService.create_event` / `update_event` raise `PermissionDenied("Events cannot be created through the Public API.")` for `SystemUser` callers (calendar_event_service.py:246 and :447) — a deliberate guard. Per owner decision, the guard is authoritative: single-event mutations are NOT exposed via the Public API, and `docs/building-blocks-integration-v2.md` is wrong on this point. Phase 5 (group-event reschedule) is flagged to revisit, since `reschedule_grouped_event` would also route through `update_event`.
+
 **Non-goals** (each is a separate, independently-planned change — explicitly out of scope here):
+- **Single-calendar event mutations** (`createCalendarEvent`, `rescheduleCalendarEvent`, `cancelEvent`) — blocked by the `SystemUser` guard in `CalendarEventService`; dropped per owner decision 2026-06-18.
 - The `is_private` / restricted flag on calendars / groups / bundles.
 - The `owners` field on `CalendarGraphQLType`.
 - The `userId` argument on the `calendarEvents` query.
@@ -95,7 +98,9 @@ Acceptance: `get_calendar_mutation_dependencies()` returns the facade + group se
 
 ---
 
-### Phase 1a — `createCalendarEvent` mutation
+> **⛔ Phases 1a / 1b / 1c DROPPED (2026-06-18).** Single-calendar event create/reschedule/cancel are not exposed via the Public API — `CalendarEventService` deliberately blocks `SystemUser` callers (see Goals → Non-goals). Phase 0 scaffolding (PR #96) is retained; later phases (resource calendars, availability, bundles) consume it. The phase bodies below are kept for the record only.
+
+### Phase 1a — `createCalendarEvent` mutation  — DROPPED
 
 **Goal**: External integrators can create a single-calendar event via the Public API.
 
