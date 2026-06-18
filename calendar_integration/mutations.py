@@ -13,6 +13,7 @@ from graphql import GraphQLError
 
 from calendar_integration.exceptions import (
     CalendarGroupError,
+    CalendarGroupValidationError,
     EventManagementError,
     InvalidTokenError,
     NoAvailableTimeWindowsError,
@@ -1921,6 +1922,15 @@ class CalendarGroupMutations:
                         event_id=event_id,
                         delete_series=False,
                     )
+        except InvalidTokenError:
+            # consume_code re-fetched under SELECT FOR UPDATE and found no row
+            # (e.g. token was deleted between resolve_code and the lock).  This is
+            # NOT a genuine authorization failure — surface it as INVALID_CODE.
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Invalid or unknown booking code.",
+            )
         except (TokenAlreadyUsedError, TokenExpiredError, TokenRevokedError) as e:
             # Concurrent consumer won the race, or state changed between resolve and consume.
             error_code = BookingCodeErrorCode.ALREADY_USED
@@ -1935,6 +1945,22 @@ class CalendarGroupMutations:
                 success=False,
                 error_code=error_code,
                 error_message=error_message,
+            )
+        except CalendarEvent.DoesNotExist:
+            # The event was concurrently deleted between resolve_code and the delete call.
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Invalid or unknown booking code.",
+            )
+        except CalendarGroupValidationError:
+            # Group-path: the bound event is not actually a grouped event (scope mismatch),
+            # or the cancel_grouped_event preconditions failed for a structural reason.
+            # This is a permission/scope issue, not a slot-availability issue.
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code does not permit cancellation of this event.",
             )
         except PermissionDenied:
             return CodeEventResult(

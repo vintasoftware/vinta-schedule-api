@@ -693,3 +693,58 @@ class TestCancelEventWithCodeLifecycleRejections:
 
         # Event must still exist.
         assert CalendarEvent.objects.filter(id=existing_event.id).exists()
+
+
+# ---------------------------------------------------------------------------
+# Scenario 6: Atomicity — consume rolls back when delete fails
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestCancelEventWithCodeAtomicity:
+    """Scenario 6: consume rolls back on delete failure.
+
+    Proves the single-use-on-success guarantee: if the delete step raises,
+    the entire transaction.atomic() block (including consume_code) rolls back
+    so the token remains live and available for a genuine future cancel.
+    """
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_delete_failure_leaves_code_live_and_event_intact(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        cancel_code,
+        organization,
+        existing_event,
+    ):
+        """Patching CalendarService.delete_event to raise RuntimeError proves
+        that the whole atomic block rolls back: the code is NOT consumed and
+        the event still exists after the failed mutation call."""
+        mock_rate_limiter.return_value = iter([None])
+        token, code = cancel_code
+
+        with patch(
+            "calendar_integration.services.calendar_service.CalendarService.delete_event",
+            side_effect=RuntimeError("Simulated delete failure"),
+        ):
+            data = post_graphql(anon_client, CANCEL_WITH_CODE, {"input": _cancel_input(code)})
+
+        # (a) The mutation must NOT succeed: either GraphQL surfaces the uncaught
+        # RuntimeError as a top-level error (data is None) or the mutation returns
+        # success=False.  Either way the caller does not see a successful cancel.
+        cancel_data = (data.get("data") or {}).get("cancelEventWithCode")
+        if cancel_data is not None:
+            assert cancel_data["success"] is False, cancel_data
+        else:
+            assert data.get("errors"), "Expected GraphQL errors for unhandled exception"
+
+        # (b) The token must still exist and must NOT be marked as used.
+        refreshed = CalendarManagementToken.original_manager.filter(pk=token.pk).first()
+        assert refreshed is not None, "Token was unexpectedly deleted (consume was not rolled back)"
+        assert refreshed.used_at is None, "Token was consumed despite the delete failure"
+
+        # (c) The event must still exist.
+        assert CalendarEvent.objects.filter(id=existing_event.id).exists(), (
+            "Event was deleted despite the delete failure rolling back"
+        )
