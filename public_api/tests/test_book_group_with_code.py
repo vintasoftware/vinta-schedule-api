@@ -12,7 +12,10 @@ Scenario coverage:
 4. Calendar-scoped code (no group) → NOT_PERMITTED.
 5. Missing CREATE permission → NOT_PERMITTED.
 6. Lifecycle rejections — expired / revoked / invalid → respective error codes.
-7. Cross-org: event is created in the code's org; other org's group is unreachable.
+7. Cross-org:
+   a. Org-A code with org-A slot selections books ONLY org-A resources (event.organization_id == org A).
+   b. Org-A code with an org-B calendar id in slot_selections → rejected (SLOT_UNAVAILABLE),
+      no event created, code NOT consumed.
 """
 
 import datetime
@@ -683,24 +686,112 @@ class TestCreateGroupEventWithCodeLifecycleRejections:
 
 @pytest.mark.django_db
 class TestCreateGroupEventWithCodeCrossOrg:
-    """Scenario 7: Event is created in the code's org; other-org group is unreachable."""
+    """Scenario 7: Org isolation exercised, not just code-read.
+
+    7a — Org-A code + org-A slot selections → success, event.organization_id == org A.
+         org-B group/calendars exist in the DB but are untouched.
+
+    7b — Org-A code + org-B calendar id injected into slot_selections → rejected
+         (SLOT_UNAVAILABLE), no event created, code NOT consumed.
+    """
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_event_created_in_code_org(
+    def test_org_a_code_books_only_org_a_resources(
         self,
         mock_rate_limiter,
         anon_client,
-        group_booking_code,
+        permission_service,
         organization,
-        group,
-        primary_calendar,
-        secondary_calendar,
-        availability_windows,  # noqa: ARG002
+        availability_windows,  # noqa: ARG002 — seeds org-A calendar windows
     ):
-        mock_rate_limiter.return_value = iter([None])
-        token, code = group_booking_code
-        selections = _slot_selections(group, primary_calendar, secondary_calendar)
+        """7a: Org-A code with org-A slot selections books in org A.
 
+        Org B's group, slots, calendars, and availability windows are created in the DB
+        to confirm they don't interfere.  After booking we verify event.organization_id
+        equals org A and no event rows exist in org B.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        # --- build org A (uses shared fixtures already created) ---
+        org_a = organization
+        grp_a = baker.make(CalendarGroup, organization=org_a, name="Org-A Group")
+        cal_a1 = baker.make(
+            Calendar,
+            organization=org_a,
+            external_id="cross-org-test-a1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+            manage_available_windows=True,
+            accepts_public_scheduling=False,
+        )
+        cal_a2 = baker.make(
+            Calendar,
+            organization=org_a,
+            external_id="cross-org-test-a2",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            manage_available_windows=True,
+            accepts_public_scheduling=False,
+        )
+        slot_a1 = CalendarGroupSlot.objects.create(
+            organization=org_a, group=grp_a, name="A-Physicians", order=0, required_count=1
+        )
+        slot_a2 = CalendarGroupSlot.objects.create(
+            organization=org_a, group=grp_a, name="A-Rooms", order=1, required_count=1
+        )
+        CalendarGroupSlotMembership.objects.create(
+            organization=org_a, slot=slot_a1, calendar=cal_a1
+        )
+        CalendarGroupSlotMembership.objects.create(
+            organization=org_a, slot=slot_a2, calendar=cal_a2
+        )
+        for cal in (cal_a1, cal_a2):
+            AvailableTime.objects.create(
+                organization=org_a,
+                calendar=cal,
+                start_time_tz_unaware=datetime.datetime(2030, 6, 1, 9, 0),
+                end_time_tz_unaware=datetime.datetime(2030, 6, 1, 17, 0),
+                timezone="UTC",
+            )
+
+        # --- build org B (distinct DB rows; group has same structural shape) ---
+        org_b = baker.make(Organization, name="Org-B (cross-org target)")
+        grp_b = baker.make(CalendarGroup, organization=org_b, name="Org-B Group")
+        cal_b1 = baker.make(
+            Calendar,
+            organization=org_b,
+            external_id="cross-org-test-b1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+            manage_available_windows=True,
+            accepts_public_scheduling=False,
+        )
+        slot_b1 = CalendarGroupSlot.objects.create(
+            organization=org_b, group=grp_b, name="B-Physicians", order=0, required_count=1
+        )
+        CalendarGroupSlotMembership.objects.create(
+            organization=org_b, slot=slot_b1, calendar=cal_b1
+        )
+        AvailableTime.objects.create(
+            organization=org_b,
+            calendar=cal_b1,
+            start_time_tz_unaware=datetime.datetime(2030, 6, 1, 9, 0),
+            end_time_tz_unaware=datetime.datetime(2030, 6, 1, 17, 0),
+            timezone="UTC",
+        )
+
+        # --- mint an org-A group code ---
+        _token, code = permission_service.create_booking_token(
+            organization_id=org_a.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_group_id=grp_a.id,
+        )
+
+        # --- call mutation with org-A slot selections ---
+        selections = [
+            {"slotId": slot_a1.id, "calendarIds": [cal_a1.id]},
+            {"slotId": slot_a2.id, "calendarIds": [cal_a2.id]},
+        ]
         data = post_graphql(
             anon_client,
             CREATE_GROUP_EVENT_WITH_CODE,
@@ -710,6 +801,94 @@ class TestCreateGroupEventWithCodeCrossOrg:
         result = data["data"]["createCalendarGroupEventWithCode"]
         assert result["success"] is True, result
 
+        # Event must live in org A
         event_id = int(result["event"]["id"])
-        event = CalendarEvent.objects.filter_by_organization(organization.id).get(id=event_id)
-        assert event.organization_id == token.organization_id
+        event = CalendarEvent.objects.filter_by_organization(org_a.id).get(id=event_id)
+        assert event.organization_id == org_a.id
+        assert event.calendar_group_fk_id == grp_a.id
+
+        # No events exist in org B
+        assert not CalendarEvent.objects.filter_by_organization(org_b.id).exists()
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_org_a_code_cannot_book_org_b_calendar(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+        organization,
+        availability_windows,  # noqa: ARG002
+    ):
+        """7b: Org-A code + org-B calendar id in slot_selections → rejected, code NOT consumed.
+
+        This proves the org isolation guard: the slot_selection passes an org-B calendar id
+        to an org-A group booking code.  The server must reject it (SLOT_UNAVAILABLE, since
+        the foreign calendar is not a member of the org-A group's slots) and must NOT consume
+        the code — so the patient could theoretically retry.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        # --- build org A ---
+        org_a = organization
+        grp_a = baker.make(CalendarGroup, organization=org_a, name="Org-A Group")
+        cal_a = baker.make(
+            Calendar,
+            organization=org_a,
+            external_id="cross-org-b-test-a",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+            manage_available_windows=True,
+            accepts_public_scheduling=False,
+        )
+        slot_a = CalendarGroupSlot.objects.create(
+            organization=org_a, group=grp_a, name="A-Physicians", order=0, required_count=1
+        )
+        CalendarGroupSlotMembership.objects.create(organization=org_a, slot=slot_a, calendar=cal_a)
+        AvailableTime.objects.create(
+            organization=org_a,
+            calendar=cal_a,
+            start_time_tz_unaware=datetime.datetime(2030, 6, 1, 9, 0),
+            end_time_tz_unaware=datetime.datetime(2030, 6, 1, 17, 0),
+            timezone="UTC",
+        )
+
+        # --- build org B with its own calendar ---
+        org_b = baker.make(Organization, name="Org-B (cross-org attacker)")
+        cal_b = baker.make(
+            Calendar,
+            organization=org_b,
+            external_id="cross-org-b-test-b",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+            manage_available_windows=True,
+            accepts_public_scheduling=False,
+        )
+
+        # --- mint an org-A group code ---
+        token, code = permission_service.create_booking_token(
+            organization_id=org_a.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_group_id=grp_a.id,
+        )
+
+        # --- inject org-B's calendar id into the slot selection for org-A's slot ---
+        bad_selections = [
+            {"slotId": slot_a.id, "calendarIds": [cal_b.id]},
+        ]
+        data = post_graphql(
+            anon_client,
+            CREATE_GROUP_EVENT_WITH_CODE,
+            {"input": _group_booking_input(code, bad_selections)},
+        )
+
+        result = data["data"]["createCalendarGroupEventWithCode"]
+        assert result["success"] is False
+        assert result["errorCode"] == "SLOT_UNAVAILABLE"
+
+        # Code must NOT have been consumed
+        token.refresh_from_db()
+        assert token.used_at is None
+
+        # No event must exist in either org
+        assert not CalendarEvent.objects.filter_by_organization(org_a.id).exists()
+        assert not CalendarEvent.objects.filter_by_organization(org_b.id).exists()

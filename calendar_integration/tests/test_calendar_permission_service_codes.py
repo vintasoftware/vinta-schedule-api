@@ -1,10 +1,12 @@
-"""Unit tests for CalendarPermissionService booking-code methods (Phase 0).
+"""Unit tests for CalendarPermissionService booking-code methods (Phase 0 and Phase 5b).
 
 Covers:
 - create_booking_token() persists scope, permissions, expiry, and minter.
 - validate_code() returns the token on a valid active code.
 - validate_code() raises the right exception for each terminal state
   (expired / used / revoked / unknown).
+- can_perform_scheduling() group-scoped token branch, including the cross-org
+  isolation case introduced in Phase 5b.
 """
 
 import base64
@@ -341,7 +343,7 @@ def _public_settings() -> CalendarSettingsData:
     return CalendarSettingsData(manage_available_windows=False, accepts_public_scheduling=True)
 
 
-def _dummy_event_data(org: Organization, cal: Calendar) -> CalendarEventInputData:
+def _dummy_event_data() -> CalendarEventInputData:
     """Minimal CalendarEventInputData for use in can_perform_scheduling calls."""
     now = timezone.now()
     return CalendarEventInputData(
@@ -401,7 +403,7 @@ def test_can_perform_scheduling_group_token_member_calendar_with_create_returns_
     result = service.can_perform_scheduling(
         calendar_id=calendar.id,
         calendar_settings=_restricted_settings(),
-        event=_dummy_event_data(org, calendar),
+        event=_dummy_event_data(),
     )
     assert result is True
 
@@ -421,7 +423,7 @@ def test_can_perform_scheduling_group_token_non_member_calendar_returns_false(
     result = service.can_perform_scheduling(
         calendar_id=non_member_calendar.id,
         calendar_settings=_restricted_settings(),
-        event=_dummy_event_data(org, non_member_calendar),
+        event=_dummy_event_data(),
     )
     assert result is False
 
@@ -441,7 +443,7 @@ def test_can_perform_scheduling_group_token_without_create_returns_false(
     result = service.can_perform_scheduling(
         calendar_id=calendar.id,
         calendar_settings=_restricted_settings(),
-        event=_dummy_event_data(org, calendar),
+        event=_dummy_event_data(),
     )
     assert result is False
 
@@ -455,7 +457,7 @@ def test_can_perform_scheduling_public_calendar_always_returns_true(
     result = service.can_perform_scheduling(
         calendar_id=calendar.id,
         calendar_settings=_public_settings(),
-        event=_dummy_event_data(org, calendar),
+        event=_dummy_event_data(),
     )
     assert result is True
 
@@ -475,6 +477,55 @@ def test_can_perform_scheduling_calendar_scoped_token_own_calendar_returns_true(
     result = service.can_perform_scheduling(
         calendar_id=calendar.id,
         calendar_settings=_restricted_settings(),
-        event=_dummy_event_data(org, calendar),
+        event=_dummy_event_data(),
     )
     assert result is True
+
+
+@pytest.mark.django_db
+def test_can_perform_scheduling_group_token_member_calendar_in_other_org_returns_false(
+    service, org
+):
+    """Group-scoped token in org A must NOT authorize a calendar that belongs to org B.
+
+    This test proves that the ``filter_by_organization(self.token.organization_id)``
+    guard inside ``can_perform_scheduling`` prevents cross-org access even when org B's
+    calendar happens to be a member of a structurally similar group.
+
+    Setup:
+    - org A has a group (grp_a) with one slot containing cal_a.
+    - org B has its own group (grp_b) with one slot containing cal_b.
+    - A CREATE token is minted in org A scoped to grp_a.
+    - can_perform_scheduling is called with org B's calendar id → must return False.
+    """
+    other_org = baker.make("organizations.Organization")
+
+    # Org A side
+    grp_a = CalendarGroup.objects.create(organization=org, name="Org-A Group")
+    slot_a = CalendarGroupSlot.objects.create(organization=org, group=grp_a, name="Slot A", order=0)
+    cal_a = Calendar.objects.create(name="Org-A Calendar", organization=org)
+    CalendarGroupSlotMembership.objects.create(organization=org, slot=slot_a, calendar=cal_a)
+
+    # Org B side — mirrors org A's structure with distinct DB rows
+    grp_b = CalendarGroup.objects.create(organization=other_org, name="Org-B Group")
+    slot_b = CalendarGroupSlot.objects.create(
+        organization=other_org, group=grp_b, name="Slot B", order=0
+    )
+    cal_b = Calendar.objects.create(name="Org-B Calendar", organization=other_org)
+    CalendarGroupSlotMembership.objects.create(organization=other_org, slot=slot_b, calendar=cal_b)
+
+    # Token minted in org A scoped to grp_a
+    token, _ = service.create_booking_token(
+        organization_id=org.id,
+        permissions=[EventManagementPermissions.CREATE],
+        calendar_group_id=grp_a.id,
+    )
+    service.token = token
+
+    # Attempt to authorize org B's calendar with org A's token → must be False
+    result = service.can_perform_scheduling(
+        calendar_id=cal_b.id,
+        calendar_settings=_restricted_settings(),
+        event=_dummy_event_data(),
+    )
+    assert result is False

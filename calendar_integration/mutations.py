@@ -403,6 +403,19 @@ def _load_organization(organization_id: int) -> Organization | None:
         return None
 
 
+def _client_ip_from_request(request: object) -> str:
+    """Extract the client IP address from a Django request for audit logging.
+
+    Prefers the first entry of ``X-Forwarded-For`` (set by load balancers /
+    proxies); falls back to ``REMOTE_ADDR``.  Robust to a missing ``META``
+    attribute (returns ``""`` rather than raising).
+    """
+    forwarded_for = getattr(request, "META", {}).get("HTTP_X_FORWARDED_FOR", "")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    return getattr(request, "META", {}).get("REMOTE_ADDR", "")
+
+
 # ---------------------------------------------------------------------------
 # Booking-code mint mutations (Phase 1)
 # ---------------------------------------------------------------------------
@@ -1131,12 +1144,7 @@ class CalendarGroupMutations:
             )
 
         # --- Step 5: extract client IP for audit ---
-        request = info.context.request
-        forwarded_for = getattr(request, "META", {}).get("HTTP_X_FORWARDED_FOR", "")
-        if forwarded_for:
-            source_ip = forwarded_for.split(",")[0].strip()
-        else:
-            source_ip = getattr(request, "META", {}).get("REMOTE_ADDR", "")
+        source_ip = _client_ip_from_request(info.context.request)
 
         # --- Step 6: build event data ---
         event_data = CalendarEventInputData(
@@ -1275,12 +1283,7 @@ class CalendarGroupMutations:
             )
 
         # --- Step 5: extract client IP for audit ---
-        request = info.context.request
-        forwarded_for = getattr(request, "META", {}).get("HTTP_X_FORWARDED_FOR", "")
-        if forwarded_for:
-            source_ip = forwarded_for.split(",")[0].strip()
-        else:
-            source_ip = getattr(request, "META", {}).get("REMOTE_ADDR", "")
+        source_ip = _client_ip_from_request(info.context.request)
 
         # --- Step 6: build group event data ---
         # group_id comes from the token — not from client input — to enforce scope.
@@ -1347,9 +1350,11 @@ class CalendarGroupMutations:
                 error_code=BookingCodeErrorCode.NOT_PERMITTED,
                 error_message="This code does not permit booking on this calendar.",
             )
-        except (NoAvailableTimeWindowsError, EventManagementError, CalendarGroupError):
+        except (EventManagementError, CalendarGroupError):
             # Slot taken / invalid selection / invalid times — code NOT consumed (txn rolled
             # back), patient may retry with a different slot.
+            # Note: NoAvailableTimeWindowsError is a subclass of EventManagementError and
+            # is therefore already covered by the EventManagementError branch.
             return CodeEventResult(
                 success=False,
                 error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
