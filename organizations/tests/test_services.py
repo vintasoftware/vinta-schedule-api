@@ -1388,6 +1388,97 @@ class TestOrganizationService:
         assert event.payload["membership_role"] == OrganizationRole.MEMBER
         assert event.payload["membership_id"] == membership.id
 
+    # -----------------------------------------------------------------------
+    # Phase 3 — organization_member_created webhook emission on create_organization
+    # -----------------------------------------------------------------------
+
+    def test_create_organization_calls_on_member_created_for_admin_membership(
+        self,
+        organization_service_with_webhook_mock,
+        mock_webhook_membership_side_effects_service,
+    ):
+        """Integration: creating an organization calls on_member_created with the admin membership."""
+        creator = baker.make(User, email="org_creator_webhook@example.com")
+
+        organization_service_with_webhook_mock.create_organization(
+            creator=creator, name="Webhook Test Org"
+        )
+
+        mock_webhook_membership_side_effects_service.on_member_created.assert_called_once()
+        passed_membership = (
+            mock_webhook_membership_side_effects_service.on_member_created.call_args[0][0]
+        )
+        assert passed_membership.user == creator
+        assert passed_membership.role == OrganizationRole.ADMIN
+        assert passed_membership.is_active is True
+
+    def test_create_organization_no_webhook_emission_when_no_subscribed_config(
+        self,
+        django_capture_on_commit_callbacks,
+    ):
+        """Integration: no WebhookEvent rows when no WebhookConfiguration subscribes to the event type.
+
+        Exercises the full stack (no mocks on the webhook path) to confirm that creating an
+        organization with no matching config produces zero WebhookEvent rows.
+        """
+        from unittest.mock import patch
+
+        from di_core.containers import container
+        from webhooks.models import WebhookEvent
+
+        creator = baker.make(User, email="no_config_creator@example.com")
+
+        with container.calendar_service.override(Mock()):
+            service = OrganizationService()
+
+        with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
+            with django_capture_on_commit_callbacks(execute=True):
+                org = service.create_organization(creator=creator, name="No Config Org")
+
+        assert WebhookEvent.objects.filter(organization=org).count() == 0
+
+    def test_create_organization_webhook_emission_payload_and_role(
+        self,
+        django_capture_on_commit_callbacks,
+    ):
+        """Integration: on_commit fires send_event with membership_role='admin' and correct payload.
+
+        Since the org does not exist until create_organization runs, we cannot pre-create a
+        WebhookConfiguration for it. Instead we intercept WebhookService.send_event to capture
+        the call and assert the payload without needing a config row. The no-config gate is
+        already covered by test_create_organization_no_webhook_emission_when_no_subscribed_config.
+        """
+        from unittest.mock import patch
+
+        from di_core.containers import container
+        from webhooks.constants import WebhookEventType
+
+        creator = baker.make(User, email="with_config_creator@example.com")
+
+        with container.calendar_service.override(Mock()):
+            service = OrganizationService()
+
+        captured_calls: list[dict] = []
+
+        def fake_send_event(self_svc, organization, event_type, payload):
+            captured_calls.append(
+                {"organization": organization, "event_type": event_type, "payload": payload}
+            )
+
+        with patch("webhooks.services.webhook_service.WebhookService.send_event", fake_send_event):
+            with django_capture_on_commit_callbacks(execute=True):
+                org = service.create_organization(creator=creator, name="With Config Org")
+
+        assert len(captured_calls) == 1
+        call = captured_calls[0]
+        assert call["organization"] == org
+        assert call["event_type"] == WebhookEventType.ORGANIZATION_MEMBER_CREATED
+        assert call["payload"]["user_id"] == creator.id
+        assert call["payload"]["email"] == creator.email
+        assert call["payload"]["organization_id"] == org.id
+        assert call["payload"]["organization_name"] == org.name
+        assert call["payload"]["membership_role"] == OrganizationRole.ADMIN
+
 
 @pytest.mark.django_db
 class TestRequestAllCalendarsSync:
