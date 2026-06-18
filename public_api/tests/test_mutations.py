@@ -5715,3 +5715,177 @@ class TestUpdateCalendarBundleMutation:
         data = response.json()
         assert "errors" in data
         assert len(data["errors"]) > 0
+
+    def test_update_calendar_bundle_non_bundle_id_returns_not_found(self):
+        """Passing a RESOURCE calendar's id as bundleId → success=False 'Bundle not found'.
+
+        The resolver filters by calendar_type=BUNDLE; a RESOURCE calendar in the same org
+        must not be treated as a bundle — it should return the friendly not-found message.
+        """
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a RESOURCE calendar (not a bundle) in the org
+        resource_calendar = baker.make(
+            Calendar,
+            organization=org,
+            name="Not A Bundle",
+            calendar_type=CalendarType.RESOURCE,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+        child = self._make_child_calendar(org)
+
+        # Pass the RESOURCE calendar's id as bundleId
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": UPDATE_CALENDAR_BUNDLE_MUTATION,
+                    "variables": {
+                        "input": {
+                            "organizationId": org.id,
+                            "bundleId": resource_calendar.id,
+                            "childrenIds": [child.id],
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "bundle not found" in result["errorMessage"].lower()
+
+    def test_update_calendar_bundle_child_is_bundle_rejected(self):
+        """Passing a BUNDLE calendar id inside childrenIds → success=False (service ValueError).
+
+        The service rejects bundle-as-child to prevent nested bundles. The resolver must
+        surface this as success=False, not as an unhandled exception.
+        """
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[
+                PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+                PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
+            ]
+        )
+
+        outer_child = self._make_child_calendar(org, name="Outer Child")
+
+        # Create the bundle-under-test via the mutation (one bundle, no conflict)
+        outer_bundle_id = self._create_bundle_via_mutation(
+            org, system_user, token, auth_service, [outer_child.id], name="Outer Bundle"
+        )
+
+        # Create a second BUNDLE calendar directly in the DB (avoids the unique constraint
+        # conflict that arises when two bundles share external_id="" in the same org).
+        nested_bundle = baker.make(
+            Calendar,
+            organization=org,
+            name="Inner Bundle",
+            calendar_type=CalendarType.BUNDLE,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+
+        # Try to update outer bundle to include the inner bundle as a child (invalid)
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": outer_bundle_id,
+                    "childrenIds": [nested_bundle.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+    def test_update_calendar_bundle_rolls_back_name_on_service_failure(self):
+        """bundle.save(name) is rolled back when the service raises ValueError.
+
+        This test proves the transaction.atomic() block works: the name/description
+        are saved to the DB inside the block, then the service raises (child-is-bundle),
+        and the entire block — including the name change — must be rolled back.
+        """
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[
+                PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+                PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
+            ]
+        )
+
+        outer_child = self._make_child_calendar(org, name="Outer Child")
+
+        # Create the bundle-under-test via the mutation with a known name/description
+        bundle_id = self._create_bundle_via_mutation(
+            org,
+            system_user,
+            token,
+            auth_service,
+            [outer_child.id],
+            name="Original Name",
+        )
+
+        # Create a second BUNDLE calendar directly in the DB to use as an invalid child
+        # (avoids the unique constraint conflict for external_id="" in the same org).
+        nested_bundle = baker.make(
+            Calendar,
+            organization=org,
+            name="Inner Bundle",
+            calendar_type=CalendarType.BUNDLE,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+
+        # Capture current DB state before the failing update
+        bundle_before = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
+        original_name = bundle_before.name
+        original_description = bundle_before.description
+
+        # Attempt to rename AND use a bundle-as-child (triggers service ValueError)
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": bundle_id,
+                    "name": "Should Not Persist",
+                    "description": "Should not persist either",
+                    "childrenIds": [nested_bundle.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is False
+
+        # The name and description must be UNCHANGED — the atomic block was rolled back
+        bundle_after = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
+        assert bundle_after.name == original_name, (
+            f"Name was persisted despite service failure: got '{bundle_after.name}', "
+            f"expected '{original_name}'"
+        )
+        assert bundle_after.description == original_description, (
+            f"Description was persisted despite service failure: got '{bundle_after.description}', "
+            f"expected '{original_description}'"
+        )

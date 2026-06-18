@@ -14,6 +14,7 @@ import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
+from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import CalendarIntegrationError
 from calendar_integration.graphql import (
     AvailableTimeGraphQLType,
@@ -1320,32 +1321,10 @@ class Mutation(CalendarGroupMutations):
 
         The token's OrganizationResourceAccess must include the UPDATE_CALENDAR_BUNDLE resource.
         """
-        from calendar_integration.constants import CalendarType
-
         calendar_service, org = _get_org_and_init_calendar_service(info)
 
-        # Fetch the bundle org-scoped and restricted to BUNDLE type
-        try:
-            bundle = (
-                Calendar.objects.filter_by_organization(org.id)
-                .filter(calendar_type=CalendarType.BUNDLE)
-                .get(id=input.bundle_id)
-            )
-        except Calendar.DoesNotExist:
-            return UpdateCalendarBundleResult(success=False, error_message="Bundle not found.")
-
-        # Update name/description in the resolver (the service does NOT update these fields)
-        update_fields: list[str] = []
-        if input.name is not None:
-            bundle.name = input.name
-            update_fields.append("name")
-        if input.description is not None:
-            bundle.description = input.description
-            update_fields.append("description")
-        if update_fields:
-            bundle.save(update_fields=update_fields)
-
-        # Fetch child calendars org-scoped (rejects cross-org / missing ids)
+        # Fetch child calendars org-scoped (rejects cross-org / missing ids) — validation
+        # that returns success=False for friendly errors runs BEFORE the atomic block.
         unique_children_ids = list(dict.fromkeys(input.children_ids))
         children = list(
             Calendar.objects.filter_by_organization(org.id).filter(id__in=unique_children_ids)
@@ -1367,11 +1346,34 @@ class Mutation(CalendarGroupMutations):
             primary = next(c for c in children if c.id == input.primary_calendar_id)
 
         try:
-            updated_bundle = calendar_service.update_bundle_calendar(
-                bundle_calendar=bundle,
-                child_calendars=children,
-                primary_calendar=primary,
-            )
+            with transaction.atomic():
+                # Fetch the bundle org-scoped and restricted to BUNDLE type inside the atomic
+                # block so that the DoesNotExist error rolls back any prior savepoint.
+                bundle = (
+                    Calendar.objects.filter_by_organization(org.id)
+                    .filter(calendar_type=CalendarType.BUNDLE)
+                    .get(id=input.bundle_id)
+                )
+
+                # Update name/description in the resolver (the service does NOT update these).
+                # Runs inside the atomic block so a subsequent service failure rolls back the save.
+                update_fields: list[str] = []
+                if input.name is not None:
+                    bundle.name = input.name
+                    update_fields.append("name")
+                if input.description is not None:
+                    bundle.description = input.description
+                    update_fields.append("description")
+                if update_fields:
+                    bundle.save(update_fields=update_fields)
+
+                updated_bundle = calendar_service.update_bundle_calendar(
+                    bundle_calendar=bundle,
+                    child_calendars=children,
+                    primary_calendar=primary,
+                )
+        except Calendar.DoesNotExist:
+            return UpdateCalendarBundleResult(success=False, error_message="Bundle not found.")
         except (CalendarIntegrationError, ValueError, DjangoValidationError, IntegrityError) as e:
             return UpdateCalendarBundleResult(success=False, error_message=str(e))
 
