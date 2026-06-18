@@ -330,6 +330,29 @@ class CreateBlockedTimeResult:
     blocked_time: BlockedTimeGraphQLType | None = None
 
 
+@strawberry.input
+class UpdateBlockedTimeInput:
+    """Input for updating an existing blocked time (partial update — only provided fields change)."""
+
+    organization_id: int
+    calendar_id: int
+    blocked_time_id: int
+    start_time: datetime.datetime | None = None
+    end_time: datetime.datetime | None = None
+    timezone: str | None = None
+    reason: str | None = None
+    rrule_string: str | None = None
+
+
+@strawberry.type
+class UpdateBlockedTimeResult:
+    """Result of the updateBlockedTime mutation."""
+
+    success: bool
+    error_message: str | None = None
+    blocked_time: BlockedTimeGraphQLType | None = None
+
+
 @strawberry.type
 class Mutation(CalendarGroupMutations):
     @strawberry.mutation
@@ -1049,6 +1072,49 @@ class Mutation(CalendarGroupMutations):
             return CreateBlockedTimeResult(success=False, error_message=str(e))
 
         return CreateBlockedTimeResult(
+            success=True,
+            blocked_time=blocked_time,  # type: ignore[arg-type]
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def update_blocked_time(
+        self,
+        info: strawberry.Info,
+        input: UpdateBlockedTimeInput,  # noqa: A002
+    ) -> UpdateBlockedTimeResult:
+        """Update an existing blocked time (partial update — only provided fields change).
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Delegates to CalendarService.update_blocked_time with the supplied parameters.
+           Only fields present (non-None) in the input are applied; others are left unchanged.
+        4. Returns the updated BlockedTime on success, or success=False + errorMessage on failure.
+           Note: a missing or cross-calendar blocked_time_id raises ValueError (success=False).
+
+        The token's OrganizationResourceAccess must include the UPDATE_BLOCKED_TIME resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return UpdateBlockedTimeResult(success=False, error_message="Calendar not found.")
+
+        try:
+            blocked_time = calendar_service.update_blocked_time(
+                calendar=calendar,
+                blocked_time_id=input.blocked_time_id,
+                start_time=input.start_time,
+                end_time=input.end_time,
+                timezone=input.timezone,
+                reason=input.reason,
+                rrule_string=input.rrule_string,
+            )
+        except (CalendarIntegrationError, ValueError, DjangoValidationError, IntegrityError) as e:
+            return UpdateBlockedTimeResult(success=False, error_message=str(e))
+
+        return UpdateBlockedTimeResult(
             success=True,
             blocked_time=blocked_time,  # type: ignore[arg-type]
         )

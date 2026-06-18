@@ -9535,3 +9535,146 @@ class TestDisableResourceCalendarService:
 
         with pytest.raises(ValueError, match="not a resource calendar"):
             service.disable_resource_calendar(calendar_id=personal_calendar.id)
+
+
+class TestUpdateBlockedTimeService:
+    """Unit tests for CalendarService.update_blocked_time (Phase 3f)."""
+
+    def _make_calendar(self, organization: Organization) -> Calendar:
+        """Create a resource calendar for testing."""
+        return Calendar.objects.create(
+            name="Test Room",
+            external_id=f"room-update-{organization.id}",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            organization=organization,
+        )
+
+    def _make_blocked_time(self, calendar: Calendar, organization: Organization) -> BlockedTime:
+        """Create a blocked time on the given calendar."""
+        return BlockedTime.objects.create(
+            calendar=calendar,
+            organization_id=organization.id,
+            start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            reason="Original reason",
+            external_id="manual-update-test",
+        )
+
+    @pytest.mark.django_db
+    def test_happy_path_updates_fields(self, organization):
+        """Provided fields are updated; omitted fields are unchanged."""
+        calendar = self._make_calendar(organization)
+        blocked_time = self._make_blocked_time(calendar, organization)
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        new_start = datetime.datetime(2026, 9, 2, 10, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 9, 2, 18, 0, 0, tzinfo=datetime.UTC)
+
+        updated = service.update_blocked_time(
+            calendar=calendar,
+            blocked_time_id=blocked_time.id,
+            start_time=new_start,
+            end_time=new_end,
+            reason="Updated reason",
+        )
+
+        assert updated.id == blocked_time.id
+        assert updated.start_time_tz_unaware == new_start
+        assert updated.end_time_tz_unaware == new_end
+        assert updated.reason == "Updated reason"
+        # timezone was not passed so it must remain unchanged
+        assert updated.timezone == "UTC"
+
+    @pytest.mark.django_db
+    def test_partial_update_leaves_other_fields_unchanged(self, organization):
+        """Omitted fields are not touched."""
+        calendar = self._make_calendar(organization)
+        blocked_time = self._make_blocked_time(calendar, organization)
+        original_start = blocked_time.start_time_tz_unaware
+        original_end = blocked_time.end_time_tz_unaware
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        updated = service.update_blocked_time(
+            calendar=calendar,
+            blocked_time_id=blocked_time.id,
+            reason="Only reason changed",
+        )
+
+        assert updated.reason == "Only reason changed"
+        assert updated.start_time_tz_unaware == original_start
+        assert updated.end_time_tz_unaware == original_end
+
+    @pytest.mark.django_db
+    def test_missing_id_raises_value_error(self, organization):
+        """A non-existent blocked_time_id raises ValueError."""
+        calendar = self._make_calendar(organization)
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(ValueError, match="not found in this calendar"):
+            service.update_blocked_time(
+                calendar=calendar,
+                blocked_time_id=999999,
+            )
+
+    @pytest.mark.django_db
+    def test_cross_calendar_id_raises_value_error(self, organization):
+        """A blocked time from a different calendar in the same org raises ValueError."""
+        calendar_a = self._make_calendar(organization)
+        calendar_b = Calendar.objects.create(
+            name="Other Room",
+            external_id=f"room-update-b-{organization.id}",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            organization=organization,
+        )
+        blocked_time_a = self._make_blocked_time(calendar_a, organization)
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        # Pass calendar_b but the blocked time belongs to calendar_a
+        with pytest.raises(ValueError, match="not found in this calendar"):
+            service.update_blocked_time(
+                calendar=calendar_b,
+                blocked_time_id=blocked_time_a.id,
+            )
+
+    @pytest.mark.django_db
+    def test_org_scoping_rejects_cross_org_id(self, organization):
+        """A blocked time from a different org raises ValueError (org filter excludes it)."""
+        other_org = Organization.objects.create(name="Other Org Update Test")
+        other_calendar = Calendar.objects.create(
+            name="Other Room",
+            external_id="room-other-org-update",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            organization=other_org,
+        )
+        other_blocked_time = BlockedTime.objects.create(
+            calendar=other_calendar,
+            organization_id=other_org.id,
+            start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            reason="Cross-org blocked time",
+            external_id="manual-cross-org",
+        )
+
+        my_calendar = self._make_calendar(organization)
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(ValueError, match="not found in this calendar"):
+            service.update_blocked_time(
+                calendar=my_calendar,
+                blocked_time_id=other_blocked_time.id,
+            )
