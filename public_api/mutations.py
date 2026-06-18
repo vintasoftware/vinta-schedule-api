@@ -14,7 +14,7 @@ import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
-from calendar_integration.graphql import AvailableTimeGraphQLType
+from calendar_integration.graphql import AvailableTimeGraphQLType, BlockedTimeGraphQLType
 from calendar_integration.models import Calendar
 from calendar_integration.mutations import CalendarGroupMutations
 from organizations.exceptions import UserAlreadyHasMembershipError
@@ -592,3 +592,54 @@ class Mutation(CalendarGroupMutations):
         except ValueError as e:
             raise GraphQLError(str(e)) from e
         return available_time  # type: ignore[return-value]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_blocked_time(
+        self,
+        info: strawberry.Info,
+        calendar_id: int,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone_str: Annotated[str, strawberry.argument(name="timezone")],
+        reason: str = "",
+        rrule_string: str | None = None,
+    ) -> BlockedTimeGraphQLType:
+        """Create a blocked time slot on a provider-owned calendar.
+
+        Args:
+            calendar_id: ID of the calendar to block time on.
+            start_time: Start of the blocked window (timezone-aware).
+            end_time: End of the blocked window (timezone-aware).
+            timezone: IANA timezone string (e.g. "America/New_York").
+            reason: Optional human-readable reason for the block.
+            rrule_string: Optional RFC-5545 RRULE for recurring blocks.
+
+        Returns:
+            The created BlockedTime as BlockedTimeGraphQLType.
+
+        Raises:
+            GraphQLError: Calendar not found / not in owner's scope; or service-level
+                ValueError (e.g. invalid rrule format).
+
+        The token's OrganizationResourceAccess must include the BLOCKED_TIME resource.
+        """
+        if len(reason) > 255:
+            raise GraphQLError("reason must be 255 characters or fewer.")
+
+        try:
+            calendar_service, calendar = prepare_service_and_calendar(info, calendar_id)
+        except Calendar.DoesNotExist as e:
+            raise GraphQLError("Calendar matching query does not exist.") from e
+
+        try:
+            blocked_time = calendar_service.create_blocked_time(
+                calendar=calendar,
+                start_time=start_time,
+                end_time=end_time,
+                timezone=timezone_str,
+                reason=reason,
+                rrule_string=rrule_string,
+            )
+        except ValueError as e:
+            raise GraphQLError(str(e)) from e
+        return blocked_time  # type: ignore[return-value]
