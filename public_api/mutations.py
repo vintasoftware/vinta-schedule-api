@@ -14,6 +14,7 @@ from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
 from calendar_integration.graphql import CalendarGraphQLType
+from calendar_integration.models import Calendar
 from calendar_integration.mutations import CalendarGroupMutations
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
@@ -161,6 +162,22 @@ class CreateResourceCalendarResult:
     success: bool
     error_message: str | None = None
     calendar: CalendarGraphQLType | None = None
+
+
+@strawberry.input
+class DisableResourceCalendarInput:
+    """Input for disabling a resource calendar."""
+
+    organization_id: int
+    calendar_id: int
+
+
+@strawberry.type
+class DisableResourceCalendarResult:
+    """Result of the disableResourceCalendar mutation."""
+
+    success: bool
+    error_message: str | None = None
 
 
 @strawberry.type
@@ -544,3 +561,29 @@ class Mutation(CalendarGroupMutations):
             return CreateResourceCalendarResult(success=False, error_message=str(e))
 
         return CreateResourceCalendarResult(success=True, calendar=calendar)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def disable_resource_calendar(
+        self,
+        info: strawberry.Info,
+        input: DisableResourceCalendarInput,  # noqa: A002
+    ) -> DisableResourceCalendarResult:
+        """Disable a resource calendar by setting its visibility to INACTIVE.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Delegates to CalendarService.disable_resource_calendar with the supplied calendar_id.
+        3. Returns success=True on success, or success=False + errorMessage on failure.
+
+        The token's OrganizationResourceAccess must include the DISABLE_RESOURCE_CALENDAR resource.
+        """
+        calendar_service, _org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar_service.disable_resource_calendar(calendar_id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return DisableResourceCalendarResult(success=False, error_message="Calendar not found.")
+        except (ValueError, DjangoValidationError) as e:
+            return DisableResourceCalendarResult(success=False, error_message=str(e))
+
+        return DisableResourceCalendarResult(success=True)

@@ -14,6 +14,7 @@ from calendar_integration.constants import (
     CalendarSyncStatus,
     CalendarSyncTriggerSource,
     CalendarType,
+    CalendarVisibility,
     EventManagementPermissions,
     RecurrenceFrequency,
 )
@@ -9468,3 +9469,69 @@ def test_facade_cancel_recurring_available_time_from_date(organization):
     assert result is None
     assert avail.bulk_modification_records.count() == 1
     assert avail.bulk_modification_records.first().is_bulk_cancelled is True
+
+
+class TestDisableResourceCalendarService:
+    """Unit tests for CalendarService.disable_resource_calendar."""
+
+    @pytest.mark.django_db
+    def test_happy_path_sets_visibility_inactive(self, organization):
+        """A RESOURCE calendar gets visibility == INACTIVE after disable_resource_calendar."""
+        resource_calendar = Calendar.objects.create(
+            name="Conference Room A",
+            external_id="room-disable-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+        service.disable_resource_calendar(calendar_id=resource_calendar.id)
+
+        resource_calendar.refresh_from_db()
+        assert resource_calendar.visibility == CalendarVisibility.INACTIVE
+
+    @pytest.mark.django_db
+    def test_cross_org_raises_does_not_exist(self, organization):
+        """Calendar belonging to another org (or non-existent id) raises Calendar.DoesNotExist."""
+        other_org = Organization.objects.create(name="Other Org for disable test")
+        other_calendar = Calendar.objects.create(
+            name="Other Room",
+            external_id="room-other-org-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            organization=other_org,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(Calendar.DoesNotExist):
+            service.disable_resource_calendar(calendar_id=other_calendar.id)
+
+    @pytest.mark.django_db
+    def test_missing_id_raises_does_not_exist(self, organization):
+        """A completely non-existent calendar id raises Calendar.DoesNotExist."""
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(Calendar.DoesNotExist):
+            service.disable_resource_calendar(calendar_id=999999)
+
+    @pytest.mark.django_db
+    def test_non_resource_calendar_raises_value_error(self, organization):
+        """A non-RESOURCE calendar raises ValueError."""
+        personal_calendar = Calendar.objects.create(
+            name="Personal Calendar",
+            external_id="personal-disable-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(ValueError, match="not a resource calendar"):
+            service.disable_resource_calendar(calendar_id=personal_calendar.id)
