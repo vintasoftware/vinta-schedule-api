@@ -3529,3 +3529,426 @@ class TestDeleteAvailabilityWindowMutation:
         data = response.json()
         assert "errors" in data
         assert len(data["errors"]) > 0
+
+
+BATCH_UPDATE_AVAILABILITY_WINDOWS_MUTATION = """
+mutation BatchUpdateAvailabilityWindows($input: BatchAvailabilityInput!) {
+    batchUpdateAvailabilityWindows(input: $input) {
+        success
+        errorMessage
+        availableTimes {
+            id
+            startTime
+            endTime
+        }
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestBatchUpdateAvailabilityWindowsMutation:
+    """Tests for the batchUpdateAvailabilityWindows mutation (Phase 3d)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_org_and_token(self, resources: list[str] | None = None):
+        """Create an org + system user with the given resource scopes."""
+        if resources is None:
+            resources = [PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS]
+        org = baker.make(Organization, name="Test Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": BATCH_UPDATE_AVAILABILITY_WINDOWS_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def _create_managing_calendar_and_available_time(self, org, system_user):
+        """Create a managing resource calendar and an AvailableTime row via the service."""
+        from di_core.containers import container
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        managing_calendar = calendar_service.create_resource_calendar(
+            name="Batch Availability Room",
+            description="",
+            manage_available_windows=True,
+        )
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+        available_time = calendar_service.create_available_time(
+            calendar=managing_calendar,
+            start_time=start,
+            end_time=end,
+            timezone="UTC",
+        )
+        return managing_calendar, available_time
+
+    def test_batch_update_mixed_operations_happy_path(self):
+        """A mixed batch (create + update + delete) applies atomically; DB state correct.
+
+        Asserts:
+        - The created row exists in the DB after the batch.
+        - The updated row has the new start/end times.
+        - The deleted row is gone from the DB.
+        - The returned availableTimes list reflects the post-batch state.
+        """
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        managing_calendar, existing_time = self._create_managing_calendar_and_available_time(
+            org, system_user
+        )
+
+        # Create a second AvailableTime that we will delete via the batch.
+        from di_core.containers import container
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        time_to_delete = calendar_service.create_available_time(
+            calendar=managing_calendar,
+            start_time=datetime.datetime(2026, 9, 2, 10, 0, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2026, 9, 2, 18, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        new_start = datetime.datetime(2026, 10, 5, 8, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 5, 16, 0, 0, tzinfo=datetime.UTC)
+        create_start = datetime.datetime(2026, 11, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        create_end = datetime.datetime(2026, 11, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": managing_calendar.id,
+                    "operations": [
+                        # Create a new AvailableTime
+                        {
+                            "action": "create",
+                            "startTime": create_start.isoformat(),
+                            "endTime": create_end.isoformat(),
+                            "timezone": "UTC",
+                        },
+                        # Update the existing time
+                        {
+                            "action": "update",
+                            "availableTimeId": existing_time.id,
+                            "startTime": new_start.isoformat(),
+                            "endTime": new_end.isoformat(),
+                        },
+                        # Delete the second time
+                        {
+                            "action": "delete",
+                            "availableTimeId": time_to_delete.id,
+                        },
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+
+        result = data["data"]["batchUpdateAvailabilityWindows"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+
+        # The returned list should contain the surviving rows (created + updated).
+        assert len(result["availableTimes"]) == 2
+
+        # Verify the updated row's times changed in the DB.
+        existing_time.refresh_from_db()
+        assert existing_time.start_time_tz_unaware == new_start
+        assert existing_time.end_time_tz_unaware == new_end
+
+        # Verify the deleted row is gone from the DB.
+        assert (
+            not AvailableTime.objects.filter_by_organization(org.id)
+            .filter(id=time_to_delete.id)
+            .exists()
+        )
+
+        # Verify a new row was created (2 total: the updated one + the newly created one).
+        all_times = AvailableTime.objects.filter_by_organization(org.id).filter(
+            calendar_fk=managing_calendar
+        )
+        assert all_times.count() == 2
+
+    def test_batch_rollback_on_bad_id(self):
+        """A batch with one bad id rolls the whole batch back; no partial writes survive.
+
+        We send a batch with TWO operations:
+        1. A create (new row that does NOT yet exist in the DB).
+        2. A delete referencing a non-existent id (triggers ValueError inside the service).
+
+        Because batch_modify_available_times is decorated with @transaction.atomic(),
+        the ValueError causes a full rollback of the batch. Asserts:
+        - The mutation returns success=False.
+        - The create did NOT persist (the calendar has the same number of rows as before).
+        """
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        managing_calendar, _existing_time = self._create_managing_calendar_and_available_time(
+            org, system_user
+        )
+
+        # Count existing rows before the attempted batch.
+        rows_before = (
+            AvailableTime.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=managing_calendar)
+            .count()
+        )
+
+        non_existent_id = 999999
+        create_start = datetime.datetime(2026, 12, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        create_end = datetime.datetime(2026, 12, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": managing_calendar.id,
+                    "operations": [
+                        # This create would succeed on its own...
+                        {
+                            "action": "create",
+                            "startTime": create_start.isoformat(),
+                            "endTime": create_end.isoformat(),
+                            "timezone": "UTC",
+                        },
+                        # ...but this delete references a non-existent id and triggers rollback.
+                        {
+                            "action": "delete",
+                            "availableTimeId": non_existent_id,
+                        },
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # The mutation result must signal failure (GraphQL-level success=False, not a GraphQL error).
+        result = data["data"]["batchUpdateAvailabilityWindows"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+        # CRITICAL: the create from the same batch must NOT have persisted.
+        rows_after = (
+            AvailableTime.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=managing_calendar)
+            .count()
+        )
+        assert rows_after == rows_before, (
+            f"Partial write detected: DB row count changed from {rows_before} to {rows_after} "
+            "even though the batch should have rolled back entirely."
+        )
+
+    def test_batch_invalid_action_returns_failure(self):
+        """An operation with an action not in {create, update, delete} → success=False.
+
+        The validation happens before the service is called, so no DB state changes.
+        """
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        managing_calendar, _existing_time = self._create_managing_calendar_and_available_time(
+            org, system_user
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": managing_calendar.id,
+                    "operations": [
+                        {
+                            "action": "upsert",  # Invalid action
+                            "startTime": "2026-09-01T09:00:00+00:00",
+                            "endTime": "2026-09-01T17:00:00+00:00",
+                            "timezone": "UTC",
+                        }
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+
+        result = data["data"]["batchUpdateAvailabilityWindows"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "invalid operation action" in result["errorMessage"].lower()
+        assert "upsert" in result["errorMessage"]
+
+    def test_batch_permission_denied_without_grant(self):
+        """A token without BATCH_UPDATE_AVAILABILITY_WINDOWS grant is denied."""
+        # Grant CALENDAR scope instead, NOT BATCH_UPDATE_AVAILABILITY_WINDOWS
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[PublicAPIResources.CALENDAR]
+        )
+
+        managing_calendar = baker.make(
+            "calendar_integration.Calendar",
+            organization=org,
+            calendar_type=CalendarType.RESOURCE,
+            manage_available_windows=True,
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": managing_calendar.id,
+                    "operations": [],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_batch_unauthenticated_denied(self):
+        """An unauthenticated call (no Authorization header) is denied."""
+        response = self.client.post(
+            "/graphql/",
+            data={
+                "query": BATCH_UPDATE_AVAILABILITY_WINDOWS_MUTATION,
+                "variables": {
+                    "input": {
+                        "organizationId": 1,
+                        "calendarId": 1,
+                        "operations": [],
+                    }
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+    def test_batch_update_availability_windows_cross_org_calendar_rejected(self):
+        """A calendarId owned by a different org → success=False (Calendar.DoesNotExist path)."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Calendar belongs to a DIFFERENT org
+        other_org = baker.make(Organization, name="Other Org")
+        other_calendar = baker.make(
+            "calendar_integration.Calendar",
+            organization=other_org,
+            calendar_type=CalendarType.RESOURCE,
+            manage_available_windows=True,
+        )
+
+        create_start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        create_end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": other_calendar.id,
+                    "operations": [
+                        {
+                            "action": "create",
+                            "startTime": create_start.isoformat(),
+                            "endTime": create_end.isoformat(),
+                            "timezone": "UTC",
+                        }
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["batchUpdateAvailabilityWindows"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "calendar not found" in result["errorMessage"].lower()
+
+    def test_batch_update_availability_windows_create_missing_fields_returns_failure(self):
+        """A create op missing startTime → success=False with validation message, no DB write."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        managing_calendar, _existing_time = self._create_managing_calendar_and_available_time(
+            org, system_user
+        )
+
+        rows_before = (
+            AvailableTime.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=managing_calendar)
+            .count()
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": managing_calendar.id,
+                    "operations": [
+                        # Missing startTime — should trigger fail-fast validation
+                        {
+                            "action": "create",
+                            "endTime": "2026-09-01T17:00:00+00:00",
+                            "timezone": "UTC",
+                        }
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["batchUpdateAvailabilityWindows"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "create operation requires" in result["errorMessage"].lower()
+
+        # No AvailableTime row was created (proves no partial write and no 500).
+        rows_after = (
+            AvailableTime.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=managing_calendar)
+            .count()
+        )
+        assert rows_after == rows_before

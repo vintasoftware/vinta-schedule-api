@@ -40,3 +40,7 @@ class PublicAPIResources(TextChoices):
     CREATE_AVAILABILITY_WINDOW = "create_availability_window", "Create Availability Window"
     UPDATE_AVAILABILITY_WINDOW = "update_availability_window", "Update Availability Window"
     DELETE_AVAILABILITY_WINDOW = "delete_availability_window", "Delete Availability Window"
+    BATCH_UPDATE_AVAILABILITY_WINDOWS = (
+        "batch_update_availability_windows",
+        "Batch Update Availability Windows",
+    )
