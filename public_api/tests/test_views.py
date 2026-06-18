@@ -1320,7 +1320,7 @@ class TestSystemUserTokenViewSetScopedCreate:
         assert_response_status_code(response, status.HTTP_201_CREATED)
         data = response.json()
         # DB row must reference the owner via the membership FK
-        system_user = SystemUser.objects.select_related("scoped_to_membership_fk").get(
+        system_user = SystemUser.original_manager.select_related("scoped_to_membership_fk").get(
             integration_name="scoped_db_check"
         )
         assert system_user.scoped_to_membership_fk.user_id == provider_user.id
@@ -1486,7 +1486,9 @@ class TestSystemUserTokenViewSetScopedCreate:
         assert_response_status_code(put_response, status.HTTP_200_OK)
 
         # Owner must remain the original provider_user (checked via the membership FK)
-        system_user = SystemUser.objects.select_related("scoped_to_membership_fk").get(pk=token_id)
+        system_user = SystemUser.original_manager.select_related("scoped_to_membership_fk").get(
+            pk=token_id
+        )
         assert system_user.scoped_to_membership_fk.user_id == provider_user.id
 
     def test_patch_cannot_change_owner(self, admin_client, organization, provider_user):
@@ -1526,7 +1528,9 @@ class TestSystemUserTokenViewSetScopedCreate:
         assert_response_status_code(patch_response, status.HTTP_200_OK)
 
         # Owner must remain the original provider_user (checked via the membership FK)
-        system_user = SystemUser.objects.select_related("scoped_to_membership_fk").get(pk=token_id)
+        system_user = SystemUser.original_manager.select_related("scoped_to_membership_fk").get(
+            pk=token_id
+        )
         assert system_user.scoped_to_membership_fk.user_id == provider_user.id
 
 
