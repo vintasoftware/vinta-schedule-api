@@ -10,11 +10,13 @@ from graphql import GraphQLError
 
 from calendar_integration.exceptions import CalendarGroupError
 from calendar_integration.graphql import (
+    BookingCodeErrorCode,
+    BookingCodeResult,
     CalendarEventGraphQLType,
     CalendarGroupGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
 )
-from calendar_integration.models import CalendarGroup
+from calendar_integration.models import Calendar, CalendarGroup, EventManagementPermissions
 from calendar_integration.services.dataclasses import (
     CalendarGroupEventInputData,
     CalendarGroupInputData,
@@ -26,10 +28,12 @@ from calendar_integration.services.dataclasses import (
 )
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
 from organizations.models import Organization
+from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 
 
 if TYPE_CHECKING:
     from calendar_integration.services.calendar_group_service import CalendarGroupService
+    from calendar_integration.services.calendar_permission_service import CalendarPermissionService
     from calendar_integration.services.calendar_service import CalendarService
 
 
@@ -381,6 +385,50 @@ def _load_organization(organization_id: int) -> Organization | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Booking-code mint mutations (Phase 1)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BookingCodeMutationDependencies:
+    """Dependencies for booking-code mint mutations."""
+
+    calendar_permission_service: "CalendarPermissionService"
+
+
+@inject
+def get_booking_code_mutation_dependencies(
+    calendar_permission_service: Annotated[
+        "CalendarPermissionService | None", Provide["calendar_permission_service"]
+    ] = None,
+) -> BookingCodeMutationDependencies:
+    """Get booking-code mutation dependencies from DI container."""
+    if calendar_permission_service is None:
+        raise GraphQLError("Missing required dependency: calendar_permission_service")
+    return BookingCodeMutationDependencies(
+        calendar_permission_service=cast("CalendarPermissionService", calendar_permission_service),
+    )
+
+
+@strawberry.input
+class CreateBookingCodeInput:
+    """Input for minting a single-use calendar booking code."""
+
+    organization_id: int
+    calendar_id: int
+    expires_at: datetime.datetime | None = None
+
+
+@strawberry.input
+class CreateGroupBookingCodeInput:
+    """Input for minting a single-use calendar-group booking code."""
+
+    organization_id: int
+    calendar_group_id: int
+    expires_at: datetime.datetime | None = None
+
+
 @strawberry.type
 class CalendarGroupMutations:
     """GraphQL mutations for CalendarGroup CRUD and grouped event booking."""
@@ -493,3 +541,85 @@ class CalendarGroupMutations:
         except CalendarGroupError as e:
             return CalendarGroupEventResult(success=False, error_message=str(e))
         return CalendarGroupEventResult(success=True, event=event)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_calendar_booking_code(
+        self,
+        info: strawberry.Info,
+        input: CreateBookingCodeInput,  # noqa: A002
+    ) -> BookingCodeResult:
+        """Mint a single-use booking code scoped to a calendar.
+
+        The token grants CREATE permission, allowing the code-bearer to book
+        an event on the bound calendar (or bundle calendar).  The code is
+        returned once in plaintext — only its hash is persisted.
+        """
+        org = info.context.request.public_api_organization
+        if org is None:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Organization not found.",
+            )
+
+        # Verify the calendar belongs to the authenticated org.
+        try:
+            Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Calendar not found.",
+            )
+
+        minted_by = getattr(info.context.request, "public_api_system_user", None)
+        deps = get_booking_code_mutation_dependencies()
+        token, plaintext_code = deps.calendar_permission_service.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.CREATE],
+            expires_at=input.expires_at,
+            minted_by=minted_by,
+            calendar_id=input.calendar_id,
+        )
+        return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_calendar_group_booking_code(
+        self,
+        info: strawberry.Info,
+        input: CreateGroupBookingCodeInput,  # noqa: A002
+    ) -> BookingCodeResult:
+        """Mint a single-use booking code scoped to a calendar group.
+
+        The token grants CREATE permission, allowing the code-bearer to book
+        an event against the bound calendar group.  The code is returned once
+        in plaintext — only its hash is persisted.
+        """
+        org = info.context.request.public_api_organization
+        if org is None:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Organization not found.",
+            )
+
+        # Verify the calendar group belongs to the authenticated org.
+        try:
+            CalendarGroup.objects.filter_by_organization(org.id).get(id=input.calendar_group_id)
+        except CalendarGroup.DoesNotExist:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Calendar group not found.",
+            )
+
+        minted_by = getattr(info.context.request, "public_api_system_user", None)
+        deps = get_booking_code_mutation_dependencies()
+        token, plaintext_code = deps.calendar_permission_service.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.CREATE],
+            expires_at=input.expires_at,
+            minted_by=minted_by,
+            calendar_group_id=input.calendar_group_id,
+        )
+        return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
