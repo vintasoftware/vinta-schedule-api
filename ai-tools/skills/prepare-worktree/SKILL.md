@@ -121,6 +121,8 @@ Test artefact dirs (`coverage/`, `playwright-report/`) — same.
 
 Two distinct database axes need handling:
 
+> **This project (vinta_schedule_api): Postgres lives in docker compose, never on the host.** The dev + test databases are the `db` service (`postgres:alpine`) in `docker-compose.yml` — there is no host Postgres. Every DB operation below (create, clone, migrate, drop, psql) MUST run through compose: `docker compose exec db <pg-tool>` against the running server, or `docker compose run --rm api uv run python manage.py <cmd>` for Django-side work. Never call host `createdb` / `psql` / `pg_dump` — they will hit the wrong server or nothing at all. Because each worktree gets its own `COMPOSE_PROJECT_NAME` (Step 4), it also gets its **own isolated `db` container + volume** — that per-worktree container *is* the fork; data cloning is only needed when the feature wants the main checkout's existing rows.
+
 ### 3a — Dev / app database
 
 Whatever the app reads + writes during local dev. Detect the connection string source:
@@ -132,7 +134,8 @@ Whatever the app reads + writes during local dev. Detect the connection string s
 For each detected DB, ask the user (`AskUserQuestion`) once:
 
 - **Fork the DB** — recommended when `schema_change = true` or when the plan's phases run destructive migrations. Strategy depends on the engine:
-  - **Postgres (server-based)** — `createdb -T <main_db> <main_db>_wt_<name>` (template-clone if rights allow; else `pg_dump <main_db> | psql <main_db>_wt_<name>` after `createdb`). Update the worktree's `DATABASE_URL` to point at the forked DB. Append `?application_name=wt-<name>` so the user can grep `pg_stat_activity`.
+  - **Postgres (server-based, host)** — *generic stacks only; for this repo see the compose note above.* `createdb -T <main_db> <main_db>_wt_<name>` (template-clone if rights allow; else `pg_dump <main_db> | psql <main_db>_wt_<name>` after `createdb`). Update the worktree's `DATABASE_URL` to point at the forked DB. Append `?application_name=wt-<name>` so the user can grep `pg_stat_activity`.
+  - **Postgres (this repo, docker compose `db` service)** — the per-worktree `COMPOSE_PROJECT_NAME` (Step 4) already gives the worktree its own empty `db` container + volume, so the common path is just **Stub the DB** below (own container + run migrations). To clone the main checkout's data instead, dump from main's stack and load into the worktree's: `docker compose -p <main_project> exec -T db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" | docker compose -p <repo>_<worktree-name> exec -T db psql -U "$POSTGRES_USER" "$POSTGRES_DB"` (both stacks up). Keep the worktree's `DATABASE_URL` host as the compose service name (`db`) — it resolves inside the worktree's own network.
   - **MySQL (server-based)** — `mysqldump <main_db> | mysql <main_db>_wt_<name>` after `CREATE DATABASE`.
   - **SQLite (file-based)** — `cp <main>/db.sqlite3 <worktree>/db.sqlite3`. Symlink would defeat the point.
   - **Mongo / Redis / Elasticsearch** — engine-specific clone, OR per-worktree DB name / key prefix (`REDIS_URL=redis://localhost:6379/<index>` with a free index; `MONGODB_URI=mongodb://localhost:27017/<db>_wt_<name>`).
@@ -147,6 +150,8 @@ Record the chosen strategy + the forked DB name in the worktree summary (written
 
 A different beast — tests on the same engine but a different DB name (`<main_db>_test`, `test_<repo>`). Parallel worktrees running tests against the same `<main_db>_test` will overwrite each other's fixtures and produce flaky failures.
 
+> **This repo:** because each worktree owns a separate compose `db` container (Step 4), its test DB is already isolated — `docker compose run --rm api uv run pytest -n auto` inside the worktree creates/reuses the test DB inside *that* worktree's `db` container. No `conftest.py` override or per-worktree DB name is needed; just keep the worktree's `COMPOSE_PROJECT_NAME` exported. The generic per-server overrides below apply only to stacks that share one Postgres server across worktrees.
+
 - **`pytest-django` / `pytest`** — set `--reuse-db` per worktree via a per-worktree `DJANGO_SETTINGS_MODULE` env, OR override `DATABASES['default']['NAME']` to `<main_db>_test_wt_<name>` in `conftest.py` when the env var `WORKTREE_NAME` is set. Drop a `conftest_worktree.py` patch in the worktree (don't edit `conftest.py` in tracked code — too easy to commit by accident).
 - **`vitest` / `jest`** — set `TEST_DATABASE_URL` per worktree; ensure the test setup respects it.
 - **Rails** — `DATABASE_URL` for the `test` env, `<main_db>_test_wt_<name>`.
@@ -156,7 +161,13 @@ If `test_infra_change = true` → fork the test DB unconditionally. If `false` a
 
 ### 3c — Migrations against the forked DB
 
-When the plan has migrations: run them once now against the forked DB so subsequent agent runs in the worktree don't surprise the user. Use the project's standard migration command (`pnpm migrate`, `python manage.py migrate`, `alembic upgrade head`, `prisma migrate dev`, `knex migrate:latest`).
+When the plan has migrations: run them once now against the forked DB so subsequent agent runs in the worktree don't surprise the user. **In this repo, run them inside the worktree's compose stack against the compose `db` service** (with the worktree's `COMPOSE_PROJECT_NAME` exported so it hits the worktree's own container, not host or main):
+
+```bash
+docker compose run --rm api uv run python manage.py migrate
+```
+
+For other stacks, use the project's standard migration command (`pnpm migrate`, `alembic upgrade head`, `prisma migrate dev`, `knex migrate:latest`).
 
 Failure → surface the error, leave the DB un-migrated, ask the user how to proceed (skip, retry, drop and recreate the DB).
 
@@ -320,8 +331,8 @@ Every step gated on user confirmation when the worktree has un-pushed branches.
 After the **Write the summary file** step writes the summary:
 
 1. `git worktree list` shows the new entry.
-2. `cd <worktree-path>` then run the project's standard lint + test commands. Both must run clean against the worktree's forked DB / env.
+2. `cd <worktree-path>` then run the project's standard lint + test commands **through the worktree's compose stack** (`docker compose run --rm api uv run ruff check ./` + `docker compose run --rm api uv run pytest -n auto`). Both must run clean against the worktree's own compose `db` service — not the host or main checkout.
 3. `git -C <worktree-path> status` is clean (no accidental file additions from the prep step).
 4. The summary YAML parses (`python3 -c "import yaml; yaml.safe_load(open('.vinta-ai-workflows/worktrees/<name>.yaml'))"`).
 5. `WORKTREE.md` exists at the worktree root with accurate fork / share annotations.
-6. Optional smoke test: run a single new-test command in the worktree (e.g. `pytest -x tests/health.py`) — confirms env vars resolved, DB reachable, deps importable.
+6. Optional smoke test: run a single new-test command in the worktree through compose (e.g. `docker compose run --rm api uv run pytest -x <app>/tests/test_health.py`) — confirms env vars resolved, the compose `db` service is reachable, deps importable.
