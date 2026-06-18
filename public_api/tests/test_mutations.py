@@ -3360,6 +3360,121 @@ class TestDeleteAvailabilityWindowMutation:
             .exists()
         )
 
+    def test_delete_availability_window_non_managing_calendar_returns_failure(self):
+        """A calendar with manage_available_windows=False → success=False (service raises ValueError)."""
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a resource calendar without manage_available_windows flag
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        non_managing_calendar = calendar_service.create_resource_calendar(
+            name="Non-Managing Room",
+            description="",
+            manage_available_windows=False,
+        )
+        assert non_managing_calendar.manage_available_windows is False
+
+        # Create an AvailableTime outside the service (bypass the flag check at create time)
+        available_time = baker.make(
+            "calendar_integration.AvailableTime",
+            calendar=non_managing_calendar,
+            organization=org,
+            start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": non_managing_calendar.id,
+                    "availableTimeId": available_time.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["deleteAvailabilityWindow"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+    def test_delete_availability_window_cross_calendar_same_org_rejected(self):
+        """An AvailableTime from calendar B cannot be deleted via calendar A (same org).
+
+        The service validates that the available_time_id belongs to the calendar passed
+        in the operation; a cross-calendar id in the same org raises ValueError → success=False.
+        The AvailableTime row must remain intact in the DB.
+        """
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create calendar_a via the service (managing); calendar_b via baker to avoid
+        # the unique constraint on (external_id, provider, organization_id) that fires
+        # when the service creates a second internal calendar for the same org.
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        calendar_a = calendar_service.create_resource_calendar(
+            name="Room A",
+            description="",
+            manage_available_windows=True,
+        )
+        calendar_b = baker.make(
+            "calendar_integration.Calendar",
+            organization=org,
+            calendar_type=CalendarType.RESOURCE,
+            manage_available_windows=True,
+            external_id="calendar-b-unique-ext-id",
+        )
+
+        # Create an AvailableTime that belongs to calendar_b
+        available_time_b = baker.make(
+            "calendar_integration.AvailableTime",
+            calendar=calendar_b,
+            organization=org,
+            start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        # Call delete with calendarId=calendar_a but availableTimeId=calendar_b's row
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_a.id,
+                    "availableTimeId": available_time_b.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["deleteAvailabilityWindow"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+        # The AvailableTime row must still exist in the DB — it must not have been deleted
+        assert (
+            AvailableTime.objects.filter_by_organization(org.id)
+            .filter(id=available_time_b.id)
+            .exists()
+        )
+
     def test_delete_availability_window_permission_denied_without_grant(self):
         """A token without DELETE_AVAILABILITY_WINDOW grant is denied."""
         # Grant CALENDAR scope instead, NOT DELETE_AVAILABILITY_WINDOW

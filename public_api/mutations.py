@@ -854,12 +854,7 @@ class Mutation(CalendarGroupMutations):
 
         try:
             calendar_service.batch_modify_available_times(calendar=calendar, operations=[op])
-        except (
-            CalendarIntegrationError,
-            ValueError,
-            DjangoValidationError,
-            Calendar.DoesNotExist,
-        ) as e:
+        except (CalendarIntegrationError, ValueError, DjangoValidationError) as e:
             return DeleteAvailabilityWindowResult(success=False, error_message=str(e))
 
         return DeleteAvailabilityWindowResult(success=True)
