@@ -15,7 +15,11 @@ from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
 from calendar_integration.exceptions import CalendarIntegrationError
-from calendar_integration.graphql import AvailableTimeGraphQLType, CalendarGraphQLType
+from calendar_integration.graphql import (
+    AvailableTimeGraphQLType,
+    BlockedTimeGraphQLType,
+    CalendarGraphQLType,
+)
 from calendar_integration.models import Calendar
 from calendar_integration.mutations import CalendarGroupMutations
 from organizations.exceptions import NoServiceAccountConfiguredError, UserAlreadyHasMembershipError
@@ -302,6 +306,28 @@ class BatchUpdateAvailabilityWindowsResult:
     success: bool
     error_message: str | None = None
     available_times: list[AvailableTimeGraphQLType]
+
+
+@strawberry.input
+class CreateBlockedTimeInput:
+    """Input for creating a single (optionally recurring) blocked time on a calendar."""
+
+    organization_id: int
+    calendar_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+    reason: str = ""
+    rrule_string: str | None = None
+
+
+@strawberry.type
+class CreateBlockedTimeResult:
+    """Result of the createBlockedTime mutation."""
+
+    success: bool
+    error_message: str | None = None
+    blocked_time: BlockedTimeGraphQLType | None = None
 
 
 @strawberry.type
@@ -985,4 +1011,44 @@ class Mutation(CalendarGroupMutations):
         return BatchUpdateAvailabilityWindowsResult(
             success=True,
             available_times=available_times,  # type: ignore[arg-type]
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_blocked_time(
+        self,
+        info: strawberry.Info,
+        input: CreateBlockedTimeInput,  # noqa: A002
+    ) -> CreateBlockedTimeResult:
+        """Create a single (optionally recurring) blocked time on a calendar.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Delegates to CalendarService.create_blocked_time with the supplied parameters.
+        4. Returns the created BlockedTime on success, or success=False + errorMessage on failure.
+
+        The token's OrganizationResourceAccess must include the CREATE_BLOCKED_TIME resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return CreateBlockedTimeResult(success=False, error_message="Calendar not found.")
+
+        try:
+            blocked_time = calendar_service.create_blocked_time(
+                calendar=calendar,
+                start_time=input.start_time,
+                end_time=input.end_time,
+                timezone=input.timezone,
+                reason=input.reason,
+                rrule_string=input.rrule_string,
+            )
+        except (CalendarIntegrationError, ValueError, DjangoValidationError, IntegrityError) as e:
+            return CreateBlockedTimeResult(success=False, error_message=str(e))
+
+        return CreateBlockedTimeResult(
+            success=True,
+            blocked_time=blocked_time,  # type: ignore[arg-type]
         )

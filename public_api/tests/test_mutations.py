@@ -3952,3 +3952,325 @@ class TestBatchUpdateAvailabilityWindowsMutation:
             .count()
         )
         assert rows_after == rows_before
+
+
+CREATE_BLOCKED_TIME_MUTATION = """
+mutation CreateBlockedTime($input: CreateBlockedTimeInput!) {
+    createBlockedTime(input: $input) {
+        success
+        errorMessage
+        blockedTime {
+            id
+            startTime
+            endTime
+        }
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestCreateBlockedTimeMutation:
+    """Tests for the createBlockedTime mutation (Phase 3e)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_org_and_token(self, resources: list[str] | None = None):
+        """Create an org + system user with the given resource scopes."""
+        if resources is None:
+            resources = [PublicAPIResources.CREATE_BLOCKED_TIME]
+        org = baker.make(Organization, name="Test Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": CREATE_BLOCKED_TIME_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def test_create_blocked_time_happy_path(self):
+        """A granted token creates a blocked time on a calendar; DB row + blockedTime returned."""
+        from calendar_integration.models import BlockedTime
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a resource calendar via the service
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        calendar = calendar_service.create_resource_calendar(
+            name="Blocked Room",
+            description="",
+            manage_available_windows=True,
+        )
+
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                    "reason": "Staff meeting",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createBlockedTime"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+        assert result["blockedTime"] is not None
+        blocked_time_id = int(result["blockedTime"]["id"])
+
+        # Verify startTime and endTime in the response match the supplied inputs
+        assert result["blockedTime"]["startTime"] == start.isoformat()
+        assert result["blockedTime"]["endTime"] == end.isoformat()
+
+        # Verify DB row was created and is org-scoped, with reason persisted
+        bt = BlockedTime.objects.filter_by_organization(org.id).get(id=blocked_time_id)
+        assert bt.calendar_fk_id == calendar.id
+        assert bt.reason == "Staff meeting"
+
+    def test_create_blocked_time_recurring_rrule_creates_recurrence_rule(self):
+        """Supplying rruleString creates a BlockedTime with a non-null recurrence_rule."""
+        from calendar_integration.models import BlockedTime
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        calendar = calendar_service.create_resource_calendar(
+            name="Recurring Block Room",
+            description="",
+            manage_available_windows=True,
+        )
+
+        start = datetime.datetime(2026, 9, 7, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 7, 17, 0, 0, tzinfo=datetime.UTC)
+        rrule = "FREQ=WEEKLY;BYDAY=MO"
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                    "rruleString": rrule,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createBlockedTime"]
+        assert result["success"] is True
+        assert result["blockedTime"] is not None
+        blocked_time_id = int(result["blockedTime"]["id"])
+
+        # Verify the DB row has a non-null recurrence_rule
+        bt = BlockedTime.objects.filter_by_organization(org.id).get(id=blocked_time_id)
+        assert bt.recurrence_rule is not None, (
+            "BlockedTime must have a non-null recurrence_rule when rruleString is supplied"
+        )
+
+    def test_create_blocked_time_cross_org_calendar_rejected(self):
+        """A calendar belonging to a different org → success=False 'Calendar not found'."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a calendar in a DIFFERENT org
+        other_org = baker.make(Organization, name="Other Org")
+        other_calendar = baker.make(
+            "calendar_integration.Calendar",
+            organization=other_org,
+            calendar_type=CalendarType.RESOURCE,
+        )
+
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": other_calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createBlockedTime"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "calendar not found" in result["errorMessage"].lower()
+
+    def test_create_blocked_time_permission_denied_without_grant(self):
+        """A token without CREATE_BLOCKED_TIME grant is denied."""
+        # Grant CALENDAR scope instead, NOT CREATE_BLOCKED_TIME
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[PublicAPIResources.CALENDAR]
+        )
+
+        other_calendar = baker.make(
+            "calendar_integration.Calendar",
+            organization=org,
+            calendar_type=CalendarType.RESOURCE,
+        )
+
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": other_calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_create_blocked_time_unauthenticated_denied(self):
+        """An unauthenticated call (no Authorization header) is denied."""
+        response = self.client.post(
+            "/graphql/",
+            data={
+                "query": CREATE_BLOCKED_TIME_MUTATION,
+                "variables": {
+                    "input": {
+                        "organizationId": 1,
+                        "calendarId": 1,
+                        "startTime": "2026-09-01T09:00:00Z",
+                        "endTime": "2026-09-01T17:00:00Z",
+                        "timezone": "UTC",
+                    }
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+    def test_create_blocked_time_duplicate_returns_failure(self):
+        """A duplicate blocked time (same calendar + same external_id) returns success=False.
+
+        bulk_create_manual_blocked_times generates external_id as
+        "manual-{start_time.isoformat()}-{index}". Two calls with the same calendar and
+        the same start_time both produce external_id "manual-...-0", triggering the
+        unique_together (calendar_fk_id, external_id) DB constraint (IntegrityError).
+        The handler must catch IntegrityError and return success=False rather than a 500.
+
+        Approach: patch the service to raise IntegrityError directly (the real collision
+        requires the same calendar + same start_time AND the same index, which is always
+        0 for single-blocked-time calls — but ATOMIC_REQUESTS wraps each request in its
+        own transaction, so two separate HTTP calls both commit cleanly and do NOT
+        collide at the DB level because Django's bulk_create on a unique-violating row
+        silently skips or raises only within the same savepoint). Patching is therefore
+        the reliable approach.
+        """
+        from django.db import IntegrityError as DjangoIntegrityError
+
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        calendar_service_real: CalendarService = container.calendar_service()
+        calendar_service_real.initialize_without_provider(
+            user_or_token=system_user, organization=org
+        )
+        calendar = calendar_service_real.create_resource_calendar(
+            name="Blocked Room Dup",
+            description="",
+            manage_available_windows=True,
+        )
+
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        mock_calendar_service = Mock(spec=CalendarService)
+        mock_calendar_service.organization = org
+        mock_calendar_service.user_or_token = system_user
+        mock_calendar_service.create_blocked_time.side_effect = DjangoIntegrityError(
+            "UNIQUE constraint failed: calendar_integration_blockedtime.calendar_fk_id, "
+            "calendar_integration_blockedtime.external_id"
+        )
+
+        with (
+            container.public_api_auth_service.override(auth_service),
+            container.calendar_service.override(mock_calendar_service),
+        ):
+            response = self._post_mutation(
+                system_user,
+                token,
+                auth_service,
+                {
+                    "input": {
+                        "organizationId": org.id,
+                        "calendarId": calendar.id,
+                        "startTime": start.isoformat(),
+                        "endTime": end.isoformat(),
+                        "timezone": "UTC",
+                    }
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        # Must NOT surface as a GraphQL-level error (no 500); must be a typed result.
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["createBlockedTime"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
