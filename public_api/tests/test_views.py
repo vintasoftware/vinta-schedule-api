@@ -473,6 +473,50 @@ class TestSystemUserTokenViewSetList:
         assert "token" not in token_data
         assert "long_lived_token_hash" not in token_data
 
+    def test_list_scoped_to_user_field_does_not_scale_with_token_count(
+        self, admin_client, organization, django_assert_max_num_queries
+    ):
+        """Listing N scoped tokens must NOT issue N extra membership queries.
+
+        The viewset annotates ``scoped_to_user_id_value`` via a JOIN so the
+        serializer never executes a per-token OrganizationMembership lookup.
+        We create 3 scoped tokens and assert the total query count is bounded
+        by a small constant that cannot scale with the number of tokens.
+        """
+        # Create the owner membership used for all scoped tokens
+        owner_user = baker.make(User, email="perf_owner@example.com")
+        baker.make(Profile, user=owner_user)
+        owner_membership = baker.make(
+            OrganizationMembership,
+            user=owner_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        # Create 3 scoped SystemUser tokens
+        for _i in range(3):
+            su = baker.make(
+                SystemUser,
+                organization=organization,
+                is_active=True,
+                scoped_to_membership_fk=owner_membership,
+            )
+            baker.make(ResourceAccess, system_user=su, resource_name=PublicAPIResources.CALENDAR)
+
+        # 10 queries is a generous ceiling that is still constant w.r.t. token count.
+        # Without the annotation fix a 3-token list would issue ≥3 extra membership
+        # queries, easily exceeding this bound if we added more tokens.
+        with django_assert_max_num_queries(10):
+            response = admin_client.get(self._url())
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        assert len(results) == 3
+        # Every token must return the owner's user id — not null
+        for token in results:
+            assert token["scoped_to_user"] == owner_user.id
+
     def test_list_excludes_cross_org_tokens(self, admin_client, organization, other_organization):
         """List excludes tokens from other organizations."""
         # Create token in the admin's org

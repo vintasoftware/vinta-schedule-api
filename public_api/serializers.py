@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, cast
 
 from django.db import IntegrityError, transaction
 
@@ -221,7 +221,18 @@ class SystemUserTokenSerializer(serializers.ModelSerializer):
         return [ra.resource_name for ra in obj.available_resources.all()]
 
     def get_scoped_to_user(self, obj: SystemUser) -> int | None:
-        """Return the owner's User id derived from the stored membership FK, or None."""
+        """Return the owner's User id from the queryset annotation when present.
+
+        For list/retrieve the viewset annotates ``scoped_to_user_id_value`` via an
+        F-expression JOIN, so no extra query is issued per token.  For any other
+        call path (e.g. the revoke action that constructs the serializer from a
+        freshly-fetched instance without the annotation) we fall back to a single
+        membership lookup.
+        """
+        _missing = object()
+        annotated = getattr(obj, "scoped_to_user_id_value", _missing)
+        if annotated is not _missing:
+            return cast("int | None", annotated)
         if not obj.scoped_to_membership_fk_id:
             return None
         return (
