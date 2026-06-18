@@ -51,6 +51,7 @@ class OrganizationResourceAccess(BasePermission):
         "childOrganizations": PublicAPIResources.CHILD_ORG_ANALYTICS,
         "createAvailableTime": PublicAPIResources.AVAILABLE_TIME,
         "createBlockedTime": PublicAPIResources.BLOCKED_TIME,
+        "scheduleEvent": PublicAPIResources.CALENDAR_EVENT,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore

@@ -44,6 +44,7 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarManagementToken,
+    CalendarOwnership,
     EventAttendance,
     EventBulkModification,
     EventExternalAttendance,
@@ -237,6 +238,7 @@ class CalendarEventService:
 
         calendar = self._get_calendar_by_id(calendar_id)
 
+        owner_scoped_authorized = False
         if isinstance(context.user_or_token, User):
             context.calendar_permission_service.initialize_with_user(
                 context.user_or_token,
@@ -244,15 +246,39 @@ class CalendarEventService:
                 calendar_id=calendar_id,
             )
         elif isinstance(context.user_or_token, SystemUser):
-            raise PermissionDenied("Events cannot be created through the Public API.")
+            # A provider-scoped Public API token may schedule events ONLY on calendars
+            # owned by the user it is scoped to. Org-wide tokens (scoped_to_user is None)
+            # remain blocked — event creation otherwise requires single-use scheduling
+            # codes / public-scheduling calendars.
+            owner_id = context.user_or_token.scoped_to_user_id
+            if (
+                owner_id is not None
+                and CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+                .filter(calendar_fk_id=calendar_id, user_id=owner_id)
+                .exists()
+            ):
+                owner_scoped_authorized = True
+            else:
+                raise PermissionDenied("Events cannot be created through the Public API.")
 
-        if not context.calendar_permission_service.can_perform_scheduling(
-            calendar_id=calendar_id,
-            calendar_settings=CalendarSettingsData(
-                manage_available_windows=calendar.manage_available_windows,
-                accepts_public_scheduling=calendar.accepts_public_scheduling,
-            ),
-            event=event_data,
+        # Owner-scoped tokens are limited to PERSONAL/RESOURCE calendars they own.
+        # Allowing a bundle calendar would fan-out to child calendars owned by other
+        # providers and fail confusingly; block it with an explicit, clean error.
+        if owner_scoped_authorized and calendar.calendar_type == CalendarType.BUNDLE:
+            raise PermissionDenied(
+                "Provider-scoped tokens cannot schedule events on bundle calendars."
+            )
+
+        if (
+            not owner_scoped_authorized
+            and not context.calendar_permission_service.can_perform_scheduling(
+                calendar_id=calendar_id,
+                calendar_settings=CalendarSettingsData(
+                    manage_available_windows=calendar.manage_available_windows,
+                    accepts_public_scheduling=calendar.accepts_public_scheduling,
+                ),
+                event=event_data,
+            )
         ):
             raise PermissionDenied("You do not have permission to update this event.")
 
@@ -402,16 +428,26 @@ class CalendarEventService:
         # Grant permissions to event attendees
         self._host._grant_event_attendee_permissions(event)
 
+        _mgmt_token = cast(
+            CalendarManagementToken | None,
+            getattr(context.calendar_permission_service, "token", None),
+        )
+        _mgmt_token_user = cast(User | None, _mgmt_token.user if _mgmt_token else None)
+        # context.user_or_token is typed as User | str | SystemUser | None; the str
+        # variant is an artefact of settings.AUTH_USER_MODEL FK resolution.  At
+        # runtime user_or_token is always a proper model instance (User / SystemUser)
+        # or None for the owner-scoped path — never a bare str.
+        _actor_fallback = cast(
+            "User | SystemUser | None",
+            context.user_or_token,  # type: ignore[redundant-cast]
+        )
         transaction.on_commit(
             lambda: (
                 context.calendar_side_effects_service.on_create_event(
                     actor=(
-                        context.calendar_permission_service.token.user
-                        if (
-                            context.calendar_permission_service.token
-                            and context.calendar_permission_service.token.user
-                        )
-                        else context.calendar_permission_service.token
+                        _mgmt_token_user
+                        if (_mgmt_token and _mgmt_token_user)
+                        else (_mgmt_token or _actor_fallback)
                     ),
                     event=self._serialize_event(event),
                     organization=event.organization,

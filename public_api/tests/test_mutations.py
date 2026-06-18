@@ -8,7 +8,13 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarOwnership
+from calendar_integration.models import (
+    AvailableTime,
+    BlockedTime,
+    Calendar,
+    CalendarEvent,
+    CalendarOwnership,
+)
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import (
     Organization,
@@ -3162,3 +3168,758 @@ class TestCreateBlockedTimeMutation:
             .filter(calendar_fk=cal.id)
             .exists()
         )
+
+
+SCHEDULE_EVENT_MUTATION = """
+mutation ScheduleEvent(
+    $calendarId: Int!,
+    $title: String!,
+    $startTime: DateTime!,
+    $endTime: DateTime!,
+    $timezone: String!,
+    $description: String,
+    $rruleString: String,
+    $attendances: [EventAttendanceInput!],
+    $externalAttendances: [EventExternalAttendanceInput!]
+) {
+    scheduleEvent(
+        calendarId: $calendarId,
+        title: $title,
+        startTime: $startTime,
+        endTime: $endTime,
+        timezone: $timezone,
+        description: $description,
+        rruleString: $rruleString,
+        attendances: $attendances,
+        externalAttendances: $externalAttendances
+    ) {
+        id
+        title
+        startTime
+        endTime
+    }
+}
+"""
+
+
+def _make_scoped_calendar_event_client(
+    organization: Organization,
+    owner: User,
+) -> tuple[APIClient, SystemUser]:
+    """Create a scoped API client with CALENDAR_EVENT resource grant."""
+    token = generate_long_lived_token()
+    system_user = baker.make(
+        SystemUser,
+        organization=organization,
+        scoped_to_user=owner,
+        integration_name=f"scoped_ce_{organization.pk}_{owner.pk}",
+        long_lived_token_hash=hash_long_lived_token(token),
+        is_active=True,
+    )
+    baker.make(
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR_EVENT
+    )
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+    return client, system_user
+
+
+def _make_org_wide_calendar_event_client(
+    organization: Organization,
+) -> tuple[APIClient, SystemUser]:
+    """Create an org-wide API client with CALENDAR_EVENT resource grant."""
+    auth_service = PublicAPIAuthService()
+    system_user, token = auth_service.create_system_user(
+        integration_name=f"org_wide_ce_{organization.pk}", organization=organization
+    )
+    baker.make(
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR_EVENT
+    )
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+    return client, system_user
+
+
+@pytest.mark.django_db
+class TestScheduleEventMutation:
+    """Integration tests for the scheduleEvent mutation (Phase 4c).
+
+    Covers:
+    - Scoped owner on a non-public-scheduling calendar succeeds (the core owner-path proof).
+    - Scoped token schedules a recurring event (with rrule_string).
+    - Attendees persisted: external attendee persists; out-of-org internal user_id → clean error.
+    - Cross-owner calendar_id → not-found, identical to genuinely missing, no row created.
+    - Org-wide token (scoped_to_user IS NULL) → DENIED (intentional design; event creation
+      requires either owner-scoped token or public-scheduling / management-token path).
+    - No availability window covering the slot → clean GraphQL error, no row.
+    - Token without CALENDAR_EVENT resource → denied.
+    - A too-long title returns a clean GraphQL error, no row created.
+    """
+
+    def setup_method(self) -> None:
+        self.client = APIClient()
+
+    def _make_owner_with_calendar(self, organization: Organization) -> tuple[User, Calendar]:
+        """Create a user + calendar (manage_available_windows=False) owned by that user.
+
+        The calendar has manage_available_windows=False — the owner-scoped path skips
+        the AvailableTime check in this configuration (service always returns a window
+        when manage_available_windows is False).  No dead AvailableTime rows are created.
+        Tests that require the managed-window path should set manage_available_windows=True
+        and add a covering AvailableTime window explicitly.
+        """
+        owner = baker.make(User, email=f"owner_ce_{uuid4().hex}@test.com")
+        cal = baker.make(
+            Calendar,
+            organization=organization,
+            name="Owner CE Cal",
+            external_id=f"ext-ce-{organization.pk}-{owner.pk}",
+            accepts_public_scheduling=False,
+            manage_available_windows=False,
+        )
+        baker.make(CalendarOwnership, calendar=cal, user=owner, organization=organization)
+        return owner, cal
+
+    def test_scoped_owner_on_non_public_calendar_succeeds(self) -> None:
+        """Core proof: scoped owner schedules on a calendar with managed availability windows.
+
+        The calendar has accepts_public_scheduling=False and manage_available_windows=True
+        with an AvailableTime row that covers the event slot.  The owner-scoped path must
+        succeed via the CalendarOwnership check — it does NOT rely on accepts_public_scheduling.
+        This exercises the managed-window provider flow end-to-end.
+
+        Asserts:
+        - The mutation returns success (id, title, startTime, endTime).
+        - A CalendarEvent row is persisted on that calendar with the given title.
+        - The persisted row has no recurrence_rule (one-off).
+        """
+        org = baker.make(Organization, name="Scoped CE Org")
+        owner = baker.make(User, email=f"owner_ce_{uuid4().hex}@test.com")
+        cal = baker.make(
+            Calendar,
+            organization=org,
+            name="Owner CE Cal",
+            external_id=f"ext-ce-managed-{org.pk}-{owner.pk}",
+            accepts_public_scheduling=False,
+            manage_available_windows=True,
+        )
+        baker.make(CalendarOwnership, calendar=cal, user=owner, organization=org)
+        # Add an AvailableTime window that covers the event slot below
+        AvailableTime.objects.create(
+            organization=org,
+            calendar=cal,
+            start_time_tz_unaware=datetime.datetime(2026, 8, 1, 0, 0),
+            end_time_tz_unaware=datetime.datetime(2026, 8, 1, 23, 59),
+            timezone="UTC",
+        )
+        client, _ = _make_scoped_calendar_event_client(org, owner)
+
+        start = datetime.datetime(2026, 8, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 8, 1, 10, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "title": "Team Sync",
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                    "description": "Weekly team sync meeting",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0, data.get("errors")
+        result = data["data"]["scheduleEvent"]
+        assert result["id"] is not None
+        assert result["title"] == "Team Sync"
+
+        # Confirm CalendarEvent was persisted in the DB
+        event = CalendarEvent.objects.filter_by_organization(org.id).get(id=int(result["id"]))
+        assert event.calendar_fk_id == cal.id
+        assert event.title == "Team Sync"
+        assert event.recurrence_rule_fk_id is None, "One-off event must have no recurrence rule"
+
+    def test_scoped_token_schedules_recurring_event(self) -> None:
+        """A scoped token schedules a recurring event (rrule_string) on a non-public calendar.
+
+        Asserts:
+        - The mutation returns success.
+        - A CalendarEvent row is persisted with a recurrence_rule attached.
+        """
+        org = baker.make(Organization, name="Scoped CE Recurring Org")
+        owner, cal = self._make_owner_with_calendar(org)
+        client, _ = _make_scoped_calendar_event_client(org, owner)
+
+        start = datetime.datetime(2026, 8, 4, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 8, 4, 10, 0, tzinfo=datetime.UTC)
+        rrule = "FREQ=WEEKLY;BYDAY=MO"
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "title": "Weekly Monday Meeting",
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                    "rruleString": rrule,
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0, data.get("errors")
+        result = data["data"]["scheduleEvent"]
+        assert result["id"] is not None
+
+        # Confirm CalendarEvent was persisted with a recurrence rule
+        event = CalendarEvent.objects.filter_by_organization(org.id).get(id=int(result["id"]))
+        assert event.calendar_fk_id == cal.id
+        assert event.recurrence_rule_fk_id is not None, (
+            "Recurring event must have a recurrence rule"
+        )
+
+    def test_scoped_token_schedules_event_with_external_attendee_persisted(self) -> None:
+        """External attendee is persisted on a successful schedule.
+
+        Asserts:
+        - The mutation returns success.
+        - A CalendarEvent row is persisted with an EventExternalAttendance record.
+        """
+        from calendar_integration.models import EventExternalAttendance
+
+        org = baker.make(Organization, name="Scoped CE Attendee Org")
+        owner, cal = self._make_owner_with_calendar(org)
+        client, _ = _make_scoped_calendar_event_client(org, owner)
+
+        start = datetime.datetime(2026, 8, 5, 14, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 8, 5, 15, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "title": "Client Call",
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                    "externalAttendances": [
+                        {"externalAttendee": {"email": "client@external.com", "name": "Client"}}
+                    ],
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0, data.get("errors")
+        result = data["data"]["scheduleEvent"]
+        assert result["id"] is not None
+
+        # Confirm CalendarEvent persisted with at least one external attendance
+        event = CalendarEvent.objects.filter_by_organization(org.id).get(id=int(result["id"]))
+        assert event.calendar_fk_id == cal.id
+        assert EventExternalAttendance.objects.filter(event=event).exists(), (
+            "At least one EventExternalAttendance must be created"
+        )
+
+    def test_nonexistent_internal_attendee_user_id_returns_clean_error(self) -> None:
+        """An attendances user_id that does not exist → clean GraphQL error, no row created.
+
+        Attendees are now pre-validated against active org membership before any DB writes.
+        A nonexistent user_id is caught by the pre-validation check and surfaces a clean
+        GraphQL error.  No CalendarEvent row must be left behind.
+        """
+        from calendar_integration.models import EventAttendance as EventAttendanceModel
+
+        org = baker.make(Organization, name="Nonexistent-User Attendee Org")
+        owner, cal = self._make_owner_with_calendar(org)
+        client, _ = _make_scoped_calendar_event_client(org, owner)
+
+        # Use a user_id that does not exist in the users table at all
+        nonexistent_user_id = 999999999
+
+        start = datetime.datetime(2026, 8, 6, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 8, 6, 10, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "title": "Meeting with Ghost",
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                    "attendances": [{"userId": nonexistent_user_id}],
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # Must be a clean GraphQL error (not a 500)
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        # The pre-validation error message must identify the problem clearly
+        assert "not active members" in str(data["errors"]).lower()
+        # No CalendarEvent row must have been created
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=cal.id)
+            .exists()
+        ), "No CalendarEvent must be created when the attendee pre-validation fails"
+        # No EventAttendance row either
+        assert not EventAttendanceModel.objects.filter_by_organization(org.id).exists()
+
+    def test_scoped_token_cross_owner_calendar_not_found(self) -> None:
+        """A scoped token attempting to schedule on another provider's calendar gets not-found.
+
+        The response must be identical to a genuinely missing calendar — no existence leak.
+
+        Asserts:
+        - The mutation returns a GraphQL error.
+        - The error message matches the not-found path (does NOT reveal the calendar exists).
+        - No CalendarEvent row is created for that calendar.
+        """
+        org = baker.make(Organization, name="Cross-Owner CE Org")
+        owner, _owner_cal = self._make_owner_with_calendar(org)
+
+        # Another provider's calendar in the same org — the scoped token must not touch it
+        other_owner = baker.make(User, email=f"other_ce_provider_{uuid4().hex}@test.com")
+        other_cal = baker.make(
+            Calendar,
+            organization=org,
+            name="Other CE Provider Cal",
+            external_id=f"other-ext-ce-cross-{uuid4().hex}",
+        )
+        baker.make(CalendarOwnership, calendar=other_cal, user=other_owner, organization=org)
+
+        client, _ = _make_scoped_calendar_event_client(org, owner)
+
+        start = datetime.datetime(2026, 8, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 8, 1, 10, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": other_cal.id,
+                    "title": "Unauthorized Event",
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        # The error must be a not-found path — same message as a missing calendar
+        assert "does not exist" in str(data["errors"]).lower()
+
+        # No CalendarEvent row must have been created for the other calendar
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=other_cal.id)
+            .exists()
+        ), "No CalendarEvent must be created on another owner's calendar"
+
+    def test_scoped_token_missing_calendar_same_not_found_response(self) -> None:
+        """Cross-owner and genuinely-missing calendar produce identical not-found errors.
+
+        The owner first OWNS their own calendar (populated allowed-set = {own_cal.id}).
+        Then we assert that requesting a different provider's calendar id and a nonexistent
+        id (999999999) both yield the IDENTICAL error — proving no existence leak even with
+        a non-empty allowed-set.
+        """
+        org = baker.make(Organization, name="No-Leak CE Org")
+        # Give the owner their own calendar so the allowed-set is populated
+        owner, _own_cal = self._make_owner_with_calendar(org)
+        client, _ = _make_scoped_calendar_event_client(org, owner)
+
+        start = datetime.datetime(2026, 8, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 8, 1, 10, 0, tzinfo=datetime.UTC)
+
+        nonexistent_id = 999999999
+
+        response_missing = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": nonexistent_id,
+                    "title": "Ghost Event",
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        # Create a calendar in the same org owned by someone else
+        other_owner = baker.make(User, email=f"other_no_leak_ce_{uuid4().hex}@test.com")
+        other_cal = baker.make(
+            Calendar,
+            organization=org,
+            name="Other No Leak CE Cal",
+            external_id=f"other-no-leak-ce-ext-{uuid4().hex}",
+        )
+        baker.make(CalendarOwnership, calendar=other_cal, user=other_owner, organization=org)
+
+        response_cross_owner = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": other_cal.id,
+                    "title": "Ghost Event",
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        # Both responses must be errors
+        assert "errors" in response_missing.json()
+        assert "errors" in response_cross_owner.json()
+
+        # The error messages must be identical (no existence leak)
+        missing_msg = str(response_missing.json()["errors"])
+        cross_owner_msg = str(response_cross_owner.json()["errors"])
+        assert missing_msg == cross_owner_msg, (
+            f"Cross-owner response must be identical to missing-calendar response.\n"
+            f"Missing: {missing_msg}\nCross-owner: {cross_owner_msg}"
+        )
+
+    def test_org_wide_token_event_creation_is_denied(self) -> None:
+        """An org-wide token (scoped_to_user IS NULL) is DENIED for event creation.
+
+        By design, org-wide Public API tokens cannot create events directly — event
+        creation requires either an owner-scoped token (CalendarOwnership check) or
+        the public-scheduling / management-token path (User branch).  This test
+        confirms org-wide tokens remain blocked and asserts no CalendarEvent row is
+        created.
+
+        Asserts:
+        - The mutation returns a GraphQL error (PermissionDenied → GraphQLError).
+        - No CalendarEvent row is created.
+        """
+        org = baker.make(Organization, name="Org-Wide CE Org")
+        _owner, cal = self._make_owner_with_calendar(org)
+        client, _ = _make_org_wide_calendar_event_client(org)
+
+        start = datetime.datetime(2026, 8, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 8, 1, 10, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "title": "Org-Wide Event",
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+        # No CalendarEvent must have been created
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=cal.id)
+            .exists()
+        ), "No CalendarEvent must be created via an org-wide token"
+
+    def test_no_availability_window_returns_clean_error(self) -> None:
+        """No AvailableTime covering the event slot → clean GraphQL error, no row created.
+
+        The calendar is owner-scoped (CalendarOwnership authorizes the token) but has
+        manage_available_windows=True and NO AvailableTime window — so the service's
+        availability check raises NoAvailableTimeWindowsError.  The mutation must catch
+        it and surface a clean GraphQL error.
+
+        Asserts:
+        - The mutation returns a GraphQL error.
+        - No CalendarEvent row is created.
+        """
+        org = baker.make(Organization, name="No-Window CE Org")
+        owner = baker.make(User, email=f"no_window_owner_{uuid4().hex}@test.com")
+        # manage_available_windows=True forces the service to check AvailableTime rows.
+        # No AvailableTime rows → NoAvailableTimeWindowsError.
+        cal = baker.make(
+            Calendar,
+            organization=org,
+            name="No Window Cal",
+            external_id=f"no-window-ext-{uuid4().hex}",
+            accepts_public_scheduling=False,
+            manage_available_windows=True,
+        )
+        baker.make(CalendarOwnership, calendar=cal, user=owner, organization=org)
+        # Intentionally do NOT create any AvailableTime rows
+        client, _ = _make_scoped_calendar_event_client(org, owner)
+
+        start = datetime.datetime(2026, 8, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 8, 1, 10, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "title": "No Window Event",
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+        # No CalendarEvent row must have been created
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=cal.id)
+            .exists()
+        ), "No CalendarEvent must be created when there are no available time windows"
+
+    def test_token_without_calendar_event_resource_denied(self) -> None:
+        """A token lacking the CALENDAR_EVENT resource is denied by OrganizationResourceAccess.
+
+        Asserts:
+        - The mutation returns a GraphQL error with a permission-denied message.
+        - No CalendarEvent row is created.
+        """
+        org = baker.make(Organization, name="No-Scope CE Org")
+        _owner, cal = self._make_owner_with_calendar(org)
+
+        # Create a token with a DIFFERENT resource — not CALENDAR_EVENT
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="no_ce_scope", organization=org
+        )
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+
+        start = datetime.datetime(2026, 8, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 8, 1, 10, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "title": "Unauthorized Event",
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+        # No CalendarEvent must have been created
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=cal.id)
+            .exists()
+        )
+
+    def test_title_too_long_returns_error_no_row_created(self) -> None:
+        """A title longer than 255 chars returns a clean GraphQL error; no CalendarEvent created.
+
+        Confirms the title-length guard fires before the service call — without the guard
+        a DataError would bubble up as an uncaught 500.
+        """
+        org = baker.make(Organization, name="Long Title CE Org")
+        owner, cal = self._make_owner_with_calendar(org)
+        client, _ = _make_scoped_calendar_event_client(org, owner)
+
+        start = datetime.datetime(2026, 8, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 8, 1, 10, 0, tzinfo=datetime.UTC)
+        long_title = "x" * 256  # 256 chars — one over the max
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "title": long_title,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "255 characters or fewer" in str(data["errors"])
+
+        # No CalendarEvent row must have been created
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=cal.id)
+            .exists()
+        )
+
+    def test_scoped_token_on_bundle_calendar_denied(self) -> None:
+        """scheduleEvent with an owner-scoped token on a BUNDLE calendar returns a clean
+        GraphQL error and creates NO CalendarEvent row.
+
+        Provider-scoped tokens are limited to PERSONAL/RESOURCE calendars they own.
+        A bundle calendar would fan-out to child calendars owned by other providers and
+        fail confusingly; the explicit guard fires first.
+
+        Asserts:
+        - The mutation returns a GraphQL error.
+        - No CalendarEvent row is created.
+        """
+        from calendar_integration.constants import CalendarType
+
+        org = baker.make(Organization, name="Bundle Guard Org")
+        owner = baker.make(User, email=f"bundle_owner_{uuid4().hex}@test.com")
+        bundle_cal = baker.make(
+            Calendar,
+            organization=org,
+            name="Bundle Cal",
+            external_id=f"ext-bundle-{org.pk}-{owner.pk}",
+            calendar_type=CalendarType.BUNDLE,
+            accepts_public_scheduling=False,
+        )
+        baker.make(CalendarOwnership, calendar=bundle_cal, user=owner, organization=org)
+        client, _ = _make_scoped_calendar_event_client(org, owner)
+
+        start = datetime.datetime(2026, 8, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 8, 1, 10, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": bundle_cal.id,
+                    "title": "Bundle Event",
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+        # No CalendarEvent row must have been created
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=bundle_cal.id)
+            .exists()
+        ), "No CalendarEvent must be created on a bundle calendar via a scoped token"
+
+    def test_out_of_org_attendee_rejected(self) -> None:
+        """scheduleEvent with an attendances user_id that is NOT a member of the caller's
+        org returns a clean GraphQL error and creates NO CalendarEvent row.
+
+        This prevents a provider token from injecting an arbitrary out-of-org user as
+        an event attendee.
+
+        Asserts:
+        - The mutation returns a GraphQL error.
+        - No CalendarEvent row is created.
+        """
+        org = baker.make(Organization, name="Attendee Org-Check Org")
+        owner, cal = self._make_owner_with_calendar(org)
+        client, _ = _make_scoped_calendar_event_client(org, owner)
+
+        # Create a user in a completely different org — not a member of `org`
+        other_org = baker.make(Organization, name="Other Org")
+        user_model = get_user_model()
+        outsider = baker.make(user_model, email=f"outsider_{uuid4().hex}@other.com")
+        baker.make(OrganizationMembership, user=outsider, organization=other_org, is_active=True)
+
+        start = datetime.datetime(2026, 8, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 8, 1, 10, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": SCHEDULE_EVENT_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "title": "Event with Outsider",
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                    "attendances": [{"userId": outsider.id}],
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "not active members" in str(data["errors"]).lower()
+
+        # No CalendarEvent row must have been created
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=cal.id)
+            .exists()
+        ), "No CalendarEvent must be created when an out-of-org attendee is supplied"

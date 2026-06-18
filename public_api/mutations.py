@@ -5,6 +5,7 @@ from typing import Annotated, cast
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import URLValidator
 from django.db import IntegrityError, transaction
@@ -14,9 +15,24 @@ import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
-from calendar_integration.graphql import AvailableTimeGraphQLType, BlockedTimeGraphQLType
+from calendar_integration.exceptions import NoAvailableTimeWindowsError
+from calendar_integration.graphql import (
+    AvailableTimeGraphQLType,
+    BlockedTimeGraphQLType,
+    CalendarEventGraphQLType,
+)
 from calendar_integration.models import Calendar
-from calendar_integration.mutations import CalendarGroupMutations
+from calendar_integration.mutations import (
+    CalendarGroupMutations,
+    EventAttendanceInput,
+    EventExternalAttendanceInput,
+)
+from calendar_integration.services.dataclasses import (
+    CalendarEventInputData,
+    EventAttendanceInputData,
+    EventExternalAttendanceInputData,
+    ExternalAttendeeInputData,
+)
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from organizations.services import OrganizationService
@@ -643,3 +659,93 @@ class Mutation(CalendarGroupMutations):
         except ValueError as e:
             raise GraphQLError(str(e)) from e
         return blocked_time  # type: ignore[return-value]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def schedule_event(
+        self,
+        info: strawberry.Info,
+        calendar_id: int,
+        title: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone_str: Annotated[str, strawberry.argument(name="timezone")],
+        description: str = "",
+        attendances: list[EventAttendanceInput] | None = None,
+        external_attendances: list[EventExternalAttendanceInput] | None = None,
+        rrule_string: str | None = None,
+    ) -> CalendarEventGraphQLType:
+        """Schedule a calendar event on a provider-owned calendar.
+
+        Args:
+            calendar_id: ID of the calendar to schedule the event on.
+            title: Event title (max 255 characters).
+            description: Optional event description.
+            start_time: Start of the event (timezone-aware datetime).
+            end_time: End of the event (timezone-aware datetime).
+            timezone: IANA timezone string (e.g. "America/New_York").
+            attendances: Optional list of internal attendees (by user_id).
+            external_attendances: Optional list of external attendees (by email).
+            rrule_string: Optional RFC-5545 RRULE for recurring events.
+
+        Returns:
+            The created CalendarEvent as CalendarEventGraphQLType.
+
+        Raises:
+            GraphQLError: title exceeds 255 chars; calendar not found / not in owner's scope;
+                or service-level ValueError (e.g. invalid rrule format or calendar state).
+
+        The token's OrganizationResourceAccess must include the CALENDAR_EVENT resource.
+        """
+        if len(title) > 255:
+            raise GraphQLError("title must be 255 characters or fewer.")
+
+        try:
+            calendar_service, calendar = prepare_service_and_calendar(info, calendar_id)
+        except Calendar.DoesNotExist as e:
+            raise GraphQLError("Calendar matching query does not exist.") from e
+
+        # Validate internal attendees are active members of the caller's org before
+        # writing any rows — prevents FK-constraint IntegrityErrors and blocks
+        # out-of-org user_id injection.
+        if attendances:
+            from users.models import User as UserModel
+
+            org = info.context.request.public_api_organization
+            requested_ids = [a.user_id for a in attendances]
+            found_ids = set(
+                UserModel.objects.filter(
+                    id__in=requested_ids,
+                    organization_memberships__organization=org,
+                    organization_memberships__is_active=True,
+                ).values_list("id", flat=True)
+            )
+            if set(requested_ids) != found_ids:
+                raise GraphQLError(
+                    "One or more attendee user_ids are not active members of this organization."
+                )
+
+        event_data = CalendarEventInputData(
+            title=title,
+            description=description,
+            start_time=start_time,
+            end_time=end_time,
+            timezone=timezone_str,
+            attendances=[EventAttendanceInputData(user_id=a.user_id) for a in (attendances or [])],
+            external_attendances=[
+                EventExternalAttendanceInputData(
+                    external_attendee=ExternalAttendeeInputData(
+                        email=e.external_attendee.email,
+                        name=e.external_attendee.name,
+                        id=e.external_attendee.id,
+                    )
+                )
+                for e in (external_attendances or [])
+            ],
+            recurrence_rule=rrule_string,
+        )
+
+        try:
+            event = calendar_service.create_event(calendar.id, event_data)
+        except (ValueError, PermissionDenied, NoAvailableTimeWindowsError) as e:
+            raise GraphQLError(str(e) or "Event could not be created.") from e
+        return event  # type: ignore[return-value]
