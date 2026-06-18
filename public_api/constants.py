@@ -34,3 +34,4 @@ class PublicAPIResources(TextChoices):
     INVITATION = "invitation", "Invitation"
     BRANDING = "branding", "Branding"
     CHILD_ORG_ANALYTICS = "child_org_analytics", "Child Organization Analytics"
+    CALENDAR_BOOKING_CODE = "calendar_booking_code", "Calendar Booking Code"

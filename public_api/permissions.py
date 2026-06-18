@@ -48,6 +48,14 @@ class OrganizationResourceAccess(BasePermission):
         "createSystemUserToken": PublicAPIResources.SYSTEM_USER,
         "updateBranding": PublicAPIResources.BRANDING,
         "childOrganizations": PublicAPIResources.CHILD_ORG_ANALYTICS,
+        # Single-use booking-code mint / revoke mutations (Phase 0+)
+        "createCalendarBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createCalendarGroupBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createCalendarRescheduleBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createCalendarGroupRescheduleBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createCalendarCancellationBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createCalendarGroupCancellationBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "revokeBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
