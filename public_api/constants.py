@@ -52,3 +52,15 @@ class PublicAPIResources(TextChoices):
     CREATE_CALENDAR_BUNDLE = "create_calendar_bundle", "Create Calendar Bundle"
     UPDATE_CALENDAR_BUNDLE = "update_calendar_bundle", "Update Calendar Bundle"
     DISABLE_CALENDAR_BUNDLE = "disable_calendar_bundle", "Disable Calendar Bundle"
+
+
+PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
+    [
+        PublicAPIResources.AVAILABLE_TIME,
+        PublicAPIResources.BLOCKED_TIME,
+        PublicAPIResources.CALENDAR_EVENT,
+        PublicAPIResources.AVAILABILITY_WINDOWS,
+        PublicAPIResources.UNAVAILABLE_WINDOWS,
+        PublicAPIResources.CALENDAR,
+    ]
+)

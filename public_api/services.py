@@ -20,7 +20,7 @@ class PublicAPIAuthService:
             system_user_id_int = int(system_user_id)
         except (TypeError, ValueError) as e:
             raise SystemUser.DoesNotExist(f"Invalid system_user_id: {system_user_id!r}") from e
-        system_user = SystemUser.objects.get(id=system_user_id_int)
+        system_user = SystemUser.original_manager.get(id=system_user_id_int)
 
         if not system_user.is_active or system_user.deleted_at is not None:
             return system_user, False
