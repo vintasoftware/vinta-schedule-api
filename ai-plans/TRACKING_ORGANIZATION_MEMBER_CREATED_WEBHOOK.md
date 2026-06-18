@@ -71,8 +71,16 @@
 - Cross-plan note: public_api 0007 may collide with the parallel booking-code plan's migration number at integration time.
 - PR-context: `.vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-5.md` (pending).
 
+### Phase 6 — GraphQL WebhookConfiguration CRUD ✅
+- Status: implemented, fixed (3 SHOULD-FIX), verified, reviewed, pushed. PR pending.
+- Model: Tier 3 (sonnet). Branch `phase-6` → base `phase-5`. Commits `61a3972` (feat) + `24f7f24` (refactor: validation→service, .live() manager, return type).
+- Query + create/update/delete mutations, org-scoped, [IsAuthenticated, OrganizationResourceAccess], all 4 fields in FIELD_TO_RESOURCE_MAPPING. Reuses webhook_service. New WebhookConfiguration manager/queryset (.live()). schema.yml regenerated (incl. Phase 5's resource enum drift).
+- Verify: ruff/format clean; mypy 0 new in changed files; full suite 2066 passed; makemigrations clean; check --deploy dev warnings only.
+- Review: no BLOCKER (tenant isolation verified for all 4 ops); 3 SHOULD-FIX fixed; NITs left.
+- PR-context: `.vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-6.md` (pending).
+
 ## Current phase
-- Phase 6 — GraphQL WebhookConfiguration CRUD. Tier 3 (sonnet).
+- Phase 7 — GraphQL WebhookEvent history read. Tier 2 (sonnet).
 
 ## Remaining phases
 - Phase 3 — Org-creator (admin) emission
