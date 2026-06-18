@@ -2,7 +2,7 @@ import pytest
 from model_bakery import baker
 
 from calendar_integration.models import Calendar, CalendarOwnership
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from public_api.models import SystemUser
 from public_api.scoping import scoped_calendar_ids
 from public_api.services import PublicAPIAuthService
@@ -32,6 +32,18 @@ class TestScopedCalendarIds:
     def another_user(self, organization):
         """Create another test user in the organization."""
         return baker.make(User, email="another@example.com")
+
+    @pytest.fixture
+    def membership(self, organization, user):
+        """Create an active membership for the main user in the main organization."""
+        return baker.make(OrganizationMembership, user=user, organization=organization, is_active=True)
+
+    @pytest.fixture
+    def another_membership(self, organization, another_user):
+        """Create an active membership for another user in the main organization."""
+        return baker.make(
+            OrganizationMembership, user=another_user, organization=organization, is_active=True
+        )
 
     @pytest.fixture
     def calendar_owned_by_user(self, organization, user):
@@ -80,36 +92,36 @@ class TestScopedCalendarIds:
         return system_user
 
     @pytest.fixture
-    def scoped_system_user(self, organization, user):
-        """Create a system user scoped to a specific user."""
+    def scoped_system_user(self, organization, membership):
+        """Create a system user scoped to a specific membership."""
         system_user = baker.make(
             SystemUser,
             organization=organization,
-            scoped_to_user=user,
+            scoped_to_membership_fk=membership,
             integration_name="scoped_token",
         )
         return system_user
 
     @pytest.fixture
-    def scoped_system_user_no_calendars(self, organization, another_user):
-        """Create a system user scoped to a user with no owned calendars."""
+    def scoped_system_user_no_calendars(self, organization, another_membership):
+        """Create a system user scoped to a membership whose user owns no calendars."""
         system_user = baker.make(
             SystemUser,
             organization=organization,
-            scoped_to_user=another_user,
+            scoped_to_membership_fk=another_membership,
             integration_name="scoped_token_no_calendars",
         )
         return system_user
 
     def test_returns_none_for_org_wide_token(self, org_wide_system_user, organization):
-        """Test that org-wide tokens (scoped_to_user IS NULL) return None."""
+        """Test that org-wide tokens (scoped_to_membership IS NULL) return None."""
         result = scoped_calendar_ids(org_wide_system_user, organization)
         assert result is None
 
     def test_returns_owners_calendar_ids_for_scoped_token(
         self, scoped_system_user, organization, calendar_owned_by_user
     ):
-        """Test that scoped tokens return only the owner's calendar IDs."""
+        """Test that scoped tokens return only the membership user's calendar IDs."""
         result = scoped_calendar_ids(scoped_system_user, organization)
         assert result is not None
         assert calendar_owned_by_user.id in result
@@ -118,7 +130,7 @@ class TestScopedCalendarIds:
     def test_returns_empty_set_for_owner_with_no_calendars(
         self, scoped_system_user_no_calendars, organization
     ):
-        """Test that scoped tokens for users with no calendars return an empty set."""
+        """Test that scoped tokens for memberships whose user owns no calendars return an empty set."""
         result = scoped_calendar_ids(scoped_system_user_no_calendars, organization)
         assert result is not None
         assert isinstance(result, set)
@@ -146,16 +158,18 @@ class TestScopedCalendarIds:
         calendar_owned_by_user,
         calendar_owned_by_another_user,
     ):
-        """Test that the helper only returns calendars owned by the scoped user."""
+        """Test that the helper only returns calendars owned by the membership's user."""
         result = scoped_calendar_ids(scoped_system_user, organization)
         assert result is not None
-        # Should include calendars owned by the scoped user
+        # Should include calendars owned by the membership's user
         assert calendar_owned_by_user.id in result
         # Should not include calendars owned by other users
         assert calendar_owned_by_another_user.id not in result
 
-    def test_multiple_calendars_owned_by_scoped_user(self, scoped_system_user, organization, user):
-        """Test that the helper returns all calendars owned by the scoped user."""
+    def test_multiple_calendars_owned_by_scoped_user(
+        self, scoped_system_user, organization, user
+    ):
+        """Test that the helper returns all calendars owned by the membership's user."""
         calendar1 = baker.make(
             Calendar, organization=organization, name="Calendar 1", external_id="test-cal-1"
         )
@@ -170,3 +184,19 @@ class TestScopedCalendarIds:
         assert calendar1.id in result
         assert calendar2.id in result
         assert len(result) == 2
+
+    def test_scoped_membership_resolves_when_org_matches(
+        self, organization, user, membership
+    ):
+        """Test that scoped_to_membership resolves correctly when SystemUser.organization matches the membership's org."""
+        system_user = baker.make(
+            SystemUser,
+            organization=organization,
+            scoped_to_membership_fk=membership,
+            integration_name="scoped_token_org_check",
+        )
+        # SystemUser.organization must match the membership's organization for the
+        # OrganizationForeignKey tenant join to resolve correctly.
+        assert system_user.organization_id == membership.organization_id
+        # The scalar id is always accessible regardless of the FK join path.
+        assert system_user.scoped_to_membership_fk_id == membership.id

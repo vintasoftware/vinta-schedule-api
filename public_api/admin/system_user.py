@@ -36,7 +36,7 @@ class SystemUserAdmin(admin.ModelAdmin):
         "created",
         "modified",
         "is_active",
-        "scoped_to_user",
+        "scoped_to_membership",
     )
     fieldsets = (
         (
@@ -45,7 +45,7 @@ class SystemUserAdmin(admin.ModelAdmin):
                 "fields": (
                     "organization",
                     "integration_name",
-                    "scoped_to_user",
+                    "scoped_to_membership",
                     "long_lived_token_hash",
                     "is_active",
                 )

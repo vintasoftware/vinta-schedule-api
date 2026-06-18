@@ -25,8 +25,8 @@ Spec: [2026-06-17-PER_OWNER_SCOPED_PUBLIC_API_TOKENS_SPEC.md](2026-06-17-PER_OWN
 
 | Decision | Resolution |
 |---|---|
-| **Scope storage** | New nullable `SystemUser.scoped_to_user` FK to `users.User`. One token scopes to one provider; `NULL` = today's org-wide token. Chosen over object-level/polymorphic rows because no use-case needs per-resource owners, and a single nullable column gives clean backward-compat with zero backfill. |
-| **Owner edge** | "This provider's data" = calendars where `CalendarOwnership.user == scoped_to_user` (related_name `ownerships` on `Calendar`), and the events / blocked times / available times on those calendars. Matches the existing `user_id` filter already used by the `calendars` query. |
+| **Scope storage** | **Amended 2026-06-18**: new nullable `SystemUser.scoped_to_membership` `OrganizationForeignKey` to `organizations.OrganizationMembership` (was a plain FK to `users.User`). A membership is the unique `(user, org)` pair, so the scope is org-bound at the schema level and the FK can be an `OrganizationForeignKey` (which `users.User` cannot, having no `organization_id`). `NULL` = today's org-wide token. Single nullable column, clean backward-compat, zero backfill. **External API stays user-centric**: callers pass/receive `scoped_to_user_id` (a `User` id); mint resolves the user's active membership and stores it. |
+| **Owner edge** | "This provider's data" = calendars where `CalendarOwnership.user` is the membership's user (related_name `ownerships` on `Calendar`), and the events / blocked times / available times on those calendars. The helper joins `ownerships__user__organization_memberships = scoped_to_membership_id`. |
 | **Enforcement location** | Two layers. The permission class still gates the *resource type*. A shared helper derives the owner's calendar-id set; every read resolver intersects its queryset against it, and every write mutation refuses a target calendar not in it. Filtering lives where the queryset is built (not in the boolean permission class) because list queries without a `calendarId` are the leak-prone cases. |
 | **Cross-owner response** | Reads return empty; writes return not-found. Never confirms the existence of another provider's object. |
 | **Rollout gating** | No feature flag (repo has no flag infra). Enforcement only activates when `scoped_to_user` is non-null, so null-owner tokens are provably unchanged. Every enforcement phase ships a test asserting an org-wide token sees identical behavior. No flag-removal phase. |
@@ -40,46 +40,62 @@ Spec: [2026-06-17-PER_OWNER_SCOPED_PUBLIC_API_TOKENS_SPEC.md](2026-06-17-PER_OWN
 
 ## 3. Data Model Changes
 
-### 3.1 `SystemUser.scoped_to_user`
+### 3.1 `SystemUser.scoped_to_membership`
+
+> **Amended 2026-06-18**: the scope FK targets `organizations.OrganizationMembership` via an
+> `OrganizationForeignKey`, not `users.User`. A membership is the `(user, organization)` pair (unique),
+> so the FK is inherently org-bound and `OrganizationForeignKey` adds `organization_id` to the JOIN ON
+> clause (schema-level tenant safety). `User` has no `organization_id` column, so it cannot be an
+> `OrganizationForeignKey` target. The **external API contract is unchanged** — callers still pass and
+> receive a `scoped_to_user_id` (an internal `User` id); mint resolves it to the user's active
+> membership in the caller's org and stores that membership.
 
 Add to `SystemUser` in @public_api/models.py:
 
 ```python
-scoped_to_user = models.ForeignKey(
-    "users.User",
+scoped_to_membership = OrganizationForeignKey(
+    "organizations.OrganizationMembership",
     related_name="scoped_system_users",
     on_delete=models.CASCADE,
     null=True,
     blank=True,
     db_index=True,
     help_text=(
-        "When set, this token may only read/write data belonging to calendars "
-        "owned by this user. NULL = organization-wide token (legacy default)."
+        "When set, this token may only read/write data belonging to calendars owned by "
+        "this organization membership's user. NULL = organization-wide token (legacy default)."
     ),
 )
 ```
 
-- Nullable, indexed. `on_delete=CASCADE`: if the provider user is deleted, their scoped tokens go with them (they could never access anything afterward anyway).
-- Migration is an additive nullable column on a low-volume table — no lock concern, no backfill. Reverse path = drop column.
+- `OrganizationForeignKey` (from `organizations.models`) — enforces `organization_id` in the JOIN ON
+  clause; `SystemUser.organization` supplies the tenant side, the membership the target side. Nullable,
+  indexed. `on_delete=CASCADE`: if the membership is deleted, its scoped tokens go with it.
+- Migration is an additive nullable column on a low-volume table — no lock concern, no backfill.
+  Reverse path = drop column.
 
 ### 3.2 Owner-derivation helper
 
-New helper (module-level in @public_api/permissions.py or a small @public_api/scoping.py) returning the owner's calendar-id set for a request's system user:
+New helper (module-level in @public_api/scoping.py) returning the owner's calendar-id set for a
+request's system user. The owner's calendars are still keyed by `User` (`CalendarOwnership.user`), so
+the helper joins from the membership to its user in a single query:
 
 ```python
 def scoped_calendar_ids(system_user, organization) -> set[int] | None:
     """None => unrestricted (org-wide token). A set (possibly empty) => the
     only calendar ids this token may touch."""
-    if system_user.scoped_to_user_id is None:
+    if system_user.scoped_to_membership_id is None:
         return None
     return set(
         Calendar.objects.filter_by_organization(organization.id)
-        .filter(ownerships__user_id=system_user.scoped_to_user_id)
+        .filter(ownerships__user__organization_memberships=system_user.scoped_to_membership_id)
+        .distinct()
         .values_list("id", flat=True)
     )
 ```
 
-`None` is the unrestricted sentinel so the null-owner path stays a no-op. An empty set means "scoped, but owns nothing" → reads empty, writes not-found.
+`None` is the unrestricted sentinel so the null-owner path stays a no-op. An empty set means "scoped,
+but owns nothing" → reads empty, writes not-found. The `ownerships__user__organization_memberships`
+join reaches the calendars owned by the membership's user without loading the membership row.
 
 ### 3.3 Type plumbing
 
@@ -342,3 +358,16 @@ Acceptance: the adversarial sweep passes (no read leak, no cross-owner write, in
 - New: `@public_api/tests/test_scoping_security.py`
 - Edit: any resolver/mutation a leak is found in
 - New: bypass-surface checklist doc alongside the spec in `ai-plans/`
+
+## Amendments
+
+- **2026-06-18** — Scope FK retargeted from `users.User` (plain `ForeignKey`) to
+  `organizations.OrganizationMembership` (`OrganizationForeignKey`), renamed `scoped_to_user` →
+  `scoped_to_membership`. Rationale: a membership is the unique `(user, org)` pair, so the scope is
+  org-bound at the schema level and the FK gains `organization_id` in its JOIN ON clause (tenant
+  safety); `users.User` has no `organization_id` and so cannot be an `OrganizationForeignKey` target.
+  The external API contract is unchanged — callers still pass/receive `scoped_to_user_id` (a `User`
+  id); mint resolves the user's active membership in the caller's org and stores the membership.
+  Affected phases: 0 (model + helper), 2 + 3 (mint resolves membership), 4c (service ownership check
+  hops membership→user), 1 + 4a + 4b + 5 (test factories). Branches force-pushed: phase-0, phase-1,
+  phase-2, phase-3, phase-4a, phase-4b, phase-4c, phase-5.
