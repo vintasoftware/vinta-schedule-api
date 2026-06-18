@@ -36,7 +36,9 @@ class TestScopedCalendarIds:
     @pytest.fixture
     def membership(self, organization, user):
         """Create an active membership for the main user in the main organization."""
-        return baker.make(OrganizationMembership, user=user, organization=organization, is_active=True)
+        return baker.make(
+            OrganizationMembership, user=user, organization=organization, is_active=True
+        )
 
     @pytest.fixture
     def another_membership(self, organization, another_user):
@@ -166,9 +168,7 @@ class TestScopedCalendarIds:
         # Should not include calendars owned by other users
         assert calendar_owned_by_another_user.id not in result
 
-    def test_multiple_calendars_owned_by_scoped_user(
-        self, scoped_system_user, organization, user
-    ):
+    def test_multiple_calendars_owned_by_scoped_user(self, scoped_system_user, organization, user):
         """Test that the helper returns all calendars owned by the membership's user."""
         calendar1 = baker.make(
             Calendar, organization=organization, name="Calendar 1", external_id="test-cal-1"
@@ -185,9 +185,7 @@ class TestScopedCalendarIds:
         assert calendar2.id in result
         assert len(result) == 2
 
-    def test_scoped_membership_resolves_when_org_matches(
-        self, organization, user, membership
-    ):
+    def test_scoped_membership_resolves_when_org_matches(self, organization, user, membership):
         """Test that scoped_to_membership resolves correctly when SystemUser.organization matches the membership's org."""
         system_user = baker.make(
             SystemUser,
