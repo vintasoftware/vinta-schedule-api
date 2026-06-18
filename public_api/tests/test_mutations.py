@@ -1915,3 +1915,238 @@ class TestGetCalendarMutationDependencies:
             _get_org_and_init_calendar_service(mock_info)
 
         assert "Organization not found in request context" in str(exc_info.value)
+
+
+CREATE_RESOURCE_CALENDAR_MUTATION = """
+mutation CreateResourceCalendar($input: CreateResourceCalendarInput!) {
+    createResourceCalendar(input: $input) {
+        success
+        errorMessage
+        calendar {
+            id
+            name
+            description
+            calendarType
+            capacity
+            manageAvailableWindows
+        }
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestCreateResourceCalendarMutation:
+    """Tests for the createResourceCalendar mutation (Phase 2a)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_org_and_token(self, resources: list[str] | None = None):
+        """Create an org + system user with the given resource scopes."""
+        if resources is None:
+            resources = [PublicAPIResources.CREATE_RESOURCE_CALENDAR]
+        org = baker.make(Organization, name="Test Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": CREATE_RESOURCE_CALENDAR_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def test_create_resource_calendar_happy_path(self):
+        """A granted token creates a resource calendar; returns the calendar + DB row."""
+        from calendar_integration.models import Calendar, CalendarType
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "Conference Room A",
+                    "description": "Main conference room",
+                    "capacity": 10,
+                    "manageAvailableWindows": True,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createResourceCalendar"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+        assert result["calendar"] is not None
+        assert result["calendar"]["name"] == "Conference Room A"
+        assert result["calendar"]["description"] == "Main conference room"
+        assert result["calendar"]["calendarType"] == CalendarType.RESOURCE
+        assert result["calendar"]["capacity"] == 10
+        assert result["calendar"]["manageAvailableWindows"] is True
+
+        # Verify the DB row exists and is scoped to the org
+        calendar_id = int(result["calendar"]["id"])
+        cal = Calendar.objects.filter_by_organization(org.id).get(id=calendar_id)
+        assert cal.name == "Conference Room A"
+        assert cal.calendar_type == CalendarType.RESOURCE
+        assert cal.organization == org
+
+    def test_create_resource_calendar_minimal_input(self):
+        """Name-only input succeeds; optional fields default correctly."""
+        from calendar_integration.models import CalendarType
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "name": "Room B"}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createResourceCalendar"]
+        assert result["success"] is True
+        assert result["calendar"]["name"] == "Room B"
+        assert result["calendar"]["calendarType"] == CalendarType.RESOURCE
+
+    def test_create_resource_calendar_permission_denied_without_grant(self):
+        """A token without CREATE_RESOURCE_CALENDAR grant is denied."""
+        # Grant CALENDAR scope instead, NOT CREATE_RESOURCE_CALENDAR
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[PublicAPIResources.CALENDAR]
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "name": "Room C"}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_create_resource_calendar_unauthenticated_denied(self):
+        """An unauthenticated call is denied."""
+        response = self.client.post(
+            "/graphql/",
+            data={
+                "query": CREATE_RESOURCE_CALENDAR_MUTATION,
+                "variables": {"input": {"organizationId": 1, "name": "Room D"}},
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+    def test_create_resource_calendar_org_scoping(self):
+        """The created calendar belongs to the token's org, not the input organizationId.
+
+        The organization is resolved from the token context (public_api_organization),
+        not from the input field. The organizationId input is present for client
+        convenience but the server always uses the token's org.
+        """
+        from calendar_integration.models import Calendar, CalendarType
+
+        # Create the token's org
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        # Create a different org that we pass as organizationId — should be ignored
+        other_org = baker.make(Organization, name="Other Org")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": other_org.id,  # Deliberately different from token's org
+                    "name": "Scoping Test Room",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # The mutation should succeed (org context from token, not input)
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["createResourceCalendar"]
+        assert result["success"] is True
+
+        # Verify calendar is scoped to the token's org
+        calendar_id = int(result["calendar"]["id"])
+        cal = Calendar.objects.filter_by_organization(org.id).get(id=calendar_id)
+        assert cal.organization == org
+        assert cal.organization != other_org
+        assert cal.calendar_type == CalendarType.RESOURCE
+
+    def test_create_resource_calendar_error_path_service_raises_value_error(self):
+        """An exception from CalendarService.create_resource_calendar returns success=False + errorMessage.
+
+        This tests the error handler catching ValueError/ValidationError/IntegrityError
+        and returning the failure result with the exception message.
+        """
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a mock calendar service that raises ValueError
+        from calendar_integration.services.calendar_service import CalendarService
+
+        mock_calendar_service = Mock(spec=CalendarService)
+        error_message = "boom"
+        mock_calendar_service.create_resource_calendar.side_effect = ValueError(error_message)
+
+        with (
+            container.public_api_auth_service.override(auth_service),
+            container.calendar_service.override(mock_calendar_service),
+        ):
+            response = self._post_mutation(
+                system_user,
+                token,
+                auth_service,
+                {
+                    "input": {
+                        "organizationId": org.id,
+                        "name": "Will Fail Room",
+                        "description": "This will trigger an error",
+                    }
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        # Should not have GraphQL errors; the mutation should return a result with success=False
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createResourceCalendar"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert error_message in result["errorMessage"]
+        assert result["calendar"] is None

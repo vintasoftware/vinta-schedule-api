@@ -35,11 +35,14 @@ COMPOSE_PROJECT_NAME=vinta-schedule docker compose run --rm api uv run <cmd>
 - Review: no BLOCKERs. SHOULD-FIX applied — reverted unrelated `get_mutation_dependencies` message (scope creep); tightened tests (`pytest.raises(GraphQLError)`, behavioral assertions on `calendar_service.organization`/`user_or_token`, top-level imports).
 - Outer gate (docker compose): ruff ✅, format ✅, check --deploy ✅, pytest -n auto = 2004 passed.
 
+### Phases 1a / 1b / 1c — DROPPED (2026-06-18)
+Single-calendar event create/reschedule/cancel not exposed via Public API. `CalendarEventService.create_event`/`update_event` raise `PermissionDenied("Events cannot be created through the Public API.")` for `SystemUser` (calendar_event_service.py:246, :447). Owner decided the guard is authoritative. Phase-1a work (createCalendarEvent) was reverted (branch deleted, never pushed). Phase 0 scaffolding retained.
+
 ## Current Phase
-- Phase 1a — createCalendarEvent (next)
+- Phase 2a — createResourceCalendar (in progress), stacked on phase-0
 
 ## Remaining Phases
-1a, 1b, 1c, 2a, 2b, 2c, 3a, 3b, 3c, 3d, 3e, 3f, 3g, 4a, 4b, 4c, 4d, 5a, 5b
+2a, 2b, 2c, 3a, 3b, 3c, 3d, 3e, 3f, 3g, 4a, 4b, 4c, 4d, 5a (REVISIT — group reschedule routes through update_event guard), 5b (REVISIT)
 
 ## Deferred Phases
 _(none — no cross-repo, no flag-removal phases in this plan)_
