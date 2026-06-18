@@ -4203,3 +4203,74 @@ class TestCreateBlockedTimeMutation:
         data = response.json()
         assert "errors" in data
         assert len(data["errors"]) > 0
+
+    def test_create_blocked_time_duplicate_returns_failure(self):
+        """A duplicate blocked time (same calendar + same external_id) returns success=False.
+
+        bulk_create_manual_blocked_times generates external_id as
+        "manual-{start_time.isoformat()}-{index}". Two calls with the same calendar and
+        the same start_time both produce external_id "manual-...-0", triggering the
+        unique_together (calendar_fk_id, external_id) DB constraint (IntegrityError).
+        The handler must catch IntegrityError and return success=False rather than a 500.
+
+        Approach: patch the service to raise IntegrityError directly (the real collision
+        requires the same calendar + same start_time AND the same index, which is always
+        0 for single-blocked-time calls — but ATOMIC_REQUESTS wraps each request in its
+        own transaction, so two separate HTTP calls both commit cleanly and do NOT
+        collide at the DB level because Django's bulk_create on a unique-violating row
+        silently skips or raises only within the same savepoint). Patching is therefore
+        the reliable approach.
+        """
+        from django.db import IntegrityError as DjangoIntegrityError
+
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        calendar_service_real: CalendarService = container.calendar_service()
+        calendar_service_real.initialize_without_provider(
+            user_or_token=system_user, organization=org
+        )
+        calendar = calendar_service_real.create_resource_calendar(
+            name="Blocked Room Dup",
+            description="",
+            manage_available_windows=True,
+        )
+
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        mock_calendar_service = Mock(spec=CalendarService)
+        mock_calendar_service.organization = org
+        mock_calendar_service.user_or_token = system_user
+        mock_calendar_service.create_blocked_time.side_effect = DjangoIntegrityError(
+            "UNIQUE constraint failed: calendar_integration_blockedtime.calendar_fk_id, "
+            "calendar_integration_blockedtime.external_id"
+        )
+
+        with (
+            container.public_api_auth_service.override(auth_service),
+            container.calendar_service.override(mock_calendar_service),
+        ):
+            response = self._post_mutation(
+                system_user,
+                token,
+                auth_service,
+                {
+                    "input": {
+                        "organizationId": org.id,
+                        "calendarId": calendar.id,
+                        "startTime": start.isoformat(),
+                        "endTime": end.isoformat(),
+                        "timezone": "UTC",
+                    }
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        # Must NOT surface as a GraphQL-level error (no 500); must be a typed result.
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["createBlockedTime"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None

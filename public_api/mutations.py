@@ -1045,12 +1045,7 @@ class Mutation(CalendarGroupMutations):
                 reason=input.reason,
                 rrule_string=input.rrule_string,
             )
-        except (
-            CalendarIntegrationError,
-            ValueError,
-            DjangoValidationError,
-            Calendar.DoesNotExist,
-        ) as e:
+        except (CalendarIntegrationError, ValueError, DjangoValidationError, IntegrityError) as e:
             return CreateBlockedTimeResult(success=False, error_message=str(e))
 
         return CreateBlockedTimeResult(
