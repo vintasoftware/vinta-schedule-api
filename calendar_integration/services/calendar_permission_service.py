@@ -652,3 +652,34 @@ class CalendarPermissionService:
             TokenRevokedError: If the token was revoked between validation and consume.
         """
         CalendarManagementToken.objects.consume(token, source_ip)
+
+    def revoke_token(self, organization_id: int, token_id: int) -> bool:
+        """Revoke a booking code by its opaque id (idempotent).
+
+        Fetch the token scoped to the organization, set ``revoked_at`` to
+        the current time if not already set, and save. If the token is already
+        revoked, return True without changing the timestamp (idempotent).
+
+        Args:
+            organization_id: Tenant scope.
+            token_id: The id of the token to revoke.
+
+        Returns:
+            True on success (revoked or already-revoked).
+
+        Raises:
+            InvalidTokenError: If no token with the given id exists in the
+                organization.
+        """
+        try:
+            token = CalendarManagementToken.objects.filter_by_organization(organization_id).get(
+                id=token_id
+            )
+        except CalendarManagementToken.DoesNotExist as e:
+            raise InvalidTokenError("Token not found") from e
+
+        if token.revoked_at is None:
+            token.revoked_at = timezone.now()
+            token.save(update_fields=["revoked_at"])
+
+        return True
