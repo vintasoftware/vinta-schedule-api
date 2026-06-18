@@ -93,9 +93,15 @@ vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (
   ## Worktree
   Work entirely inside this worktree: `<run_options.worktree_path>`.
   `cd` into it before any command. Every `git`, every lint / test / build / migrate
-  call runs there. Do NOT touch the main checkout — its DB, env, and compose stack
-  are intentionally separated. See `<run_options.worktree_path>/WORKTREE.md` for
-  what's forked vs shared (deps, dev DB, test DB, compose project name, env file).
+  call runs there, and every lint / test / typecheck / format / migrate command runs
+  through this worktree's own compose stack — `docker compose run --rm api uv run …`
+  (e.g. `docker compose run --rm api uv run pytest -n auto`). Because the worktree
+  exports its own `COMPOSE_PROJECT_NAME`, those commands hit the worktree's **own
+  compose `db` container** — never the host and never the main checkout's database.
+  Do NOT run these tools on the host, and do NOT touch the main checkout — its DB,
+  env, and compose stack are intentionally separated. See
+  `<run_options.worktree_path>/WORKTREE.md` for what's forked vs shared (deps, dev DB,
+  test DB, compose project name, env file).
   Branch base for this phase: `<phase-specific base>` — orchestrator already
   created your phase branch there; commit straight to it.
 
