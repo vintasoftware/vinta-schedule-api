@@ -1478,9 +1478,9 @@ class CalendarGroupMutations:
         try:
             existing_event = (
                 CalendarEvent.objects.filter_by_organization(org.id)
+                .select_related("calendar")
                 .prefetch_related(
                     "attendances",
-                    "external_attendances__external_attendee",
                     "resource_allocations",
                 )
                 .get(id=event_id, calendar_fk_id=calendar_id)
@@ -1514,10 +1514,12 @@ class CalendarGroupMutations:
             for ea in existing_event.external_attendances.select_related("external_attendee")
         ]
 
-        # Preserve resource allocations.
+        # Preserve resource allocations (skip any with a null calendar_fk_id, mirroring
+        # the recurring-event transfer guard in calendar_event_service.py).
         preserved_resource_allocations = [
             ResourceAllocationInputData(resource_id=ra.calendar_fk_id)  # type: ignore[arg-type]
             for ra in existing_event.resource_allocations.all()
+            if ra.calendar_fk_id
         ]
 
         event_data = CalendarEventInputData(
@@ -1530,6 +1532,25 @@ class CalendarGroupMutations:
             external_attendances=preserved_external_attendances,
             resource_allocations=preserved_resource_allocations,
         )
+
+        # --- Step 7b: availability pre-check (code-path only) ---
+        # For calendars that manage availability windows, verify the requested slot falls
+        # inside a declared window BEFORE entering the atomic block.  This keeps the check
+        # scoped to the reschedule-with-code path (REST/bundle updates are unaffected) and
+        # ensures the code is never consumed on an out-of-window attempt.
+        if existing_event.calendar.manage_available_windows:
+            deps.calendar_service.initialize_without_provider(organization=org)
+            available_windows = deps.calendar_service.get_availability_windows_in_range(
+                existing_event.calendar,
+                input.start_time,
+                input.end_time,
+            )
+            if not available_windows:
+                return CodeEventResult(
+                    success=False,
+                    error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
+                    error_message="The requested time slot is not available.",
+                )
 
         # --- Step 8: atomic update + consume ---
         # Update FIRST, then consume — so on a race the loser's consume_code raises under

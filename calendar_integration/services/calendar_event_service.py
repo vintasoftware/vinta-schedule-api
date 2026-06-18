@@ -468,19 +468,6 @@ class CalendarEventService:
                 "calendar event"
             )
 
-        # Enforce availability windows when the calendar manages them.  A reschedule
-        # that moves the event outside all declared windows must fail the same way as
-        # a booking attempt on an unavailable slot.  This mirrors the check in
-        # ``create_event`` so that managed-window calendars remain consistent.
-        if event.calendar.manage_available_windows:
-            available_windows = self._host.get_availability_windows_in_range(
-                event.calendar,
-                event_data.start_time,
-                event_data.end_time,
-            )
-            if not available_windows:
-                raise NoAvailableTimeWindowsError()
-
         original_payload: dict[str, Any] = {}
         if event.calendar.calendar_type in [
             CalendarType.PERSONAL,
