@@ -706,6 +706,33 @@ class CalendarService(BaseCalendarService):
 
         return calendar
 
+    def disable_resource_calendar(self, calendar_id: int) -> Calendar:
+        """Disable a resource calendar by setting its visibility to INACTIVE.
+
+        Fetches the calendar with an org-scoped query, validates it is a resource calendar,
+        then sets ``visibility = INACTIVE`` and saves.
+
+        :param calendar_id: Primary key of the Calendar to disable.
+        :return: The updated Calendar instance.
+        :raises Calendar.DoesNotExist: If no calendar with this id exists within the org.
+        :raises ValueError: If the calendar is not of type RESOURCE.
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        calendar = Calendar.objects.filter_by_organization(self.organization.id).get(id=calendar_id)
+
+        if calendar.calendar_type != CalendarType.RESOURCE:
+            raise ValueError(
+                f"Calendar {calendar_id} is not a resource calendar "
+                f"(type={calendar.calendar_type})."
+            )
+
+        calendar.visibility = CalendarVisibility.INACTIVE
+        calendar.save(update_fields=["visibility"])
+
+        return calendar
+
     def create_bundle_calendar(
         self,
         name: str,

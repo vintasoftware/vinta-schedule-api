@@ -2150,3 +2150,178 @@ class TestCreateResourceCalendarMutation:
         assert result["errorMessage"] is not None
         assert error_message in result["errorMessage"]
         assert result["calendar"] is None
+
+
+DISABLE_RESOURCE_CALENDAR_MUTATION = """
+mutation DisableResourceCalendar($input: DisableResourceCalendarInput!) {
+    disableResourceCalendar(input: $input) {
+        success
+        errorMessage
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestDisableResourceCalendarMutation:
+    """Tests for the disableResourceCalendar mutation (Phase 2b)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_org_and_token(self, resources: list[str] | None = None):
+        """Create an org + system user with the given resource scopes."""
+        if resources is None:
+            resources = [PublicAPIResources.DISABLE_RESOURCE_CALENDAR]
+        org = baker.make(Organization, name="Test Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": DISABLE_RESOURCE_CALENDAR_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def test_disable_resource_calendar_happy_path(self):
+        """A granted token disables a resource calendar; visibility is set to INACTIVE in DB."""
+        from calendar_integration.constants import CalendarType, CalendarVisibility
+        from calendar_integration.models import Calendar
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a resource calendar via the service (mirrors production path)
+        from calendar_integration.services.calendar_service import CalendarService
+        from di_core.containers import container
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        resource_cal = calendar_service.create_resource_calendar(
+            name="Room A",
+            description="Test room",
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "calendarId": resource_cal.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["disableResourceCalendar"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+
+        # Verify the calendar is now INACTIVE in the DB
+        resource_cal.refresh_from_db()
+        assert resource_cal.visibility == CalendarVisibility.INACTIVE
+
+        # Also verify via org-scoped query
+        updated_cal = Calendar.objects.filter_by_organization(org.id).get(id=resource_cal.id)
+        assert updated_cal.visibility == CalendarVisibility.INACTIVE
+        assert updated_cal.calendar_type == CalendarType.RESOURCE
+
+    def test_disable_resource_calendar_rejects_non_resource_calendar(self):
+        """Attempting to disable a non-resource calendar (e.g. personal) returns success=False."""
+        from calendar_integration.constants import CalendarType
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a personal (non-resource) calendar
+        personal_cal = baker.make(
+            "calendar_integration.Calendar",
+            organization=org,
+            calendar_type=CalendarType.PERSONAL,
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "calendarId": personal_cal.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["disableResourceCalendar"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+    def test_disable_resource_calendar_cross_org_rejected(self):
+        """A calendar belonging to a different org returns success=False (Calendar.DoesNotExist)."""
+        from calendar_integration.constants import CalendarType
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a resource calendar in a DIFFERENT org
+        other_org = baker.make(Organization, name="Other Org")
+        other_cal = baker.make(
+            "calendar_integration.Calendar",
+            organization=other_org,
+            calendar_type=CalendarType.RESOURCE,
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "calendarId": other_cal.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["disableResourceCalendar"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+        # Verify the other org's calendar was NOT modified
+        other_cal.refresh_from_db()
+        from calendar_integration.constants import CalendarVisibility
+
+        assert other_cal.visibility != CalendarVisibility.INACTIVE
+
+    def test_disable_resource_calendar_permission_denied_without_grant(self):
+        """A token without DISABLE_RESOURCE_CALENDAR grant is denied."""
+        from calendar_integration.constants import CalendarType
+
+        # Grant CALENDAR scope instead, NOT DISABLE_RESOURCE_CALENDAR
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[PublicAPIResources.CALENDAR]
+        )
+
+        other_cal = baker.make(
+            "calendar_integration.Calendar",
+            organization=org,
+            calendar_type=CalendarType.RESOURCE,
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "calendarId": other_cal.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
