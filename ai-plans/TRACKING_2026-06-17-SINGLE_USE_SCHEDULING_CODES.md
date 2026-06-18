@@ -40,11 +40,19 @@
 - **Summary**: `createCalendarBookingCode` + `createCalendarGroupBookingCode` on `CalendarGroupMutations` (org-token-gated via CALENDAR_BOOKING_CODE), delegate to `create_booking_token(permissions=[CREATE])`, org from authenticated request, `minted_by` = request system user, bundle calendars transparent. Returns `BookingCodeResult{code, id}`. Not-found + organizationId-mismatch → INVALID_CODE (no cross-org leak). 11 tests.
 - **PR**: pending (filled below after push).
 
+### Phase 2 — Mint reschedule & cancel codes ✅
+- **Status**: complete, reviewed (Layers 1–3 + fix loop), outer gate green.
+- **Model/tier**: implementer / Sonnet (Tier 3, used over Haiku for reliability after Phase 1).
+- **Branch**: plan/single-use-scheduling-codes/phase-2 (base: phase-1).
+- **Commits**: 57b6eb2 (4 mint mutations) + d5e8929 (restrict calendar codes to non-grouped events).
+- **Outer gate**: `pytest -n auto` 2066 passed; check --deploy clean; makemigrations clean; ruff clean.
+- **Summary**: `createCalendarRescheduleBookingCode` / `createCalendarGroupRescheduleBookingCode` (RESCHEDULE) + `createCalendarCancellationBookingCode` / `createCalendarGroupCancellationBookingCode` (CANCEL), event-bound. Validates event∈org AND event.calendar_fk_id==calendarId (calendar variants additionally require calendar_group_fk_id IS NULL → no grouped events) / event.calendar_group_fk_id==groupId (group variants). Uniform "Not found." INVALID_CODE on all failures. Shared inputs CreateEventCodeInput / CreateGroupEventCodeInput. Permission-swap guard + grouped-event-rejection tests.
+- **PR**: pending (filled after push).
+
 ## Current phase
-Phase 2 — Mint reschedule & cancel codes (next).
+Phase 3 — Revoke codes (next).
 
 ## Remaining phases
-- Phase 2 — Mint reschedule & cancel codes
 - Phase 3 — Revoke codes
 - Phase 4 — Code-gated availability reads
 - Phase 5a — Book single-calendar event with code
