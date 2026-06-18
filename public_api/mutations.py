@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -32,9 +32,15 @@ from public_api.types import (
     CreateSystemUserTokenResult,
     InvitationResult,
     OrganizationResult,
+    PublicApiHttpRequest,
     UpdateBrandingInput,
     UpdateBrandingResult,
 )
+
+
+if TYPE_CHECKING:
+    from calendar_integration.services.calendar_group_service import CalendarGroupService
+    from calendar_integration.services.calendar_service import CalendarService
 
 
 # Module-scope constants for validation
@@ -59,14 +65,64 @@ def get_mutation_dependencies(
 ) -> MutationDependencies:
     required_dependencies = [public_api_auth_service, organization_service]
     if any(dep is None for dep in required_dependencies):
-        raise GraphQLError(
-            f"Missing required dependency {', '.join([str(dep) for dep in required_dependencies if dep is None])}"
-        )
+        missing = [d for d in required_dependencies if d is None]
+        raise GraphQLError(f"Missing required dependencies: {missing}")
 
     return MutationDependencies(
         public_api_auth_service=cast(PublicAPIAuthService, public_api_auth_service),
         organization_service=cast(OrganizationService, organization_service),
     )
+
+
+@dataclass
+class CalendarMutationDependencies:
+    """Dependencies for calendar mutations."""
+
+    calendar_service: "CalendarService"
+    calendar_group_service: "CalendarGroupService"
+
+
+@inject
+def get_calendar_mutation_dependencies(
+    calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+    calendar_group_service: Annotated[
+        "CalendarGroupService | None", Provide["calendar_group_service"]
+    ] = None,
+) -> CalendarMutationDependencies:
+    """Get calendar mutation dependencies from DI container."""
+    required_dependencies = [calendar_service, calendar_group_service]
+    if any(dep is None for dep in required_dependencies):
+        missing = [d for d in required_dependencies if d is None]
+        raise GraphQLError(f"Missing required dependencies: {missing}")
+
+    return CalendarMutationDependencies(
+        calendar_service=cast("CalendarService", calendar_service),
+        calendar_group_service=cast("CalendarGroupService", calendar_group_service),
+    )
+
+
+def _get_org_and_init_calendar_service(
+    info: strawberry.Info,
+) -> tuple["CalendarService", Organization]:
+    """Resolve org from request context and initialize calendar service.
+
+    Returns:
+        Tuple of (initialized calendar_service, organization)
+
+    Raises:
+        GraphQLError: If organization is not found in request context
+    """
+    org = info.context.request.public_api_organization
+    if not org:
+        raise GraphQLError("Organization not found in request context")
+
+    deps = get_calendar_mutation_dependencies()
+    request: PublicApiHttpRequest = info.context.request
+    deps.calendar_service.initialize_without_provider(
+        user_or_token=request.public_api_system_user, organization=org
+    )
+
+    return deps.calendar_service, org
 
 
 @strawberry.type
