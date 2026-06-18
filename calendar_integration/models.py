@@ -30,6 +30,7 @@ from calendar_integration.managers import (
     CalendarGroupManager,
     CalendarGroupSlotManager,
     CalendarGroupSlotMembershipManager,
+    CalendarManagementTokenManager,
     CalendarManager,
     CalendarSyncManager,
 )
@@ -1633,6 +1634,11 @@ class GoogleCalendarServiceAccount(OrganizationModel):
 class CalendarManagementToken(OrganizationModel):
     """
     Represents a token used to allow updates to calendar events without authentication.
+
+    Single-use booking codes extend this model: they bind to a calendar (or
+    calendar group or specific event) via the existing scope fields, carry an
+    optional ``expires_at``, record who minted them (``minted_by_system_user``),
+    and are atomically consumed by ``CalendarManagementTokenManager.consume()``.
     """
 
     calendar = OrganizationForeignKey(
@@ -1640,6 +1646,17 @@ class CalendarManagementToken(OrganizationModel):
         on_delete=models.CASCADE,
         null=True,
         related_name="management_tokens",
+    )
+    calendar_group = OrganizationForeignKey(
+        "CalendarGroup",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="management_tokens",
+        help_text=(
+            "If set, this token is scoped to a calendar group (for group booking codes). "
+            "Mutually exclusive with the ``calendar`` scope for booking codes."
+        ),
     )
     event = OrganizationForeignKey(
         CalendarEvent,
@@ -1650,6 +1667,26 @@ class CalendarManagementToken(OrganizationModel):
     token_hash = models.TextField()
     used_at = models.DateTimeField(null=True)
     revoked_at = models.DateTimeField(null=True)
+
+    # Booking-code audit / lifecycle columns (Phase 0)
+    expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When set, the token is invalid after this datetime (UTC).",
+    )
+    minted_by_system_user = models.ForeignKey(
+        "public_api.SystemUser",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="minted_management_tokens",
+        help_text="The SystemUser (org token) that minted this booking code, if any.",
+    )
+    consumed_source_ip = models.GenericIPAddressField(
+        null=True,
+        blank=True,
+        help_text="IP address of the client that consumed (used) this token.",
+    )
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1663,6 +1700,8 @@ class CalendarManagementToken(OrganizationModel):
         null=True,
         related_name="calendar_event_management_tokens",
     )
+
+    objects: "CalendarManagementTokenManager" = CalendarManagementTokenManager()
 
     permissions: "RelatedManager[CalendarManagementTokenPermission]"
 

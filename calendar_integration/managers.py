@@ -1,17 +1,32 @@
 import datetime
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
+from django.db import transaction
+from django.utils import timezone
+
+from calendar_integration.exceptions import (
+    InvalidTokenError,
+    TokenAlreadyUsedError,
+    TokenExpiredError,
+    TokenRevokedError,
+)
 from calendar_integration.querysets import (
     CalendarEventGroupSelectionQuerySet,
     CalendarEventQuerySet,
     CalendarGroupQuerySet,
     CalendarGroupSlotMembershipQuerySet,
     CalendarGroupSlotQuerySet,
+    CalendarManagementTokenQuerySet,
     CalendarQuerySet,
     CalendarSyncQuerySet,
     RecurringQuerySetMixin,
 )
 from organizations.managers import BaseOrganizationModelManager
+
+
+if TYPE_CHECKING:
+    from calendar_integration.models import CalendarManagementToken
 
 
 class RecurringManagerMixin:
@@ -224,3 +239,83 @@ class CalendarEventGroupSelectionManager(BaseOrganizationModelManager):
 
     def get_queryset(self) -> CalendarEventGroupSelectionQuerySet:
         return CalendarEventGroupSelectionQuerySet(self.model, using=self._db)
+
+
+class CalendarManagementTokenManager(BaseOrganizationModelManager):
+    """Manager for CalendarManagementToken with lifecycle-aware query methods."""
+
+    def get_queryset(self) -> CalendarManagementTokenQuerySet:
+        return CalendarManagementTokenQuerySet(self.model, using=self._db)
+
+    def active(self) -> CalendarManagementTokenQuerySet:
+        """Return tokens that are not used, not revoked, and not expired."""
+        return self.get_queryset().active()
+
+    def consume(self, token: "CalendarManagementToken", source_ip: str) -> None:
+        """Atomically consume *token* by setting used_at + consumed_source_ip.
+
+        Wraps the lock + re-check + save in ``transaction.atomic()`` so the
+        SELECT FOR UPDATE lock is always acquired inside a transaction,
+        regardless of the caller's ambient context (request, Celery task, or
+        management command). ``atomic()`` is reentrant — it is a no-op when a
+        request transaction (ATOMIC_REQUESTS) already exists. Uses SELECT FOR
+        UPDATE to serialise concurrent consume attempts — the first caller wins;
+        subsequent callers receive TokenAlreadyUsedError.
+
+        Args:
+            token: The CalendarManagementToken instance to consume.
+            source_ip: The IP address of the consuming client.
+
+        Raises:
+            InvalidTokenError: If no token resolves for (organization_id, pk).
+            TokenExpiredError: If the token has expired.
+            TokenAlreadyUsedError: If the token was already used (including by a
+                concurrent transaction that committed first).
+            TokenRevokedError: If the token has been revoked.
+        """
+        with transaction.atomic():
+            # Re-fetch under a row-level lock to serialise concurrent consume calls.
+            try:
+                locked = (
+                    self.get_queryset()
+                    .filter(organization_id=token.organization_id)
+                    .select_for_update()
+                    .get(pk=token.pk)
+                )
+            except self.model.DoesNotExist as exc:
+                raise InvalidTokenError() from exc
+
+            now = timezone.now()
+
+            if locked.revoked_at is not None:
+                raise TokenRevokedError()
+
+            if locked.used_at is not None:
+                raise TokenAlreadyUsedError()
+
+            if locked.expires_at is not None and locked.expires_at <= now:
+                raise TokenExpiredError()
+
+            locked.used_at = now
+            locked.consumed_source_ip = source_ip
+            locked.save(update_fields=["used_at", "consumed_source_ip"])
+
+    def get_token_error_code(self, token: "CalendarManagementToken") -> str | None:
+        """Return a machine-readable error code if the token is in a terminal state.
+
+        Returns None when the token is active (no error).
+
+        This method does NOT acquire a lock — it is safe to call for read-only
+        validation where atomicity is not required (e.g. resolvers for
+        availability reads).
+
+        Returns:
+            ``"REVOKED"`` / ``"ALREADY_USED"`` / ``"EXPIRED"`` or ``None``.
+        """
+        if token.revoked_at is not None:
+            return "REVOKED"
+        if token.used_at is not None:
+            return "ALREADY_USED"
+        if token.expires_at is not None and token.expires_at <= timezone.now():
+            return "EXPIRED"
+        return None

@@ -190,6 +190,18 @@ class InvalidTokenError(CalendarPermissionError):
     default_message = "Invalid token string provided."
 
 
+class TokenExpiredError(CalendarPermissionError):
+    default_message = "The token has expired."
+
+
+class TokenAlreadyUsedError(CalendarPermissionError):
+    default_message = "The token has already been used."
+
+
+class TokenRevokedError(CalendarPermissionError):
+    default_message = "The token has been revoked."
+
+
 class InvalidParameterCombinationError(CalendarPermissionError):
     default_message = "Specify either calendar_id or event_id, not both."
 

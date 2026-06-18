@@ -3,6 +3,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q, Subquery
+from django.utils import timezone
 
 from calendar_integration.constants import CalendarSyncStatus, CalendarType, CalendarVisibility
 from calendar_integration.database_functions import (
@@ -18,6 +19,24 @@ from organizations.querysets import BaseOrganizationModelQuerySet
 
 if TYPE_CHECKING:
     from calendar_integration.models import CalendarSync as CalendarSyncType
+
+
+class CalendarManagementTokenQuerySet(BaseOrganizationModelQuerySet):
+    """QuerySet for CalendarManagementToken with lifecycle-aware filtering."""
+
+    def active(self) -> "CalendarManagementTokenQuerySet":
+        """Return tokens that are not used, not revoked, and not expired.
+
+        A token is active when all three conditions hold:
+          - ``used_at`` is NULL (never consumed),
+          - ``revoked_at`` is NULL (not revoked),
+          - ``expires_at`` is NULL OR ``expires_at`` is in the future.
+        """
+        now = timezone.now()
+        return self.filter(
+            used_at__isnull=True,
+            revoked_at__isnull=True,
+        ).filter(Q(expires_at__isnull=True) | Q(expires_at__gt=now))
 
 
 class RecurringQuerySetMixin:

@@ -1,5 +1,9 @@
 import base64
+import datetime
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
+
+from django.utils import timezone
 
 from calendar_integration.exceptions import (
     InvalidParameterCombinationError,
@@ -7,6 +11,9 @@ from calendar_integration.exceptions import (
     MissingRequiredParameterError,
     NoPermissionsSpecifiedError,
     PermissionServiceInitializationError,
+    TokenAlreadyUsedError,
+    TokenExpiredError,
+    TokenRevokedError,
 )
 from calendar_integration.models import (
     CalendarGroup,
@@ -27,6 +34,10 @@ from common.utils.authentication_utils import (
     verify_long_lived_token,
 )
 from users.models import User
+
+
+if TYPE_CHECKING:
+    from public_api.models import SystemUser
 
 
 DEFAULT_CALENDAR_OWNER_PERMISSIONS = [
@@ -487,3 +498,157 @@ class CalendarPermissionService:
         )
 
         return token
+
+    # ------------------------------------------------------------------
+    # Single-use booking-code API (Phase 0+)
+    # ------------------------------------------------------------------
+
+    def create_booking_token(
+        self,
+        organization_id: int,
+        permissions: list[EventManagementPermissions],
+        expires_at: datetime.datetime | None = None,
+        minted_by: "SystemUser | None" = None,
+        calendar_id: int | None = None,
+        calendar_group_id: int | None = None,
+        event_id: int | None = None,
+    ) -> tuple[CalendarManagementToken, str]:
+        """Mint a new single-use booking code token.
+
+        Creates a fresh ``CalendarManagementToken`` with a one-time-use plaintext
+        code.  The plaintext code is returned exactly once here and never stored —
+        only the hash is persisted.  Callers must pass the plaintext to the client.
+
+        Scope rules (at most one of ``calendar_id``, ``calendar_group_id``,
+        ``event_id`` should be supplied, though ``calendar_id``/``calendar_group_id``
+        and ``event_id`` may be combined for reschedule/cancel codes):
+
+        - Booking codes: ``calendar_id`` OR ``calendar_group_id`` (no ``event_id``).
+        - Reschedule / cancel codes: ``event_id`` PLUS either ``calendar_id`` or
+          ``calendar_group_id`` to record which calendar/group the event belongs to.
+
+        Args:
+            organization_id: Tenant scope.
+            permissions: One or more ``EventManagementPermissions`` to grant.
+            expires_at: Optional expiry datetime (UTC).  Pass ``None`` for no expiry.
+            minted_by: The ``SystemUser`` that created this code, for audit.
+            calendar_id: Scope to a single calendar (booking or reschedule/cancel).
+            calendar_group_id: Scope to a calendar group (group booking or reschedule/cancel).
+            event_id: Scope to a specific event (reschedule/cancel codes only).
+
+        Returns:
+            A ``(token, plaintext_code)`` tuple.  The ``plaintext_code`` must be
+            delivered to the end-user; it is not recoverable after this call.
+
+        Raises:
+            NoPermissionsSpecifiedError: If ``permissions`` is empty.
+        """
+        if len(permissions) == 0:
+            raise NoPermissionsSpecifiedError(
+                "At least one permission must be specified to create a booking token."
+            )
+
+        token_str = generate_long_lived_token()
+        hashed_token = hash_long_lived_token(token_str)
+
+        # Build the plaintext token in the same base64 format as initialize_with_token expects:
+        # "<id>:<raw_token>" base64-encoded.  We'll set the id after creation.
+        token = CalendarManagementToken(
+            organization_id=organization_id,
+            token_hash=hashed_token,
+            expires_at=expires_at,
+            minted_by_system_user=minted_by,
+        )
+        if calendar_id is not None:
+            token.calendar_fk_id = calendar_id
+        if calendar_group_id is not None:
+            token.calendar_group_fk_id = calendar_group_id
+        if event_id is not None:
+            token.event_fk_id = event_id
+
+        token.save()
+
+        for perm in permissions:
+            token.permissions.create(permission=perm, organization_id=organization_id)
+
+        # Encode as "<id>:<raw>" in base64, matching initialize_with_token's decode logic.
+        plaintext_code = base64.b64encode(f"{token.pk}:{token_str}".encode()).decode("utf-8")
+
+        return token, plaintext_code
+
+    def validate_code(self, code: str, organization_id: int) -> CalendarManagementToken:
+        """Decode and validate a booking code, returning the active token.
+
+        Performs the same decode/hash/lookup as ``initialize_with_token`` but
+        additionally enforces that the token is still active (not used, not
+        revoked, not expired).
+
+        Args:
+            code: The base64-encoded plaintext code as returned by
+                ``create_booking_token``.
+            organization_id: Tenant scope.  The token must belong to this org.
+
+        Returns:
+            The active ``CalendarManagementToken`` instance, with
+            ``permissions`` and ``calendar``/``event`` pre-fetched.
+
+        Raises:
+            InvalidTokenError: If the code is malformed or does not match any token.
+            TokenExpiredError: If the token's ``expires_at`` has passed.
+            TokenAlreadyUsedError: If the token was already consumed.
+            TokenRevokedError: If the token was revoked.
+        """
+        try:
+            token_full_str = base64.b64decode(code).decode("utf-8")
+            token_parts = token_full_str.split(":")
+            if len(token_parts) != 2:
+                raise ValueError("Invalid token format")
+            token_id = token_parts[0]
+            token_str = token_parts[1]
+        except (ValueError, UnicodeDecodeError) as e:
+            raise InvalidTokenError("Invalid booking code format") from e
+
+        try:
+            token = (
+                CalendarManagementToken.objects.prefetch_related("permissions")
+                .select_related("calendar", "event", "calendar_group")
+                .filter(organization_id=organization_id)
+                .get(id=token_id)
+            )
+        except CalendarManagementToken.DoesNotExist as e:
+            raise InvalidTokenError("Invalid booking code") from e
+
+        if not verify_long_lived_token(token_str, token.token_hash):
+            raise InvalidTokenError("Invalid booking code") from None
+
+        # Check terminal lifecycle states in priority order.
+        if token.revoked_at is not None:
+            raise TokenRevokedError()
+
+        if token.used_at is not None:
+            raise TokenAlreadyUsedError()
+
+        if token.expires_at is not None and token.expires_at <= timezone.now():
+            raise TokenExpiredError()
+
+        return token
+
+    def consume_code(self, token: CalendarManagementToken, source_ip: str) -> None:
+        """Atomically consume a booking-code token.
+
+        Delegates to ``CalendarManagementToken.objects.consume()`` which
+        acquires a ``SELECT FOR UPDATE`` row lock before committing the
+        ``used_at`` + ``consumed_source_ip`` update.  Must be called inside
+        the same transaction as the booking action.
+
+        Args:
+            token: A ``CalendarManagementToken`` previously returned by
+                ``validate_code``.
+            source_ip: The IP address of the consuming client.
+
+        Raises:
+            TokenExpiredError: If the token expired between validation and consume.
+            TokenAlreadyUsedError: If a concurrent request consumed the token first.
+            TokenRevokedError: If the token was revoked between validation and consume.
+        """
+        CalendarManagementToken.objects.consume(token, source_ip)
