@@ -1,6 +1,5 @@
 from typing import Annotated
 
-from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 
 from dependency_injector.wiring import Provide, inject
@@ -51,10 +50,14 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
 
     def validate(self, attrs: dict) -> dict:
         """Cross-field validation: when scoped_to_user is present and non-null, resolve the
-        owner User (must be an active member of the caller's org) and enforce the provider
+        active OrganizationMembership of that user in the caller's org and enforce the provider
         allow-list on available_resources.  When scoped_to_user is absent or null, no
         additional constraints are applied — the no-owner path is byte-for-byte identical
         to the pre-Phase-3 behaviour.
+
+        The input field ``scoped_to_user`` is a User id (external REST API contract).  Internally
+        the membership FK is resolved and stashed as ``_resolved_membership``; only the membership
+        is ever stored — the User id is derived from it on read.
         """
         scoped_to_user_id: int | None = attrs.get("scoped_to_user")
         if scoped_to_user_id is None:
@@ -62,19 +65,21 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
             return attrs
 
         request = self.context["request"]
-        membership: OrganizationMembership | None = get_active_organization_membership(request.user)
-        if membership is None:
+        caller_membership: OrganizationMembership | None = get_active_organization_membership(
+            request.user
+        )
+        if caller_membership is None:
             raise PermissionDenied("No active organisation membership.")
 
-        # Resolve the owner: must exist AND be an active member of the caller's org.
-        user_model = get_user_model()
+        # Resolve the owner: the target user must be an active member of the caller's org.
+        # This single query both validates active membership AND yields the value to store.
         try:
-            owner = user_model.objects.get(
-                id=scoped_to_user_id,
-                organization_memberships__organization=membership.organization,
-                organization_memberships__is_active=True,
+            resolved_membership = OrganizationMembership.objects.get(
+                user_id=scoped_to_user_id,
+                organization=caller_membership.organization,
+                is_active=True,
             )
-        except user_model.DoesNotExist as e:
+        except OrganizationMembership.DoesNotExist as e:
             raise serializers.ValidationError(
                 {
                     "scoped_to_user": [
@@ -98,8 +103,8 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
                 }
             )
 
-        # Stash the resolved User instance so create() can pass it to create_system_user.
-        attrs["_resolved_owner"] = owner
+        # Stash the resolved membership so create() can pass it to create_system_user.
+        attrs["_resolved_membership"] = resolved_membership
         return attrs
 
     def create(self, validated_data: dict) -> SystemUser:
@@ -112,7 +117,7 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
         integration_name: str = validated_data["integration_name"]
         available_resources: list[str] = validated_data["available_resources"]
         # Pop the internal stash set by validate(); None when no owner was supplied.
-        owner = validated_data.pop("_resolved_owner", None)
+        resolved_membership = validated_data.pop("_resolved_membership", None)
 
         try:
             with transaction.atomic():
@@ -120,7 +125,7 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
                 system_user, plaintext_token = self.public_api_auth_service.create_system_user(
                     integration_name=integration_name,
                     organization=membership.organization,
-                    scoped_to_user=owner,
+                    scoped_to_membership=resolved_membership,
                 )
                 # dict.fromkeys dedupes while preserving order, so the unique
                 # (system_user, resource_name) constraint cannot be violated.
@@ -149,15 +154,15 @@ class SystemUserTokenResponseSerializer(serializers.ModelSerializer):
 
     Includes the write-once ``token`` field (sourced from the view) and
     ``available_resources`` (derived from the related ``ResourceAccess`` rows).
-    Exposes ``scoped_to_user`` as the FK id (null for org-wide tokens).
+    Exposes ``scoped_to_user`` as the owner's User id derived from the stored membership FK
+    (null for org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API
+    stability; the value is resolved via ``scoped_to_membership_fk.user_id``.
     Never exposes ``long_lived_token_hash``.
     """
 
     available_resources = serializers.SerializerMethodField()
     token = serializers.CharField(read_only=True)
-    scoped_to_user: serializers.PrimaryKeyRelatedField = serializers.PrimaryKeyRelatedField(
-        read_only=True, allow_null=True
-    )
+    scoped_to_user = serializers.SerializerMethodField()
 
     class Meta:
         model = SystemUser
@@ -177,23 +182,34 @@ class SystemUserTokenResponseSerializer(serializers.ModelSerializer):
             ResourceAccess.objects.filter(system_user=obj).values_list("resource_name", flat=True)
         )
 
+    def get_scoped_to_user(self, obj: SystemUser) -> int | None:
+        """Return the owner's User id derived from the stored membership FK, or None."""
+        if not obj.scoped_to_membership_fk_id:
+            return None
+        return (
+            OrganizationMembership.objects.filter(pk=obj.scoped_to_membership_fk_id)
+            .values_list("user_id", flat=True)
+            .first()
+        )
+
 
 class SystemUserTokenSerializer(serializers.ModelSerializer):
     """Read-only serializer for listing and retrieving public-API tokens.
 
     Exposes ``id``, ``integration_name``, ``is_active``, ``available_resources``
     (list of resource_name strings from the related ``ResourceAccess`` rows), and
-    ``scoped_to_user`` (FK id, null for org-wide tokens).
+    ``scoped_to_user`` (the owner's User id derived from the membership FK, null for
+    org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API stability;
+    the value is resolved via ``scoped_to_membership_fk.user_id``.
     Never exposes ``long_lived_token_hash`` or ``token``.
 
-    Optimized for list queries: uses prefetched ``available_resources`` from
-    the viewset's ``get_queryset`` to avoid N+1 queries.
+    Optimized for list queries: uses prefetched ``available_resources`` and
+    ``select_related("scoped_to_membership_fk")`` from the viewset's ``get_queryset``
+    to avoid N+1 queries.
     """
 
     available_resources = serializers.SerializerMethodField()
-    scoped_to_user: serializers.PrimaryKeyRelatedField = serializers.PrimaryKeyRelatedField(
-        read_only=True, allow_null=True
-    )
+    scoped_to_user = serializers.SerializerMethodField()
 
     class Meta:
         model = SystemUser
@@ -203,6 +219,16 @@ class SystemUserTokenSerializer(serializers.ModelSerializer):
     def get_available_resources(self, obj: SystemUser) -> list[str]:
         """Return a list of resource_name values from the prefetched ResourceAccess rows."""
         return [ra.resource_name for ra in obj.available_resources.all()]
+
+    def get_scoped_to_user(self, obj: SystemUser) -> int | None:
+        """Return the owner's User id derived from the stored membership FK, or None."""
+        if not obj.scoped_to_membership_fk_id:
+            return None
+        return (
+            OrganizationMembership.objects.filter(pk=obj.scoped_to_membership_fk_id)
+            .values_list("user_id", flat=True)
+            .first()
+        )
 
 
 class SystemUserTokenUpdateSerializer(serializers.Serializer):

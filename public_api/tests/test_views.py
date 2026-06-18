@@ -1266,7 +1266,7 @@ class TestSystemUserTokenViewSetScopedCreate:
         assert response.json()["scoped_to_user"] == provider_user.id
 
     def test_scoped_token_db_has_owner_and_token(self, admin_client, organization, provider_user):
-        """DB SystemUser.scoped_to_user_id matches the owner; token is non-empty in response."""
+        """DB SystemUser membership FK resolves to the owner; token is non-empty in response."""
         payload = {
             "integration_name": "scoped_db_check",
             "available_resources": [PublicAPIResources.CALENDAR],
@@ -1275,9 +1275,12 @@ class TestSystemUserTokenViewSetScopedCreate:
         response = admin_client.post(self._url(), payload, format="json")
         assert_response_status_code(response, status.HTTP_201_CREATED)
         data = response.json()
-        # DB row must reference the owner
-        system_user = SystemUser.objects.get(integration_name="scoped_db_check")
-        assert system_user.scoped_to_user_id == provider_user.id
+        # DB row must reference the owner via the membership FK
+        system_user = SystemUser.objects.select_related("scoped_to_membership_fk").get(
+            integration_name="scoped_db_check"
+        )
+        assert system_user.scoped_to_membership_fk.user_id == provider_user.id
+        assert system_user.scoped_to_membership_fk.organization_id == organization.id
         # Plaintext token must be present in response exactly once
         assert "token" in data
         assert data["token"]  # non-empty string
@@ -1438,9 +1441,9 @@ class TestSystemUserTokenViewSetScopedCreate:
         )
         assert_response_status_code(put_response, status.HTTP_200_OK)
 
-        # Owner must remain the original provider_user
-        system_user = SystemUser.objects.get(pk=token_id)
-        assert system_user.scoped_to_user_id == provider_user.id
+        # Owner must remain the original provider_user (checked via the membership FK)
+        system_user = SystemUser.objects.select_related("scoped_to_membership_fk").get(pk=token_id)
+        assert system_user.scoped_to_membership_fk.user_id == provider_user.id
 
     def test_patch_cannot_change_owner(self, admin_client, organization, provider_user):
         """PATCH with a different scoped_to_user in the body must not change the stored owner."""
@@ -1478,9 +1481,9 @@ class TestSystemUserTokenViewSetScopedCreate:
         )
         assert_response_status_code(patch_response, status.HTTP_200_OK)
 
-        # Owner must remain the original provider_user
-        system_user = SystemUser.objects.get(pk=token_id)
-        assert system_user.scoped_to_user_id == provider_user.id
+        # Owner must remain the original provider_user (checked via the membership FK)
+        system_user = SystemUser.objects.select_related("scoped_to_membership_fk").get(pk=token_id)
+        assert system_user.scoped_to_membership_fk.user_id == provider_user.id
 
 
 @pytest.mark.django_db
@@ -1573,10 +1576,8 @@ class TestSystemUserTokenUpdateEscalationGuard:
         non_provider_resource = PublicAPIResources.USER
         assert non_provider_resource not in PROVIDER_SCOPED_RESOURCES
 
-        # Create an org-wide token.
-        system_user = baker.make(
-            SystemUser, organization=organization, is_active=True, scoped_to_user=None
-        )
+        # Create an org-wide token (no scoped_to_membership_fk).
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
         baker.make(
             ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
         )

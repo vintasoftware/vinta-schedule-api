@@ -54,10 +54,14 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
             return SystemUser.objects.none()
         membership = get_active_organization_membership(user)
         if membership:
-            return SystemUser.objects.filter(
-                organization_id=membership.organization_id,
-                deleted_at__isnull=True,
-            ).prefetch_related("available_resources")
+            return (
+                SystemUser.objects.filter(
+                    organization_id=membership.organization_id,
+                    deleted_at__isnull=True,
+                )
+                .select_related("scoped_to_membership_fk")
+                .prefetch_related("available_resources")
+            )
         return SystemUser.objects.none()
 
     def get_serializer_class(self):  # type: ignore[override]
@@ -145,7 +149,7 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
         desired_resources: list[str] = input_serializer.validated_data["available_resources"]
 
         # Guard: scoped tokens may not be updated with resources outside PROVIDER_SCOPED_RESOURCES.
-        if system_user.scoped_to_user_id is not None:
+        if system_user.scoped_to_membership_fk_id is not None:
             over_grant = [r for r in desired_resources if r not in PROVIDER_SCOPED_RESOURCES]
             if over_grant:
                 raise ValidationError(
