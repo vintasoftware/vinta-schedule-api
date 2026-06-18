@@ -220,6 +220,28 @@ class CreateAvailabilityWindowResult:
     available_time: AvailableTimeGraphQLType | None = None
 
 
+@strawberry.input
+class UpdateAvailableTimeInput:
+    """Input for updating a single available time via the batch path."""
+
+    organization_id: int
+    calendar_id: int
+    available_time_id: int
+    start_time: datetime.datetime | None = None
+    end_time: datetime.datetime | None = None
+    timezone: str | None = None
+    rrule_string: str | None = None
+
+
+@strawberry.type
+class UpdateAvailabilityWindowResult:
+    """Result of the updateAvailabilityWindow mutation."""
+
+    success: bool
+    error_message: str | None = None
+    available_time: AvailableTimeGraphQLType | None = None
+
+
 @strawberry.type
 class Mutation(CalendarGroupMutations):
     @strawberry.mutation
@@ -713,4 +735,67 @@ class Mutation(CalendarGroupMutations):
         return CreateAvailabilityWindowResult(
             success=True,
             available_time=available_time,  # type: ignore[arg-type]
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def update_availability_window(
+        self,
+        info: strawberry.Info,
+        input: UpdateAvailableTimeInput,  # noqa: A002
+    ) -> UpdateAvailabilityWindowResult:
+        """Update a single available time via the batch path (action=update).
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Builds a single-op batch dict including only the fields provided in the input.
+        4. Delegates to CalendarService.batch_modify_available_times with the single op.
+        5. Finds the updated AvailableTime by id in the returned list and returns it.
+           Note: a missing or cross-calendar available_time_id raises ValueError (success=False).
+           Note: the service raises ValueError if calendar.manage_available_windows is False.
+
+        The token's OrganizationResourceAccess must include the UPDATE_AVAILABILITY_WINDOW resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return UpdateAvailabilityWindowResult(
+                success=False, error_message="Calendar not found."
+            )
+
+        # Build the op dict — always include action + id; include optional fields only when provided.
+        op: dict[str, object] = {"action": "update", "id": input.available_time_id}
+        if input.start_time is not None:
+            op["start_time"] = input.start_time
+        if input.end_time is not None:
+            op["end_time"] = input.end_time
+        if input.timezone is not None:
+            op["timezone"] = input.timezone
+        if input.rrule_string is not None:
+            op["rrule_string"] = input.rrule_string
+
+        try:
+            updated_times = calendar_service.batch_modify_available_times(
+                calendar=calendar, operations=[op]
+            )
+        except (
+            CalendarIntegrationError,
+            ValueError,
+            DjangoValidationError,
+            Calendar.DoesNotExist,
+        ) as e:
+            return UpdateAvailabilityWindowResult(success=False, error_message=str(e))
+
+        # Find the updated row in the returned list.
+        updated_time = next((at for at in updated_times if at.id == input.available_time_id), None)
+        if updated_time is None:
+            return UpdateAvailabilityWindowResult(
+                success=False,
+                error_message="Updated available time not found in result set.",
+            )
+        return UpdateAvailabilityWindowResult(
+            success=True,
+            available_time=updated_time,  # type: ignore[arg-type]
         )
