@@ -62,8 +62,17 @@
 - Review: no BLOCKER/SHOULD-FIX; 2 NITs (redundant imports; organization_name already covered in Phase 2 unit tests) left. Confirmed exactly-once + genuine multi-org scoping.
 - PR-context: `.vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-4.md` (pending).
 
+### Phase 5 — GraphQL foundation: resource + WebhookConfiguration type ✅
+- Status: implemented, verified, reviewed (clean), pushed. PR pending.
+- Model: Tier 2 (sonnet). Branch `phase-5` → base `phase-4`. Commit `60aa200`.
+- Added WEBHOOK_CONFIGURATION resource (+ cosmetic public_api 0007 migration); webhooks/graphql.py with config + read-only event types. FIELD_TO_RESOURCE_MAPPING untouched (Phase 6/7). configuration_id via configuration_fk_id.
+- Verify: ruff/mypy clean (0 new); makemigrations clean; full suite 2045 passed; check --deploy dev warnings only.
+- Review: no BLOCKER/SHOULD-FIX; 2 cosmetic NITs left. Types confirmed not yet in public SDL.
+- Cross-plan note: public_api 0007 may collide with the parallel booking-code plan's migration number at integration time.
+- PR-context: `.vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-5.md` (pending).
+
 ## Current phase
-- Phase 5 — GraphQL foundation: resource + WebhookConfiguration type. Tier 1→2 (sonnet).
+- Phase 6 — GraphQL WebhookConfiguration CRUD. Tier 3 (sonnet).
 
 ## Remaining phases
 - Phase 3 — Org-creator (admin) emission
