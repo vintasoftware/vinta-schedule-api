@@ -9,7 +9,7 @@ from graphql import GraphQLError
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import CalendarType, CalendarVisibility
 from calendar_integration.models import AvailableTime, Calendar, ChildrenCalendarRelationship
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import (
@@ -5954,8 +5954,6 @@ class TestDisableCalendarBundleMutation:
 
     def test_disable_calendar_bundle_happy_path(self):
         """A granted token disables a bundle calendar; visibility is set to INACTIVE in DB."""
-        from calendar_integration.constants import CalendarVisibility
-
         org, system_user, token, auth_service = self._setup_org_and_token()
         bundle = self._make_bundle(org)
 
@@ -6003,12 +6001,15 @@ class TestDisableCalendarBundleMutation:
         assert any(b["id"] == str(bundle.id) for b in before_bundles)
 
         # Disable the bundle
-        self._post_mutation(
+        disable_response = self._post_mutation(
             system_user,
             token,
             auth_service,
             {"input": {"organizationId": org.id, "bundleId": bundle.id}},
         )
+        disable_data = disable_response.json()
+        assert "errors" not in disable_data or len(disable_data.get("errors", [])) == 0
+        assert disable_data["data"]["disableCalendarBundle"]["success"] is True
 
         # Verify the bundle no longer appears in the listing
         with container.public_api_auth_service.override(auth_service):
@@ -6074,8 +6075,6 @@ class TestDisableCalendarBundleMutation:
 
         # Verify the other org's bundle was NOT modified
         other_bundle.refresh_from_db()
-        from calendar_integration.constants import CalendarVisibility
-
         assert other_bundle.visibility != CalendarVisibility.INACTIVE
 
     def test_disable_calendar_bundle_permission_denied_without_grant(self):
@@ -6121,3 +6120,4 @@ class TestDisableCalendarBundleMutation:
         data = response.json()
         assert "errors" in data
         assert len(data["errors"]) > 0
+        assert "authenticated" in str(data["errors"]).lower()

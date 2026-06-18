@@ -9831,6 +9831,9 @@ class TestDisableBundleCalendarService:
 
         service = CalendarService()
         service.initialize_without_provider(organization=organization)
+
+        assert bundle_calendar.visibility == CalendarVisibility.ACTIVE
+
         service.disable_bundle_calendar(bundle_id=bundle_calendar.id)
 
         bundle_calendar.refresh_from_db()
