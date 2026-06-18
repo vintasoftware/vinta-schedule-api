@@ -69,11 +69,20 @@
 - **NOTE**: main checkout has UNRELATED in-progress work (validateReturnUrl OAuth feature) on public_api/{queries,types,tests}; left untouched — worktree isolation kept my work separate.
 - **PR**: pending (filled after push).
 
+### Phase 5a — Book single-calendar event with code ✅
+- **Status**: complete, reviewed (Layers 1–3 + fix loop). Layer 3 caught a BLOCKER — fixed.
+- **Model/tier**: implementer / Sonnet (Tier 3).
+- **Branch**: plan/single-use-scheduling-codes/phase-5a (base: phase-4).
+- **Commits**: e0288b7 (book-with-code mutation) + c9d6d72 (BLOCKER fix: authorize on restricted calendars).
+- **Outer gate**: `pytest -n auto` 2114 passed; check --deploy clean; makemigrations clean; ruff clean.
+- **Summary**: unauthenticated `createCalendarEventWithCode` (no permission_classes). resolve_code → require CREATE perm + calendar scope → atomic { initialize_without_provider(user_or_token=code) → create_event → consume_code }. First-write-wins (consume after create, under lock, rolls back on race). SLOT_UNAVAILABLE ← NoAvailableTimeWindowsError/EventManagementError (code NOT consumed, retryable); PermissionDenied → NOT_PERMITTED; resolve_code errors → INVALID_CODE/EXPIRED/ALREADY_USED/REVOKED. IP audit from X-Forwarded-For/REMOTE_ADDR.
+- **BLOCKER caught + fixed**: original impl passed `user_or_token=None`, so `can_perform_scheduling` rejected bookings on RESTRICTED calendars (the core use case) — masked by tests using accepts_public_scheduling=True. Fix: thread the code as `user_or_token` so the event service's permission instance gets the token → CREATE-permission branch authorizes on restricted calendars. Tests rewritten to use a restricted calendar with seeded availability + a real (non-mocked) slot-unavailable test.
+- **PR**: pending (filled after push).
+
 ## Current phase
-Phase 5a — Book single-calendar event with code (next).
+Phase 5b — Book calendar-group event with code (next).
 
 ## Remaining phases
-- Phase 5a — Book single-calendar event with code
 - Phase 5b — Book calendar-group event with code
 - Phase 6a — Reschedule single-calendar event with code
 - Phase 6b — Reschedule calendar-group event with code
