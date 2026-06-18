@@ -1,4 +1,5 @@
 import datetime
+import uuid
 import zoneinfo
 from datetime import timedelta
 from unittest.mock import MagicMock, Mock, patch
@@ -9552,8 +9553,6 @@ class TestUpdateBlockedTimeService:
 
     def _make_blocked_time(self, calendar: Calendar, organization: Organization) -> BlockedTime:
         """Create a blocked time on the given calendar."""
-        import uuid
-
         return BlockedTime.objects.create(
             calendar=calendar,
             organization_id=organization.id,
@@ -9717,8 +9716,6 @@ class TestDeleteBlockedTimeService:
 
     def _make_blocked_time(self, calendar: Calendar, organization: Organization) -> BlockedTime:
         """Create a blocked time on the given calendar."""
-        import uuid
-
         return BlockedTime.objects.create(
             calendar=calendar,
             organization_id=organization.id,
@@ -9793,8 +9790,6 @@ class TestDeleteBlockedTimeService:
             calendar_type=CalendarType.RESOURCE,
             organization=other_org,
         )
-        import uuid
-
         other_blocked_time = BlockedTime.objects.create(
             calendar=other_calendar,
             organization_id=other_org.id,

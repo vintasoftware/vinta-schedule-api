@@ -4744,6 +4744,57 @@ class TestDeleteBlockedTimeMutation:
         assert len(data["errors"]) > 0
         assert "don't have access" in str(data["errors"]).lower()
 
+    def test_delete_blocked_time_recurring_removes_row(self):
+        """A recurring blocked time (with rrule_string) is fully removed from the DB."""
+        from calendar_integration.models import BlockedTime
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        calendar = calendar_service.create_resource_calendar(
+            name="Recurring Delete Room",
+            description="",
+            manage_available_windows=True,
+        )
+
+        start = datetime.datetime(2026, 10, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 10, 1, 17, 0, 0, tzinfo=datetime.UTC)
+        blocked_time = calendar_service.create_blocked_time(
+            calendar=calendar,
+            start_time=start,
+            end_time=end,
+            timezone="UTC",
+            reason="Recurring block",
+            rrule_string="FREQ=WEEKLY;BYDAY=TH",
+        )
+        blocked_time_id = blocked_time.id
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "blockedTimeId": blocked_time_id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["deleteBlockedTime"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+
+        # The row must be gone from the DB
+        assert not BlockedTime.objects.filter(id=blocked_time_id).exists()
+
     def test_delete_blocked_time_unauthenticated_denied(self):
         """An unauthenticated call (no Authorization header) is denied."""
         response = self.client.post(
