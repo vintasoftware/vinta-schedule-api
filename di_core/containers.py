@@ -32,7 +32,11 @@ from vintasend_django_sms_template_renderer.services.notification_template_rende
 from vintasend_twilio.services.notification_adapters.twilio import (
     TwilioSMSNotificationAdapter,
 )
-from webhooks.services import WebhookCalendarEventSideEffectsService, WebhookService
+from webhooks.services import (
+    WebhookCalendarEventSideEffectsService,
+    WebhookMembershipSideEffectsService,
+    WebhookService,
+)
 
 
 class AppContainer(containers.DeclarativeContainer):
@@ -91,6 +95,11 @@ class AppContainer(containers.DeclarativeContainer):
         webhook_service=webhook_service,
     )
 
+    webhook_membership_side_effects_service = providers.Factory(
+        WebhookMembershipSideEffectsService,
+        webhook_service=webhook_service,
+    )
+
     calendar_side_effects_service = providers.Factory(
         CalendarSideEffectsService,
         side_effects_pipeline=(webhook_calendar_side_effects_service,),
@@ -115,6 +124,7 @@ class AppContainer(containers.DeclarativeContainer):
     organization_service = providers.Factory(
         OrganizationService,
         calendar_service=calendar_service,
+        webhook_membership_side_effects_service=webhook_membership_side_effects_service,
     )
 
     public_api_auth_service = providers.Factory(

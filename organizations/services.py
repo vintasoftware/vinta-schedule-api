@@ -39,6 +39,7 @@ from organizations.models import (
     OrganizationRole,
 )
 from users.models import User
+from webhooks.services.webhook_membership_side_effects import WebhookMembershipSideEffectsService
 
 
 logger = logging.getLogger(__name__)
@@ -50,9 +51,14 @@ class OrganizationService:
         self,
         calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
         notification_service: Annotated[NotificationService, Provide["notification_service"]],
+        webhook_membership_side_effects_service: Annotated[
+            WebhookMembershipSideEffectsService,
+            Provide["webhook_membership_side_effects_service"],
+        ],
     ):
         self.calendar_service = calendar_service
         self.notification_service = notification_service
+        self.webhook_membership_side_effects_service = webhook_membership_side_effects_service
 
     def create_organization(
         self, creator: User, name: str, should_sync_rooms: bool = False
@@ -340,6 +346,7 @@ class OrganizationService:
                 invitation.accepted_at = now
                 invitation.membership = membership
                 invitation.save()
+                self.webhook_membership_side_effects_service.on_member_created(membership)
                 return membership
 
         raise InvalidInvitationTokenError()
