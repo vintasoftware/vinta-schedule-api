@@ -49,6 +49,7 @@ class OrganizationResourceAccess(BasePermission):
         "createScopedSystemUser": PublicAPIResources.SYSTEM_USER,
         "updateBranding": PublicAPIResources.BRANDING,
         "childOrganizations": PublicAPIResources.CHILD_ORG_ANALYTICS,
+        "createAvailableTime": PublicAPIResources.AVAILABLE_TIME,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore

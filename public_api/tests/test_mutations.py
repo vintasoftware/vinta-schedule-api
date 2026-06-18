@@ -1,4 +1,6 @@
+import datetime
 from unittest.mock import patch
+from uuid import uuid4
 
 from django.contrib.auth import get_user_model
 
@@ -6,6 +8,8 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
+from calendar_integration.models import AvailableTime, Calendar, CalendarOwnership
+from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import (
     Organization,
     OrganizationInvitation,
@@ -13,8 +17,9 @@ from organizations.models import (
     OrganizationRole,
 )
 from public_api.constants import PublicAPIResources
-from public_api.models import ResourceAccess
+from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
+from users.models import User
 
 
 @pytest.fixture
@@ -1874,7 +1879,7 @@ class TestCreateScopedSystemUserMutation:
     def _make_org_member(self, org):
         """Create a user and make them an active member of the given org."""
         user_model = get_user_model()
-        user = baker.make(user_model, email=f"member_{org.id}_{id(org)}@example.com")
+        user = baker.make(user_model, email=f"member_{uuid4().hex}@example.com")
         baker.make(OrganizationMembership, user=user, organization=org, is_active=True)
         return user
 
@@ -2289,3 +2294,438 @@ class TestCreateScopedSystemUserMutation:
 
         # No SystemUser or token row must have been created
         assert not SystemUser.objects.filter(integration_name="inactive_owner_provider").exists()
+
+
+CREATE_AVAILABLE_TIME_MUTATION = """
+mutation CreateAvailableTime(
+    $calendarId: Int!,
+    $startTime: DateTime!,
+    $endTime: DateTime!,
+    $timezone: String!,
+    $rruleString: String
+) {
+    createAvailableTime(
+        calendarId: $calendarId,
+        startTime: $startTime,
+        endTime: $endTime,
+        timezone: $timezone,
+        rruleString: $rruleString
+    ) {
+        id
+        startTime
+        endTime
+    }
+}
+"""
+
+
+def _make_scoped_available_time_client(
+    organization: Organization,
+    owner: User,
+) -> tuple[APIClient, SystemUser]:
+    """Create a scoped API client with AVAILABLE_TIME resource grant."""
+    token = generate_long_lived_token()
+    system_user = baker.make(
+        SystemUser,
+        organization=organization,
+        scoped_to_user=owner,
+        integration_name=f"scoped_at_{organization.pk}_{owner.pk}",
+        long_lived_token_hash=hash_long_lived_token(token),
+        is_active=True,
+    )
+    baker.make(
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.AVAILABLE_TIME
+    )
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+    return client, system_user
+
+
+def _make_org_wide_available_time_client(
+    organization: Organization,
+) -> tuple[APIClient, SystemUser]:
+    """Create an org-wide API client with AVAILABLE_TIME resource grant."""
+    auth_service = PublicAPIAuthService()
+    system_user, token = auth_service.create_system_user(
+        integration_name=f"org_wide_at_{organization.pk}", organization=organization
+    )
+    baker.make(
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.AVAILABLE_TIME
+    )
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+    return client, system_user
+
+
+@pytest.mark.django_db
+class TestCreateAvailableTimeMutation:
+    """Integration tests for the createAvailableTime mutation (Phase 4a).
+
+    Covers:
+    - Scoped token creates a one-off available time (no rrule).
+    - Scoped token creates a recurring available time (with rrule_string).
+    - Scoped token attempting a cross-owner calendar gets not-found (no existence leak).
+    - Org-wide token can create on any calendar in its org (owner guard is scoped-only).
+    - Token without AVAILABLE_TIME resource is denied.
+    """
+
+    def setup_method(self) -> None:
+        self.client = APIClient()
+
+    def _make_owner_with_calendar(self, organization: Organization) -> tuple[User, Calendar]:
+        """Create a user + calendar (manage_available_windows=True) owned by that user."""
+        owner = baker.make(User, email=f"owner_{uuid4().hex}@test.com")
+        cal = baker.make(
+            Calendar,
+            organization=organization,
+            name="Owner Cal",
+            external_id=f"ext-{organization.pk}-{owner.pk}",
+            manage_available_windows=True,
+        )
+        baker.make(CalendarOwnership, calendar=cal, user=owner, organization=organization)
+        return owner, cal
+
+    def test_scoped_token_creates_one_off_available_time(self) -> None:
+        """A scoped token creates a one-off (no rrule) available time on its owned calendar.
+
+        Asserts:
+        - The mutation returns success (id, startTime, endTime).
+        - An AvailableTime row is persisted on that calendar.
+        - The persisted row has no recurrence_rule (one-off).
+        """
+        org = baker.make(Organization, name="Scoped AT Org")
+        owner, cal = self._make_owner_with_calendar(org)
+        client, _ = _make_scoped_available_time_client(org, owner)
+
+        start = datetime.datetime(2026, 7, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 7, 1, 17, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": CREATE_AVAILABLE_TIME_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0, data.get("errors")
+        result = data["data"]["createAvailableTime"]
+        assert result["id"] is not None
+
+        # Confirm AvailableTime was persisted in the DB
+        at = AvailableTime.objects.filter_by_organization(org.id).get(id=int(result["id"]))
+        assert at.calendar_fk_id == cal.id
+        assert at.recurrence_rule_fk_id is None, "One-off must have no recurrence rule"
+
+    def test_scoped_token_creates_recurring_available_time(self) -> None:
+        """A scoped token creates a recurring available time (with rrule_string).
+
+        Asserts:
+        - The mutation returns success.
+        - An AvailableTime row is persisted with a recurrence_rule attached.
+        """
+        org = baker.make(Organization, name="Scoped AT Recurring Org")
+        owner, cal = self._make_owner_with_calendar(org)
+        client, _ = _make_scoped_available_time_client(org, owner)
+
+        start = datetime.datetime(2026, 7, 7, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 7, 7, 17, 0, tzinfo=datetime.UTC)
+        rrule = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": CREATE_AVAILABLE_TIME_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                    "rruleString": rrule,
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0, data.get("errors")
+        result = data["data"]["createAvailableTime"]
+        assert result["id"] is not None
+
+        # Confirm AvailableTime was persisted with a recurrence rule
+        at = AvailableTime.objects.filter_by_organization(org.id).get(id=int(result["id"]))
+        assert at.calendar_fk_id == cal.id
+        assert at.recurrence_rule_fk_id is not None, "Recurring must have a recurrence rule"
+
+    def test_scoped_token_cross_owner_calendar_not_found(self) -> None:
+        """A scoped token attempting to create on another provider's calendar gets not-found.
+
+        The response must be identical to a genuinely missing calendar — no existence leak.
+
+        Asserts:
+        - The mutation returns a GraphQL error.
+        - The error message matches the not-found path (does NOT reveal the calendar exists).
+        - No AvailableTime row is created for that calendar.
+        """
+        org = baker.make(Organization, name="Cross-Owner AT Org")
+        owner, _owner_cal = self._make_owner_with_calendar(org)
+
+        # Another provider's calendar in the same org — the scoped token must not touch it
+        other_owner = baker.make(User, email="other_provider@test.com")
+        other_cal = baker.make(
+            Calendar,
+            organization=org,
+            name="Other Provider Cal",
+            external_id="other-ext-cross",
+            manage_available_windows=True,
+        )
+        baker.make(CalendarOwnership, calendar=other_cal, user=other_owner, organization=org)
+
+        client, _ = _make_scoped_available_time_client(org, owner)
+
+        start = datetime.datetime(2026, 7, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 7, 1, 17, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": CREATE_AVAILABLE_TIME_MUTATION,
+                "variables": {
+                    "calendarId": other_cal.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        # The error must be a not-found path — same message as a missing calendar
+        assert "does not exist" in str(data["errors"]).lower()
+
+        # No AvailableTime row must have been created for the other calendar
+        assert (
+            not AvailableTime.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=other_cal.id)
+            .exists()
+        ), "No AvailableTime must be created on another owner's calendar"
+
+    def test_scoped_token_missing_calendar_same_not_found_response(self) -> None:
+        """Cross-owner and genuinely-missing calendar produce identical not-found errors.
+
+        This confirms no existence leak: comparing the error text for a cross-owner
+        calendar vs. a nonexistent id must yield the same message.
+        """
+        org = baker.make(Organization, name="No-Leak AT Org")
+        owner = baker.make(User, email="no_leak_owner@test.com")
+        client, _ = _make_scoped_available_time_client(org, owner)
+
+        start = datetime.datetime(2026, 7, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 7, 1, 17, 0, tzinfo=datetime.UTC)
+
+        nonexistent_id = 999999999
+
+        response_missing = client.post(
+            "/graphql/",
+            data={
+                "query": CREATE_AVAILABLE_TIME_MUTATION,
+                "variables": {
+                    "calendarId": nonexistent_id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        # Create a calendar in the same org owned by someone else
+        other_owner = baker.make(User, email="other_no_leak@test.com")
+        other_cal = baker.make(
+            Calendar,
+            organization=org,
+            name="Other No Leak Cal",
+            external_id="other-no-leak-ext",
+            manage_available_windows=True,
+        )
+        baker.make(CalendarOwnership, calendar=other_cal, user=other_owner, organization=org)
+
+        response_cross_owner = client.post(
+            "/graphql/",
+            data={
+                "query": CREATE_AVAILABLE_TIME_MUTATION,
+                "variables": {
+                    "calendarId": other_cal.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        # Both responses must be errors
+        assert "errors" in response_missing.json()
+        assert "errors" in response_cross_owner.json()
+
+        # The error messages must be identical (no existence leak)
+        missing_msg = str(response_missing.json()["errors"])
+        cross_owner_msg = str(response_cross_owner.json()["errors"])
+        assert missing_msg == cross_owner_msg, (
+            f"Cross-owner response must be identical to missing-calendar response.\n"
+            f"Missing: {missing_msg}\nCross-owner: {cross_owner_msg}"
+        )
+
+    def test_org_wide_token_creates_on_any_calendar(self) -> None:
+        """An org-wide token (scoped_to_user IS NULL) can create on any calendar.
+
+        This proves the owner guard is scoped-only: org-wide tokens are unaffected.
+
+        Asserts:
+        - The mutation succeeds.
+        - An AvailableTime row is persisted on the calendar.
+        """
+        org = baker.make(Organization, name="Org-Wide AT Org")
+        _owner, cal = self._make_owner_with_calendar(org)
+        client, _ = _make_org_wide_available_time_client(org)
+
+        start = datetime.datetime(2026, 7, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 7, 1, 17, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": CREATE_AVAILABLE_TIME_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0, data.get("errors")
+        result = data["data"]["createAvailableTime"]
+        assert result["id"] is not None
+
+        at = AvailableTime.objects.filter_by_organization(org.id).get(id=int(result["id"]))
+        assert at.calendar_fk_id == cal.id
+
+    def test_token_without_available_time_resource_denied(self) -> None:
+        """A token lacking the AVAILABLE_TIME resource is denied by OrganizationResourceAccess.
+
+        Asserts:
+        - The mutation returns a GraphQL error with a permission-denied message.
+        - No AvailableTime row is created.
+        """
+        org = baker.make(Organization, name="No-Scope AT Org")
+        _owner, cal = self._make_owner_with_calendar(org)
+
+        # Create a token with a DIFFERENT resource — not AVAILABLE_TIME
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="no_at_scope", organization=org
+        )
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+
+        start = datetime.datetime(2026, 7, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 7, 1, 17, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": CREATE_AVAILABLE_TIME_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+        # No AvailableTime must have been created
+        assert (
+            not AvailableTime.objects.filter_by_organization(org.id)
+            .filter(calendar_fk=cal.id)
+            .exists()
+        )
+
+    def test_create_available_time_calendar_not_managing_windows_returns_error(self) -> None:
+        """createAvailableTime on a calendar with manage_available_windows=False returns a
+        user-facing GraphQL error, not a 500, and no AvailableTime row is created.
+
+        Args:
+            None — uses a scoped token whose owner has a calendar that does not manage
+            its own available windows.
+
+        Returns:
+            N/A — assertion test.
+
+        Raises:
+            N/A — verifies that ValueError from CalendarService is surfaced as GraphQLError.
+        """
+        org = baker.make(Organization, name="No-Manage-Windows AT Org")
+        owner = baker.make(User, email=f"owner_{uuid4().hex}@test.com")
+        cal = baker.make(
+            Calendar,
+            organization=org,
+            name="No-Manage Cal",
+            external_id=f"ext-no-manage-{uuid4().hex}",
+            manage_available_windows=False,
+        )
+        baker.make(CalendarOwnership, calendar=cal, user=owner, organization=org)
+        client, _ = _make_scoped_available_time_client(org, owner)
+
+        start = datetime.datetime(2026, 7, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 7, 1, 17, 0, tzinfo=datetime.UTC)
+
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": CREATE_AVAILABLE_TIME_MUTATION,
+                "variables": {
+                    "calendarId": cal.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data, "Expected a GraphQL error when calendar does not manage windows"
+        assert len(data["errors"]) > 0
+
+        # No AvailableTime row must have been written
+        assert not AvailableTime.objects.filter(calendar_fk=cal.id).exists()

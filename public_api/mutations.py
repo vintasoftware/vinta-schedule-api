@@ -1,3 +1,4 @@
+import datetime
 import re
 from dataclasses import dataclass
 from typing import Annotated, cast
@@ -13,12 +14,15 @@ import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
+from calendar_integration.graphql import AvailableTimeGraphQLType
+from calendar_integration.models import Calendar
 from calendar_integration.mutations import CalendarGroupMutations
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from organizations.services import OrganizationService
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
+from public_api.helpers import prepare_service_and_calendar
 from public_api.models import ResourceAccess, SystemUser
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -543,3 +547,48 @@ class Mutation(CalendarGroupMutations):
         )
 
         return UpdateBrandingResult(branding=branding_result)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_available_time(
+        self,
+        info: strawberry.Info,
+        calendar_id: int,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone_str: Annotated[str, strawberry.argument(name="timezone")],
+        rrule_string: str | None = None,
+    ) -> AvailableTimeGraphQLType:
+        """Create an available time slot on a provider-owned calendar.
+
+        Args:
+            calendar_id: ID of the calendar to create the slot on.
+            start_time: Start of the available window (timezone-aware).
+            end_time: End of the available window (timezone-aware).
+            timezone: IANA timezone string (e.g. "America/New_York").
+            rrule_string: Optional RFC-5545 RRULE for recurring slots.
+
+        Returns:
+            The created AvailableTime as AvailableTimeGraphQLType.
+
+        Raises:
+            GraphQLError: Calendar not found / not in owner's scope; or calendar
+                does not manage available windows.
+
+        The token's OrganizationResourceAccess must include the AVAILABLE_TIME resource.
+        """
+        try:
+            calendar_service, calendar = prepare_service_and_calendar(info, calendar_id)
+        except Calendar.DoesNotExist as e:
+            raise GraphQLError("Calendar matching query does not exist.") from e
+
+        try:
+            available_time = calendar_service.create_available_time(
+                calendar=calendar,
+                start_time=start_time,
+                end_time=end_time,
+                timezone=timezone_str,
+                rrule_string=rrule_string,
+            )
+        except ValueError as e:
+            raise GraphQLError(str(e)) from e
+        return available_time  # type: ignore[return-value]

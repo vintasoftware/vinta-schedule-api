@@ -1,6 +1,5 @@
 import datetime
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, cast
 
 from django.db.models import Count as DjangoCount
 from django.db.models import OuterRef, Subquery, Value
@@ -8,7 +7,6 @@ from django.db.models.functions import Concat
 
 import strawberry
 import strawberry_django
-from dependency_injector.wiring import Provide, inject
 from django_virtual_models import QuerySet
 from graphql import GraphQLError
 
@@ -36,6 +34,12 @@ from calendar_integration.models import (
 )
 from organizations.models import Organization, OrganizationMembership, resolve_branding
 from public_api.capabilities import assert_org_can_invite
+from public_api.helpers import (
+    QueryDependencies,  # noqa: F401  # re-exported for existing importers
+    get_org,
+    get_query_dependencies,
+    prepare_service_and_calendar,
+)
 from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
@@ -47,40 +51,7 @@ from users.models import User
 
 
 if TYPE_CHECKING:
-    from calendar_integration.services.calendar_group_service import CalendarGroupService
-    from calendar_integration.services.calendar_service import CalendarService
-
-
-@dataclass
-class QueryDependencies:
-    calendar_service: "CalendarService"
-    calendar_group_service: "CalendarGroupService"
-
-
-@inject
-def get_query_dependencies(
-    calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
-    calendar_group_service: Annotated[
-        "CalendarGroupService | None", Provide["calendar_group_service"]
-    ] = None,
-) -> QueryDependencies:
-    required_dependencies = [calendar_service, calendar_group_service]
-    if any(dep is None for dep in required_dependencies):
-        raise GraphQLError(
-            f"Missing required dependency {', '.join([str(dep) for dep in required_dependencies if dep is None])}"
-        )
-
-    return QueryDependencies(
-        calendar_service=cast("CalendarService", calendar_service),
-        calendar_group_service=cast("CalendarGroupService", calendar_group_service),
-    )
-
-
-def _get_org(info: strawberry.Info):
-    org = info.context.request.public_api_organization
-    if not org:
-        raise GraphQLError("Organization not found in request context")
-    return org
+    pass
 
 
 def _vinta_default_branding() -> PublicBrandingResult:
@@ -106,28 +77,6 @@ def _slice_qs[TQuerySet: QuerySet](qs: TQuerySet, offset: int, limit: int) -> TQ
     return qs[offset : offset + limit]
 
 
-def _prepare_service_and_calendar(
-    info: strawberry.Info, calendar_id: int
-) -> tuple["CalendarService", Calendar]:
-    org = _get_org(info)
-    deps = get_query_dependencies()
-    request: PublicApiHttpRequest = info.context.request
-    deps.calendar_service.initialize_without_provider(
-        user_or_token=request.public_api_system_user, organization=org
-    )
-
-    # Owner-scope check: when the token is scoped, reject calendars outside the owner's set.
-    # Match the same not-found path used for a genuinely missing calendar (no existence leak).
-    system_user = request.public_api_system_user
-    if system_user is not None:
-        allowed_ids = scoped_calendar_ids(system_user, org)
-        if allowed_ids is not None and calendar_id not in allowed_ids:
-            raise Calendar.DoesNotExist("Calendar matching query does not exist.")
-
-    cal = Calendar.objects.filter_by_organization(org.id).get(id=calendar_id)
-    return deps.calendar_service, cal
-
-
 @strawberry.input
 class DateTimeRangeInput:
     """A single [start_time, end_time] window used by calendar-group availability queries."""
@@ -149,7 +98,7 @@ class Query:
         limit: int = 100,
     ) -> list[CalendarGraphQLType]:
         """Get calendars filtered by user's organization."""
-        org = _get_org(info)
+        org = get_org(info)
 
         # Validate pagination parameters
         if offset < 0:
@@ -196,7 +145,7 @@ class Query:
     ) -> list[CalendarEventGraphQLType]:
         """Get calendar events filtered by user's organization."""
         # Get the user's organization from the GraphQL context
-        org = _get_org(info)
+        org = get_org(info)
 
         if event_id is not None:
             qs = CalendarEvent.objects.filter_by_organization(org.id).filter(id=event_id)
@@ -216,7 +165,8 @@ class Query:
                 "calendarId, startDatetime, and endDatetime. "
             )
 
-        calendar_service, calendar = _prepare_service_and_calendar(info, calendar_id)
+        deps = get_query_dependencies()
+        calendar_service, calendar = prepare_service_and_calendar(info, calendar_id, _deps=deps)
         events = calendar_service.get_calendar_events_expanded(
             calendar,
             start_datetime,
@@ -248,7 +198,7 @@ class Query:
     ) -> list[BlockedTimeGraphQLType]:
         """Get blocked times filtered by user's organization."""
         # Get the user's organization from the GraphQL context
-        org = _get_org(info)
+        org = get_org(info)
 
         if blocked_time_id is not None:
             qs = BlockedTime.objects.filter_by_organization(org.id).filter(id=blocked_time_id)
@@ -268,7 +218,8 @@ class Query:
                 "require calendarId, startDatetime, and endDatetime. "
             )
 
-        calendar_service, calendar = _prepare_service_and_calendar(info, calendar_id)
+        deps = get_query_dependencies()
+        calendar_service, calendar = prepare_service_and_calendar(info, calendar_id, _deps=deps)
 
         blocked_times = calendar_service.get_blocked_times_expanded(
             calendar,
@@ -303,7 +254,7 @@ class Query:
     ) -> list[AvailableTimeGraphQLType]:
         """Get available times filtered by user's organization."""
         # Get the user's organization from the GraphQL context
-        org = _get_org(info)
+        org = get_org(info)
 
         if available_time_id is not None:
             qs = AvailableTime.objects.filter_by_organization(org.id).filter(id=available_time_id)
@@ -323,7 +274,8 @@ class Query:
                 "require calendarId, startDatetime, and endDatetime. "
             )
 
-        calendar_service, calendar = _prepare_service_and_calendar(info, calendar_id)
+        deps = get_query_dependencies()
+        calendar_service, calendar = prepare_service_and_calendar(info, calendar_id, _deps=deps)
 
         available_times = calendar_service.get_available_times_expanded(
             calendar,
@@ -358,7 +310,7 @@ class Query:
         limit: int = 100,
     ) -> list[UserGraphQLType]:
         """Get users filtered by user's organization."""
-        org = _get_org(info)
+        org = get_org(info)
 
         queryset = User.objects.filter(
             organization_memberships__organization=org, organization_memberships__is_active=True
@@ -395,7 +347,8 @@ class Query:
         end_datetime: datetime.datetime,
     ) -> list[AvailableTimeWindowGraphQLType]:
         """Get availability windows for a calendar within a date range."""
-        calendar_service, calendar = _prepare_service_and_calendar(info, calendar_id)
+        deps = get_query_dependencies()
+        calendar_service, calendar = prepare_service_and_calendar(info, calendar_id, _deps=deps)
 
         # Get the availability windows
         availability_windows = calendar_service.get_availability_windows_in_range(
@@ -424,7 +377,8 @@ class Query:
         end_datetime: datetime.datetime,
     ) -> list[UnavailableTimeWindowGraphQLType]:
         """Get unavailable (blocked or event) windows for a calendar within a date range."""
-        calendar_service, calendar = _prepare_service_and_calendar(info, calendar_id)
+        deps = get_query_dependencies()
+        calendar_service, calendar = prepare_service_and_calendar(info, calendar_id, _deps=deps)
 
         unavailable_windows = calendar_service.get_unavailable_time_windows_in_range(
             calendar=calendar, start_datetime=start_datetime, end_datetime=end_datetime
@@ -445,7 +399,7 @@ class Query:
         provider: str | None = None,
     ) -> list[CalendarWebhookSubscriptionGraphQLType]:
         """Get webhook subscriptions filtered by user's organization."""
-        org = _get_org(info)
+        org = get_org(info)
         deps = get_query_dependencies()
 
         # Set organization context on service
@@ -470,7 +424,7 @@ class Query:
         limit: int = 50,
     ) -> list[CalendarWebhookEventGraphQLType]:
         """Get recent webhook events filtered by user's organization."""
-        org = _get_org(info)
+        org = get_org(info)
 
         import datetime
 
@@ -497,7 +451,7 @@ class Query:
         info: strawberry.Info,
     ) -> WebhookSubscriptionStatusGraphQLType:
         """Get webhook system health status for the organization."""
-        org = _get_org(info)
+        org = get_org(info)
         deps = get_query_dependencies()
 
         # Set organization context on service
@@ -523,7 +477,7 @@ class Query:
         self, info: strawberry.Info, group_id: int
     ) -> CalendarGroupGraphQLType | None:
         """Fetch a single CalendarGroup scoped to the caller's organization."""
-        org = _get_org(info)
+        org = get_org(info)
         return CalendarGroup.objects.filter_by_organization(org.id).filter(id=group_id).first()
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
@@ -534,7 +488,7 @@ class Query:
         limit: int = 100,
     ) -> list[CalendarGroupGraphQLType]:
         """List CalendarGroups for the caller's organization."""
-        org = _get_org(info)
+        org = get_org(info)
         qs = CalendarGroup.objects.filter_by_organization(org.id).order_by("pk")
         return cast(list[CalendarGroupGraphQLType], list(_slice_qs(qs, offset, limit)))
 
@@ -546,7 +500,7 @@ class Query:
         ranges: list[DateTimeRangeInput],
     ) -> list[CalendarGroupRangeAvailabilityGraphQLType]:
         """For each range, list which calendars in each slot's pool are available."""
-        org = _get_org(info)
+        org = get_org(info)
         deps = get_query_dependencies()
         deps.calendar_group_service.initialize(organization=org)
 
@@ -582,7 +536,7 @@ class Query:
     ) -> list[BookableSlotProposalGraphQLType]:
         """Return time windows within the search range where every slot in the
         group has enough available calendars to satisfy its required_count."""
-        org = _get_org(info)
+        org = get_org(info)
         deps = get_query_dependencies()
         deps.calendar_group_service.initialize(organization=org)
 
@@ -607,7 +561,7 @@ class Query:
         end_datetime: datetime.datetime,
     ) -> list[CalendarEventGraphQLType]:
         """Return events booked under a CalendarGroup overlapping the window."""
-        org = _get_org(info)
+        org = get_org(info)
         deps = get_query_dependencies()
         deps.calendar_group_service.initialize(organization=org)
         events = deps.calendar_group_service.get_group_events(
@@ -638,7 +592,7 @@ class Query:
         Gate: acting org must have can_invite_organizations=True (assert_org_can_invite)
         AND the token must carry CHILD_ORG_ANALYTICS scope (OrganizationResourceAccess).
         """
-        org = _get_org(info)
+        org = get_org(info)
         assert_org_can_invite(org)
 
         # Subquery-based counts to avoid join fan-out when multiple aggregates
