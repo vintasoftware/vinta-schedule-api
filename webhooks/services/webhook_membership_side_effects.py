@@ -1,5 +1,7 @@
 from typing import TYPE_CHECKING, Annotated
 
+from django.db import transaction
+
 from dependency_injector.wiring import Provide, inject
 
 from organizations.models import OrganizationMembership
@@ -45,8 +47,11 @@ class WebhookMembershipSideEffectsService:
         if not membership.is_active:
             return
 
-        self.webhook_service.send_event(
-            organization=membership.organization,
-            event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
-            payload=dict(self._serialize_membership(membership)),
+        payload = dict(self._serialize_membership(membership))
+        transaction.on_commit(
+            lambda: self.webhook_service.send_event(
+                organization=membership.organization,
+                event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
+                payload=payload,
+            )
         )

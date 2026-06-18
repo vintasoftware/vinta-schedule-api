@@ -1284,6 +1284,7 @@ class TestOrganizationService:
     def test_accept_invitation_no_webhook_emission_when_no_subscribed_config(
         self,
         organization,
+        django_capture_on_commit_callbacks,
     ):
         """Integration: no WebhookEvent rows when no WebhookConfiguration subscribes to the event type.
 
@@ -1317,13 +1318,15 @@ class TestOrganizationService:
         from unittest.mock import patch
 
         with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
-            service.accept_invitation(token=token, user=invitee)
+            with django_capture_on_commit_callbacks(execute=True):
+                service.accept_invitation(token=token, user=invitee)
 
         assert WebhookEvent.objects.filter(organization=organization).count() == 0
 
     def test_accept_invitation_webhook_emission_with_subscribed_config(
         self,
         organization,
+        django_capture_on_commit_callbacks,
     ):
         """Integration: exactly one WebhookEvent row per subscribed config on invitation-accept.
 
@@ -1367,7 +1370,8 @@ class TestOrganizationService:
         from unittest.mock import patch
 
         with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
-            membership = service.accept_invitation(token=token, user=invitee)
+            with django_capture_on_commit_callbacks(execute=True):
+                membership = service.accept_invitation(token=token, user=invitee)
 
         events = WebhookEvent.objects.filter(
             organization=organization,
