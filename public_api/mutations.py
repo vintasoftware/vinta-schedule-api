@@ -18,7 +18,7 @@ from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from organizations.services import OrganizationService
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
-from public_api.constants import PublicAPIResources
+from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -28,6 +28,8 @@ from public_api.types import (
     CreateInvitationResult,
     CreateOrganizationInput,
     CreateOrganizationResult,
+    CreateScopedSystemUserInput,
+    CreateScopedSystemUserResult,
     CreateSystemUserTokenInput,
     CreateSystemUserTokenResult,
     InvitationResult,
@@ -354,6 +356,111 @@ class Mutation(CalendarGroupMutations):
 
         return CreateSystemUserTokenResult(
             system_user_id=strawberry.ID(str(system_user.id)),
+            token=plaintext_token,
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_scoped_system_user(
+        self,
+        info: strawberry.Info,
+        input: CreateScopedSystemUserInput,  # noqa: A002
+    ) -> CreateScopedSystemUserResult:
+        """
+        Mint a provider-scoped Public API token.
+
+        The mutation:
+        1. Resolves the caller's organization from the request context.
+        2. Validates that scoped_to_user_id refers to an active member of that organization.
+        3. Validates that every value in available_resources is a valid PublicAPIResources
+           value AND is in the PROVIDER_SCOPED_RESOURCES allow-list (no over-grant).
+        4. Validates that available_resources is non-empty.
+        5. Creates the SystemUser with scoped_to_user set and bulk-creates ResourceAccess rows.
+           Duplicate integration_name is rejected (IntegrityError → GraphQLError).
+        6. Returns the plaintext token exactly once — it is never persisted.
+
+        The token's OrganizationResourceAccess must include the SYSTEM_USER resource.
+        """
+        deps = get_mutation_dependencies()
+
+        org = info.context.request.public_api_organization
+        if not org:
+            raise GraphQLError("Organization not found")
+
+        # Validate owner: must exist and be an active member of the caller's org
+        user_model = get_user_model()
+        try:
+            owner = user_model.objects.get(
+                id=input.scoped_to_user_id,
+                organization_memberships__organization=org,
+                organization_memberships__is_active=True,
+            )
+        except user_model.DoesNotExist as e:
+            raise GraphQLError(
+                f"User with id '{input.scoped_to_user_id}' is not an active member of "
+                "the caller's organization."
+            ) from e
+
+        # Validate available_resources: non-empty
+        if not input.available_resources:
+            raise GraphQLError("available_resources must not be empty.")
+
+        # Validate each resource is a known PublicAPIResources value
+        valid_values = {r.value for r in PublicAPIResources}
+        invalid_resources = [r for r in input.available_resources if r not in valid_values]
+        if invalid_resources:
+            raise GraphQLError(
+                f"Invalid resource(s): {', '.join(invalid_resources)}. "
+                f"Valid values are: {', '.join(sorted(valid_values))}."
+            )
+
+        # Validate each resource is within the provider allow-list (no over-grant)
+        over_grant = [r for r in input.available_resources if r not in PROVIDER_SCOPED_RESOURCES]
+        if over_grant:
+            raise GraphQLError(
+                f"Resource(s) not permitted for provider-scoped tokens: {', '.join(over_grant)}. "
+                f"Allowed resources are: {', '.join(sorted(PROVIDER_SCOPED_RESOURCES))}."
+            )
+
+        # Create the system user and resource-access rows atomically
+        try:
+            with transaction.atomic():
+                system_user, plaintext_token = deps.public_api_auth_service.create_system_user(
+                    integration_name=input.integration_name,
+                    organization=org,
+                    scoped_to_user=owner,
+                )
+                # dict.fromkeys dedupes while preserving order; prevents constraint violations
+                ResourceAccess.objects.bulk_create(
+                    [
+                        ResourceAccess(system_user=system_user, resource_name=resource_name)
+                        for resource_name in dict.fromkeys(input.available_resources)
+                    ]
+                )
+        except IntegrityError as e:
+            # Only convert to "already exists" when the integration_name uniqueness constraint
+            # fired; a ResourceAccess constraint failure would have a different message and
+            # must not be silently mislabeled.
+            if "integration_name" in str(e).lower():
+                raise GraphQLError(
+                    f"A token with integration_name '{input.integration_name}' already exists."
+                ) from e
+            raise
+
+        granted_resources = list(
+            ResourceAccess.objects.filter(system_user=system_user).values_list(
+                "resource_name", flat=True
+            )
+        )
+
+        # scoped_to_user_id is always set here — we passed owner to create_system_user above.
+        assert system_user.scoped_to_user_id is not None  # noqa: S101
+
+        return CreateScopedSystemUserResult(
+            id=system_user.id,
+            integration_name=system_user.integration_name,
+            is_active=system_user.is_active,
+            available_resources=granted_resources,
+            scoped_to_user_id=system_user.scoped_to_user_id,
             token=plaintext_token,
         )
 
