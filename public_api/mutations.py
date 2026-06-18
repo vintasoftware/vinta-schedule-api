@@ -405,6 +405,34 @@ class CreateCalendarBundleResult:
     bundle: CalendarBundleGraphQLType | None = None
 
 
+@strawberry.input
+class UpdateCalendarBundleInput:
+    """Input for updating a bundle calendar's name, description, children set, and primary.
+
+    name: If provided (non-None), updates the bundle's name.
+    description: If provided (non-None), updates the bundle's description.
+    children_ids: Full desired set of child calendar IDs (reconciles adds/removals).
+    primary_calendar_id: Optional. Must be present in children_ids when provided.
+    No isPrivate — out of scope (non-goal).
+    """
+
+    organization_id: int
+    bundle_id: int
+    name: str | None = None
+    description: str | None = None
+    children_ids: list[int]
+    primary_calendar_id: int | None = None
+
+
+@strawberry.type
+class UpdateCalendarBundleResult:
+    """Result of the updateCalendarBundle mutation."""
+
+    success: bool
+    error_message: str | None = None
+    bundle: CalendarBundleGraphQLType | None = None
+
+
 @strawberry.type
 class Mutation(CalendarGroupMutations):
     @strawberry.mutation
@@ -1267,3 +1295,87 @@ class Mutation(CalendarGroupMutations):
             return CreateCalendarBundleResult(success=False, error_message=str(e))
 
         return CreateCalendarBundleResult(success=True, bundle=bundle)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def update_calendar_bundle(
+        self,
+        info: strawberry.Info,
+        input: UpdateCalendarBundleInput,  # noqa: A002
+    ) -> UpdateCalendarBundleResult:
+        """Update a bundle calendar's name, description, children set, and/or primary.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the bundle Calendar org-scoped, restricted to BUNDLE type.
+           Returns success=False ("Bundle not found") if missing or wrong type.
+        3. If name is non-None, sets bundle.name = input.name.
+           If description is non-None, sets bundle.description = input.description.
+           If either field changed, saves only those fields to the DB.
+        4. Fetches child calendars org-scoped + deduplicates children_ids.
+           Returns success=False if any id is missing or cross-org.
+        5. Resolves primary_calendar from children when provided;
+           returns success=False if primary_calendar_id is not in children_ids.
+        6. Delegates to CalendarService.update_bundle_calendar to reconcile children/primary.
+        7. Returns the updated bundle on success, or success=False + errorMessage on failure.
+
+        The token's OrganizationResourceAccess must include the UPDATE_CALENDAR_BUNDLE resource.
+        """
+        from calendar_integration.constants import CalendarType
+
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        # Fetch the bundle org-scoped and restricted to BUNDLE type
+        try:
+            bundle = (
+                Calendar.objects.filter_by_organization(org.id)
+                .filter(calendar_type=CalendarType.BUNDLE)
+                .get(id=input.bundle_id)
+            )
+        except Calendar.DoesNotExist:
+            return UpdateCalendarBundleResult(success=False, error_message="Bundle not found.")
+
+        # Update name/description in the resolver (the service does NOT update these fields)
+        update_fields: list[str] = []
+        if input.name is not None:
+            bundle.name = input.name
+            update_fields.append("name")
+        if input.description is not None:
+            bundle.description = input.description
+            update_fields.append("description")
+        if update_fields:
+            bundle.save(update_fields=update_fields)
+
+        # Fetch child calendars org-scoped (rejects cross-org / missing ids)
+        unique_children_ids = list(dict.fromkeys(input.children_ids))
+        children = list(
+            Calendar.objects.filter_by_organization(org.id).filter(id__in=unique_children_ids)
+        )
+        if len(children) != len(unique_children_ids):
+            return UpdateCalendarBundleResult(
+                success=False,
+                error_message="One or more child calendars not found.",
+            )
+
+        # Resolve primary calendar if requested
+        primary: Calendar | None = None
+        if input.primary_calendar_id is not None:
+            if input.primary_calendar_id not in unique_children_ids:
+                return UpdateCalendarBundleResult(
+                    success=False,
+                    error_message="primary_calendar_id must be one of the children_ids.",
+                )
+            primary = next(c for c in children if c.id == input.primary_calendar_id)
+
+        try:
+            updated_bundle = calendar_service.update_bundle_calendar(
+                bundle_calendar=bundle,
+                child_calendars=children,
+                primary_calendar=primary,
+            )
+        except (CalendarIntegrationError, ValueError, DjangoValidationError, IntegrityError) as e:
+            return UpdateCalendarBundleResult(success=False, error_message=str(e))
+
+        return UpdateCalendarBundleResult(
+            success=True,
+            bundle=updated_bundle,  # type: ignore[arg-type]
+        )
