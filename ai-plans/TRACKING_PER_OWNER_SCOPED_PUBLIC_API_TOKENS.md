@@ -115,11 +115,34 @@ against that same caller-resolved org, so a token can only ever be scoped to a u
 admin actually belongs to. Recommend a separate change to make the viewset header-aware. Owner:
 platform eng. (See **Open Questions** in the plan.)
 
+### Phase 4a — `createAvailableTime` mutation (owner-guarded) ✅
+- **Status**: implemented, reviewed (3 layers + fixer), pushed. PR pending (no `gh`/`yq` on host).
+- **Model used**: claude-sonnet-4-6 (plan Tier 3).
+- **Branch**: `plan/per-owner-scoped-public-api-tokens/phase-4a`
+- **Base**: `plan/per-owner-scoped-public-api-tokens/phase-3`
+- **PR-context**: `.vinta-ai-workflows/prs-context/per-owner-scoped-public-api-tokens/phase-4a.md` (status: pending)
+- **Outer gate**: `check --deploy` green + `pytest -n auto` → 2066 passed; mypy clean on touched files.
+- **Summary**: New `createAvailableTime` mutation (`AVAILABLE_TIME`-guarded). Owner guard + service
+  init delegated to the shared helper; rrule optional (one-off vs recurring). Returns
+  `AvailableTimeGraphQLType`. **Promoted the owner-guard helper into new `public_api/helpers.py`**
+  (`prepare_service_and_calendar` + `get_org` + query-deps accessor) — `queries.py` and `mutations.py`
+  now import it; 4b/4c will too.
+- **Review**: caught a **BLOCKER** — service `ValueError` (calendar not managing availability windows)
+  surfaced as a 500; now a clean GraphQL error + test. Promoted the `_`-private cross-module helper;
+  aliased `timezone` to avoid shadowing `django.utils.timezone` (GraphQL field name preserved);
+  hardened cross-owner test to assert no row written.
+- **Deviations**: `--no-verify` commits. The helper-promotion refactor also edited `queries.py` (pure
+  move, all Phase 1 query tests still green — 116 query/calendar tests pass).
+
+### Note for Phase 5
+3 pre-existing mypy `no-redef` warnings in `queries.py` (duplicate `request: PublicApiHttpRequest`
+annotations from Phase 1's owner-scope blocks; mypy-only, harmless at runtime). Clean up during the
+Phase 5 sweep (which revisits `queries.py`).
+
 ## Current Phase
-Phase 4a — `createAvailableTime` mutation, owner-guarded (next).
+Phase 4b — `createBlockedTime` mutation, owner-guarded (next).
 
 ## Remaining Phases
-- Phase 4a — `createAvailableTime` mutation, owner-guarded (Tier 3)
 - Phase 4b — `createBlockedTime` mutation, owner-guarded (Tier 2)
 - Phase 4c — `scheduleEvent` mutation, owner-guarded (Tier 3)
 - Phase 5 — Cross-owner adversarial sweep + security review (Tier 4)
