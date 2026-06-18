@@ -781,13 +781,13 @@ class TestDeleteWebhookConfigurationMutation:
 
 
 # ---------------------------------------------------------------------------
-# Tests: webhookEvents query (Phase 7)
+# Tests: webhookDeliveryEvents query (Phase 7)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestWebhookEventsQuery:
-    """Tests for the read-only webhookEvents list query (delivery history)."""
+class TestWebhookDeliveryEventsQuery:
+    """Tests for the read-only webhookDeliveryEvents list query (delivery history)."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -806,7 +806,7 @@ class TestWebhookEventsQuery:
         return baker.make(WebhookEvent, **defaults)
 
     def test_list_returns_own_org_events(self, organization, system_user_with_webhook_access):
-        """webhookEvents returns all events for the caller's organization."""
+        """webhookDeliveryEvents returns all events for the caller's organization."""
         system_user, token, _ = system_user_with_webhook_access
         cfg = baker.make(
             WebhookConfiguration,
@@ -823,9 +823,14 @@ class TestWebhookEventsQuery:
         data = response.json()
         assert "errors" not in data or not data.get("errors"), data.get("errors")
 
-        ids_returned = {int(e["id"]) for e in data["data"]["webhookDeliveryEvents"]}
+        events_returned = data["data"]["webhookDeliveryEvents"]
+        ids_returned = {int(e["id"]) for e in events_returned}
         assert event1.id in ids_returned
         assert event2.id in ids_returned
+
+        # Verify the configuration_id custom resolver reads configuration_fk_id correctly.
+        event1_data = next(e for e in events_returned if int(e["id"]) == event1.id)
+        assert int(event1_data["configurationId"]) == cfg.id
 
     def test_list_excludes_other_org_events(
         self,
@@ -859,7 +864,7 @@ class TestWebhookEventsQuery:
         assert other_event.id not in ids_returned
 
     def test_list_returns_newest_first(self, organization, system_user_with_webhook_access):
-        """webhookEvents returns events ordered newest first (descending pk)."""
+        """webhookDeliveryEvents returns events ordered newest first (descending pk)."""
         system_user, token, _ = system_user_with_webhook_access
         cfg = baker.make(
             WebhookConfiguration,
@@ -879,7 +884,7 @@ class TestWebhookEventsQuery:
         assert ids_returned.index(event_second.id) < ids_returned.index(event_first.id)
 
     def test_list_denied_without_webhook_configuration_scope(self, organization):
-        """Token without WEBHOOK_CONFIGURATION scope is denied for webhookEvents."""
+        """Token without WEBHOOK_CONFIGURATION scope is denied for webhookDeliveryEvents."""
         system_user, token, _ = _make_system_user(
             organization, resources=[PublicAPIResources.CALENDAR]
         )
@@ -891,7 +896,7 @@ class TestWebhookEventsQuery:
         assert "don't have access" in str(data["errors"]).lower()
 
     def test_list_denied_for_unauthenticated_request(self):
-        """Unauthenticated request is denied for webhookEvents."""
+        """Unauthenticated request is denied for webhookDeliveryEvents."""
         from di_core.containers import container
 
         auth_service = PublicAPIAuthService()
@@ -921,5 +926,8 @@ class TestWebhookEventsQuery:
         response = _post(self.client, system_user, token, create_mutation)
         assert response.status_code == 200
         data = response.json()
-        # Must error — mutation doesn't exist in schema
+        # Must error — mutation doesn't exist in schema, and the error must
+        # specifically name the missing field so this is a genuine no-write-path proof.
         assert "errors" in data and len(data["errors"]) > 0
+        error_messages = " ".join(str(e.get("message", "")) for e in data["errors"])
+        assert "Cannot query field" in error_messages and "createWebhookEvent" in error_messages
