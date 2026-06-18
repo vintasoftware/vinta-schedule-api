@@ -130,11 +130,18 @@ class WebhookService:
             WebhookEvent: The processed webhook event.
         """
 
+        envelope = {
+            "id": str(event.main_event_fk_id or event.id),
+            "type": event.event_type,
+            "timestamp": event.created.isoformat(),
+            "data": event.payload,
+        }
+
         try:
             response = requests.post(
                 event.url,
                 headers=event.headers,
-                json=event.payload,
+                json=envelope,
                 timeout=60,
             )
         except requests.RequestException as e:
