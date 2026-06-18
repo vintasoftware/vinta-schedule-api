@@ -1,6 +1,7 @@
 import logging
 
 from django.db import transaction
+from django.db.models import F
 
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
@@ -59,7 +60,7 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
                     organization_id=membership.organization_id,
                     deleted_at__isnull=True,
                 )
-                .select_related("scoped_to_membership_fk")
+                .annotate(scoped_to_user_id_value=F("scoped_to_membership_fk__user_id"))
                 .prefetch_related("available_resources")
             )
         return SystemUser.objects.none()
