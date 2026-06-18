@@ -17,6 +17,7 @@ from calendar_integration.exceptions import (
 )
 from calendar_integration.models import (
     CalendarGroup,
+    CalendarGroupSlotMembership,
     CalendarManagementToken,
     CalendarOwnership,
     EventManagementPermissions,
@@ -338,8 +339,17 @@ class CalendarPermissionService:
         calendar_settings: CalendarSettingsData,
         event: CalendarEventInputData,
     ) -> bool:
-        """
-        Check if the token has all the required permissions to perform the scheduling.
+        """Check if the token has all the required permissions to perform the scheduling.
+
+        Authorization is granted when any of the following holds:
+
+        1. The calendar accepts public scheduling (``accepts_public_scheduling=True``).
+        2. The token is calendar-scoped (``calendar_fk_id == calendar_id``) and has
+           the CREATE permission.
+        3. The token is group-scoped (``calendar_group_fk_id`` is set), has the CREATE
+           permission, **and** ``calendar_id`` is a member of one of that group's slots.
+           This case covers group-booking codes: the code is minted with a group scope,
+           and the create call targets the primary calendar of the group.
         """
         if calendar_settings.accepts_public_scheduling:
             return True
@@ -349,6 +359,21 @@ class CalendarPermissionService:
 
         if self.token.calendar_fk_id == calendar_id:  # type: ignore
             return self.has_permission(EventManagementPermissions.CREATE)
+
+        # Group-scoped token: authorize if calendar_id belongs to any slot of the bound group.
+        if self.token.calendar_group_fk_id is not None and self.has_permission(
+            EventManagementPermissions.CREATE
+        ):
+            return (
+                CalendarGroupSlotMembership.objects.filter_by_organization(
+                    self.token.organization_id
+                )
+                .filter(
+                    slot__group_fk_id=self.token.calendar_group_fk_id,
+                    calendar_fk_id=calendar_id,
+                )
+                .exists()
+            )
 
         return False
 

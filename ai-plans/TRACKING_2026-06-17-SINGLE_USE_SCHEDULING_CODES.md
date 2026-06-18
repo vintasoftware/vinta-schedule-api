@@ -79,11 +79,19 @@
 - **BLOCKER caught + fixed**: original impl passed `user_or_token=None`, so `can_perform_scheduling` rejected bookings on RESTRICTED calendars (the core use case) — masked by tests using accepts_public_scheduling=True. Fix: thread the code as `user_or_token` so the event service's permission instance gets the token → CREATE-permission branch authorizes on restricted calendars. Tests rewritten to use a restricted calendar with seeded availability + a real (non-mocked) slot-unavailable test.
 - **PR**: pending (filled after push).
 
+### Phase 5b — Book calendar-group event with code ✅
+- **Status**: complete, reviewed (Layers 1–3 + fix loop; no BLOCKERs).
+- **Model/tier**: implementer / Sonnet (Tier 3).
+- **Branch**: plan/single-use-scheduling-codes/phase-5b (base: phase-5a).
+- **Commits**: 5a910c4 (book-group-with-code + can_perform_scheduling group branch) + 3224907 (cross-org coverage + IP helper).
+- **Outer gate**: `pytest -n auto` 2133 passed; check --deploy clean; makemigrations clean; ruff clean.
+- **Summary**: unauthenticated `createCalendarGroupEventWithCode`. Required extending `can_perform_scheduling` with a GROUP-scoped branch (token group-scoped + CREATE + calendar is a member of the group's slots, org-scoped via CalendarGroupSlotMembership) — because `create_grouped_event` books on the primary calendar and a group code has calendar_fk_id=None. Mutation: resolve_code → require CREATE + group scope → atomic { calendar_service.initialize_without_provider(user_or_token=code) → wire group_service.calendar_service=calendar_service → group_service.initialize → create_grouped_event → consume_code }. Real restricted-primary-calendar tests + real cross-org isolation (org-A code can't book org-B calendar → SLOT_UNAVAILABLE, not consumed). Shared `_client_ip_from_request` helper. 17+ tests.
+- **PR**: pending (filled after push).
+
 ## Current phase
-Phase 5b — Book calendar-group event with code (next).
+Phase 6a — Reschedule single-calendar event with code (next).
 
 ## Remaining phases
-- Phase 5b — Book calendar-group event with code
 - Phase 6a — Reschedule single-calendar event with code
 - Phase 6b — Reschedule calendar-group event with code
 - Phase 6c — Cancel event with code
