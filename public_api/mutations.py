@@ -434,6 +434,22 @@ class UpdateCalendarBundleResult:
     bundle: CalendarBundleGraphQLType | None = None
 
 
+@strawberry.input
+class DisableCalendarBundleInput:
+    """Input for disabling a bundle calendar."""
+
+    organization_id: int
+    bundle_id: int
+
+
+@strawberry.type
+class DisableCalendarBundleResult:
+    """Result of the disableCalendarBundle mutation."""
+
+    success: bool
+    error_message: str | None = None
+
+
 @strawberry.type
 class Mutation(CalendarGroupMutations):
     @strawberry.mutation
@@ -1381,3 +1397,29 @@ class Mutation(CalendarGroupMutations):
             success=True,
             bundle=updated_bundle,  # type: ignore[arg-type]
         )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def disable_calendar_bundle(
+        self,
+        info: strawberry.Info,
+        input: DisableCalendarBundleInput,  # noqa: A002
+    ) -> DisableCalendarBundleResult:
+        """Disable a bundle calendar by setting its visibility to INACTIVE.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Delegates to CalendarService.disable_bundle_calendar with the supplied bundle_id.
+        3. Returns success=True on success, or success=False + errorMessage on failure.
+
+        The token's OrganizationResourceAccess must include the DISABLE_CALENDAR_BUNDLE resource.
+        """
+        calendar_service, _org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar_service.disable_bundle_calendar(bundle_id=input.bundle_id)
+        except Calendar.DoesNotExist:
+            return DisableCalendarBundleResult(success=False, error_message="Bundle not found.")
+        except (ValueError, DjangoValidationError) as e:
+            return DisableCalendarBundleResult(success=False, error_message=str(e))
+
+        return DisableCalendarBundleResult(success=True)

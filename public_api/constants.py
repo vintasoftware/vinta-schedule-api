@@ -50,3 +50,4 @@ class PublicAPIResources(TextChoices):
     CALENDAR_BUNDLE = "calendar_bundle", "Calendar Bundle"
     CREATE_CALENDAR_BUNDLE = "create_calendar_bundle", "Create Calendar Bundle"
     UPDATE_CALENDAR_BUNDLE = "update_calendar_bundle", "Update Calendar Bundle"
+    DISABLE_CALENDAR_BUNDLE = "disable_calendar_bundle", "Disable Calendar Bundle"

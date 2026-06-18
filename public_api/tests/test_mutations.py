@@ -5889,3 +5889,235 @@ class TestUpdateCalendarBundleMutation:
             f"Description was persisted despite service failure: got '{bundle_after.description}', "
             f"expected '{original_description}'"
         )
+
+
+DISABLE_CALENDAR_BUNDLE_MUTATION = """
+mutation DisableCalendarBundle($input: DisableCalendarBundleInput!) {
+    disableCalendarBundle(input: $input) {
+        success
+        errorMessage
+    }
+}
+"""
+
+_CALENDAR_BUNDLES_QUERY = """
+    query GetCalendarBundles($offset: Int, $limit: Int) {
+        calendarBundles(offset: $offset, limit: $limit) {
+            id
+            name
+        }
+    }
+"""
+
+
+@pytest.mark.django_db
+class TestDisableCalendarBundleMutation:
+    """Tests for the disableCalendarBundle mutation (Phase 4d)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_org_and_token(self, resources: list[str] | None = None):
+        """Create an org + system user with the given resource scopes."""
+        if resources is None:
+            resources = [PublicAPIResources.DISABLE_CALENDAR_BUNDLE]
+        org = baker.make(Organization, name="Test Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": DISABLE_CALENDAR_BUNDLE_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def _make_bundle(self, org, name="Test Bundle"):
+        """Create a BUNDLE Calendar directly in the DB."""
+        return baker.make(
+            Calendar,
+            organization=org,
+            name=name,
+            calendar_type=CalendarType.BUNDLE,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+
+    def test_disable_calendar_bundle_happy_path(self):
+        """A granted token disables a bundle calendar; visibility is set to INACTIVE in DB."""
+        from calendar_integration.constants import CalendarVisibility
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        bundle = self._make_bundle(org)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "bundleId": bundle.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["disableCalendarBundle"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+
+        # Verify the bundle is now INACTIVE in the DB
+        bundle.refresh_from_db()
+        assert bundle.visibility == CalendarVisibility.INACTIVE
+
+    def test_disable_calendar_bundle_drops_from_calendar_bundles_query(self):
+        """After disabling, the bundle no longer appears in the calendarBundles query."""
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[
+                PublicAPIResources.DISABLE_CALENDAR_BUNDLE,
+                PublicAPIResources.CALENDAR_BUNDLE,
+            ]
+        )
+        bundle = self._make_bundle(org, name="Bundle To Disable")
+
+        # Confirm the bundle is listed before disabling
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            before_response = self.client.post(
+                "/graphql/",
+                data={"query": _CALENDAR_BUNDLES_QUERY},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+        before_data = before_response.json()
+        before_bundles = before_data["data"]["calendarBundles"]
+        assert any(b["id"] == str(bundle.id) for b in before_bundles)
+
+        # Disable the bundle
+        self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "bundleId": bundle.id}},
+        )
+
+        # Verify the bundle no longer appears in the listing
+        with container.public_api_auth_service.override(auth_service):
+            after_response = self.client.post(
+                "/graphql/",
+                data={"query": _CALENDAR_BUNDLES_QUERY},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+        after_data = after_response.json()
+        after_bundles = after_data["data"]["calendarBundles"]
+        assert not any(b["id"] == str(bundle.id) for b in after_bundles)
+
+    def test_disable_calendar_bundle_rejects_non_bundle_calendar(self):
+        """Attempting to disable a non-bundle calendar returns success=False."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a resource (non-bundle) calendar
+        resource_cal = baker.make(
+            Calendar,
+            organization=org,
+            calendar_type=CalendarType.RESOURCE,
+            external_id=str(uuid.uuid4()),
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "bundleId": resource_cal.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["disableCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+    def test_disable_calendar_bundle_cross_org_rejected(self):
+        """A bundle belonging to a different org returns success=False."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a bundle in a DIFFERENT org
+        other_org = baker.make(Organization, name="Other Org")
+        other_bundle = self._make_bundle(other_org, name="Other Bundle")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "bundleId": other_bundle.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["disableCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+        # Verify the other org's bundle was NOT modified
+        other_bundle.refresh_from_db()
+        from calendar_integration.constants import CalendarVisibility
+
+        assert other_bundle.visibility != CalendarVisibility.INACTIVE
+
+    def test_disable_calendar_bundle_permission_denied_without_grant(self):
+        """A token without DISABLE_CALENDAR_BUNDLE grant is denied."""
+        # Grant CALENDAR_BUNDLE scope instead, NOT DISABLE_CALENDAR_BUNDLE
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[PublicAPIResources.CALENDAR_BUNDLE]
+        )
+        bundle = self._make_bundle(org)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "bundleId": bundle.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_disable_calendar_bundle_unauthenticated(self):
+        """An unauthenticated request returns a permission error."""
+        org, _system_user, _token, auth_service = self._setup_org_and_token()
+        bundle = self._make_bundle(org)
+
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": DISABLE_CALENDAR_BUNDLE_MUTATION,
+                    "variables": {"input": {"organizationId": org.id, "bundleId": bundle.id}},
+                },
+                format="json",
+                # No authorization header
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0

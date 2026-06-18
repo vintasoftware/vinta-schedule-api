@@ -61,6 +61,7 @@ class OrganizationResourceAccess(BasePermission):
         "calendarBundles": PublicAPIResources.CALENDAR_BUNDLE,
         "createCalendarBundle": PublicAPIResources.CREATE_CALENDAR_BUNDLE,
         "updateCalendarBundle": PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
+        "disableCalendarBundle": PublicAPIResources.DISABLE_CALENDAR_BUNDLE,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
