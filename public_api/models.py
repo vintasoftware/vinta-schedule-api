@@ -3,11 +3,11 @@ from typing import ClassVar
 from django.db import models
 
 from common.models import BaseModel
-from organizations.models import OrganizationForeignKey
+from organizations.models import OrganizationForeignKey, OrganizationModel
 from public_api.constants import PublicAPIResources
 
 
-class SystemUser(BaseModel):
+class SystemUser(OrganizationModel):
     """
     Represents a system user in the application.
     This model is used to manage system-level users that interact with the application.

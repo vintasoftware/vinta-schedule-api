@@ -641,7 +641,7 @@ class TestCreateSystemUserTokenProvisioning:
         minted_token = d1["data"]["createSystemUserToken"]["token"]
 
         # Retrieve the minted SystemUser from the DB
-        minted_su = SystemUser.objects.get(id=minted_system_user_id)
+        minted_su = SystemUser.original_manager.get(id=minted_system_user_id)
         assert minted_su.organization == reseller_org
 
         # Step 2: use the minted token to create a child org under the reseller's subtree
@@ -710,7 +710,9 @@ class TestCreateSystemUserTokenProvisioning:
         assert "subtree" in str(d["errors"]).lower()
 
         # No SystemUser must have been created for the attempted integration_name
-        assert not SystemUser.objects.filter(integration_name=attempted_integration_name).exists()
+        assert not SystemUser.original_manager.filter(
+            integration_name=attempted_integration_name
+        ).exists()
 
     def test_child_created_by_minted_token_cannot_grant_itself_reseller_flag(self):
         """A child org created by a minted token has can_invite_organizations=False.

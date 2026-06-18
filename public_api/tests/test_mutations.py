@@ -1042,7 +1042,7 @@ class TestCreateSystemUserTokenMutation:
         assert len(result["token"]) > 0
 
         # Verify the SystemUser was created in the DB
-        minted_user = SystemUser.objects.get(id=int(result["systemUserId"]))
+        minted_user = SystemUser.original_manager.get(id=int(result["systemUserId"]))
         assert minted_user.integration_name == "minted_integration"
         assert minted_user.organization == reseller_org
 
@@ -1070,7 +1070,7 @@ class TestCreateSystemUserTokenMutation:
         data = response.json()
         assert "errors" not in data or len(data.get("errors", [])) == 0
         minted_id = int(data["data"]["createSystemUserToken"]["systemUserId"])
-        minted_user = SystemUser.objects.get(id=minted_id)
+        minted_user = SystemUser.original_manager.get(id=minted_id)
         assert minted_user.organization == child_org
 
     def test_requested_resource_access_rows_attached_exact_set(self):

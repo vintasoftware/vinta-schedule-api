@@ -204,7 +204,7 @@ class TestSystemUserTokenViewSetCreate:
         assert_response_status_code(response, status.HTTP_201_CREATED)
 
         # Verify only one row per distinct resource exists
-        system_user = SystemUser.objects.get(integration_name="dedup_test")
+        system_user = SystemUser.original_manager.get(integration_name="dedup_test")
         persisted_resources = list(
             ResourceAccess.objects.filter(system_user=system_user).values_list(
                 "resource_name", flat=True
@@ -232,7 +232,7 @@ class TestSystemUserTokenViewSetCreate:
             "available_resources": [PublicAPIResources.CALENDAR],
         }
         admin_client.post(self._url(), payload, format="json")
-        system_user = SystemUser.objects.get(integration_name="org_scope_check")
+        system_user = SystemUser.original_manager.get(integration_name="org_scope_check")
         assert system_user.organization_id == organization.id
         assert system_user.is_active is True
 
@@ -248,7 +248,7 @@ class TestSystemUserTokenViewSetCreate:
             "available_resources": resources,
         }
         admin_client.post(self._url(), payload, format="json")
-        system_user = SystemUser.objects.get(integration_name="ra_check")
+        system_user = SystemUser.original_manager.get(integration_name="ra_check")
         persisted = set(
             ResourceAccess.objects.filter(system_user=system_user).values_list(
                 "resource_name", flat=True
@@ -363,7 +363,7 @@ class TestSystemUserTokenViewSetCreate:
             "available_resources": [PublicAPIResources.CALENDAR],
         }
         admin_client.post(self._url(), payload, format="json")
-        system_user = SystemUser.objects.get(integration_name="scope_isolation")
+        system_user = SystemUser.original_manager.get(integration_name="scope_isolation")
         assert system_user.organization_id == organization.id
         assert system_user.organization_id != other_organization.id
 
