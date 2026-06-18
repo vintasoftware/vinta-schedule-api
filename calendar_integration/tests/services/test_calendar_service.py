@@ -9813,3 +9813,72 @@ class TestDeleteBlockedTimeService:
 
         # Confirm the other org's row was not deleted
         assert BlockedTime.objects.filter(id=other_blocked_time.id).exists()
+
+
+class TestDisableBundleCalendarService:
+    """Unit tests for CalendarService.disable_bundle_calendar."""
+
+    @pytest.mark.django_db
+    def test_happy_path_sets_visibility_inactive(self, organization):
+        """A BUNDLE calendar gets visibility == INACTIVE after disable_bundle_calendar."""
+        bundle_calendar = Calendar.objects.create(
+            name="Test Bundle",
+            external_id=f"bundle-disable-{uuid.uuid4()}",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.BUNDLE,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        assert bundle_calendar.visibility == CalendarVisibility.ACTIVE
+
+        service.disable_bundle_calendar(bundle_id=bundle_calendar.id)
+
+        bundle_calendar.refresh_from_db()
+        assert bundle_calendar.visibility == CalendarVisibility.INACTIVE
+
+    @pytest.mark.django_db
+    def test_cross_org_raises_does_not_exist(self, organization):
+        """Calendar belonging to another org (or non-existent id) raises Calendar.DoesNotExist."""
+        other_org = Organization.objects.create(name="Other Org for bundle disable test")
+        other_bundle = Calendar.objects.create(
+            name="Other Bundle",
+            external_id=f"bundle-other-org-{uuid.uuid4()}",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.BUNDLE,
+            organization=other_org,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(Calendar.DoesNotExist):
+            service.disable_bundle_calendar(bundle_id=other_bundle.id)
+
+    @pytest.mark.django_db
+    def test_missing_id_raises_does_not_exist(self, organization):
+        """A completely non-existent calendar id raises Calendar.DoesNotExist."""
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(Calendar.DoesNotExist):
+            service.disable_bundle_calendar(bundle_id=999999)
+
+    @pytest.mark.django_db
+    def test_non_bundle_calendar_raises_value_error(self, organization):
+        """A non-BUNDLE calendar raises ValueError."""
+        resource_calendar = Calendar.objects.create(
+            name="Conference Room",
+            external_id=f"resource-for-bundle-test-{uuid.uuid4()}",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(ValueError, match="not a bundle calendar"):
+            service.disable_bundle_calendar(bundle_id=resource_calendar.id)

@@ -1,5 +1,6 @@
 import datetime
 import json
+import uuid
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
@@ -8,12 +9,14 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
+from calendar_integration.constants import CalendarType, CalendarVisibility
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    ChildrenCalendarRelationship,
 )
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
@@ -2748,3 +2751,295 @@ class TestChildOrganizationsQuery:
         assert len(children) == 1
         # Both memberships (active + inactive) are counted
         assert children[0]["membershipCount"] == 2
+
+
+_CALENDAR_BUNDLES_QUERY = """
+    query GetCalendarBundles($offset: Int, $limit: Int) {
+        calendarBundles(offset: $offset, limit: $limit) {
+            id
+            name
+            description
+            children {
+                id
+                name
+            }
+        }
+    }
+"""
+
+
+def _make_bundle_calendar(organization, name="Test Bundle", child_count=2):
+    """Helper: create a BUNDLE Calendar with `child_count` children in `organization`.
+
+    Uses unique external_ids to avoid the (external_id, provider, organization_id)
+    unique constraint on Calendar.
+    """
+    bundle = baker.make(
+        Calendar,
+        organization=organization,
+        name=name,
+        description=f"Description of {name}",
+        calendar_type=CalendarType.BUNDLE,
+        provider="internal",
+        external_id=str(uuid.uuid4()),
+    )
+    children = []
+    for i in range(child_count):
+        child = baker.make(
+            Calendar,
+            organization=organization,
+            name=f"{name} child {i}",
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child,
+            organization=organization,
+            is_primary=(i == 0),
+        )
+        children.append(child)
+    return bundle, children
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestCalendarBundlesQuery:
+    """Integration tests for the calendarBundles public GraphQL query."""
+
+    @pytest.fixture
+    def bundle_graphql_client(self, organization):
+        """Create a system user + token with CALENDAR_BUNDLE access, return (client, org)."""
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="bundle_test_integration", organization=organization
+        )
+        baker.make(
+            ResourceAccess,
+            system_user=system_user,
+            resource_name=PublicAPIResources.CALENDAR_BUNDLE,
+        )
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+        return client, organization
+
+    def test_lists_bundle_calendars(self, mock_rate_limiter, bundle_graphql_client):
+        """Happy path: bundle calendars are listed with their children."""
+        mock_rate_limiter.return_value = iter([None])
+        client, org = bundle_graphql_client
+
+        bundle, children = _make_bundle_calendar(org, name="Bundle Alpha", child_count=2)
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+        assert len(bundles) == 1
+
+        returned_bundle = bundles[0]
+        assert returned_bundle["id"] == str(bundle.id)
+        assert returned_bundle["name"] == "Bundle Alpha"
+        assert returned_bundle["description"] == "Description of Bundle Alpha"
+
+        returned_child_ids = {c["id"] for c in returned_bundle["children"]}
+        assert returned_child_ids == {str(c.id) for c in children}
+
+    def test_children_resolve_for_bundle(self, mock_rate_limiter, bundle_graphql_client):
+        """Children of a bundle are correctly resolved via the children field."""
+        mock_rate_limiter.return_value = iter([None])
+        client, org = bundle_graphql_client
+
+        _bundle, children = _make_bundle_calendar(org, name="Parent Bundle", child_count=3)
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+        assert len(bundles) == 1
+
+        returned_children = bundles[0]["children"]
+        assert len(returned_children) == 3
+        returned_names = {c["name"] for c in returned_children}
+        expected_names = {c.name for c in children}
+        assert returned_names == expected_names
+
+    def test_org_isolation_other_org_bundles_excluded(
+        self, mock_rate_limiter, bundle_graphql_client
+    ):
+        """Bundles from another organization must not appear in the results."""
+        mock_rate_limiter.return_value = iter([None])
+        client, org = bundle_graphql_client
+
+        # Create a bundle in the acting org
+        _make_bundle_calendar(org, name="My Bundle")
+
+        # Create a bundle in a different org — must NOT appear
+        other_org = baker.make(Organization, name="Other Org")
+        _make_bundle_calendar(other_org, name="Other Org Bundle")
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+        assert len(bundles) == 1
+        assert bundles[0]["name"] == "My Bundle"
+
+    def test_only_bundle_type_calendars_returned(self, mock_rate_limiter, bundle_graphql_client):
+        """Regular (non-bundle) calendars must not appear in calendarBundles."""
+        mock_rate_limiter.return_value = iter([None])
+        client, org = bundle_graphql_client
+
+        # A bundle calendar — should appear
+        bundle, _ = _make_bundle_calendar(org, name="Real Bundle")
+
+        # A regular calendar — should NOT appear
+        baker.make(
+            Calendar,
+            organization=org,
+            name="Regular Calendar",
+            calendar_type=CalendarType.PERSONAL,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+        assert len(bundles) == 1
+        assert bundles[0]["id"] == str(bundle.id)
+
+    def test_pagination_offset_and_limit_respected(self, mock_rate_limiter, bundle_graphql_client):
+        """Pagination offset and limit control the returned slice."""
+        mock_rate_limiter.return_value = iter([None])
+        client, org = bundle_graphql_client
+
+        # Create 5 bundles
+        for i in range(5):
+            _make_bundle_calendar(org, name=f"Bundle {i}", child_count=0)
+
+        variables = {"offset": 1, "limit": 2}
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+        assert len(bundles) == 2
+
+    def test_pagination_empty_result_beyond_last_page(
+        self, mock_rate_limiter, bundle_graphql_client
+    ):
+        """An offset beyond total count returns an empty list."""
+        mock_rate_limiter.return_value = iter([None])
+        client, org = bundle_graphql_client
+
+        _make_bundle_calendar(org, name="Only Bundle")
+
+        variables = {"offset": 10, "limit": 10}
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert data["calendarBundles"] == []
+
+    def test_permission_denied_without_calendar_bundle_grant(self, mock_rate_limiter, organization):
+        """A token without CALENDAR_BUNDLE grant receives a permission error."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # System user without CALENDAR_BUNDLE resource
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="no_bundle_integration", organization=organization
+        )
+        # Grant a different resource (not CALENDAR_BUNDLE)
+        baker.make(
+            ResourceAccess,
+            system_user=system_user,
+            resource_name=PublicAPIResources.CALENDAR,
+        )
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_QUERY}),
+            content_type="application/json",
+        )
+
+        assert response.status_code == 200
+        response_data = response.json()
+        assert "errors" in response_data
+        permission_messages = [e.get("message", "") for e in response_data["errors"]]
+        assert any(
+            "access" in m.lower() or "permission" in m.lower() or "authenticated" in m.lower()
+            for m in permission_messages
+        )
+
+    def test_empty_result_when_no_bundles(self, mock_rate_limiter, bundle_graphql_client):
+        """Returns empty list when org has no bundle calendars."""
+        mock_rate_limiter.return_value = iter([None])
+        client, _org = bundle_graphql_client
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert data["calendarBundles"] == []
+
+    def test_inactive_bundle_excluded_from_results(self, mock_rate_limiter, bundle_graphql_client):
+        """Bundles with visibility=INACTIVE must be absent; active bundles still appear.
+
+        BLOCKER — calendarBundles must honour .only_listed() so that bundles
+        disabled by Phase 4d's disableCalendarBundle mutation drop out of the
+        public listing, matching the behaviour of the `calendars` query.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        client, org = bundle_graphql_client
+
+        # Active bundle — must appear
+        active_bundle, _ = _make_bundle_calendar(org, name="Active Bundle", child_count=1)
+
+        # Inactive bundle — must NOT appear
+        inactive_bundle, _ = _make_bundle_calendar(org, name="Inactive Bundle", child_count=1)
+        inactive_bundle.visibility = CalendarVisibility.INACTIVE
+        inactive_bundle.save()
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+
+        returned_ids = {b["id"] for b in bundles}
+        assert str(active_bundle.id) in returned_ids, "Active bundle must be present"
+        assert str(inactive_bundle.id) not in returned_ids, "Inactive bundle must be excluded"

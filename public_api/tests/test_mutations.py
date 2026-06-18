@@ -1,4 +1,5 @@
 import datetime
+import uuid
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
@@ -8,8 +9,8 @@ from graphql import GraphQLError
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from calendar_integration.constants import CalendarType
-from calendar_integration.models import AvailableTime
+from calendar_integration.constants import CalendarType, CalendarVisibility
+from calendar_integration.models import AvailableTime, Calendar, ChildrenCalendarRelationship
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import (
     Organization,
@@ -4816,3 +4817,1307 @@ class TestDeleteBlockedTimeMutation:
         data = response.json()
         assert "errors" in data
         assert len(data["errors"]) > 0
+
+
+CREATE_CALENDAR_BUNDLE_MUTATION = """
+mutation CreateCalendarBundle($input: CreateCalendarBundleInput!) {
+    createCalendarBundle(input: $input) {
+        success
+        errorMessage
+        bundle {
+            id
+            name
+            description
+            children {
+                id
+                name
+            }
+        }
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestCreateCalendarBundleMutation:
+    """Tests for the createCalendarBundle mutation (Phase 4b)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_org_and_token(self, resources: list[str] | None = None):
+        """Create an org + system user with the given resource scopes."""
+        if resources is None:
+            resources = [PublicAPIResources.CREATE_CALENDAR_BUNDLE]
+        org = baker.make(Organization, name="Test Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": CREATE_CALENDAR_BUNDLE_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def _make_child_calendar(self, org, name="Child Calendar"):
+        """Create an org-scoped resource calendar suitable as a bundle child."""
+        return baker.make(
+            Calendar,
+            organization=org,
+            name=name,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+
+    def test_create_calendar_bundle_happy_path(self):
+        """A granted token creates a bundle with two children; result has calendar_type=BUNDLE."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        child1 = self._make_child_calendar(org, name="Child A")
+        child2 = self._make_child_calendar(org, name="Child B")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "My Bundle",
+                    "description": "Bundle desc",
+                    "childrenIds": [child1.id, child2.id],
+                    "primaryCalendarId": child1.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createCalendarBundle"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+        assert result["bundle"] is not None
+        assert result["bundle"]["name"] == "My Bundle"
+        assert result["bundle"]["description"] == "Bundle desc"
+
+        # Returned children include both child calendars
+        returned_child_ids = {c["id"] for c in result["bundle"]["children"]}
+        assert returned_child_ids == {str(child1.id), str(child2.id)}
+
+        # The DB row must be a BUNDLE type, scoped to the org
+        bundle_id = int(result["bundle"]["id"])
+        bundle_cal = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
+        assert bundle_cal.calendar_type == CalendarType.BUNDLE
+        assert bundle_cal.organization == org
+
+        # ChildrenCalendarRelationship rows exist and primary is set correctly
+        rels = ChildrenCalendarRelationship.objects.filter_by_organization(org.id).filter(
+            bundle_calendar_fk=bundle_cal
+        )
+        rel_ids = {r.child_calendar_fk_id for r in rels}
+        assert rel_ids == {child1.id, child2.id}
+        primary_rel = rels.get(child_calendar_fk_id=child1.id)
+        assert primary_rel.is_primary is True
+
+    def test_create_calendar_bundle_without_primary(self):
+        """Bundle creation without a primary calendar succeeds; no child is marked primary."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        child1 = self._make_child_calendar(org, name="Child X")
+        child2 = self._make_child_calendar(org, name="Child Y")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "Bundle No Primary",
+                    "childrenIds": [child1.id, child2.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createCalendarBundle"]
+        assert result["success"] is True
+        bundle_id = int(result["bundle"]["id"])
+
+        # No child should be marked as primary
+        primary_rels = ChildrenCalendarRelationship.objects.filter_by_organization(org.id).filter(
+            bundle_calendar_fk=bundle_id, is_primary=True
+        )
+        assert primary_rels.count() == 0
+
+    def test_create_calendar_bundle_cross_org_child_rejected(self):
+        """A child id belonging to a different org → success=False (not created)."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Child calendar in a different organization
+        other_org = baker.make(Organization, name="Other Org")
+        cross_org_child = self._make_child_calendar(other_org, name="Cross-Org Child")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "Bad Bundle",
+                    "childrenIds": [cross_org_child.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "not found" in result["errorMessage"].lower()
+
+        # No bundle was created in the org
+        assert (
+            not Calendar.objects.filter_by_organization(org.id)
+            .filter(calendar_type=CalendarType.BUNDLE)
+            .exists()
+        )
+
+    def test_create_calendar_bundle_primary_not_among_children_rejected(self):
+        """primary_calendar_id not in children_ids → success=False."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        child1 = self._make_child_calendar(org, name="Valid Child")
+        # A different calendar that will be used as primary but NOT in children_ids
+        unrelated = baker.make(
+            Calendar,
+            organization=org,
+            name="Unrelated Calendar",
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "Bad Primary Bundle",
+                    "childrenIds": [child1.id],
+                    "primaryCalendarId": unrelated.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert (
+            "primary_calendar_id" in result["errorMessage"] or "children" in result["errorMessage"]
+        )
+
+    def test_create_calendar_bundle_permission_denied_without_grant(self):
+        """A token without CREATE_CALENDAR_BUNDLE grant is denied."""
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[PublicAPIResources.CALENDAR_BUNDLE]
+        )
+        child = self._make_child_calendar(org)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "Should Not Exist",
+                    "childrenIds": [child.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_create_calendar_bundle_unauthenticated_denied(self):
+        """An unauthenticated call (no Authorization header) is denied."""
+        response = self.client.post(
+            "/graphql/",
+            data={
+                "query": CREATE_CALENDAR_BUNDLE_MUTATION,
+                "variables": {
+                    "input": {
+                        "organizationId": 1,
+                        "name": "Should Fail",
+                        "childrenIds": [],
+                    }
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+    def test_create_calendar_bundle_duplicate_children_ids_deduped(self):
+        """Duplicate entries in childrenIds are deduplicated; the bundle has exactly one child.
+
+        Proves the dict.fromkeys dedup in the mutation: passing [child1.id, child1.id] must
+        produce a bundle with one ChildrenCalendarRelationship row, not two.
+        """
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        child1 = self._make_child_calendar(org, name="Deduplicated Child")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "Dedup Bundle",
+                    "childrenIds": [child1.id, child1.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createCalendarBundle"]
+        assert result["success"] is True
+        assert result["bundle"] is not None
+
+        # The returned children list must have exactly ONE entry (the duplicate was removed).
+        assert len(result["bundle"]["children"]) == 1
+
+        # Confirm at the DB level: exactly one ChildrenCalendarRelationship for this bundle.
+        bundle_id = int(result["bundle"]["id"])
+        rel_count = (
+            ChildrenCalendarRelationship.objects.filter_by_organization(org.id)
+            .filter(bundle_calendar_fk_id=bundle_id)
+            .count()
+        )
+        assert rel_count == 1
+
+    def test_create_calendar_bundle_none_description_normalized_to_empty_string(self):
+        """Omitting description (None) normalizes to '' in the persisted bundle.
+
+        Proves the None -> '' normalization: when description is not supplied the
+        bundle's description field is an empty string, not null.
+        """
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        child1 = self._make_child_calendar(org, name="Desc Child")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "Bundle No Desc",
+                    # description deliberately omitted
+                    "childrenIds": [child1.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createCalendarBundle"]
+        assert result["success"] is True
+        # The GraphQL response must return "" (not null) for description when omitted.
+        assert result["bundle"]["description"] == ""
+
+        # Confirm in the DB: description column is empty string, not null.
+        bundle_id = int(result["bundle"]["id"])
+        bundle_cal = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
+        assert bundle_cal.description == ""
+
+    def test_create_calendar_bundle_round_trip_appears_in_calendar_bundles_query(self):
+        """Round-trip acceptance: a bundle created via mutation appears in calendarBundles query.
+
+        Uses the same token (CREATE_CALENDAR_BUNDLE + CALENDAR_BUNDLE) to:
+        1. Create the bundle via the mutation.
+        2. Query calendarBundles with the same token.
+        3. Assert the new bundle id is present in the query result.
+        """
+        import json
+
+        from di_core.containers import container
+
+        org = baker.make(Organization, name="Round-Trip Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="round_trip_integration", organization=org
+        )
+        # Grant both the mutation resource and the query resource.
+        baker.make(
+            ResourceAccess,
+            system_user=system_user,
+            resource_name=PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+        )
+        baker.make(
+            ResourceAccess,
+            system_user=system_user,
+            resource_name=PublicAPIResources.CALENDAR_BUNDLE,
+        )
+
+        child1 = self._make_child_calendar(org, name="Round-Trip Child")
+
+        with container.public_api_auth_service.override(auth_service):
+            # Step 1: create the bundle
+            create_response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": CREATE_CALENDAR_BUNDLE_MUTATION,
+                    "variables": {
+                        "input": {
+                            "organizationId": org.id,
+                            "name": "Round-Trip Bundle",
+                            "childrenIds": [child1.id],
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert create_response.status_code == 200
+        create_data = create_response.json()
+        assert "errors" not in create_data or len(create_data.get("errors", [])) == 0
+        new_bundle_id = create_data["data"]["createCalendarBundle"]["bundle"]["id"]
+
+        _calendar_bundles_query = """
+            query GetCalendarBundles {
+                calendarBundles {
+                    id
+                    name
+                }
+            }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            # Step 2: query calendarBundles with the same token
+            query_response = self.client.post(
+                "/graphql/",
+                data=json.dumps({"query": _calendar_bundles_query}),
+                content_type="application/json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert query_response.status_code == 200
+        query_data = query_response.json()
+        assert "errors" not in query_data or len(query_data.get("errors", [])) == 0
+
+        # Step 3: assert the new bundle id appears in the result
+        returned_bundle_ids = {b["id"] for b in query_data["data"]["calendarBundles"]}
+        assert new_bundle_id in returned_bundle_ids, (
+            f"Newly created bundle {new_bundle_id} was not returned by calendarBundles query. "
+            f"Returned ids: {returned_bundle_ids}"
+        )
+
+
+UPDATE_CALENDAR_BUNDLE_MUTATION = """
+mutation UpdateCalendarBundle($input: UpdateCalendarBundleInput!) {
+    updateCalendarBundle(input: $input) {
+        success
+        errorMessage
+        bundle {
+            id
+            name
+            description
+            children {
+                id
+                name
+            }
+        }
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestUpdateCalendarBundleMutation:
+    """Tests for the updateCalendarBundle mutation (Phase 4c)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_org_and_token(self, resources: list[str] | None = None):
+        """Create an org + system user with the given resource scopes."""
+        if resources is None:
+            resources = [PublicAPIResources.UPDATE_CALENDAR_BUNDLE]
+        org = baker.make(Organization, name="Test Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": UPDATE_CALENDAR_BUNDLE_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def _make_child_calendar(self, org, name="Child Calendar"):
+        """Create an org-scoped calendar suitable as a bundle child."""
+        return baker.make(
+            Calendar,
+            organization=org,
+            name=name,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+
+    def _create_bundle_via_mutation(
+        self,
+        org,
+        system_user,
+        token,
+        auth_service,
+        child_ids,
+        name="Initial Bundle",
+        primary_id=None,
+    ):
+        """Helper: create a bundle through the createCalendarBundle mutation."""
+        from di_core.containers import container
+
+        variables: dict = {
+            "input": {
+                "organizationId": org.id,
+                "name": name,
+                "description": "Initial description",
+                "childrenIds": child_ids,
+            }
+        }
+        if primary_id is not None:
+            variables["input"]["primaryCalendarId"] = primary_id
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={"query": CREATE_CALENDAR_BUNDLE_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+        data = response.json()
+        assert data["data"]["createCalendarBundle"]["success"] is True
+        return int(data["data"]["createCalendarBundle"]["bundle"]["id"])
+
+    def test_update_calendar_bundle_happy_path(self):
+        """Update children set (add/remove) and rename; asserts ChildrenCalendarRelationship reconciled."""
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[
+                PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+                PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
+            ]
+        )
+
+        child1 = self._make_child_calendar(org, name="Child A")
+        child2 = self._make_child_calendar(org, name="Child B")
+        child3 = self._make_child_calendar(org, name="Child C (new)")
+
+        # Create bundle with child1 + child2
+        bundle_id = self._create_bundle_via_mutation(
+            org, system_user, token, auth_service, [child1.id, child2.id]
+        )
+
+        # Update: replace children with child2 + child3; rename the bundle
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": bundle_id,
+                    "name": "Updated Bundle Name",
+                    "description": "Updated description",
+                    "childrenIds": [child2.id, child3.id],
+                    "primaryCalendarId": child3.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+        assert result["bundle"] is not None
+        assert result["bundle"]["name"] == "Updated Bundle Name"
+        assert result["bundle"]["description"] == "Updated description"
+
+        # Children should now be child2 + child3 (child1 removed)
+        returned_child_ids = {c["id"] for c in result["bundle"]["children"]}
+        assert returned_child_ids == {str(child2.id), str(child3.id)}
+        assert str(child1.id) not in returned_child_ids
+
+        # Verify DB: name/description updated
+        bundle_cal = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
+        assert bundle_cal.name == "Updated Bundle Name"
+        assert bundle_cal.description == "Updated description"
+
+        # Verify DB: ChildrenCalendarRelationship rows reconciled
+        rels = ChildrenCalendarRelationship.objects.filter_by_organization(org.id).filter(
+            bundle_calendar_fk=bundle_cal
+        )
+        rel_child_ids = {r.child_calendar_fk_id for r in rels}
+        assert rel_child_ids == {child2.id, child3.id}
+        assert child1.id not in rel_child_ids
+
+        # Verify DB: primary is child3
+        primary_rel = rels.get(child_calendar_fk_id=child3.id)
+        assert primary_rel.is_primary is True
+
+    def test_update_calendar_bundle_missing_bundle_id_returns_not_found(self):
+        """A bundle_id that does not exist in the org → success=False, 'Bundle not found'."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        child = self._make_child_calendar(org)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": 999999,
+                    "childrenIds": [child.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "bundle not found" in result["errorMessage"].lower()
+
+    def test_update_calendar_bundle_cross_org_bundle_id_returns_not_found(self):
+        """A bundle_id from a different org → success=False ('Bundle not found')."""
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[
+                PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+                PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
+            ]
+        )
+
+        # Create a bundle in a different org
+        other_org = baker.make(Organization, name="Other Org")
+        other_auth_service = PublicAPIAuthService()
+        other_system_user, other_token = other_auth_service.create_system_user(
+            integration_name="other_integration", organization=other_org
+        )
+        baker.make(
+            ResourceAccess,
+            system_user=other_system_user,
+            resource_name=PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+        )
+        other_child = self._make_child_calendar(other_org, name="Other Child")
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(other_auth_service):
+            other_response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": CREATE_CALENDAR_BUNDLE_MUTATION,
+                    "variables": {
+                        "input": {
+                            "organizationId": other_org.id,
+                            "name": "Other Bundle",
+                            "childrenIds": [other_child.id],
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {other_system_user.id}:{other_token}"},
+            )
+        other_data = other_response.json()
+        assert other_data["data"]["createCalendarBundle"]["success"] is True
+        other_bundle_id = int(other_data["data"]["createCalendarBundle"]["bundle"]["id"])
+
+        child = self._make_child_calendar(org)
+
+        # Attempt to update the other org's bundle using our org's token
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": other_bundle_id,
+                    "childrenIds": [child.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is False
+        assert "bundle not found" in result["errorMessage"].lower()
+
+    def test_update_calendar_bundle_cross_org_child_rejected(self):
+        """A child_id from a different org → success=False."""
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[
+                PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+                PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
+            ]
+        )
+
+        child1 = self._make_child_calendar(org, name="Child A")
+        bundle_id = self._create_bundle_via_mutation(
+            org, system_user, token, auth_service, [child1.id]
+        )
+
+        # A child from another org
+        other_org = baker.make(Organization, name="Other Org")
+        cross_org_child = self._make_child_calendar(other_org, name="Cross-Org Child")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": bundle_id,
+                    "childrenIds": [cross_org_child.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "not found" in result["errorMessage"].lower()
+
+    def test_update_calendar_bundle_primary_not_in_children_rejected(self):
+        """primary_calendar_id not in children_ids → success=False."""
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[
+                PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+                PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
+            ]
+        )
+
+        child1 = self._make_child_calendar(org, name="Valid Child")
+        unrelated = self._make_child_calendar(org, name="Unrelated Calendar")
+        bundle_id = self._create_bundle_via_mutation(
+            org, system_user, token, auth_service, [child1.id]
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": bundle_id,
+                    "childrenIds": [child1.id],
+                    "primaryCalendarId": unrelated.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert (
+            "primary_calendar_id" in result["errorMessage"] or "children" in result["errorMessage"]
+        )
+
+    def test_update_calendar_bundle_none_name_leaves_name_unchanged(self):
+        """name=None in input leaves the bundle's name unchanged in the DB."""
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[
+                PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+                PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
+            ]
+        )
+
+        child1 = self._make_child_calendar(org, name="Child A")
+        child2 = self._make_child_calendar(org, name="Child B")
+        bundle_id = self._create_bundle_via_mutation(
+            org, system_user, token, auth_service, [child1.id], name="Original Name"
+        )
+
+        # Update with name=None (not provided) → should preserve "Original Name"
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": bundle_id,
+                    "childrenIds": [child1.id, child2.id],
+                    # name intentionally omitted → None
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is True
+
+        # DB should still have the original name
+        bundle_cal = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
+        assert bundle_cal.name == "Original Name"
+
+    def test_update_calendar_bundle_none_description_leaves_description_unchanged(self):
+        """description=None in input leaves the bundle's description unchanged."""
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[
+                PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+                PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
+            ]
+        )
+
+        child1 = self._make_child_calendar(org, name="Child A")
+        bundle_id = self._create_bundle_via_mutation(
+            org, system_user, token, auth_service, [child1.id], name="Bundle With Desc"
+        )
+
+        # Confirm initial description
+        bundle_cal = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
+        original_description = bundle_cal.description
+
+        child2 = self._make_child_calendar(org, name="Child B")
+
+        # Update with description=None (not provided) → should preserve original description
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": bundle_id,
+                    "childrenIds": [child1.id, child2.id],
+                    # description intentionally omitted → None
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is True
+
+        # DB should still have the original description
+        bundle_cal.refresh_from_db()
+        assert bundle_cal.description == original_description
+
+    def test_update_calendar_bundle_permission_denied_without_grant(self):
+        """A token without UPDATE_CALENDAR_BUNDLE grant is denied."""
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[PublicAPIResources.CREATE_CALENDAR_BUNDLE]
+        )
+        child = self._make_child_calendar(org)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": 1,
+                    "childrenIds": [child.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_update_calendar_bundle_unauthenticated_denied(self):
+        """An unauthenticated call (no Authorization header) is denied."""
+        response = self.client.post(
+            "/graphql/",
+            data={
+                "query": UPDATE_CALENDAR_BUNDLE_MUTATION,
+                "variables": {
+                    "input": {
+                        "organizationId": 1,
+                        "bundleId": 1,
+                        "childrenIds": [],
+                    }
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+    def test_update_calendar_bundle_non_bundle_id_returns_not_found(self):
+        """Passing a RESOURCE calendar's id as bundleId → success=False 'Bundle not found'.
+
+        The resolver filters by calendar_type=BUNDLE; a RESOURCE calendar in the same org
+        must not be treated as a bundle — it should return the friendly not-found message.
+        """
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a RESOURCE calendar (not a bundle) in the org
+        resource_calendar = baker.make(
+            Calendar,
+            organization=org,
+            name="Not A Bundle",
+            calendar_type=CalendarType.RESOURCE,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+        child = self._make_child_calendar(org)
+
+        # Pass the RESOURCE calendar's id as bundleId
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": UPDATE_CALENDAR_BUNDLE_MUTATION,
+                    "variables": {
+                        "input": {
+                            "organizationId": org.id,
+                            "bundleId": resource_calendar.id,
+                            "childrenIds": [child.id],
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "bundle not found" in result["errorMessage"].lower()
+
+    def test_update_calendar_bundle_child_is_bundle_rejected(self):
+        """Passing a BUNDLE calendar id inside childrenIds → success=False (service ValueError).
+
+        The service rejects bundle-as-child to prevent nested bundles. The resolver must
+        surface this as success=False, not as an unhandled exception.
+        """
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[
+                PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+                PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
+            ]
+        )
+
+        outer_child = self._make_child_calendar(org, name="Outer Child")
+
+        # Create the bundle-under-test via the mutation (one bundle, no conflict)
+        outer_bundle_id = self._create_bundle_via_mutation(
+            org, system_user, token, auth_service, [outer_child.id], name="Outer Bundle"
+        )
+
+        # Create a second BUNDLE calendar directly in the DB (avoids the unique constraint
+        # conflict that arises when two bundles share external_id="" in the same org).
+        nested_bundle = baker.make(
+            Calendar,
+            organization=org,
+            name="Inner Bundle",
+            calendar_type=CalendarType.BUNDLE,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+
+        # Try to update outer bundle to include the inner bundle as a child (invalid)
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": outer_bundle_id,
+                    "childrenIds": [nested_bundle.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+    def test_update_calendar_bundle_rolls_back_name_on_service_failure(self):
+        """bundle.save(name) is rolled back when the service raises ValueError.
+
+        This test proves the transaction.atomic() block works: the name/description
+        are saved to the DB inside the block, then the service raises (child-is-bundle),
+        and the entire block — including the name change — must be rolled back.
+        """
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[
+                PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+                PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
+            ]
+        )
+
+        outer_child = self._make_child_calendar(org, name="Outer Child")
+
+        # Create the bundle-under-test via the mutation with a known name/description
+        bundle_id = self._create_bundle_via_mutation(
+            org,
+            system_user,
+            token,
+            auth_service,
+            [outer_child.id],
+            name="Original Name",
+        )
+
+        # Create a second BUNDLE calendar directly in the DB to use as an invalid child
+        # (avoids the unique constraint conflict for external_id="" in the same org).
+        nested_bundle = baker.make(
+            Calendar,
+            organization=org,
+            name="Inner Bundle",
+            calendar_type=CalendarType.BUNDLE,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+
+        # Capture current DB state before the failing update
+        bundle_before = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
+        original_name = bundle_before.name
+        original_description = bundle_before.description
+
+        # Attempt to rename AND use a bundle-as-child (triggers service ValueError)
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": bundle_id,
+                    "name": "Should Not Persist",
+                    "description": "Should not persist either",
+                    "childrenIds": [nested_bundle.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is False
+
+        # The name and description must be UNCHANGED — the atomic block was rolled back
+        bundle_after = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
+        assert bundle_after.name == original_name, (
+            f"Name was persisted despite service failure: got '{bundle_after.name}', "
+            f"expected '{original_name}'"
+        )
+        assert bundle_after.description == original_description, (
+            f"Description was persisted despite service failure: got '{bundle_after.description}', "
+            f"expected '{original_description}'"
+        )
+
+
+DISABLE_CALENDAR_BUNDLE_MUTATION = """
+mutation DisableCalendarBundle($input: DisableCalendarBundleInput!) {
+    disableCalendarBundle(input: $input) {
+        success
+        errorMessage
+    }
+}
+"""
+
+_CALENDAR_BUNDLES_QUERY = """
+    query GetCalendarBundles($offset: Int, $limit: Int) {
+        calendarBundles(offset: $offset, limit: $limit) {
+            id
+            name
+        }
+    }
+"""
+
+
+@pytest.mark.django_db
+class TestDisableCalendarBundleMutation:
+    """Tests for the disableCalendarBundle mutation (Phase 4d)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_org_and_token(self, resources: list[str] | None = None):
+        """Create an org + system user with the given resource scopes."""
+        if resources is None:
+            resources = [PublicAPIResources.DISABLE_CALENDAR_BUNDLE]
+        org = baker.make(Organization, name="Test Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": DISABLE_CALENDAR_BUNDLE_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def _make_bundle(self, org, name="Test Bundle"):
+        """Create a BUNDLE Calendar directly in the DB."""
+        return baker.make(
+            Calendar,
+            organization=org,
+            name=name,
+            calendar_type=CalendarType.BUNDLE,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+        )
+
+    def test_disable_calendar_bundle_happy_path(self):
+        """A granted token disables a bundle calendar; visibility is set to INACTIVE in DB."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        bundle = self._make_bundle(org)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "bundleId": bundle.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["disableCalendarBundle"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+
+        # Verify the bundle is now INACTIVE in the DB
+        bundle.refresh_from_db()
+        assert bundle.visibility == CalendarVisibility.INACTIVE
+
+    def test_disable_calendar_bundle_drops_from_calendar_bundles_query(self):
+        """After disabling, the bundle no longer appears in the calendarBundles query."""
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[
+                PublicAPIResources.DISABLE_CALENDAR_BUNDLE,
+                PublicAPIResources.CALENDAR_BUNDLE,
+            ]
+        )
+        bundle = self._make_bundle(org, name="Bundle To Disable")
+
+        # Confirm the bundle is listed before disabling
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            before_response = self.client.post(
+                "/graphql/",
+                data={"query": _CALENDAR_BUNDLES_QUERY},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+        before_data = before_response.json()
+        before_bundles = before_data["data"]["calendarBundles"]
+        assert any(b["id"] == str(bundle.id) for b in before_bundles)
+
+        # Disable the bundle
+        disable_response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "bundleId": bundle.id}},
+        )
+        disable_data = disable_response.json()
+        assert "errors" not in disable_data or len(disable_data.get("errors", [])) == 0
+        assert disable_data["data"]["disableCalendarBundle"]["success"] is True
+
+        # Verify the bundle no longer appears in the listing
+        with container.public_api_auth_service.override(auth_service):
+            after_response = self.client.post(
+                "/graphql/",
+                data={"query": _CALENDAR_BUNDLES_QUERY},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+        after_data = after_response.json()
+        after_bundles = after_data["data"]["calendarBundles"]
+        assert not any(b["id"] == str(bundle.id) for b in after_bundles)
+
+    def test_disable_calendar_bundle_rejects_non_bundle_calendar(self):
+        """Attempting to disable a non-bundle calendar returns success=False."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a resource (non-bundle) calendar
+        resource_cal = baker.make(
+            Calendar,
+            organization=org,
+            calendar_type=CalendarType.RESOURCE,
+            external_id=str(uuid.uuid4()),
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "bundleId": resource_cal.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["disableCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+    def test_disable_calendar_bundle_cross_org_rejected(self):
+        """A bundle belonging to a different org returns success=False."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a bundle in a DIFFERENT org
+        other_org = baker.make(Organization, name="Other Org")
+        other_bundle = self._make_bundle(other_org, name="Other Bundle")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "bundleId": other_bundle.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["disableCalendarBundle"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+        # Verify the other org's bundle was NOT modified
+        other_bundle.refresh_from_db()
+        assert other_bundle.visibility != CalendarVisibility.INACTIVE
+
+    def test_disable_calendar_bundle_permission_denied_without_grant(self):
+        """A token without DISABLE_CALENDAR_BUNDLE grant is denied."""
+        # Grant CALENDAR_BUNDLE scope instead, NOT DISABLE_CALENDAR_BUNDLE
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[PublicAPIResources.CALENDAR_BUNDLE]
+        )
+        bundle = self._make_bundle(org)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": org.id, "bundleId": bundle.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_disable_calendar_bundle_unauthenticated(self):
+        """An unauthenticated request returns a permission error."""
+        org, _system_user, _token, auth_service = self._setup_org_and_token()
+        bundle = self._make_bundle(org)
+
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": DISABLE_CALENDAR_BUNDLE_MUTATION,
+                    "variables": {"input": {"organizationId": org.id, "bundleId": bundle.id}},
+                },
+                format="json",
+                # No authorization header
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "authenticated" in str(data["errors"]).lower()

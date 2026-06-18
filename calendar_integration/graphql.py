@@ -346,6 +346,27 @@ class CalendarGroupGraphQLType:
     slots: list[CalendarGroupSlotGraphQLType] = strawberry_django.field()
 
 
+# ---------------------------------------------------------------------------
+# CalendarBundle types
+# ---------------------------------------------------------------------------
+@strawberry_django.type(Calendar)
+class CalendarBundleGraphQLType:
+    """GraphQL type for a bundle calendar and its children.
+
+    Exposes id, name, description, and the list of child calendars.
+    No isPrivate / owners (non-goals — separate plans).
+    """
+
+    id: strawberry.auto  # noqa: A003
+    name: strawberry.auto
+    description: strawberry.auto
+
+    @strawberry_django.field
+    def children(self) -> list[CalendarGraphQLType]:
+        """Return the child calendars of this bundle calendar."""
+        return list(self.bundle_children.all())  # type: ignore[union-attr]
+
+
 @strawberry_django.type(CalendarEventGroupSelection)
 class CalendarEventGroupSelectionGraphQLType:
     id: strawberry.auto  # noqa: A003
