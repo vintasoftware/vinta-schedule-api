@@ -1479,6 +1479,219 @@ class TestOrganizationService:
         assert call["payload"]["organization_name"] == org.name
         assert call["payload"]["membership_role"] == OrganizationRole.ADMIN
 
+    # -----------------------------------------------------------------------
+    # Phase 4 — provision_tenant_for_user pending-invitation branch + multi-org
+    # -----------------------------------------------------------------------
+
+    def test_provision_pending_invite_calls_on_member_created(
+        self,
+        organization_service_with_webhook_mock,
+        mock_webhook_membership_side_effects_service,
+        organization,
+    ):
+        """Integration: provision via pending-invitation calls on_member_created exactly once."""
+        user = baker.make(User, email="provision_webhook_invitee@example.com")
+        inviter = baker.make(User, email="provision_webhook_inviter@example.com")
+        self._make_invitation(email=user.email, organization=organization, invited_by=inviter)
+
+        membership = organization_service_with_webhook_mock.provision_tenant_for_user(user)
+
+        assert membership is not None
+        mock_webhook_membership_side_effects_service.on_member_created.assert_called_once_with(
+            membership
+        )
+        assert membership.is_active is True
+
+    def test_provision_pending_invite_emits_member_role_event(
+        self,
+        organization,
+        django_capture_on_commit_callbacks,
+    ):
+        """Integration: provision via pending-invitation emits exactly one ORGANIZATION_MEMBER_CREATED
+        event scoped to the invitation's org, with membership_role=MEMBER."""
+        from unittest.mock import Mock, patch
+
+        from di_core.containers import container
+        from webhooks.constants import WebhookEventType
+        from webhooks.models import WebhookConfiguration, WebhookEvent
+
+        invitee = baker.make(User, email="provision_with_config_invitee@example.com")
+        inviter = baker.make(User, email="provision_with_config_inviter@example.com")
+        self._make_invitation(email=invitee.email, organization=organization, invited_by=inviter)
+        baker.make(
+            WebhookConfiguration,
+            organization=organization,
+            event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
+            url="https://example.com/webhook",
+            headers={},
+            deleted_at=None,
+        )
+
+        with container.calendar_service.override(Mock()):
+            service = OrganizationService()
+
+        with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
+            with django_capture_on_commit_callbacks(execute=True):
+                membership = service.provision_tenant_for_user(invitee)
+
+        assert membership is not None
+        events = WebhookEvent.objects.filter(
+            organization=organization,
+            event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
+        )
+        assert events.count() == 1
+        event = events.first()
+        assert event is not None
+        assert event.payload["user_id"] == invitee.id
+        assert event.payload["email"] == invitee.email
+        assert event.payload["organization_id"] == organization.id
+        assert event.payload["membership_role"] == OrganizationRole.MEMBER
+        assert event.payload["membership_id"] == membership.id
+
+    def test_provision_org_creation_emits_exactly_once_not_twice(
+        self,
+        organization_service_with_webhook_mock,
+        mock_webhook_membership_side_effects_service,
+    ):
+        """Integration: provision via org-creation delegates to create_organization which already
+        emits — on_member_created must be called exactly once, not twice.
+
+        Guards against double-emission across provision_tenant_for_user → create_organization.
+        """
+        creator = baker.make(User, email="provision_org_no_double_emit@example.com")
+
+        organization_service_with_webhook_mock.provision_tenant_for_user(
+            creator, organization_name="Double Emit Guard Org"
+        )
+
+        # Must be called exactly once (from create_organization) — the org-creation branch in
+        # provision_tenant_for_user does NOT add a second call.
+        mock_webhook_membership_side_effects_service.on_member_created.assert_called_once()
+        passed_membership = (
+            mock_webhook_membership_side_effects_service.on_member_created.call_args[0][0]
+        )
+        assert passed_membership.role == OrganizationRole.ADMIN
+        assert passed_membership.is_active is True
+
+    def test_provision_multi_org_emits_to_second_org_only(
+        self,
+        organization,
+        django_capture_on_commit_callbacks,
+    ):
+        """Integration: a user already active in org A who provisions into org B via pending invitation
+        produces exactly one delivery scoped to org B's config — zero deliveries to org A."""
+        from unittest.mock import Mock, patch
+
+        from di_core.containers import container
+        from webhooks.constants import WebhookEventType
+        from webhooks.models import WebhookConfiguration, WebhookEvent
+
+        user = baker.make(User, email="multi_org_provision@example.com")
+        # User already has an active membership in org A (fixture `organization`).
+        baker.make(OrganizationMembership, user=user, organization=organization, is_active=True)
+        user.refresh_from_db()
+
+        # Subscribe org A to webhook events — we expect ZERO deliveries to it.
+        baker.make(
+            WebhookConfiguration,
+            organization=organization,
+            event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
+            url="https://org-a.example.com/webhook",
+            headers={},
+            deleted_at=None,
+        )
+
+        # Org B has a pending invitation for the user.
+        org_b = baker.make(Organization, name="Org B Multi")
+        inviter = baker.make(User, email="inviter_multi_orb@example.com")
+        self._make_invitation(email=user.email, organization=org_b, invited_by=inviter)
+
+        # Subscribe org B to webhook events — we expect exactly ONE delivery here.
+        baker.make(
+            WebhookConfiguration,
+            organization=org_b,
+            event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
+            url="https://org-b.example.com/webhook",
+            headers={},
+            deleted_at=None,
+        )
+
+        with container.calendar_service.override(Mock()):
+            service = OrganizationService()
+
+        with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
+            with django_capture_on_commit_callbacks(execute=True):
+                membership = service.provision_tenant_for_user(user)
+
+        assert membership is not None
+        assert membership.organization == org_b
+
+        # Exactly one event scoped to org B.
+        org_b_events = WebhookEvent.objects.filter(
+            organization=org_b,
+            event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
+        )
+        assert org_b_events.count() == 1
+
+        # Zero events scoped to org A.
+        org_a_events = WebhookEvent.objects.filter(
+            organization=organization,
+            event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
+        )
+        assert org_a_events.count() == 0
+
+        # Total events across both orgs is exactly one (org B only).
+        total_events = org_b_events.count() + org_a_events.count()
+        assert total_events == 1, (
+            f"Expected exactly 1 total ORGANIZATION_MEMBER_CREATED event, got {total_events}"
+        )
+
+    def test_provision_multi_org_emit_count_exactly_once(
+        self,
+        organization,
+        django_capture_on_commit_callbacks,
+    ):
+        """Integration: send_event is called exactly once when user with existing org A membership
+        provisions into org B via pending invitation — guards against any double-call."""
+        from unittest.mock import Mock, patch
+
+        from di_core.containers import container
+        from webhooks.constants import WebhookEventType
+
+        user = baker.make(User, email="multi_org_count_check@example.com")
+        baker.make(OrganizationMembership, user=user, organization=organization, is_active=True)
+        user.refresh_from_db()
+
+        org_b = baker.make(Organization, name="Org B Count")
+        inviter = baker.make(User, email="inviter_count@example.com")
+        self._make_invitation(email=user.email, organization=org_b, invited_by=inviter)
+
+        with container.calendar_service.override(Mock()):
+            service = OrganizationService()
+
+        captured_calls: list[dict] = []
+
+        def fake_send_event(self_svc, organization, event_type, payload):
+            captured_calls.append(
+                {"organization": organization, "event_type": event_type, "payload": payload}
+            )
+
+        with patch("webhooks.services.webhook_service.WebhookService.send_event", fake_send_event):
+            with django_capture_on_commit_callbacks(execute=True):
+                membership = service.provision_tenant_for_user(user)
+
+        assert membership is not None
+        member_created_calls = [
+            c
+            for c in captured_calls
+            if c["event_type"] == WebhookEventType.ORGANIZATION_MEMBER_CREATED
+        ]
+        assert len(member_created_calls) == 1, (
+            f"Expected exactly 1 send_event call for ORGANIZATION_MEMBER_CREATED, "
+            f"got {len(member_created_calls)}"
+        )
+        assert member_created_calls[0]["organization"] == org_b
+
 
 @pytest.mark.django_db
 class TestRequestAllCalendarsSync:

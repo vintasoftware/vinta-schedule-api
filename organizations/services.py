@@ -415,6 +415,7 @@ class OrganizationService:
             pending_invitation.accepted_at = now
             pending_invitation.membership = membership
             pending_invitation.save()
+            self.webhook_membership_side_effects_service.on_member_created(membership)
             return membership
 
         if organization_name:
