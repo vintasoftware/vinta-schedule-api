@@ -35,3 +35,16 @@ class PublicAPIResources(TextChoices):
     BRANDING = "branding", "Branding"
     CHILD_ORG_ANALYTICS = "child_org_analytics", "Child Organization Analytics"
     CALENDAR_BOOKING_CODE = "calendar_booking_code", "Calendar Booking Code"
+    CREATE_RESOURCE_CALENDAR = "create_resource_calendar", "Create Resource Calendar"
+    DISABLE_RESOURCE_CALENDAR = "disable_resource_calendar", "Disable Resource Calendar"
+    IMPORT_RESOURCE_CALENDARS = "import_resource_calendars", "Import Resource Calendars"
+    CREATE_AVAILABILITY_WINDOW = "create_availability_window", "Create Availability Window"
+    UPDATE_AVAILABILITY_WINDOW = "update_availability_window", "Update Availability Window"
+    DELETE_AVAILABILITY_WINDOW = "delete_availability_window", "Delete Availability Window"
+    BATCH_UPDATE_AVAILABILITY_WINDOWS = (
+        "batch_update_availability_windows",
+        "Batch Update Availability Windows",
+    )
+    CREATE_BLOCKED_TIME = "create_blocked_time", "Create Blocked Time"
+    UPDATE_BLOCKED_TIME = "update_blocked_time", "Update Blocked Time"
+    DELETE_BLOCKED_TIME = "delete_blocked_time", "Delete Blocked Time"

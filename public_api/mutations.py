@@ -1,6 +1,7 @@
+import datetime
 import re
 from dataclasses import dataclass
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -13,8 +14,15 @@ import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
+from calendar_integration.exceptions import CalendarIntegrationError
+from calendar_integration.graphql import (
+    AvailableTimeGraphQLType,
+    BlockedTimeGraphQLType,
+    CalendarGraphQLType,
+)
+from calendar_integration.models import Calendar
 from calendar_integration.mutations import CalendarGroupMutations
-from organizations.exceptions import UserAlreadyHasMembershipError
+from organizations.exceptions import NoServiceAccountConfiguredError, UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from organizations.services import OrganizationService
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
@@ -32,9 +40,15 @@ from public_api.types import (
     CreateSystemUserTokenResult,
     InvitationResult,
     OrganizationResult,
+    PublicApiHttpRequest,
     UpdateBrandingInput,
     UpdateBrandingResult,
 )
+
+
+if TYPE_CHECKING:
+    from calendar_integration.services.calendar_group_service import CalendarGroupService
+    from calendar_integration.services.calendar_service import CalendarService
 
 
 # Module-scope constants for validation
@@ -69,6 +83,57 @@ def get_mutation_dependencies(
     )
 
 
+@dataclass
+class CalendarMutationDependencies:
+    """Dependencies for calendar mutations."""
+
+    calendar_service: "CalendarService"
+    calendar_group_service: "CalendarGroupService"
+
+
+@inject
+def get_calendar_mutation_dependencies(
+    calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+    calendar_group_service: Annotated[
+        "CalendarGroupService | None", Provide["calendar_group_service"]
+    ] = None,
+) -> CalendarMutationDependencies:
+    """Get calendar mutation dependencies from DI container."""
+    required_dependencies = [calendar_service, calendar_group_service]
+    if any(dep is None for dep in required_dependencies):
+        missing = [d for d in required_dependencies if d is None]
+        raise GraphQLError(f"Missing required dependencies: {missing}")
+
+    return CalendarMutationDependencies(
+        calendar_service=cast("CalendarService", calendar_service),
+        calendar_group_service=cast("CalendarGroupService", calendar_group_service),
+    )
+
+
+def _get_org_and_init_calendar_service(
+    info: strawberry.Info,
+) -> tuple["CalendarService", Organization]:
+    """Resolve org from request context and initialize calendar service.
+
+    Returns:
+        Tuple of (initialized calendar_service, organization)
+
+    Raises:
+        GraphQLError: If organization is not found in request context
+    """
+    org = info.context.request.public_api_organization
+    if not org:
+        raise GraphQLError("Organization not found in request context")
+
+    deps = get_calendar_mutation_dependencies()
+    request: PublicApiHttpRequest = info.context.request
+    deps.calendar_service.initialize_without_provider(
+        user_or_token=request.public_api_system_user, organization=org
+    )
+
+    return deps.calendar_service, org
+
+
 @strawberry.type
 class AuthPayload:
     token_valid: bool
@@ -81,6 +146,233 @@ class DeleteSystemUserInput:
 
 @strawberry.type
 class DeleteSystemUserResult:
+    success: bool
+    error_message: str | None = None
+
+
+@strawberry.input
+class CreateResourceCalendarInput:
+    """Input for creating a manual resource (room/equipment) calendar."""
+
+    organization_id: int
+    name: str
+    description: str | None = None
+    capacity: int | None = None
+    manage_available_windows: bool = False
+
+
+@strawberry.type
+class CreateResourceCalendarResult:
+    """Result of the createResourceCalendar mutation."""
+
+    success: bool
+    error_message: str | None = None
+    calendar: CalendarGraphQLType | None = None
+
+
+@strawberry.input
+class DisableResourceCalendarInput:
+    """Input for disabling a resource calendar."""
+
+    organization_id: int
+    calendar_id: int
+
+
+@strawberry.type
+class DisableResourceCalendarResult:
+    """Result of the disableResourceCalendar mutation."""
+
+    success: bool
+    error_message: str | None = None
+
+
+@strawberry.input
+class ImportResourceCalendarsInput:
+    """Input for triggering a Google Workspace resource calendar import."""
+
+    organization_id: int
+    start_time: datetime.datetime | None = None
+    end_time: datetime.datetime | None = None
+
+
+@strawberry.type
+class ImportResourceCalendarsResult:
+    """Result of the importResourceCalendars mutation (async enqueue — no payload)."""
+
+    success: bool
+    error_message: str | None = None
+
+
+@strawberry.input
+class CreateAvailableTimeInput:
+    """Input for creating a single (optionally recurring) available time on a calendar."""
+
+    organization_id: int
+    calendar_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+    rrule_string: str | None = None
+
+
+@strawberry.type
+class CreateAvailabilityWindowResult:
+    """Result of the createAvailabilityWindow mutation."""
+
+    success: bool
+    error_message: str | None = None
+    available_time: AvailableTimeGraphQLType | None = None
+
+
+@strawberry.input
+class UpdateAvailableTimeInput:
+    """Input for updating a single available time via the batch path."""
+
+    organization_id: int
+    calendar_id: int
+    available_time_id: int
+    start_time: datetime.datetime | None = None
+    end_time: datetime.datetime | None = None
+    timezone: str | None = None
+    rrule_string: str | None = None
+
+
+@strawberry.type
+class UpdateAvailabilityWindowResult:
+    """Result of the updateAvailabilityWindow mutation."""
+
+    success: bool
+    error_message: str | None = None
+    available_time: AvailableTimeGraphQLType | None = None
+
+
+@strawberry.input
+class DeleteAvailableTimeInput:
+    """Input for deleting a single available time via the batch path.
+
+    Note: the v2 doc proposed a deleteSeries argument, but batch_modify_available_times
+    supports only single-row delete. Series deletion is not implemented here.
+    """
+
+    organization_id: int
+    calendar_id: int
+    available_time_id: int
+
+
+@strawberry.type
+class DeleteAvailabilityWindowResult:
+    """Result of the deleteAvailabilityWindow mutation."""
+
+    success: bool
+    error_message: str | None = None
+
+
+@strawberry.input
+class BatchAvailabilityOperationInput:
+    """A single create/update/delete operation in a batch availability update.
+
+    For action='create': start_time, end_time, and timezone are required;
+    rrule_string is optional.
+    For action='update': available_time_id is required; other fields are optional
+    (only provided fields are updated).
+    For action='delete': available_time_id is required; no other fields are needed.
+    """
+
+    action: str
+    available_time_id: int | None = None
+    start_time: datetime.datetime | None = None
+    end_time: datetime.datetime | None = None
+    timezone: str | None = None
+    rrule_string: str | None = None
+
+
+@strawberry.input
+class BatchAvailabilityInput:
+    """Input for applying an atomic batch of availability operations to a calendar."""
+
+    organization_id: int
+    calendar_id: int
+    operations: list[BatchAvailabilityOperationInput]
+
+
+@strawberry.type
+class BatchUpdateAvailabilityWindowsResult:
+    """Result of the batchUpdateAvailabilityWindows mutation.
+
+    On success, available_times contains the full list of the calendar's available times
+    after the batch is applied. On failure, available_times is an empty list.
+    """
+
+    success: bool
+    error_message: str | None = None
+    available_times: list[AvailableTimeGraphQLType]
+
+
+@strawberry.input
+class CreateBlockedTimeInput:
+    """Input for creating a single (optionally recurring) blocked time on a calendar."""
+
+    organization_id: int
+    calendar_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+    reason: str = ""
+    rrule_string: str | None = None
+
+
+@strawberry.type
+class CreateBlockedTimeResult:
+    """Result of the createBlockedTime mutation."""
+
+    success: bool
+    error_message: str | None = None
+    blocked_time: BlockedTimeGraphQLType | None = None
+
+
+@strawberry.input
+class UpdateBlockedTimeInput:
+    """Input for updating an existing blocked time (partial update — only provided fields change)."""
+
+    organization_id: int
+    calendar_id: int
+    blocked_time_id: int
+    start_time: datetime.datetime | None = None
+    end_time: datetime.datetime | None = None
+    timezone: str | None = None
+    reason: str | None = None
+    rrule_string: str | None = None
+
+
+@strawberry.type
+class UpdateBlockedTimeResult:
+    """Result of the updateBlockedTime mutation."""
+
+    success: bool
+    error_message: str | None = None
+    blocked_time: BlockedTimeGraphQLType | None = None
+
+
+@strawberry.input
+class DeleteBlockedTimeInput:
+    """Input for deleting a blocked time (single-row delete).
+
+    Note: a recurring blocked time is stored as one row (rrule on RecurrenceRule).
+    Deleting it removes the whole recurrence series. Materialized exception rows are not
+    separately handled. The v2 doc proposed a deleteSeries arg, but since a recurring
+    blocked time is one row (not a series of rows), there is no robust series-delete
+    backing distinct from single-row delete — ``deleteSeries`` is intentionally omitted.
+    """
+
+    organization_id: int
+    calendar_id: int
+    blocked_time_id: int
+
+
+@strawberry.type
+class DeleteBlockedTimeResult:
+    """Result of the deleteBlockedTime mutation."""
+
     success: bool
     error_message: str | None = None
 
@@ -436,3 +728,457 @@ class Mutation(CalendarGroupMutations):
         )
 
         return UpdateBrandingResult(branding=branding_result)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_resource_calendar(
+        self,
+        info: strawberry.Info,
+        input: CreateResourceCalendarInput,  # noqa: A002
+    ) -> CreateResourceCalendarResult:
+        """Create a manual resource (room/equipment) calendar for the acting organization.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Delegates to CalendarService.create_resource_calendar with the supplied parameters.
+        3. Returns the created Calendar on success, or success=False + errorMessage on failure.
+
+        The token's OrganizationResourceAccess must include the CREATE_RESOURCE_CALENDAR resource.
+        """
+        calendar_service, _org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = calendar_service.create_resource_calendar(
+                name=input.name,
+                # Calendar.description is NOT NULL (no null=True on the field); normalize None -> "" to avoid IntegrityError.
+                description=input.description if input.description is not None else "",
+                capacity=input.capacity,
+                manage_available_windows=input.manage_available_windows,
+            )
+        except (ValueError, DjangoValidationError, IntegrityError) as e:
+            return CreateResourceCalendarResult(success=False, error_message=str(e))
+
+        return CreateResourceCalendarResult(success=True, calendar=calendar)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def disable_resource_calendar(
+        self,
+        info: strawberry.Info,
+        input: DisableResourceCalendarInput,  # noqa: A002
+    ) -> DisableResourceCalendarResult:
+        """Disable a resource calendar by setting its visibility to INACTIVE.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Delegates to CalendarService.disable_resource_calendar with the supplied calendar_id.
+        3. Returns success=True on success, or success=False + errorMessage on failure.
+
+        The token's OrganizationResourceAccess must include the DISABLE_RESOURCE_CALENDAR resource.
+        """
+        calendar_service, _org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar_service.disable_resource_calendar(calendar_id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return DisableResourceCalendarResult(success=False, error_message="Calendar not found.")
+        except (ValueError, DjangoValidationError) as e:
+            return DisableResourceCalendarResult(success=False, error_message=str(e))
+
+        return DisableResourceCalendarResult(success=True)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def import_resource_calendars(
+        self,
+        info: strawberry.Info,
+        input: ImportResourceCalendarsInput,  # noqa: A002
+    ) -> ImportResourceCalendarsResult:
+        """Trigger a Google Workspace resource calendar import for the acting organization.
+
+        The mutation:
+        1. Resolves the organization from the request context.
+        2. Delegates to OrganizationService.request_rooms_sync, which resolves the org-level
+           GoogleCalendarServiceAccount, authenticates the calendar service, and enqueues
+           the import for the given [start_time, end_time] window (defaults: now / now+365d).
+        3. Returns success=True on success (async enqueue — no payload), or success=False
+           + errorMessage when no service account is configured or input is invalid.
+
+        The token's OrganizationResourceAccess must include the IMPORT_RESOURCE_CALENDARS resource.
+        """
+        org = info.context.request.public_api_organization
+        if not org:
+            return ImportResourceCalendarsResult(
+                success=False, error_message="Organization not found in request context."
+            )
+
+        deps = get_mutation_dependencies()
+
+        try:
+            # requested_by is typed as User but not used inside request_rooms_sync;
+            # the Public API caller is a SystemUser with no Django User equivalent.
+            deps.organization_service.request_rooms_sync(
+                organization=org,
+                requested_by=None,
+                start_time=input.start_time,
+                end_time=input.end_time,
+            )
+        except NoServiceAccountConfiguredError:
+            return ImportResourceCalendarsResult(
+                success=False,
+                error_message="No Google service account configured for this organization.",
+            )
+        except (CalendarIntegrationError, ValueError, DjangoValidationError) as e:
+            return ImportResourceCalendarsResult(success=False, error_message=str(e))
+
+        return ImportResourceCalendarsResult(success=True)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_availability_window(
+        self,
+        info: strawberry.Info,
+        input: CreateAvailableTimeInput,  # noqa: A002
+    ) -> CreateAvailabilityWindowResult:
+        """Create a single (optionally recurring) available time on a calendar.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Delegates to CalendarService.create_available_time with the supplied parameters.
+        4. Returns the created AvailableTime on success, or success=False + errorMessage on failure.
+           Note: the service raises ValueError if calendar.manage_available_windows is False.
+
+        The token's OrganizationResourceAccess must include the CREATE_AVAILABILITY_WINDOW resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return CreateAvailabilityWindowResult(
+                success=False, error_message="Calendar not found."
+            )
+
+        try:
+            available_time = calendar_service.create_available_time(
+                calendar=calendar,
+                start_time=input.start_time,
+                end_time=input.end_time,
+                timezone=input.timezone,
+                rrule_string=input.rrule_string,
+            )
+        except (ValueError, DjangoValidationError, CalendarIntegrationError) as e:
+            return CreateAvailabilityWindowResult(success=False, error_message=str(e))
+
+        return CreateAvailabilityWindowResult(
+            success=True,
+            available_time=available_time,  # type: ignore[arg-type]
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def update_availability_window(
+        self,
+        info: strawberry.Info,
+        input: UpdateAvailableTimeInput,  # noqa: A002
+    ) -> UpdateAvailabilityWindowResult:
+        """Update a single available time via the batch path (action=update).
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Builds a single-op batch dict including only the fields provided in the input.
+        4. Delegates to CalendarService.batch_modify_available_times with the single op.
+        5. Finds the updated AvailableTime by id in the returned list and returns it.
+           Note: a missing or cross-calendar available_time_id raises ValueError (success=False).
+           Note: the service raises ValueError if calendar.manage_available_windows is False.
+
+        The token's OrganizationResourceAccess must include the UPDATE_AVAILABILITY_WINDOW resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return UpdateAvailabilityWindowResult(
+                success=False, error_message="Calendar not found."
+            )
+
+        # Build the op dict — always include action + id; include optional fields only when provided.
+        op: dict[str, object] = {"action": "update", "id": input.available_time_id}
+        if input.start_time is not None:
+            op["start_time"] = input.start_time
+        if input.end_time is not None:
+            op["end_time"] = input.end_time
+        if input.timezone is not None:
+            op["timezone"] = input.timezone
+        if input.rrule_string is not None:
+            op["rrule_string"] = input.rrule_string
+
+        try:
+            updated_times = calendar_service.batch_modify_available_times(
+                calendar=calendar, operations=[op]
+            )
+        except (
+            CalendarIntegrationError,
+            ValueError,
+            DjangoValidationError,
+            Calendar.DoesNotExist,
+        ) as e:
+            return UpdateAvailabilityWindowResult(success=False, error_message=str(e))
+
+        # Find the updated row in the returned list.
+        updated_time = next((at for at in updated_times if at.id == input.available_time_id), None)
+        if updated_time is None:
+            return UpdateAvailabilityWindowResult(
+                success=False,
+                error_message="Updated available time not found in result set.",
+            )
+        return UpdateAvailabilityWindowResult(
+            success=True,
+            available_time=updated_time,  # type: ignore[arg-type]
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def delete_availability_window(
+        self,
+        info: strawberry.Info,
+        input: DeleteAvailableTimeInput,  # noqa: A002
+    ) -> DeleteAvailabilityWindowResult:
+        """Delete a single available time via the batch path (action=delete).
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Delegates to CalendarService.batch_modify_available_times with a single delete op.
+        4. Returns success=True on success, or success=False + errorMessage on failure.
+           Note: a missing or cross-calendar available_time_id raises ValueError (success=False).
+           Note: the service raises ValueError if calendar.manage_available_windows is False.
+           Note: the v2 doc proposed a deleteSeries argument, but batch_modify_available_times
+           supports only single-row delete. Series deletion is not supported at this time.
+
+        The token's OrganizationResourceAccess must include the DELETE_AVAILABILITY_WINDOW resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return DeleteAvailabilityWindowResult(
+                success=False, error_message="Calendar not found."
+            )
+
+        op: dict[str, object] = {"action": "delete", "id": input.available_time_id}
+
+        try:
+            calendar_service.batch_modify_available_times(calendar=calendar, operations=[op])
+        except (CalendarIntegrationError, ValueError, DjangoValidationError) as e:
+            return DeleteAvailabilityWindowResult(success=False, error_message=str(e))
+
+        return DeleteAvailabilityWindowResult(success=True)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def batch_update_availability_windows(
+        self,
+        info: strawberry.Info,
+        input: BatchAvailabilityInput,  # noqa: A002
+    ) -> BatchUpdateAvailabilityWindowsResult:
+        """Apply an atomic create/update/delete batch of available times on a calendar.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Validates every operation's action is one of {create, update, delete}.
+        4. Translates each BatchAvailabilityOperationInput into the service dict shape
+           (mapping available_time_id -> id; including only fields that are not None).
+        5. Delegates to CalendarService.batch_modify_available_times with the full ops list.
+        6. Returns the calendar's full AvailableTime list after the batch is applied.
+           The entire batch is rolled back if any operation fails (ATOMIC_REQUESTS = True
+           means the request transaction wraps the whole mutation).
+
+        The token's OrganizationResourceAccess must include the BATCH_UPDATE_AVAILABILITY_WINDOWS
+        resource.
+        """
+        _valid_actions = {"create", "update", "delete"}
+
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return BatchUpdateAvailabilityWindowsResult(
+                success=False, error_message="Calendar not found.", available_times=[]
+            )
+
+        # Validate all actions before calling the service — fail fast on invalid action.
+        for op_input in input.operations:
+            if op_input.action not in _valid_actions:
+                return BatchUpdateAvailabilityWindowsResult(
+                    success=False,
+                    error_message=f"Invalid operation action: {op_input.action}",
+                    available_times=[],
+                )
+            if op_input.action == "create" and (
+                op_input.start_time is None
+                or op_input.end_time is None
+                or op_input.timezone is None
+            ):
+                return BatchUpdateAvailabilityWindowsResult(
+                    success=False,
+                    error_message="create operation requires startTime, endTime, and timezone",
+                    available_times=[],
+                )
+
+        # Translate each BatchAvailabilityOperationInput to the service dict shape.
+        ops: list[dict[str, object]] = []
+        for op_input in input.operations:
+            op: dict[str, object] = {"action": op_input.action}
+            if op_input.available_time_id is not None:
+                op["id"] = op_input.available_time_id
+            if op_input.start_time is not None:
+                op["start_time"] = op_input.start_time
+            if op_input.end_time is not None:
+                op["end_time"] = op_input.end_time
+            if op_input.timezone is not None:
+                op["timezone"] = op_input.timezone
+            if op_input.rrule_string is not None:
+                op["rrule_string"] = op_input.rrule_string
+            ops.append(op)
+
+        try:
+            available_times = calendar_service.batch_modify_available_times(
+                calendar=calendar, operations=ops
+            )
+        except (
+            CalendarIntegrationError,
+            ValueError,
+            DjangoValidationError,
+            Calendar.DoesNotExist,
+        ) as e:
+            return BatchUpdateAvailabilityWindowsResult(
+                success=False, error_message=str(e), available_times=[]
+            )
+
+        return BatchUpdateAvailabilityWindowsResult(
+            success=True,
+            available_times=available_times,  # type: ignore[arg-type]
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_blocked_time(
+        self,
+        info: strawberry.Info,
+        input: CreateBlockedTimeInput,  # noqa: A002
+    ) -> CreateBlockedTimeResult:
+        """Create a single (optionally recurring) blocked time on a calendar.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Delegates to CalendarService.create_blocked_time with the supplied parameters.
+        4. Returns the created BlockedTime on success, or success=False + errorMessage on failure.
+
+        The token's OrganizationResourceAccess must include the CREATE_BLOCKED_TIME resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return CreateBlockedTimeResult(success=False, error_message="Calendar not found.")
+
+        try:
+            blocked_time = calendar_service.create_blocked_time(
+                calendar=calendar,
+                start_time=input.start_time,
+                end_time=input.end_time,
+                timezone=input.timezone,
+                reason=input.reason,
+                rrule_string=input.rrule_string,
+            )
+        except (CalendarIntegrationError, ValueError, DjangoValidationError, IntegrityError) as e:
+            return CreateBlockedTimeResult(success=False, error_message=str(e))
+
+        return CreateBlockedTimeResult(
+            success=True,
+            blocked_time=blocked_time,  # type: ignore[arg-type]
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def update_blocked_time(
+        self,
+        info: strawberry.Info,
+        input: UpdateBlockedTimeInput,  # noqa: A002
+    ) -> UpdateBlockedTimeResult:
+        """Update an existing blocked time (partial update — only provided fields change).
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Delegates to CalendarService.update_blocked_time with the supplied parameters.
+           Only fields present (non-None) in the input are applied; others are left unchanged.
+        4. Returns the updated BlockedTime on success, or success=False + errorMessage on failure.
+           Note: a missing or cross-calendar blocked_time_id raises ValueError (success=False).
+
+        The token's OrganizationResourceAccess must include the UPDATE_BLOCKED_TIME resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return UpdateBlockedTimeResult(success=False, error_message="Calendar not found.")
+
+        try:
+            blocked_time = calendar_service.update_blocked_time(
+                calendar=calendar,
+                blocked_time_id=input.blocked_time_id,
+                start_time=input.start_time,
+                end_time=input.end_time,
+                timezone=input.timezone,
+                reason=input.reason,
+                rrule_string=input.rrule_string,
+            )
+        except (CalendarIntegrationError, ValueError, DjangoValidationError, IntegrityError) as e:
+            return UpdateBlockedTimeResult(success=False, error_message=str(e))
+
+        return UpdateBlockedTimeResult(
+            success=True,
+            blocked_time=blocked_time,  # type: ignore[arg-type]
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def delete_blocked_time(
+        self,
+        info: strawberry.Info,
+        input: DeleteBlockedTimeInput,  # noqa: A002
+    ) -> DeleteBlockedTimeResult:
+        """Delete a blocked time (single-row delete).
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Delegates to CalendarService.delete_blocked_time with the supplied blocked_time_id.
+        4. Returns success=True on success, or success=False + errorMessage on failure.
+           Note: a missing or cross-calendar blocked_time_id raises ValueError (success=False).
+
+        Note on recurrence: a recurring blocked time is stored as one row (rrule on
+        RecurrenceRule). Deleting it removes the whole recurrence series; materialized
+        exception rows are not separately handled. The v2 doc proposed a deleteSeries arg,
+        but since a recurring blocked time is one row, single-row delete already covers the
+        series — the arg is intentionally omitted.
+
+        The token's OrganizationResourceAccess must include the DELETE_BLOCKED_TIME resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return DeleteBlockedTimeResult(success=False, error_message="Calendar not found.")
+
+        try:
+            calendar_service.delete_blocked_time(
+                calendar=calendar,
+                blocked_time_id=input.blocked_time_id,
+            )
+        except (CalendarIntegrationError, ValueError, DjangoValidationError) as e:
+            return DeleteBlockedTimeResult(success=False, error_message=str(e))
+
+        return DeleteBlockedTimeResult(success=True)

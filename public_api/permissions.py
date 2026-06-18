@@ -56,6 +56,16 @@ class OrganizationResourceAccess(BasePermission):
         "createCalendarCancellationBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
         "createCalendarGroupCancellationBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
         "revokeBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createResourceCalendar": PublicAPIResources.CREATE_RESOURCE_CALENDAR,
+        "disableResourceCalendar": PublicAPIResources.DISABLE_RESOURCE_CALENDAR,
+        "importResourceCalendars": PublicAPIResources.IMPORT_RESOURCE_CALENDARS,
+        "createAvailabilityWindow": PublicAPIResources.CREATE_AVAILABILITY_WINDOW,
+        "updateAvailabilityWindow": PublicAPIResources.UPDATE_AVAILABILITY_WINDOW,
+        "deleteAvailabilityWindow": PublicAPIResources.DELETE_AVAILABILITY_WINDOW,
+        "batchUpdateAvailabilityWindows": PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS,
+        "createBlockedTime": PublicAPIResources.CREATE_BLOCKED_TIME,
+        "updateBlockedTime": PublicAPIResources.UPDATE_BLOCKED_TIME,
+        "deleteBlockedTime": PublicAPIResources.DELETE_BLOCKED_TIME,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore

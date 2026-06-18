@@ -44,6 +44,7 @@ class Migration(migrations.Migration):
                     ("branding", "Branding"),
                     ("child_org_analytics", "Child Organization Analytics"),
                     ("calendar_booking_code", "Calendar Booking Code"),
+                    ("create_resource_calendar", "Create Resource Calendar"),
                 ],
                 db_index=True,
                 max_length=150,

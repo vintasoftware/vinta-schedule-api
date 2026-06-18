@@ -706,6 +706,33 @@ class CalendarService(BaseCalendarService):
 
         return calendar
 
+    def disable_resource_calendar(self, calendar_id: int) -> Calendar:
+        """Disable a resource calendar by setting its visibility to INACTIVE.
+
+        Fetches the calendar with an org-scoped query, validates it is a resource calendar,
+        then sets ``visibility = INACTIVE`` and saves.
+
+        :param calendar_id: Primary key of the Calendar to disable.
+        :return: The updated Calendar instance.
+        :raises Calendar.DoesNotExist: If no calendar with this id exists within the org.
+        :raises ValueError: If the calendar is not of type RESOURCE.
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        calendar = Calendar.objects.filter_by_organization(self.organization.id).get(id=calendar_id)
+
+        if calendar.calendar_type != CalendarType.RESOURCE:
+            raise ValueError(
+                f"Calendar {calendar_id} is not a resource calendar "
+                f"(type={calendar.calendar_type})."
+            )
+
+        calendar.visibility = CalendarVisibility.INACTIVE
+        calendar.save(update_fields=["visibility"])
+
+        return calendar
+
     def create_bundle_calendar(
         self,
         name: str,
@@ -1318,6 +1345,61 @@ class CalendarService(BaseCalendarService):
             timezone=timezone,
             reason=reason,
             rrule_string=rrule_string,
+        )
+
+    def update_blocked_time(
+        self,
+        calendar: Calendar,
+        blocked_time_id: int,
+        start_time: datetime.datetime | None = None,
+        end_time: datetime.datetime | None = None,
+        timezone: str | None = None,
+        reason: str | None = None,
+        rrule_string: str | None = None,
+    ) -> BlockedTime:
+        """Update an existing blocked time's fields (partial update).
+
+        Delegates to AvailabilityService.update_blocked_time.
+
+        :param calendar: The calendar the blocked time belongs to.
+        :param blocked_time_id: The id of the blocked time to update.
+        :param start_time: New start time, or None to leave unchanged.
+        :param end_time: New end time, or None to leave unchanged.
+        :param timezone: New timezone string, or None to leave unchanged.
+        :param reason: New reason string, or None to leave unchanged.
+        :param rrule_string: New recurrence rule string, or None to leave unchanged.
+        :return: The updated BlockedTime instance.
+        :raises ValueError: If blocked_time_id is not found in this calendar.
+        """
+        return self._get_availability_service().update_blocked_time(
+            calendar=calendar,
+            blocked_time_id=blocked_time_id,
+            start_time=start_time,
+            end_time=end_time,
+            timezone=timezone,
+            reason=reason,
+            rrule_string=rrule_string,
+        )
+
+    def delete_blocked_time(
+        self,
+        calendar: Calendar,
+        blocked_time_id: int,
+    ) -> None:
+        """Delete an existing blocked time (single-row delete).
+
+        Delegates to AvailabilityService.delete_blocked_time.
+
+        A recurring blocked time is stored as one row (with an rrule on its RecurrenceRule).
+        Deleting it removes the whole recurrence series.
+
+        :param calendar: The calendar the blocked time belongs to.
+        :param blocked_time_id: The id of the blocked time to delete.
+        :raises ValueError: If blocked_time_id is not found in this calendar.
+        """
+        self._get_availability_service().delete_blocked_time(
+            calendar=calendar,
+            blocked_time_id=blocked_time_id,
         )
 
     def create_available_time(
