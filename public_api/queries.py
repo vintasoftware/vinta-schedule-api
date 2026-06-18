@@ -477,6 +477,7 @@ class Query:
         org = _get_org(info)
         qs = (
             Calendar.objects.filter_by_organization(org.id)
+            .only_listed()
             .filter(calendar_type=CalendarType.BUNDLE)
             .prefetch_related("bundle_children")
             .order_by("pk")

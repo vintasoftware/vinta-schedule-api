@@ -361,9 +361,9 @@ class CalendarBundleGraphQLType:
     description: strawberry.auto
 
     @strawberry_django.field
-    def children(self, root: "Calendar") -> list[CalendarGraphQLType]:
+    def children(self) -> list[CalendarGraphQLType]:
         """Return the child calendars of this bundle calendar."""
-        return list(root.bundle_children.all())  # type: ignore[arg-type]
+        return list(self.bundle_children.all())  # type: ignore[union-attr]
 
 
 @strawberry_django.type(CalendarEventGroupSelection)

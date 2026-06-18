@@ -9,7 +9,7 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import CalendarType, CalendarVisibility
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -2767,3 +2767,34 @@ class TestCalendarBundlesQuery:
 
         data = assert_graphql_success(response)
         assert data["calendarBundles"] == []
+
+    def test_inactive_bundle_excluded_from_results(self, mock_rate_limiter, bundle_graphql_client):
+        """Bundles with visibility=INACTIVE must be absent; active bundles still appear.
+
+        BLOCKER — calendarBundles must honour .only_listed() so that bundles
+        disabled by Phase 4d's disableCalendarBundle mutation drop out of the
+        public listing, matching the behaviour of the `calendars` query.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        client, org = bundle_graphql_client
+
+        # Active bundle — must appear
+        active_bundle, _ = _make_bundle_calendar(org, name="Active Bundle", child_count=1)
+
+        # Inactive bundle — must NOT appear
+        inactive_bundle, _ = _make_bundle_calendar(org, name="Inactive Bundle", child_count=1)
+        inactive_bundle.visibility = CalendarVisibility.INACTIVE
+        inactive_bundle.save()
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+
+        returned_ids = {b["id"] for b in bundles}
+        assert str(active_bundle.id) in returned_ids, "Active bundle must be present"
+        assert str(inactive_bundle.id) not in returned_ids, "Inactive bundle must be excluded"
