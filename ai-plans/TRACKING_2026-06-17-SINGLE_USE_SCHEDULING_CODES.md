@@ -31,11 +31,19 @@
 - **Summary**: Added `expires_at` / `minted_by_system_user` (FK→SystemUser, SET_NULL) / `consumed_source_ip` / `calendar_group` (OrganizationForeignKey) to `CalendarManagementToken`; `CalendarManagementTokenManager` with `active()`, atomic `consume()` (transaction.atomic + select_for_update + re-check, raises domain errors), `get_token_error_code()`. `CalendarPermissionService.create_booking_token` / `validate_code` / `consume_code`. New exceptions TokenExpired/AlreadyUsed/Revoked. `PublicAPIResources.CALENDAR_BOOKING_CODE` + 7 mint/revoke field mappings. Strawberry `BookingCodeErrorCode` + `BookingCodeResult` + `CodeEventResult` (defined, not yet wired). Migrations calendar_integration/0020 + public_api/0007. Real two-thread concurrency test proves first-write-wins.
 - **Key decisions**: `calendar_group` FK added (group booking codes need group binding; mirrors existing calendar/event composite-FK pattern). consume() wraps in reentrant `transaction.atomic()` so non-request callers (Celery/commands) are safe regardless of ATOMIC_REQUESTS.
 
+### Phase 1 — Mint booking codes ✅
+- **Status**: complete, reviewed (Layers 1–3 + fix loop), outer gate green.
+- **Model/tier**: implementer / Sonnet (Tier 3 — Haiku first attempt failed: misread base, duplicated Phase 0 defs, wrote stray edits into the MAIN checkout which were recovered + restored; reset clean and re-ran on Sonnet).
+- **Branch**: plan/single-use-scheduling-codes/phase-1 (base: phase-0).
+- **Commits**: b8c6434 (mint mutations) + 2af8a3d (org-scope validation fix).
+- **Outer gate**: `pytest -n auto` 2043 passed; check --deploy clean; makemigrations clean; ruff clean.
+- **Summary**: `createCalendarBookingCode` + `createCalendarGroupBookingCode` on `CalendarGroupMutations` (org-token-gated via CALENDAR_BOOKING_CODE), delegate to `create_booking_token(permissions=[CREATE])`, org from authenticated request, `minted_by` = request system user, bundle calendars transparent. Returns `BookingCodeResult{code, id}`. Not-found + organizationId-mismatch → INVALID_CODE (no cross-org leak). 11 tests.
+- **PR**: pending (filled below after push).
+
 ## Current phase
-Phase 1 — Mint booking codes (next).
+Phase 2 — Mint reschedule & cancel codes (next).
 
 ## Remaining phases
-- Phase 1 — Mint booking codes
 - Phase 2 — Mint reschedule & cancel codes
 - Phase 3 — Revoke codes
 - Phase 4 — Code-gated availability reads
