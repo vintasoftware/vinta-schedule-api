@@ -2436,23 +2436,34 @@ class TestImportResourceCalendarsMutation:
         mock_sync.assert_called_once()
         call_kwargs = mock_sync.call_args.kwargs
         assert call_kwargs["organization"] == org
-        # start_time and end_time are passed through as datetime objects
-        assert call_kwargs["start_time"] is not None
-        assert call_kwargs["end_time"] is not None
+        # start_time and end_time are passed through with the exact values supplied
+        passed_start = call_kwargs["start_time"]
+        passed_end = call_kwargs["end_time"]
+        assert passed_start is not None
+        assert passed_end is not None
+        assert passed_start.year == start.year
+        assert passed_start.month == start.month
+        assert passed_start.day == start.day
+        assert passed_start.hour == start.hour
+        assert passed_end.year == end.year
+        assert passed_end.month == end.month
+        assert passed_end.day == end.day
+        assert passed_end.hour == end.hour
 
     def test_import_resource_calendars_no_service_account_configured(self):
         """No service account → success=False with a descriptive error message.
 
-        This test exercises the real NoServiceAccountConfiguredError path by NOT
-        creating a GoogleCalendarServiceAccount for the org.
+        The error class (NoServiceAccountConfiguredError) is instantiated directly
+        as the mock side_effect while the service path is mocked; we do not hit
+        the real request_rooms_sync or Google APIs.
         """
         from organizations.exceptions import NoServiceAccountConfiguredError
 
         org, system_user, token, auth_service = self._setup_org_and_token()
 
-        # No GoogleCalendarServiceAccount created — request_rooms_sync will raise
-        # NoServiceAccountConfiguredError. We still mock to avoid hitting Google,
-        # but simulate the real error.
+        # request_rooms_sync is mocked to raise NoServiceAccountConfiguredError,
+        # matching the real error the service raises when no GoogleCalendarServiceAccount
+        # is configured for the org.
         with patch(
             "organizations.services.OrganizationService.request_rooms_sync",
             side_effect=NoServiceAccountConfiguredError(),

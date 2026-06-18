@@ -14,6 +14,7 @@ import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
+from calendar_integration.exceptions import CalendarIntegrationError
 from calendar_integration.graphql import CalendarGraphQLType
 from calendar_integration.models import Calendar
 from calendar_integration.mutations import CalendarGroupMutations
@@ -624,8 +625,6 @@ class Mutation(CalendarGroupMutations):
 
         The token's OrganizationResourceAccess must include the IMPORT_RESOURCE_CALENDARS resource.
         """
-        from users.models import User
-
         org = info.context.request.public_api_organization
         if not org:
             return ImportResourceCalendarsResult(
@@ -639,7 +638,7 @@ class Mutation(CalendarGroupMutations):
             # the Public API caller is a SystemUser with no Django User equivalent.
             deps.organization_service.request_rooms_sync(
                 organization=org,
-                requested_by=cast(User, None),
+                requested_by=None,
                 start_time=input.start_time,
                 end_time=input.end_time,
             )
@@ -648,7 +647,7 @@ class Mutation(CalendarGroupMutations):
                 success=False,
                 error_message="No Google service account configured for this organization.",
             )
-        except (ValueError, DjangoValidationError) as e:
+        except (CalendarIntegrationError, ValueError, DjangoValidationError) as e:
             return ImportResourceCalendarsResult(success=False, error_message=str(e))
 
         return ImportResourceCalendarsResult(success=True)
