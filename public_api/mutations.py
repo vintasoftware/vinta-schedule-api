@@ -1,3 +1,4 @@
+import datetime
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, cast
@@ -13,10 +14,11 @@ import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
+from calendar_integration.exceptions import CalendarIntegrationError
 from calendar_integration.graphql import CalendarGraphQLType
 from calendar_integration.models import Calendar
 from calendar_integration.mutations import CalendarGroupMutations
-from organizations.exceptions import UserAlreadyHasMembershipError
+from organizations.exceptions import NoServiceAccountConfiguredError, UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from organizations.services import OrganizationService
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
@@ -175,6 +177,23 @@ class DisableResourceCalendarInput:
 @strawberry.type
 class DisableResourceCalendarResult:
     """Result of the disableResourceCalendar mutation."""
+
+    success: bool
+    error_message: str | None = None
+
+
+@strawberry.input
+class ImportResourceCalendarsInput:
+    """Input for triggering a Google Workspace resource calendar import."""
+
+    organization_id: int
+    start_time: datetime.datetime | None = None
+    end_time: datetime.datetime | None = None
+
+
+@strawberry.type
+class ImportResourceCalendarsResult:
+    """Result of the importResourceCalendars mutation (async enqueue — no payload)."""
 
     success: bool
     error_message: str | None = None
@@ -587,3 +606,48 @@ class Mutation(CalendarGroupMutations):
             return DisableResourceCalendarResult(success=False, error_message=str(e))
 
         return DisableResourceCalendarResult(success=True)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def import_resource_calendars(
+        self,
+        info: strawberry.Info,
+        input: ImportResourceCalendarsInput,  # noqa: A002
+    ) -> ImportResourceCalendarsResult:
+        """Trigger a Google Workspace resource calendar import for the acting organization.
+
+        The mutation:
+        1. Resolves the organization from the request context.
+        2. Delegates to OrganizationService.request_rooms_sync, which resolves the org-level
+           GoogleCalendarServiceAccount, authenticates the calendar service, and enqueues
+           the import for the given [start_time, end_time] window (defaults: now / now+365d).
+        3. Returns success=True on success (async enqueue — no payload), or success=False
+           + errorMessage when no service account is configured or input is invalid.
+
+        The token's OrganizationResourceAccess must include the IMPORT_RESOURCE_CALENDARS resource.
+        """
+        org = info.context.request.public_api_organization
+        if not org:
+            return ImportResourceCalendarsResult(
+                success=False, error_message="Organization not found in request context."
+            )
+
+        deps = get_mutation_dependencies()
+
+        try:
+            # requested_by is typed as User but not used inside request_rooms_sync;
+            # the Public API caller is a SystemUser with no Django User equivalent.
+            deps.organization_service.request_rooms_sync(
+                organization=org,
+                requested_by=None,
+                start_time=input.start_time,
+                end_time=input.end_time,
+            )
+        except NoServiceAccountConfiguredError:
+            return ImportResourceCalendarsResult(
+                success=False,
+                error_message="No Google service account configured for this organization.",
+            )
+        except (CalendarIntegrationError, ValueError, DjangoValidationError) as e:
+            return ImportResourceCalendarsResult(success=False, error_message=str(e))
+
+        return ImportResourceCalendarsResult(success=True)

@@ -36,3 +36,4 @@ class PublicAPIResources(TextChoices):
     CHILD_ORG_ANALYTICS = "child_org_analytics", "Child Organization Analytics"
     CREATE_RESOURCE_CALENDAR = "create_resource_calendar", "Create Resource Calendar"
     DISABLE_RESOURCE_CALENDAR = "disable_resource_calendar", "Disable Resource Calendar"
+    IMPORT_RESOURCE_CALENDARS = "import_resource_calendars", "Import Resource Calendars"
