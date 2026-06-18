@@ -6220,7 +6220,7 @@ class TestCreateScopedSystemUserMutation:
         assert len(returned_token) > 0
 
         # Verify persisted SystemUser has the correct owner (stored as membership FK)
-        minted = SystemUser.objects.get(id=int(result["id"]))
+        minted = SystemUser.original_manager.get(id=int(result["id"]))
         assert minted.scoped_to_membership_fk.user_id == owner.id
         assert minted.scoped_to_membership_fk.organization_id == org.id
         assert minted.organization_id == org.id
@@ -6418,7 +6418,9 @@ class TestCreateScopedSystemUserMutation:
         d1 = r1.json()
         assert "errors" not in d1 or len(d1.get("errors", [])) == 0
 
-        su_count_after_first = SystemUser.objects.filter(integration_name="dup_scoped").count()
+        su_count_after_first = SystemUser.original_manager.filter(
+            integration_name="dup_scoped"
+        ).count()
         ra_count_after_first = ResourceAccess.objects.filter(
             system_user__integration_name="dup_scoped"
         ).count()
@@ -6445,7 +6447,8 @@ class TestCreateScopedSystemUserMutation:
 
         # No orphan SystemUser — still exactly one
         assert (
-            SystemUser.objects.filter(integration_name="dup_scoped").count() == su_count_after_first
+            SystemUser.original_manager.filter(integration_name="dup_scoped").count()
+            == su_count_after_first
         )
         assert (
             ResourceAccess.objects.filter(system_user__integration_name="dup_scoped").count()
