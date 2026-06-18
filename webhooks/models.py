@@ -2,9 +2,12 @@ from django.db import models
 
 from organizations.models import OrganizationForeignKey, OrganizationModel
 from webhooks.constants import WebhookEventType, WebhookStatus
+from webhooks.managers import WebhookConfigurationManager
 
 
 class WebhookConfiguration(OrganizationModel):
+    objects: WebhookConfigurationManager = WebhookConfigurationManager()
+
     event_type = models.CharField(
         max_length=255,
         choices=WebhookEventType,

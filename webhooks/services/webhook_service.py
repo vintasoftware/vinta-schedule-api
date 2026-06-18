@@ -1,6 +1,9 @@
 import datetime
 from typing import Any, cast
 
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import URLValidator
+
 import requests
 
 from organizations.models import Organization
@@ -12,15 +15,38 @@ from webhooks.tasks import process_webhook_event
 
 MAX_WEBHOOK_RETRIES = 5
 
+_url_validator = URLValidator(schemes=["http", "https"])
+
 
 class InitializedWebhook:
     organization: Organization
 
 
 class WebhookService:
+    def _validate_config_fields(self, event_type: str, url: str) -> None:
+        """Validate event_type and url before persisting a WebhookConfiguration.
+
+        Raises:
+            ValueError: if event_type is not a known WebhookEventType value.
+            ValueError: if url is empty or not a valid http(s) URL.
+        """
+        valid_event_types = {et.value for et in WebhookEventType}
+        if event_type not in valid_event_types:
+            raise ValueError(
+                f"Invalid event_type '{event_type}'. "
+                f"Valid values are: {', '.join(sorted(valid_event_types))}."
+            )
+        if not url:
+            raise ValueError("url must not be empty.")
+        try:
+            _url_validator(url)
+        except DjangoValidationError as e:
+            raise ValueError(f"Invalid url '{url}'. Must be a valid http(s) URL.") from e
+
     def create_configuration(
-        self, organization: Organization, event_type: WebhookEventType, url: str, headers: dict
+        self, organization: Organization, event_type: str, url: str, headers: dict
     ) -> WebhookConfiguration:
+        self._validate_config_fields(event_type, url)
         return WebhookConfiguration.objects.create(
             organization=organization, event_type=event_type, url=url, headers=headers
         )
@@ -28,10 +54,11 @@ class WebhookService:
     def update_configuration(
         self,
         configuration: WebhookConfiguration,
-        event_type: WebhookEventType,
+        event_type: str,
         url: str,
         headers: dict,
-    ) -> WebhookConfiguration | None:
+    ) -> WebhookConfiguration:
+        self._validate_config_fields(event_type, url)
         configuration.url = url
         configuration.event_type = event_type
         configuration.headers = headers

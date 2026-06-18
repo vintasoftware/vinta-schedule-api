@@ -35,7 +35,6 @@ from public_api.types import (
     UpdateBrandingInput,
     UpdateBrandingResult,
 )
-from webhooks.constants import WebhookEventType
 from webhooks.graphql import WebhookConfigurationGraphQLType
 from webhooks.models import WebhookConfiguration
 
@@ -511,10 +510,9 @@ class Mutation(CalendarGroupMutations):
         """Create an outgoing webhook configuration for the caller's organization.
 
         The mutation:
-        1. Validates that event_type is a known WebhookEventType value.
-        2. Validates that url is a non-empty http(s) URL.
-        3. Creates the configuration scoped to the acting organization.
-        4. Returns the created configuration.
+        1. Delegates event_type and url validation to the service layer.
+        2. Creates the configuration scoped to the acting organization.
+        3. Returns the created configuration.
 
         The token's OrganizationResourceAccess must include the WEBHOOK_CONFIGURATION resource.
         """
@@ -526,30 +524,17 @@ class Mutation(CalendarGroupMutations):
                 error_message="Organization not found",
             )
 
-        # Validate event_type is a known WebhookEventType value
-        valid_event_types = {et.value for et in WebhookEventType}
-        if input.event_type not in valid_event_types:
-            raise GraphQLError(
-                f"Invalid event_type '{input.event_type}'. "
-                f"Valid values are: {', '.join(sorted(valid_event_types))}."
-            )
-
-        # Validate url is a non-empty http(s) URL
-        if not input.url:
-            raise GraphQLError("url must not be empty.")
-        try:
-            _url_validator(input.url)
-        except DjangoValidationError as e:
-            raise GraphQLError(f"Invalid url '{input.url}'. Must be a valid http(s) URL.") from e
-
         headers: dict = cast(dict, input.headers) if input.headers is not None else {}
 
-        configuration = deps.webhook_service.create_configuration(
-            organization=org,
-            event_type=WebhookEventType(input.event_type),
-            url=input.url,
-            headers=headers,
-        )
+        try:
+            configuration = deps.webhook_service.create_configuration(
+                organization=org,
+                event_type=input.event_type,
+                url=input.url,
+                headers=headers,
+            )
+        except ValueError as e:
+            raise GraphQLError(str(e)) from e
 
         return CreateWebhookConfigurationResult(configuration=configuration)  # type: ignore[arg-type]
 
@@ -565,7 +550,7 @@ class Mutation(CalendarGroupMutations):
         1. Looks up the configuration by id, acting org, and non-deleted status.
         2. Returns a not-found error if missing or belonging to another org.
         3. Applies partial updates to event_type, url, and/or headers.
-        4. Validates any provided event_type or url values before saving.
+        4. Delegates validation of event_type and url to the service layer.
         5. Returns the updated configuration.
 
         The token's OrganizationResourceAccess must include the WEBHOOK_CONFIGURATION resource.
@@ -580,9 +565,12 @@ class Mutation(CalendarGroupMutations):
 
         # Tenant-scoped lookup: id + org + not-deleted
         try:
-            configuration = WebhookConfiguration.objects.filter_by_organization(org.id).get(
-                id=input.id,
-                deleted_at__isnull=True,
+            configuration = (
+                WebhookConfiguration.objects.filter_by_organization(org.id)
+                .live()
+                .get(
+                    id=input.id,
+                )
             )
         except WebhookConfiguration.DoesNotExist:
             return UpdateWebhookConfigurationResult(
@@ -598,28 +586,15 @@ class Mutation(CalendarGroupMutations):
             cast(dict, input.headers) if input.headers is not None else configuration.headers
         )
 
-        # Validate event_type if provided
-        valid_event_types = {et.value for et in WebhookEventType}
-        if new_event_type_str not in valid_event_types:
-            raise GraphQLError(
-                f"Invalid event_type '{new_event_type_str}'. "
-                f"Valid values are: {', '.join(sorted(valid_event_types))}."
-            )
-
-        # Validate url if provided
-        if not new_url:
-            raise GraphQLError("url must not be empty.")
         try:
-            _url_validator(new_url)
-        except DjangoValidationError as e:
-            raise GraphQLError(f"Invalid url '{new_url}'. Must be a valid http(s) URL.") from e
-
-        updated = deps.webhook_service.update_configuration(
-            configuration=configuration,
-            event_type=WebhookEventType(new_event_type_str),
-            url=new_url,
-            headers=new_headers,
-        )
+            updated = deps.webhook_service.update_configuration(
+                configuration=configuration,
+                event_type=new_event_type_str,
+                url=new_url,
+                headers=new_headers,
+            )
+        except ValueError as e:
+            raise GraphQLError(str(e)) from e
 
         return UpdateWebhookConfigurationResult(configuration=updated)  # type: ignore[arg-type]
 
@@ -649,9 +624,12 @@ class Mutation(CalendarGroupMutations):
 
         # Tenant-scoped lookup: id + org + not-deleted
         try:
-            configuration = WebhookConfiguration.objects.filter_by_organization(org.id).get(
-                id=input.id,
-                deleted_at__isnull=True,
+            configuration = (
+                WebhookConfiguration.objects.filter_by_organization(org.id)
+                .live()
+                .get(
+                    id=input.id,
+                )
             )
         except WebhookConfiguration.DoesNotExist:
             return DeleteWebhookConfigurationResult(
