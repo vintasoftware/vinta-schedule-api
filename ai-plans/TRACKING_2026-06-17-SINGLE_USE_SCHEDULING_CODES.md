@@ -59,11 +59,20 @@
 - **Open NITs (deferred, cosmetic)**: idempotency test docstring wording; tighten timestamp assertion to equality; late imports in test.
 - **PR**: pending (filled after push).
 
+### Phase 4 — Code-gated availability reads ✅
+- **Status**: complete, reviewed (Layers 1–3 security review + fix loop; no BLOCKERs).
+- **Model/tier**: implementer / Sonnet (Tier 3).
+- **Branch**: plan/single-use-scheduling-codes/phase-4 (base: phase-3).
+- **Commits**: 21b8c09 (5 code-gated read fields + resolve_code) + abab4a5 (harden: hash-verify test, range clamp, org guard).
+- **Outer gate**: `pytest -n auto` 2102 passed; check --deploy clean; makemigrations clean; ruff clean.
+- **Summary**: FIRST unauthenticated surface. `CalendarPermissionService.resolve_code(code)` derives org from the code (unscoped `original_manager` lookup gated by constant-time hash verify); `validate_code` delegates + org-asserts. Five no-permission_classes query fields (availableTimesWithCode, availabilityWindowsWithCode, unavailableWindowsWithCode, calendarGroupBookableSlotsWithCode, calendarGroupAvailabilityWithCode) — scope strictly from token (calendar/calendar_group or event.calendar/event.calendar_group), never consume, uniform "Invalid or expired code." on all failures (no oracle), datetime range clamped to 366 days (DoS guard). Reviewer confirmed: hash-verify-before-use, scope confinement, cross-org isolation, non-consumption. Rate limiter already keys unauth as anon:<client_ip>. 30 tests.
+- **NOTE**: main checkout has UNRELATED in-progress work (validateReturnUrl OAuth feature) on public_api/{queries,types,tests}; left untouched — worktree isolation kept my work separate.
+- **PR**: pending (filled after push).
+
 ## Current phase
-Phase 4 — Code-gated availability reads (next).
+Phase 5a — Book single-calendar event with code (next).
 
 ## Remaining phases
-- Phase 4 — Code-gated availability reads
 - Phase 5a — Book single-calendar event with code
 - Phase 5b — Book calendar-group event with code
 - Phase 6a — Reschedule single-calendar event with code
