@@ -2173,6 +2173,251 @@ class TestBrandingForTenantQuery:
         )
 
 
+_VALIDATE_RETURN_URL_QUERY = """
+    query ValidateReturnUrl($tenantId: ID!, $url: String!) {
+        validateReturnUrl(tenantId: $tenantId, url: $url) {
+            allowed
+            sanitizedUrl
+        }
+    }
+"""
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestValidateReturnUrlQuery:
+    """Test the unauthenticated validateReturnUrl public query.
+
+    This query lets the OAuth interstitial callback (no session yet) ask whether
+    a candidate `next` URL is allowed WITHOUT the reseller-internal
+    return_url_allowlist ever being exposed (§4.6).
+    """
+
+    @pytest.fixture
+    def anonymous_client(self):
+        """Create an unauthenticated GraphQL client (no Authorization header)."""
+        return APIClient()
+
+    def _post(self, client, tenant_id, url):
+        return client.post(
+            "/graphql/",
+            data=json.dumps(
+                {
+                    "query": _VALIDATE_RETURN_URL_QUERY,
+                    "variables": {"tenantId": str(tenant_id), "url": url},
+                }
+            ),
+            content_type="application/json",
+        )
+
+    def _make_reseller_with_allowlist(self, allowlist):
+        reseller = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        baker.make(
+            "organizations.OrganizationBranding",
+            organization=reseller,
+            app_name="MyApp",
+            return_url_allowlist=allowlist,
+        )
+        return reseller
+
+    def test_allowed_url_for_child_org(self, mock_rate_limiter, anonymous_client):
+        """A child org under a reseller whose allowlist contains the candidate's
+        origin returns allowed=True and echoes the url."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = self._make_reseller_with_allowlist(["https://app.example.com"])
+        child = baker.make(Organization, name="Child", parent=reseller)
+
+        candidate = "https://app.example.com/auth/callback?code=abc"
+        response = self._post(anonymous_client, child.id, candidate)
+
+        data = assert_graphql_success(response)
+        result = data["validateReturnUrl"]
+        assert result["allowed"] is True
+        assert result["sanitizedUrl"] == candidate
+
+    def test_allowed_url_for_reseller_itself(self, mock_rate_limiter, anonymous_client):
+        """A reseller validating against its own allowlist works."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = self._make_reseller_with_allowlist(["https://app.example.com"])
+
+        candidate = "https://app.example.com/return"
+        response = self._post(anonymous_client, reseller.id, candidate)
+
+        data = assert_graphql_success(response)
+        assert data["validateReturnUrl"] == {
+            "allowed": True,
+            "sanitizedUrl": candidate,
+        }
+
+    def test_origin_confusion_rejected(self, mock_rate_limiter, anonymous_client):
+        """A look-alike host suffix must NOT be admitted (no substring matching)."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = self._make_reseller_with_allowlist(["https://app.example.com"])
+
+        response = self._post(
+            anonymous_client, reseller.id, "https://app.example.com.evil.com/steal"
+        )
+
+        data = assert_graphql_success(response)
+        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
+
+    def test_scheme_mismatch_rejected(self, mock_rate_limiter, anonymous_client):
+        """http candidate against an https allowlist entry is a different origin."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = self._make_reseller_with_allowlist(["https://app.example.com"])
+
+        response = self._post(anonymous_client, reseller.id, "http://app.example.com/cb")
+
+        data = assert_graphql_success(response)
+        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
+
+    def test_default_port_normalization(self, mock_rate_limiter, anonymous_client):
+        """An explicit default port (:443 on https) equals the implicit origin."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = self._make_reseller_with_allowlist(["https://app.example.com"])
+
+        candidate = "https://app.example.com:443/cb"
+        response = self._post(anonymous_client, reseller.id, candidate)
+
+        data = assert_graphql_success(response)
+        assert data["validateReturnUrl"]["allowed"] is True
+        assert data["validateReturnUrl"]["sanitizedUrl"] == candidate
+
+    @pytest.mark.parametrize(
+        "bad_url",
+        [
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "//evil.com",
+            "not a url",
+            "",
+        ],
+    )
+    def test_scheme_guard_rejects_dangerous_schemes(
+        self, mock_rate_limiter, anonymous_client, bad_url
+    ):
+        """javascript:, data:, protocol-relative, and unparseable input are rejected
+        even when the host portion would otherwise match the allowlist."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = self._make_reseller_with_allowlist(
+            ["https://app.example.com", "https://evil.com"]
+        )
+
+        response = self._post(anonymous_client, reseller.id, bad_url)
+
+        data = assert_graphql_success(response)
+        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
+
+    def test_unknown_tenant_returns_not_allowed(self, mock_rate_limiter, anonymous_client):
+        """Unknown tenant ID returns the same not-allowed shape (no enumeration oracle)."""
+        mock_rate_limiter.return_value = iter([None])
+
+        response = self._post(anonymous_client, "999999", "https://app.example.com/cb")
+
+        data = assert_graphql_success(response)
+        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
+
+    def test_non_numeric_tenant_returns_not_allowed(self, mock_rate_limiter, anonymous_client):
+        """A non-numeric tenant ID never raises — returns not-allowed."""
+        mock_rate_limiter.return_value = iter([None])
+
+        response = self._post(anonymous_client, "not-an-int", "https://app.example.com/cb")
+
+        data = assert_graphql_success(response)
+        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
+
+    def test_org_without_branding_returns_not_allowed(self, mock_rate_limiter, anonymous_client):
+        """An org with no reseller branding returns the same not-allowed shape."""
+        mock_rate_limiter.return_value = iter([None])
+
+        org = baker.make(Organization, name="Unbranded")
+
+        response = self._post(anonymous_client, org.id, "https://app.example.com/cb")
+
+        data = assert_graphql_success(response)
+        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
+
+    def test_empty_allowlist_returns_not_allowed(self, mock_rate_limiter, anonymous_client):
+        """A reseller with an empty allowlist admits nothing (same shape)."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = self._make_reseller_with_allowlist([])
+
+        response = self._post(anonymous_client, reseller.id, "https://app.example.com/cb")
+
+        data = assert_graphql_success(response)
+        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
+
+    def test_no_oracle_identical_shape_across_negative_cases(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """Unknown tenant, no-branding org, and empty allowlist are indistinguishable."""
+        mock_rate_limiter.return_value = iter([None])
+
+        unbranded = baker.make(Organization, name="NoBranding")
+        empty_reseller = self._make_reseller_with_allowlist([])
+
+        candidate = "https://app.example.com/cb"
+        unknown = self._post(anonymous_client, "999999", candidate).json()["data"][
+            "validateReturnUrl"
+        ]
+        no_branding = self._post(anonymous_client, unbranded.id, candidate).json()["data"][
+            "validateReturnUrl"
+        ]
+        empty = self._post(anonymous_client, empty_reseller.id, candidate).json()["data"][
+            "validateReturnUrl"
+        ]
+
+        expected = {"allowed": False, "sanitizedUrl": None}
+        assert unknown == expected
+        assert no_branding == expected
+        assert empty == expected
+
+    def test_allowlist_never_serialized(self, mock_rate_limiter, anonymous_client):
+        """The allowlist values must never leak into the response (§4.6)."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = self._make_reseller_with_allowlist(
+            ["https://app.example.com", "https://secret-internal.example.com"]
+        )
+
+        response = self._post(anonymous_client, reseller.id, "https://app.example.com/cb")
+
+        body = response.content.decode()
+        assert "secret-internal.example.com" not in body
+        assert "returnUrlAllowlist" not in body
+        assert "return_url_allowlist" not in body
+
+    def test_callable_without_token(self, mock_rate_limiter, anonymous_client):
+        """validateReturnUrl is callable without authentication."""
+        mock_rate_limiter.return_value = iter([None])
+
+        response = self._post(anonymous_client, "1", "https://app.example.com/cb")
+
+        assert_response_status_code(response, 200)
+        body = response.json()
+        assert "data" in body and body["data"] is not None
+        assert "validateReturnUrl" in body["data"]
+
+    def test_rate_limited_like_branding(self, mock_rate_limiter, anonymous_client):
+        """validateReturnUrl runs through the same OrganizationRateLimiter extension."""
+        mock_rate_limiter.return_value = iter([None])
+
+        org = baker.make(Organization, name="TestOrg")
+        response = self._post(anonymous_client, org.id, "https://app.example.com/cb")
+
+        assert_response_status_code(response, 200)
+        assert mock_rate_limiter.called, (
+            "Rate limiter should be invoked for the unauthenticated validateReturnUrl query"
+        )
+
+
 # ---------------------------------------------------------------------------
 # childOrganizations analytics query tests
 # ---------------------------------------------------------------------------

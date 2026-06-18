@@ -1,6 +1,7 @@
 import datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, cast
+from urllib.parse import urlsplit
 
 from django.db.models import Count as DjangoCount
 from django.db.models import OuterRef, Subquery, Value
@@ -40,7 +41,12 @@ from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
 )
-from public_api.types import ChildOrganizationMetrics, PublicApiHttpRequest, PublicBrandingResult
+from public_api.types import (
+    ChildOrganizationMetrics,
+    PublicApiHttpRequest,
+    PublicBrandingResult,
+    ValidateReturnUrlResult,
+)
 from users.graphql import UserGraphQLType
 from users.models import User
 
@@ -95,6 +101,41 @@ def _vinta_default_branding() -> PublicBrandingResult:
         primary_color="",
         secondary_color="",
     )
+
+
+_ALLOWED_RETURN_URL_SCHEMES = ("http", "https")
+_DEFAULT_SCHEME_PORTS = {"http": 80, "https": 443}
+
+
+def _return_url_origin(raw: str) -> tuple[str, str, int] | None:
+    """Parse a URL into its (scheme, host, port) origin, or None if not eligible.
+
+    Returns None for anything that can never be an allowed return URL:
+    - non-http/https schemes (javascript:, data:, etc.)
+    - protocol-relative URLs (//host — no scheme)
+    - URLs without a host
+    - unparseable input or out-of-range ports
+
+    The port is normalized to the scheme default when omitted so that
+    https://app.example.com and https://app.example.com:443 share one origin.
+    Host is lowercased; comparison of two origins is then EXACT tuple equality,
+    so https://app.example.com never admits https://app.example.com.evil.com.
+    """
+    try:
+        parts = urlsplit(raw)
+        scheme = parts.scheme.lower()
+        if scheme not in _ALLOWED_RETURN_URL_SCHEMES:
+            return None
+        host = parts.hostname
+        if not host:
+            return None
+        port = parts.port
+    except (ValueError, TypeError):
+        # Malformed URL or out-of-range port (parts.port raises ValueError).
+        return None
+    if port is None:
+        port = _DEFAULT_SCHEME_PORTS[scheme]
+    return (scheme, host.lower(), port)
 
 
 def _slice_qs[TQuerySet: QuerySet](qs: TQuerySet, offset: int, limit: int) -> TQuerySet:
@@ -653,3 +694,66 @@ class Query:
             primary_color=branding.primary_color,
             secondary_color=branding.secondary_color,
         )
+
+    @strawberry.field()
+    def validate_return_url(self, tenant_id: strawberry.ID, url: str) -> ValidateReturnUrlResult:
+        """Validate an OAuth return ("next") URL against a tenant's branding allowlist.
+
+        Unauthenticated, rate-limited public query for the OAuth interstitial
+        callback, which has no session yet and so cannot use the reseller-admin
+        REST /branding/ endpoint. Answers a yes/no question WITHOUT ever
+        serializing the reseller-internal return_url_allowlist (preserves §4.6).
+
+        The candidate URL's ORIGIN (scheme + host + port) must EXACTLY equal the
+        origin of an allowlist entry — never a prefix/substring match — so an
+        allowlisted https://app.example.com does NOT admit
+        https://app.example.com.evil.com. Only http/https candidates can ever be
+        allowed; javascript:, data:, protocol-relative //host, and unparseable
+        input are rejected.
+
+        No enumeration oracle: unknown tenant ID, no branding row, empty
+        allowlist, and any not-allowed case ALL return the identical shape
+        {allowed: False, sanitized_url: None} with no error that distinguishes
+        "tenant exists" from "doesn't". Never raises on a bad tenant ID.
+
+        Args:
+            tenant_id: The ID of the organization whose reseller allowlist applies.
+            url: The candidate return URL to validate.
+
+        Returns:
+            ValidateReturnUrlResult with allowed and, when allowed, the echoed url.
+        """
+        not_allowed = ValidateReturnUrlResult(allowed=False, sanitized_url=None)
+
+        # Scheme/parse guard first — never reveals anything about the tenant.
+        candidate_origin = _return_url_origin(url)
+        if candidate_origin is None:
+            return not_allowed
+
+        try:
+            tenant_id_int = int(tenant_id)
+            org = Organization.objects.filter(id=tenant_id_int).first()
+        except (ValueError, TypeError):
+            org = None
+
+        if org is None:
+            # Unknown / unparseable tenant — same shape as not-allowed (no oracle).
+            return not_allowed
+
+        branding = resolve_branding(org)
+        if branding is None:
+            # Unbranded subtree — same shape as not-allowed (no oracle).
+            return not_allowed
+
+        # Build the set of allowed origins; ineligible entries are simply skipped.
+        # The allowlist itself is NEVER serialized into the response (§4.6).
+        allowed_origins = {
+            origin
+            for entry in (branding.return_url_allowlist or [])
+            if (origin := _return_url_origin(entry)) is not None
+        }
+
+        if candidate_origin in allowed_origins:
+            return ValidateReturnUrlResult(allowed=True, sanitized_url=url)
+
+        return not_allowed
