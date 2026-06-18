@@ -1,9 +1,16 @@
+from typing import TYPE_CHECKING, Any
+
 from common.utils.authentication_utils import (
     generate_long_lived_token,
     hash_long_lived_token,
     verify_long_lived_token,
 )
 from public_api.models import SystemUser
+
+
+if TYPE_CHECKING:
+    from organizations.models import Organization
+    from users.models import User
 
 
 class PublicAPIAuthService:
@@ -27,12 +34,31 @@ class PublicAPIAuthService:
 
         return system_user, verify_long_lived_token(token, system_user.long_lived_token_hash)
 
-    def create_system_user(self, integration_name: str, organization) -> tuple[SystemUser, str]:
+    def create_system_user(
+        self,
+        integration_name: str,
+        organization: "Organization",
+        scoped_to_user: "User | None" = None,
+    ) -> tuple[SystemUser, str]:
+        """
+        Create a new system user with a long-lived token.
+
+        :param integration_name: Unique name identifying the integration.
+        :param organization: The organization this system user belongs to.
+        :param scoped_to_user: Optional user to scope this token to. When set, the token
+            may only read/write data belonging to calendars owned by this user.
+            When None (default), the token has org-wide access (legacy default).
+        :return: Tuple of (system_user, plaintext_token). The plaintext token is exposed
+            once and never persisted; only the hash is stored.
+        """
         token = generate_long_lived_token()
-        system_user = SystemUser.objects.create(
-            organization=organization,
-            integration_name=integration_name,
-            long_lived_token_hash=hash_long_lived_token(token),
-            is_active=True,
-        )
+        create_kwargs: dict[str, Any] = {
+            "organization": organization,
+            "integration_name": integration_name,
+            "long_lived_token_hash": hash_long_lived_token(token),
+            "is_active": True,
+        }
+        if scoped_to_user is not None:
+            create_kwargs["scoped_to_user"] = scoped_to_user
+        system_user = SystemUser.objects.create(**create_kwargs)
         return system_user, token

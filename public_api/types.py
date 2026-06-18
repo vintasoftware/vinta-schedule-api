@@ -166,6 +166,36 @@ class PublicBrandingResult:
     secondary_color: str
 
 
+@strawberry.input
+class CreateScopedSystemUserInput:
+    """Input for minting a provider-scoped Public API token.
+
+    scoped_to_user_id must resolve to an active member of the caller's organization.
+    available_resources must be a non-empty list of resources drawn from the
+    PROVIDER_SCOPED_RESOURCES allow-list.
+    """
+
+    integration_name: str
+    scoped_to_user_id: int
+    available_resources: list[str]
+
+
+@strawberry.type
+class CreateScopedSystemUserResult:
+    """Result of minting a provider-scoped Public API token.
+
+    token is the plaintext token — exposed exactly once and never persisted.
+    scoped_to_user_id identifies the provider whose data this token may access.
+    """
+
+    id: int
+    integration_name: str
+    is_active: bool
+    available_resources: list[str]
+    scoped_to_user_id: int
+    token: str
+
+
 @strawberry.type
 class ValidateReturnUrlResult:
     """Result of validating an OAuth return ("next") URL against a tenant's allowlist.
