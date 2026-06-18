@@ -108,11 +108,19 @@
 - **BLOCKER caught + fixed**: tz storage divergence — `_create_non_primary_blocked_times` wrote blocked-time `*_tz_unaware` RAW (UTC wall-clock) while the primary event + reschedule write CONVERTED (local wall-clock), so non-primary blocked times drifted off the primary event for non-UTC zones (pre-existing create bug). Fixed create to convert; added a non-UTC (America/Recife) regression test asserting primary event + blocked times stay aligned.
 - **PR**: pending (filled after push).
 
-## Current phase
-Phase 6c — Cancel event with code (next, final implementable phase).
+### Phase 6c — Cancel event with code ✅
+- **Status**: complete, reviewed (Layers 1–3 + fix loop; no BLOCKERs).
+- **Model/tier**: implementer / Sonnet (Tier 3).
+- **Branch**: plan/single-use-scheduling-codes/phase-6c (base: phase-6b).
+- **Commits**: 7deb944 (cancel-with-code + cancel_grouped_event) + 59d0ed9 (error mapping + atomicity test).
+- **Outer gate**: `pytest -n auto` 2174 passed; check --deploy clean; makemigrations clean; ruff clean.
+- **Summary**: unauthenticated `cancelEventWithCode` (input `{ code }`), handles both calendar- and group-bound CANCEL codes. resolve_code → require CANCEL + event scope → atomic { consume_code → delete (calendar: delete_event; group: new `CalendarGroupService.cancel_grouped_event` which deletes linked non-primary BlockedTimes by external_id then deletes the primary event, selections cascade) }. consume BEFORE delete (the token's event FK is CASCADE, so delete removes the token; both in one txn → a failed delete rolls back the consume). Error mapping incl. InvalidTokenError→INVALID_CODE, PermissionDenied→NOT_PERMITTED, CalendarGroupValidationError→NOT_PERMITTED.
+- **Documented deviations (accepted)**:
+  1. **Replay of a used cancel code returns INVALID_CODE, not ALREADY_USED** (plan acceptance said ALREADY_USED). Reason: the token's `event` FK is `on_delete=CASCADE`, so a successful cancel deletes the event AND cascade-deletes the token; replay then hits DoesNotExist → INVALID_CODE. Single-use is still genuinely enforced (token gone, no second action possible). Side effect: the `used_at`/`consumed_source_ip` audit row is not retained for cancellations (the event is gone anyway). Changing to ALREADY_USED + retained audit would need `token.event` → SET_NULL, which is non-trivial on the composite OrganizationForeignKey — deferred.
 
-## Remaining phases
-- Phase 6c — Cancel event with code
+## Known follow-ups (minor, deferred)
+- **InvalidTokenError error-label consistency**: in the with-code consume paths of Phases 5a/5b/6a/6b, if a token is deleted in the narrow window between `resolve_code` and `consume_code`, the resulting `InvalidTokenError` (subclass of PermissionDenied) falls through to the `except PermissionDenied` handler and is mislabeled NOT_PERMITTED instead of INVALID_CODE. Fixed in 6c; the same one-line explicit-catch should be applied to 5a/5b/6a/6b. Cosmetic (rare race, error-code label only); deferred to avoid re-churning the stacked branches. Recommend a small follow-up PR.
+- **Phase 0 cosmetic NITs** (Phase 3 idempotency test docstring; tighten timestamp assertion) — non-blocking.
 
 ## Deferred phases
-_None (no cross-repo, no flag-removal)._
+_None (no cross-repo, no flag-removal phase — the plan declared no feature flag)._
