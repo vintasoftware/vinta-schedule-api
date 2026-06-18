@@ -50,6 +50,7 @@ from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
 )
+from public_api.scoping import scoped_calendar_ids
 from public_api.types import (
     ChildOrganizationMetrics,
     PublicApiHttpRequest,
@@ -178,6 +179,15 @@ def _prepare_service_and_calendar(
     deps.calendar_service.initialize_without_provider(
         user_or_token=request.public_api_system_user, organization=org
     )
+
+    # Owner-scope check: when the token is scoped, reject calendars outside the owner's set.
+    # Match the same not-found path used for a genuinely missing calendar (no existence leak).
+    system_user = request.public_api_system_user
+    if system_user is not None:
+        allowed_ids = scoped_calendar_ids(system_user, org)
+        if allowed_ids is not None and calendar_id not in allowed_ids:
+            raise Calendar.DoesNotExist("Calendar matching query does not exist.")
+
     cal = Calendar.objects.filter_by_organization(org.id).get(id=calendar_id)
     return deps.calendar_service, cal
 
@@ -277,6 +287,16 @@ class Query:
             raise GraphQLError("Limit must be between 1 and 100")
 
         queryset = Calendar.objects.filter_by_organization(org.id).only_listed()
+
+        # Owner-scope enforcement: scoped tokens may only see their owner's calendars.
+        # None => org-wide token (no-op). A set (possibly empty) => constrain to those ids.
+        request: PublicApiHttpRequest = info.context.request
+        system_user = request.public_api_system_user
+        if system_user is not None:
+            allowed_ids = scoped_calendar_ids(system_user, org)
+            if allowed_ids is not None:
+                queryset = queryset.filter(id__in=allowed_ids)
+
         if calendar_id is not None:
             queryset = queryset.filter(id=calendar_id)
 
@@ -308,7 +328,16 @@ class Query:
         org = _get_org(info)
 
         if event_id is not None:
-            return CalendarEvent.objects.filter_by_organization(org.id).filter(id=event_id)
+            qs = CalendarEvent.objects.filter_by_organization(org.id).filter(id=event_id)
+            # Owner-scope: for scoped tokens, only return the event if its calendar is in the
+            # owner's set. Return empty (not an error) to avoid existence leaks.
+            request: PublicApiHttpRequest = info.context.request
+            system_user = request.public_api_system_user
+            if system_user is not None:
+                allowed_ids = scoped_calendar_ids(system_user, org)
+                if allowed_ids is not None:
+                    qs = qs.filter(calendar_fk__in=allowed_ids)
+            return qs  # type: ignore[return-value]
 
         if not calendar_id or not start_datetime or not end_datetime:
             raise GraphQLError(
@@ -322,6 +351,15 @@ class Query:
             start_datetime,
             end_datetime,
         )
+
+        request: PublicApiHttpRequest = info.context.request
+        allowed_ids = (
+            scoped_calendar_ids(request.public_api_system_user, org)
+            if request.public_api_system_user is not None
+            else None
+        )
+        if allowed_ids is not None:
+            events = [e for e in events if getattr(e, "calendar_fk_id", None) in allowed_ids]
 
         return cast(
             list[CalendarEventGraphQLType],
@@ -342,7 +380,16 @@ class Query:
         org = _get_org(info)
 
         if blocked_time_id is not None:
-            return BlockedTime.objects.filter_by_organization(org.id).filter(id=blocked_time_id)
+            qs = BlockedTime.objects.filter_by_organization(org.id).filter(id=blocked_time_id)
+            # Owner-scope: for scoped tokens, only return the blocked time if its calendar is in
+            # the owner's set. Return empty (not an error) to avoid existence leaks.
+            request: PublicApiHttpRequest = info.context.request
+            system_user = request.public_api_system_user
+            if system_user is not None:
+                allowed_ids = scoped_calendar_ids(system_user, org)
+                if allowed_ids is not None:
+                    qs = qs.filter(calendar_fk__in=allowed_ids)
+            return qs  # type: ignore[return-value]
 
         if not calendar_id or not start_datetime or not end_datetime:
             raise GraphQLError(
@@ -357,6 +404,17 @@ class Query:
             start_datetime,
             end_datetime,
         )
+
+        request: PublicApiHttpRequest = info.context.request
+        allowed_ids = (
+            scoped_calendar_ids(request.public_api_system_user, org)
+            if request.public_api_system_user is not None
+            else None
+        )
+        if allowed_ids is not None:
+            blocked_times = [
+                bt for bt in blocked_times if getattr(bt, "calendar_fk_id", None) in allowed_ids
+            ]
 
         return cast(
             list[BlockedTimeGraphQLType],
@@ -377,7 +435,16 @@ class Query:
         org = _get_org(info)
 
         if available_time_id is not None:
-            return AvailableTime.objects.filter_by_organization(org.id).filter(id=available_time_id)
+            qs = AvailableTime.objects.filter_by_organization(org.id).filter(id=available_time_id)
+            # Owner-scope: for scoped tokens, only return the available time if its calendar is
+            # in the owner's set. Return empty (not an error) to avoid existence leaks.
+            request: PublicApiHttpRequest = info.context.request
+            system_user = request.public_api_system_user
+            if system_user is not None:
+                allowed_ids = scoped_calendar_ids(system_user, org)
+                if allowed_ids is not None:
+                    qs = qs.filter(calendar_fk__in=allowed_ids)
+            return qs  # type: ignore[return-value]
 
         if not calendar_id or not start_datetime or not end_datetime:
             raise GraphQLError(
@@ -392,6 +459,17 @@ class Query:
             start_datetime,
             end_datetime,
         )
+
+        request: PublicApiHttpRequest = info.context.request
+        allowed_ids = (
+            scoped_calendar_ids(request.public_api_system_user, org)
+            if request.public_api_system_user is not None
+            else None
+        )
+        if allowed_ids is not None:
+            available_times = [
+                at for at in available_times if getattr(at, "calendar_fk_id", None) in allowed_ids
+            ]
 
         return cast(
             list[AvailableTimeGraphQLType],
