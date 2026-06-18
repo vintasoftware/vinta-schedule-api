@@ -9,8 +9,7 @@ from public_api.models import SystemUser
 
 
 if TYPE_CHECKING:
-    from organizations.models import Organization
-    from users.models import User
+    from organizations.models import Organization, OrganizationMembership
 
 
 class PublicAPIAuthService:
@@ -38,15 +37,16 @@ class PublicAPIAuthService:
         self,
         integration_name: str,
         organization: "Organization",
-        scoped_to_user: "User | None" = None,
+        scoped_to_membership: "OrganizationMembership | None" = None,
     ) -> tuple[SystemUser, str]:
         """
         Create a new system user with a long-lived token.
 
         :param integration_name: Unique name identifying the integration.
         :param organization: The organization this system user belongs to.
-        :param scoped_to_user: Optional user to scope this token to. When set, the token
-            may only read/write data belonging to calendars owned by this user.
+        :param scoped_to_membership: Optional OrganizationMembership to scope this token to.
+            When set, the token may only read/write data belonging to calendars owned by the
+            membership's user within that organization.
             When None (default), the token has org-wide access (legacy default).
         :return: Tuple of (system_user, plaintext_token). The plaintext token is exposed
             once and never persisted; only the hash is stored.
@@ -58,7 +58,7 @@ class PublicAPIAuthService:
             "long_lived_token_hash": hash_long_lived_token(token),
             "is_active": True,
         }
-        if scoped_to_user is not None:
-            create_kwargs["scoped_to_user"] = scoped_to_user
+        if scoped_to_membership is not None:
+            create_kwargs["scoped_to_membership_fk"] = scoped_to_membership
         system_user = SystemUser.objects.create(**create_kwargs)
         return system_user, token

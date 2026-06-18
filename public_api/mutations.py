@@ -751,15 +751,15 @@ class Mutation(CalendarGroupMutations):
         if not org:
             raise GraphQLError("Organization not found")
 
-        # Validate owner: must exist and be an active member of the caller's org
-        user_model = get_user_model()
+        # Validate owner: resolve the active membership of the given user in the caller's org.
+        # This single query both validates active membership AND yields the value to store.
         try:
-            owner = user_model.objects.get(
-                id=input.scoped_to_user_id,
-                organization_memberships__organization=org,
-                organization_memberships__is_active=True,
+            membership = OrganizationMembership.objects.get(
+                user_id=input.scoped_to_user_id,
+                organization=org,
+                is_active=True,
             )
-        except user_model.DoesNotExist as e:
+        except OrganizationMembership.DoesNotExist as e:
             raise GraphQLError(
                 f"User with id '{input.scoped_to_user_id}' is not an active member of "
                 "the caller's organization."
@@ -792,7 +792,7 @@ class Mutation(CalendarGroupMutations):
                 system_user, plaintext_token = deps.public_api_auth_service.create_system_user(
                     integration_name=input.integration_name,
                     organization=org,
-                    scoped_to_user=owner,
+                    scoped_to_membership=membership,
                 )
                 # dict.fromkeys dedupes while preserving order; prevents constraint violations
                 ResourceAccess.objects.bulk_create(
@@ -817,15 +817,15 @@ class Mutation(CalendarGroupMutations):
             )
         )
 
-        # scoped_to_user_id is always set here — we passed owner to create_system_user above.
-        assert system_user.scoped_to_user_id is not None  # noqa: S101
+        # scoped_to_membership_fk_id is always set here — we passed membership to create_system_user above.
+        assert system_user.scoped_to_membership_fk_id is not None  # noqa: S101
 
         return CreateScopedSystemUserResult(
             id=system_user.id,
             integration_name=system_user.integration_name,
             is_active=system_user.is_active,
             available_resources=granted_resources,
-            scoped_to_user_id=system_user.scoped_to_user_id,
+            scoped_to_user_id=membership.user_id,
             token=plaintext_token,
         )
 
