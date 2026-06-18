@@ -27,11 +27,20 @@
 - Review: no BLOCKER/SHOULD-FIX; 3 NITs (sentence-case label is spec-verbatim; `data: dict` matches plan; unneeded django_db marker) — left as-is.
 - PR-context: `.vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-0.md` (status: pending).
 
+### Phase 1 — Enveloped delivery for all event types (breaking) ✅
+- Status: implemented, fixed (SHOULD-FIX), verified, reviewed, pushed. PR pending (gh unavailable).
+- Model: Tier 3 (sonnet).
+- Branch: `plan/organization-member-created-webhook/phase-1` → base `phase-0`.
+- Commits: `c1658ce` (feat envelope) + `195bdf1` (refactor: type as WebhookEnvelope + e2e retry test).
+- Key correctness: envelope `id = str(event.main_event_fk_id or event.id)` (composite ForeignObject → FK accessor is `main_event_fk_id`, not `main_event_id`); retry-chain-stable.
+- Verify: ruff clean; mypy no new errors; webhooks suite 58 passed; check --deploy only dev warnings.
+- Review: no BLOCKER; 1 SHOULD-FIX (use WebhookEnvelope TypedDict) fixed; NITs addressed (e2e retry test, `data: dict[str, Any]`).
+- PR-context: `.vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-1.md` (pending).
+
 ## Current phase
-- Phase 1 — Enveloped delivery for all event types (breaking). Tier 3 (sonnet).
+- Phase 2 — Membership side-effects service + invitation-accept emission. Tier 3 (sonnet).
 
 ## Remaining phases
-- Phase 1 — Enveloped delivery for all event types (breaking)
 - Phase 2 — Membership side-effects service + invitation-accept emission
 - Phase 3 — Org-creator (admin) emission
 - Phase 4 — Provision-path coverage + multi-org refire
