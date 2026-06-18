@@ -1381,6 +1381,27 @@ class CalendarService(BaseCalendarService):
             rrule_string=rrule_string,
         )
 
+    def delete_blocked_time(
+        self,
+        calendar: Calendar,
+        blocked_time_id: int,
+    ) -> None:
+        """Delete an existing blocked time (single-row delete).
+
+        Delegates to AvailabilityService.delete_blocked_time.
+
+        A recurring blocked time is stored as one row (with an rrule on its RecurrenceRule).
+        Deleting it removes the whole recurrence series.
+
+        :param calendar: The calendar the blocked time belongs to.
+        :param blocked_time_id: The id of the blocked time to delete.
+        :raises ValueError: If blocked_time_id is not found in this calendar.
+        """
+        return self._get_availability_service().delete_blocked_time(
+            calendar=calendar,
+            blocked_time_id=blocked_time_id,
+        )
+
     def create_available_time(
         self,
         calendar: Calendar,

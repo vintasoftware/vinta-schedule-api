@@ -57,6 +57,7 @@ class OrganizationResourceAccess(BasePermission):
         "batchUpdateAvailabilityWindows": PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS,
         "createBlockedTime": PublicAPIResources.CREATE_BLOCKED_TIME,
         "updateBlockedTime": PublicAPIResources.UPDATE_BLOCKED_TIME,
+        "deleteBlockedTime": PublicAPIResources.DELETE_BLOCKED_TIME,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
