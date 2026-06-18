@@ -1,7 +1,7 @@
 """Phase 5 — Cross-owner adversarial sweep for per-owner-scoped Public API tokens.
 
 This file is the consolidated negative-path guarantee for the per-owner-scoping
-feature. It proves that a PROVIDER-SCOPED token (``SystemUser.scoped_to_user`` set)
+feature. It proves that a PROVIDER-SCOPED token (``SystemUser.scoped_to_membership`` set)
 cannot reach data belonging to calendars owned by ANOTHER provider in the same
 organization — across:
 
@@ -15,7 +15,7 @@ organization — across:
     scheduleEvent).
 
 Each test is BEHAVIORAL: it FAILS if its corresponding owner guard / field resolver
-is removed. A regression block at the end asserts org-wide tokens (scoped_to_user IS
+is removed. A regression block at the end asserts org-wide tokens (scoped_to_membership IS
 NULL) are unaffected by any guard.
 
 Companion artifact: ``ai-plans/2026-06-17-PER_OWNER_SCOPED_PUBLIC_API_TOKENS_SECURITY_REVIEW.md``.
@@ -44,7 +44,7 @@ from calendar_integration.models import (
     ResourceAllocation,
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
@@ -71,12 +71,15 @@ def _grant_all(system_user: SystemUser) -> None:
 
 
 def _make_scoped_client(organization: Organization, owner: User) -> tuple[APIClient, SystemUser]:
-    """Scoped (scoped_to_user=owner) client with all provider resource grants."""
+    """Scoped (scoped to owner's membership) client with all provider resource grants."""
+    membership, _ = OrganizationMembership.objects.get_or_create(
+        user=owner, organization=organization, defaults={"is_active": True}
+    )
     token = generate_long_lived_token()
     system_user = baker.make(
         SystemUser,
         organization=organization,
-        scoped_to_user=owner,
+        scoped_to_membership_fk=membership,
         integration_name=f"sec_scoped_{organization.pk}_{owner.pk}_{uuid4().hex[:8]}",
         long_lived_token_hash=hash_long_lived_token(token),
         is_active=True,
@@ -88,7 +91,7 @@ def _make_scoped_client(organization: Organization, owner: User) -> tuple[APICli
 
 
 def _make_org_wide_client(organization: Organization) -> tuple[APIClient, SystemUser]:
-    """Org-wide (scoped_to_user IS NULL) client with all provider resource grants."""
+    """Org-wide (scoped_to_membership IS NULL) client with all provider resource grants."""
     auth_service = PublicAPIAuthService()
     system_user, token = auth_service.create_system_user(
         integration_name=f"sec_orgwide_{organization.pk}_{uuid4().hex[:8]}",
@@ -655,7 +658,7 @@ class TestWriteMutationsNoCrossOwnerWrite:
 @pytest.mark.django_db
 @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
 class TestOrgWideTokenUnaffected:
-    """Org-wide (scoped_to_user IS NULL) tokens see/do everything in their org."""
+    """Org-wide (scoped_to_membership IS NULL) tokens see/do everything in their org."""
 
     def test_org_wide_sees_both_calendars(self, mock_rl, organization, calendar_a, calendar_b):
         mock_rl.return_value = iter([None])
