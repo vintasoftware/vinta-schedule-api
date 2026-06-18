@@ -27,10 +27,13 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    CalendarGroupSlot,
+    CalendarGroupSlotMembership,
     CalendarManagementToken,
     CalendarManagementTokenPermission,
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
+from calendar_integration.services.dataclasses import CalendarEventInputData, CalendarSettingsData
 from organizations.models import Organization
 from public_api.models import SystemUser
 
@@ -321,3 +324,157 @@ def test_validate_code_future_expiry_is_valid(service, org, calendar):
 
     result = service.validate_code(code, org.id)
     assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# can_perform_scheduling() — group-scoped token branch (Phase 5b)
+# ---------------------------------------------------------------------------
+
+
+def _restricted_settings() -> CalendarSettingsData:
+    """A calendar settings fixture where public scheduling is disabled."""
+    return CalendarSettingsData(manage_available_windows=True, accepts_public_scheduling=False)
+
+
+def _public_settings() -> CalendarSettingsData:
+    """A calendar settings fixture where public scheduling is enabled."""
+    return CalendarSettingsData(manage_available_windows=False, accepts_public_scheduling=True)
+
+
+def _dummy_event_data(org: Organization, cal: Calendar) -> CalendarEventInputData:
+    """Minimal CalendarEventInputData for use in can_perform_scheduling calls."""
+    now = timezone.now()
+    return CalendarEventInputData(
+        title="Test",
+        description="",
+        start_time=now,
+        end_time=now + datetime.timedelta(hours=1),
+        timezone="UTC",
+    )
+
+
+@pytest.fixture
+def group_with_member_calendar(org, calendar):
+    """A CalendarGroup with one slot containing `calendar`."""
+    grp = CalendarGroup.objects.create(organization=org, name="Test Group")
+    slot = CalendarGroupSlot.objects.create(
+        organization=org,
+        group=grp,
+        name="Physicians",
+        order=0,
+    )
+    CalendarGroupSlotMembership.objects.create(
+        organization=org,
+        slot=slot,
+        calendar=calendar,
+    )
+    return grp
+
+
+@pytest.fixture
+def non_member_calendar(org):
+    """A calendar that does NOT belong to any group slot."""
+    return Calendar.objects.create(
+        name="Non-Member Calendar",
+        organization=org,
+        external_id="non-member-cal",
+    )
+
+
+@pytest.mark.django_db
+def test_can_perform_scheduling_group_token_member_calendar_with_create_returns_true(
+    service, org, calendar, group_with_member_calendar
+):
+    """Group-scoped token + CREATE + member calendar → True.
+
+    This is the fix verified by Phase 5b's happy-path test.  Before the fix,
+    this would have returned False for a restricted calendar.
+    """
+    token, _ = service.create_booking_token(
+        organization_id=org.id,
+        permissions=[EventManagementPermissions.CREATE],
+        calendar_group_id=group_with_member_calendar.id,
+    )
+    # Simulate what initialize_with_token does: set the token on the service.
+    service.token = token
+
+    result = service.can_perform_scheduling(
+        calendar_id=calendar.id,
+        calendar_settings=_restricted_settings(),
+        event=_dummy_event_data(org, calendar),
+    )
+    assert result is True
+
+
+@pytest.mark.django_db
+def test_can_perform_scheduling_group_token_non_member_calendar_returns_false(
+    service, org, non_member_calendar, group_with_member_calendar
+):
+    """Group-scoped token + CREATE + calendar NOT in the group → False."""
+    token, _ = service.create_booking_token(
+        organization_id=org.id,
+        permissions=[EventManagementPermissions.CREATE],
+        calendar_group_id=group_with_member_calendar.id,
+    )
+    service.token = token
+
+    result = service.can_perform_scheduling(
+        calendar_id=non_member_calendar.id,
+        calendar_settings=_restricted_settings(),
+        event=_dummy_event_data(org, non_member_calendar),
+    )
+    assert result is False
+
+
+@pytest.mark.django_db
+def test_can_perform_scheduling_group_token_without_create_returns_false(
+    service, org, calendar, group_with_member_calendar
+):
+    """Group-scoped token without CREATE permission → False even for a member calendar."""
+    token, _ = service.create_booking_token(
+        organization_id=org.id,
+        permissions=[EventManagementPermissions.RESCHEDULE],
+        calendar_group_id=group_with_member_calendar.id,
+    )
+    service.token = token
+
+    result = service.can_perform_scheduling(
+        calendar_id=calendar.id,
+        calendar_settings=_restricted_settings(),
+        event=_dummy_event_data(org, calendar),
+    )
+    assert result is False
+
+
+@pytest.mark.django_db
+def test_can_perform_scheduling_public_calendar_always_returns_true(
+    service, org, calendar, group_with_member_calendar
+):
+    """accepts_public_scheduling=True bypasses token check (existing behaviour)."""
+    # No token set.
+    result = service.can_perform_scheduling(
+        calendar_id=calendar.id,
+        calendar_settings=_public_settings(),
+        event=_dummy_event_data(org, calendar),
+    )
+    assert result is True
+
+
+@pytest.mark.django_db
+def test_can_perform_scheduling_calendar_scoped_token_own_calendar_returns_true(
+    service, org, calendar
+):
+    """Calendar-scoped token for the exact calendar + CREATE → True (existing behaviour)."""
+    token, _ = service.create_booking_token(
+        organization_id=org.id,
+        permissions=[EventManagementPermissions.CREATE],
+        calendar_id=calendar.id,
+    )
+    service.token = token
+
+    result = service.can_perform_scheduling(
+        calendar_id=calendar.id,
+        calendar_settings=_restricted_settings(),
+        event=_dummy_event_data(org, calendar),
+    )
+    assert result is True
