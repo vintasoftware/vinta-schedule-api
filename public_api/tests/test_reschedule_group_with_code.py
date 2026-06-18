@@ -38,7 +38,13 @@ from calendar_integration.models import (
     CalendarManagementToken,
     EventManagementPermissions,
 )
+from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
+from calendar_integration.services.calendar_service import CalendarService
+from calendar_integration.services.dataclasses import (
+    CalendarGroupEventInputData,
+    CalendarGroupSlotSelectionInputData,
+)
 from organizations.models import Organization
 
 
@@ -836,3 +842,169 @@ class TestRescheduleGroupWithCodeLifecycleRejections:
         result = data["data"]["rescheduleCalendarGroupEventWithCode"]
         assert result["success"] is False
         assert result["errorCode"] == "ALREADY_USED"
+
+
+# ---------------------------------------------------------------------------
+# Non-UTC regression: BLOCKER fix — create and reschedule agree on timezone
+# ---------------------------------------------------------------------------
+
+# America/Recife is UTC-3 (no DST).
+# Original slot: 12:00-13:00 UTC on 2030-06-01 → wall-clock 09:00-10:00 Recife.
+# New slot:      15:00-16:00 UTC on 2030-06-01 → wall-clock 12:00-13:00 Recife.
+RECIFE_ORIG_UTC_START = datetime.datetime(2030, 6, 1, 12, 0, tzinfo=datetime.UTC)
+RECIFE_ORIG_UTC_END = datetime.datetime(2030, 6, 1, 13, 0, tzinfo=datetime.UTC)
+RECIFE_NEW_UTC_START = datetime.datetime(2030, 6, 1, 15, 0, tzinfo=datetime.UTC)
+RECIFE_NEW_UTC_END = datetime.datetime(2030, 6, 1, 16, 0, tzinfo=datetime.UTC)
+RECIFE_TZ = "America/Recife"
+
+# The full window that covers both slots (in Recife wall-clock / stored as naive local).
+RECIFE_WINDOW_START = datetime.datetime(2030, 6, 1, 8, 0)
+RECIFE_WINDOW_END = datetime.datetime(2030, 6, 1, 18, 0)
+
+
+@pytest.mark.django_db
+class TestRescheduleGroupWithCodeNonUTCTimezone:
+    """Non-UTC regression: primary event and linked BlockedTimes derive the same
+    UTC instant after a reschedule in a non-UTC zone.
+
+    The test builds the grouped event via the real CalendarGroupService
+    (``create_grouped_event``) so that the BlockedTime rows are written by the
+    same fixed ``_create_non_primary_blocked_times`` path.  If the BLOCKER fix
+    is reverted, the BlockedTime's ``start_time``/``end_time`` GeneratedField
+    instants will disagree with the primary event's instants by 3 hours (the
+    America/Recife offset).
+    """
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_non_utc_reschedule_aligns_primary_and_blocked_times(
+        self,
+        mock_rate_limiter,
+        anon_client,
+    ):
+        mock_rate_limiter.return_value = iter([None])
+
+        # --- Build org + calendars ------------------------------------------------
+        org = baker.make(Organization, name="Recife Org")
+
+        # Primary calendar must have accepts_public_scheduling=True so that
+        # CalendarService.create_event doesn't reject it without a user token.
+        primary_cal = Calendar.objects.create(
+            organization=org,
+            name="Recife Primary",
+            external_id="recife-primary",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+            manage_available_windows=True,
+            accepts_public_scheduling=True,
+        )
+        secondary_cal = Calendar.objects.create(
+            organization=org,
+            name="Recife Room",
+            external_id="recife-room",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            manage_available_windows=True,
+            accepts_public_scheduling=False,
+        )
+
+        # --- Build group + availability -------------------------------------------
+        grp = baker.make(CalendarGroup, organization=org, name="Recife Group")
+        slot_a = CalendarGroupSlot.objects.create(
+            organization=org, group=grp, name="Physicians", order=0, required_count=1
+        )
+        slot_b = CalendarGroupSlot.objects.create(
+            organization=org, group=grp, name="Rooms", order=1, required_count=1
+        )
+        CalendarGroupSlotMembership.objects.create(
+            organization=org, slot=slot_a, calendar=primary_cal
+        )
+        CalendarGroupSlotMembership.objects.create(
+            organization=org, slot=slot_b, calendar=secondary_cal
+        )
+
+        # Availability windows in Recife wall-clock covering both slots.
+        for cal in (primary_cal, secondary_cal):
+            AvailableTime.objects.create(
+                organization=org,
+                calendar=cal,
+                start_time_tz_unaware=RECIFE_WINDOW_START,
+                end_time_tz_unaware=RECIFE_WINDOW_END,
+                timezone=RECIFE_TZ,
+            )
+
+        # --- Create the grouped event via the real service -------------------------
+        cs = CalendarService()
+        cs.initialize_without_provider(organization=org)
+        group_svc = CalendarGroupService(calendar_service=cs)
+        group_svc.initialize(organization=org)
+
+        event = group_svc.create_grouped_event(
+            CalendarGroupEventInputData(
+                title="Recife Appointment",
+                description="",
+                start_time=RECIFE_ORIG_UTC_START,
+                end_time=RECIFE_ORIG_UTC_END,
+                timezone=RECIFE_TZ,
+                group_id=grp.id,
+                slot_selections=[
+                    CalendarGroupSlotSelectionInputData(
+                        slot_id=slot_a.id, calendar_ids=[primary_cal.id]
+                    ),
+                    CalendarGroupSlotSelectionInputData(
+                        slot_id=slot_b.id, calendar_ids=[secondary_cal.id]
+                    ),
+                ],
+            )
+        )
+
+        # --- Create RESCHEDULE code -----------------------------------------------
+        perm_svc = CalendarPermissionService()
+        token, code = perm_svc.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.RESCHEDULE],
+            calendar_group_id=grp.id,
+            event_id=event.id,
+        )
+
+        # --- Reschedule via GraphQL mutation --------------------------------------
+        data = post_graphql(
+            anon_client,
+            RESCHEDULE_GROUP_WITH_CODE,
+            {
+                "input": {
+                    "code": code,
+                    "startTime": RECIFE_NEW_UTC_START.isoformat(),
+                    "endTime": RECIFE_NEW_UTC_END.isoformat(),
+                    "timezone": RECIFE_TZ,
+                }
+            },
+        )
+
+        assert "errors" not in data or not data.get("errors"), data
+        result = data["data"]["rescheduleCalendarGroupEventWithCode"]
+        assert result["success"] is True, result
+
+        # --- Assert instants agree ------------------------------------------------
+        # Reload from DB to get the GeneratedField values.
+        event.refresh_from_db()
+        bt = BlockedTime.objects.filter_by_organization(org.id).get(
+            external_id=f"group-event-{event.id}-cal-{secondary_cal.id}"
+        )
+        bt.refresh_from_db()
+
+        # The GeneratedField ``start_time`` / ``end_time`` must be the same UTC
+        # instant for both the primary CalendarEvent and the linked BlockedTime.
+        assert event.start_time == bt.start_time, (
+            f"Primary start_time {event.start_time} != BlockedTime start_time {bt.start_time}"
+        )
+        assert event.end_time == bt.end_time, (
+            f"Primary end_time {event.end_time} != BlockedTime end_time {bt.end_time}"
+        )
+
+        # And those instants must equal the requested new UTC times.
+        assert event.start_time == RECIFE_NEW_UTC_START
+        assert event.end_time == RECIFE_NEW_UTC_END
+
+        # Code must be consumed.
+        token.refresh_from_db()
+        assert token.used_at is not None

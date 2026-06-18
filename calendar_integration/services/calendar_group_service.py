@@ -39,6 +39,9 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupSlotAvailability,
     CalendarGroupSlotInputData,
     EventAttendanceInputData,
+    EventExternalAttendanceInputData,
+    ExternalAttendeeInputData,
+    ResourceAllocationInputData,
 )
 from organizations.models import Organization
 from users.models import User
@@ -507,13 +510,12 @@ class CalendarGroupService:
         The event id is preserved — this is intentional: external systems (e.g.
         the Building Blocks integration) store it and rely on it remaining stable
         across reschedules.
-        """
-        from calendar_integration.services.dataclasses import (
-            EventExternalAttendanceInputData,
-            ExternalAttendeeInputData,
-            ResourceAllocationInputData,
-        )
 
+        v1 limitation: non-primary calendar availability is NOT re-checked on
+        reschedule. Only the primary calendar is gated (in the mutation's
+        availability check). Non-primary double-booking is therefore possible and
+        intentionally unenforced for this time-only reschedule path.
+        """
         self._assert_initialized()
         if self.calendar_service is None:
             raise CalendarGroupValidationError(
@@ -777,8 +779,8 @@ class CalendarGroupService:
             BlockedTime.objects.create(
                 organization=self.organization,
                 calendar=calendar,
-                start_time_tz_unaware=start_time,
-                end_time_tz_unaware=end_time,
+                start_time_tz_unaware=_convert_naive_utc_datetime_to_timezone(start_time, tz),
+                end_time_tz_unaware=_convert_naive_utc_datetime_to_timezone(end_time, tz),
                 timezone=tz,
                 reason=f"Group booking: {event.title}",
                 external_id=f"group-event-{event.id}-cal-{cid}",
