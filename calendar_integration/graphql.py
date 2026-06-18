@@ -1,4 +1,5 @@
 import datetime
+import enum
 
 import strawberry
 import strawberry_django
@@ -384,3 +385,65 @@ class BookableSlotProposalGraphQLType:
 
     start_time: datetime.datetime
     end_time: datetime.datetime
+
+
+# ---------------------------------------------------------------------------
+# Single-use booking-code types (Phase 0 — defined here, wired in later phases)
+# ---------------------------------------------------------------------------
+
+
+@strawberry.enum
+class BookingCodeErrorCode(enum.Enum):
+    """Machine-readable error codes for booking-code operations.
+
+    Returned instead of (or alongside) a human-readable ``error_message`` so
+    that API consumers can branch on failure category without parsing strings.
+
+    Values:
+        INVALID_CODE: The code does not exist, belongs to a different org, or
+            its format is malformed.
+        EXPIRED: The code's ``expires_at`` has passed.
+        ALREADY_USED: The code was already consumed by a prior successful write.
+        REVOKED: The code was explicitly revoked by the minting organisation.
+        NOT_PERMITTED: The code exists and is active but does not carry the
+            permission required for the requested operation (e.g. presenting a
+            booking code to reschedule).
+        SLOT_UNAVAILABLE: The requested time slot is not available; the code
+            remains active so the patient may retry with a different slot.
+    """
+
+    INVALID_CODE = "INVALID_CODE"
+    EXPIRED = "EXPIRED"
+    ALREADY_USED = "ALREADY_USED"
+    REVOKED = "REVOKED"
+    NOT_PERMITTED = "NOT_PERMITTED"
+    SLOT_UNAVAILABLE = "SLOT_UNAVAILABLE"
+
+
+@strawberry.type
+class BookingCodeResult:
+    """Result type for booking-code mint and revoke mutations.
+
+    ``code`` and ``id`` are present only on successful mint operations.
+    """
+
+    success: bool
+    error_code: BookingCodeErrorCode | None = None
+    error_message: str | None = None
+    # Plaintext code returned once at mint time (never stored in cleartext).
+    code: str | None = None
+    # Opaque token id for subsequent revoke calls.
+    id: int | None = None  # noqa: A003
+
+
+@strawberry.type
+class CodeEventResult:
+    """Result type for unauthenticated with-code write mutations (book / reschedule / cancel).
+
+    ``event`` is present only when the operation succeeded.
+    """
+
+    success: bool
+    error_code: BookingCodeErrorCode | None = None
+    error_message: str | None = None
+    event: CalendarEventGraphQLType | None = None

@@ -13,6 +13,12 @@ from dependency_injector.wiring import Provide, inject
 from django_virtual_models import QuerySet
 from graphql import GraphQLError
 
+from calendar_integration.exceptions import (
+    InvalidTokenError,
+    TokenAlreadyUsedError,
+    TokenExpiredError,
+    TokenRevokedError,
+)
 from calendar_integration.graphql import (
     AvailableTimeGraphQLType,
     AvailableTimeWindowGraphQLType,
@@ -34,6 +40,7 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    CalendarManagementToken,
 )
 from organizations.models import Organization, OrganizationMembership, resolve_branding
 from public_api.capabilities import assert_org_can_invite
@@ -53,13 +60,23 @@ from users.models import User
 
 if TYPE_CHECKING:
     from calendar_integration.services.calendar_group_service import CalendarGroupService
+    from calendar_integration.services.calendar_permission_service import CalendarPermissionService
     from calendar_integration.services.calendar_service import CalendarService
+
+# Uniform error message for all code-gated read failures.  Never disclose whether the
+# code exists, is expired, used, revoked, or bound to the wrong scope.
+_CODE_GATED_ERROR_MESSAGE = "Invalid or expired code."
+
+# Maximum client-controlled datetime range for unauthenticated (code-gated) reads.
+# Prevents amplification / DoS via unbounded recurrence expansion.
+MAX_CODE_GATED_RANGE = datetime.timedelta(days=366)
 
 
 @dataclass
 class QueryDependencies:
     calendar_service: "CalendarService"
     calendar_group_service: "CalendarGroupService"
+    calendar_permission_service: "CalendarPermissionService | None" = None
 
 
 @inject
@@ -68,8 +85,11 @@ def get_query_dependencies(
     calendar_group_service: Annotated[
         "CalendarGroupService | None", Provide["calendar_group_service"]
     ] = None,
+    calendar_permission_service: Annotated[
+        "CalendarPermissionService | None", Provide["calendar_permission_service"]
+    ] = None,
 ) -> QueryDependencies:
-    required_dependencies = [calendar_service, calendar_group_service]
+    required_dependencies = [calendar_service, calendar_group_service, calendar_permission_service]
     if any(dep is None for dep in required_dependencies):
         raise GraphQLError(
             f"Missing required dependency {', '.join([str(dep) for dep in required_dependencies if dep is None])}"
@@ -78,6 +98,7 @@ def get_query_dependencies(
     return QueryDependencies(
         calendar_service=cast("CalendarService", calendar_service),
         calendar_group_service=cast("CalendarGroupService", calendar_group_service),
+        calendar_permission_service=cast("CalendarPermissionService", calendar_permission_service),
     )
 
 
@@ -157,6 +178,71 @@ def _prepare_service_and_calendar(
     )
     cal = Calendar.objects.filter_by_organization(org.id).get(id=calendar_id)
     return deps.calendar_service, cal
+
+
+def _prepare_service_and_calendar_for_org(
+    deps: "QueryDependencies", org: Organization, calendar: Calendar
+) -> "CalendarService":
+    """Initialize CalendarService with the given org and return it.
+
+    Used by code-gated (unauthenticated) reads where the org + calendar are
+    derived from the booking code rather than from the request auth context.
+    Receives an already-resolved ``deps`` object to avoid a second DI resolution.
+    """
+    deps.calendar_service.initialize_without_provider(user_or_token=None, organization=org)
+    return deps.calendar_service
+
+
+def _prepare_group_service_for_org(
+    deps: "QueryDependencies", org: Organization
+) -> "CalendarGroupService":
+    """Initialize CalendarGroupService with the given org and return it.
+
+    Used by code-gated (unauthenticated) reads where the org is derived from
+    the booking code.
+    Receives an already-resolved ``deps`` object to avoid a second DI resolution.
+    """
+    deps.calendar_group_service.initialize(organization=org)
+    return deps.calendar_group_service
+
+
+def _resolve_code_from_deps(deps: QueryDependencies, code: str) -> "CalendarManagementToken":
+    """Decode and validate a booking code, raising GraphQLError on any failure.
+
+    Centralises the None-guard for ``deps.calendar_permission_service`` so the
+    five code-gated read fields share a single call site for mypy purposes.
+    """
+    if deps.calendar_permission_service is None:
+        raise GraphQLError("Internal server error.")
+    try:
+        token: CalendarManagementToken = deps.calendar_permission_service.resolve_code(code)
+    except (InvalidTokenError, TokenExpiredError, TokenAlreadyUsedError, TokenRevokedError):
+        raise GraphQLError(_CODE_GATED_ERROR_MESSAGE) from None
+    return token
+
+
+def _get_org_from_token(token: "CalendarManagementToken") -> Organization:
+    """Fetch the Organization for the given token, mapping DoesNotExist to the uniform error.
+
+    Guards against hard-deleted organizations, which would otherwise raise an
+    unhandled ``Organization.DoesNotExist`` (→ 500).
+    """
+    try:
+        return Organization.objects.get(id=token.organization_id)
+    except Organization.DoesNotExist:
+        raise GraphQLError(_CODE_GATED_ERROR_MESSAGE) from None
+
+
+def _validate_code_gated_range(start: datetime.datetime, end: datetime.datetime) -> None:
+    """Validate a client-supplied datetime range for code-gated reads.
+
+    Raises ``GraphQLError`` if the range is backwards or exceeds
+    ``MAX_CODE_GATED_RANGE``.  Called BEFORE any expensive service call.
+    """
+    if end <= start:
+        raise GraphQLError("Invalid time range.")
+    if (end - start) > MAX_CODE_GATED_RANGE:
+        raise GraphQLError("Requested time range is too large.")
 
 
 @strawberry.input
@@ -654,6 +740,205 @@ class Query:
                 calendar_group_count=child.calendar_group_count or 0,
             )
             for child in qs
+        ]
+
+    # ------------------------------------------------------------------
+    # Code-gated read fields (unauthenticated — authorized by booking code)
+    # ------------------------------------------------------------------
+
+    @strawberry.field()
+    def available_times_with_code(
+        self,
+        code: str,
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> list[AvailableTimeGraphQLType]:
+        """Return available times for the calendar bound to a booking code.
+
+        No org token required.  The code gates access to its bound calendar only.
+        Reads are repeatable: the code is never consumed by this query.
+        """
+        _validate_code_gated_range(start_datetime, end_datetime)
+        deps = get_query_dependencies()
+        token = _resolve_code_from_deps(deps, code)
+
+        # Resolve the bound calendar (calendar-scope or event.calendar fallback).
+        calendar = token.calendar
+        if calendar is None and token.event is not None:
+            calendar = token.event.calendar
+        if calendar is None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
+
+        org = _get_org_from_token(token)
+        calendar_service = _prepare_service_and_calendar_for_org(deps, org, calendar)
+
+        available_times = calendar_service.get_available_times_expanded(
+            calendar,
+            start_datetime,
+            end_datetime,
+        )
+        return cast(list[AvailableTimeGraphQLType], available_times)
+
+    @strawberry.field()
+    def availability_windows_with_code(
+        self,
+        code: str,
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> list[AvailableTimeWindowGraphQLType]:
+        """Return availability windows for the calendar bound to a booking code.
+
+        No org token required.  The code gates access to its bound calendar only.
+        Reads are repeatable: the code is never consumed by this query.
+        """
+        _validate_code_gated_range(start_datetime, end_datetime)
+        deps = get_query_dependencies()
+        token = _resolve_code_from_deps(deps, code)
+
+        calendar = token.calendar
+        if calendar is None and token.event is not None:
+            calendar = token.event.calendar
+        if calendar is None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
+
+        org = _get_org_from_token(token)
+        calendar_service = _prepare_service_and_calendar_for_org(deps, org, calendar)
+
+        windows = calendar_service.get_availability_windows_in_range(
+            calendar=calendar,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+        )
+        return [
+            AvailableTimeWindowGraphQLType(
+                start_time=w.start_time,
+                end_time=w.end_time,
+                id=w.id,
+                can_book_partially=w.can_book_partially,
+            )
+            for w in windows
+        ]
+
+    @strawberry.field()
+    def unavailable_windows_with_code(
+        self,
+        code: str,
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> list[UnavailableTimeWindowGraphQLType]:
+        """Return unavailable (blocked/event) windows for the calendar bound to a booking code.
+
+        No org token required.  The code gates access to its bound calendar only.
+        Reads are repeatable: the code is never consumed by this query.
+        """
+        _validate_code_gated_range(start_datetime, end_datetime)
+        deps = get_query_dependencies()
+        token = _resolve_code_from_deps(deps, code)
+
+        calendar = token.calendar
+        if calendar is None and token.event is not None:
+            calendar = token.event.calendar
+        if calendar is None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
+
+        org = _get_org_from_token(token)
+        calendar_service = _prepare_service_and_calendar_for_org(deps, org, calendar)
+
+        unavailable = calendar_service.get_unavailable_time_windows_in_range(
+            calendar=calendar,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+        )
+        return [
+            UnavailableTimeWindowGraphQLType(
+                start_time=w.start_time, end_time=w.end_time, id=w.id, reason=w.reason
+            )
+            for w in unavailable
+        ]
+
+    @strawberry.field()
+    def calendar_group_bookable_slots_with_code(
+        self,
+        code: str,
+        search_window_start: datetime.datetime,
+        search_window_end: datetime.datetime,
+        duration_seconds: int,
+        slot_step_seconds: int = 15 * 60,
+    ) -> list[BookableSlotProposalGraphQLType]:
+        """Return bookable slot proposals for the group bound to a booking code.
+
+        No org token required.  The code gates access to its bound calendar group only.
+        Reads are repeatable: the code is never consumed by this query.
+        """
+        _validate_code_gated_range(search_window_start, search_window_end)
+        deps = get_query_dependencies()
+        token = _resolve_code_from_deps(deps, code)
+
+        # Resolve the bound group (group-scope or event.calendar_group fallback).
+        group = token.calendar_group
+        if group is None and token.event is not None:
+            group = token.event.calendar_group
+        if group is None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
+
+        org = _get_org_from_token(token)
+        calendar_group_service = _prepare_group_service_for_org(deps, org)
+
+        proposals = calendar_group_service.find_bookable_slots(
+            group_id=group.id,
+            search_window_start=search_window_start,
+            search_window_end=search_window_end,
+            duration=datetime.timedelta(seconds=duration_seconds),
+            slot_step=datetime.timedelta(seconds=slot_step_seconds),
+        )
+        return [
+            BookableSlotProposalGraphQLType(start_time=p.start_time, end_time=p.end_time)
+            for p in proposals
+        ]
+
+    @strawberry.field()
+    def calendar_group_availability_with_code(
+        self,
+        code: str,
+        ranges: list[DateTimeRangeInput],
+    ) -> list[CalendarGroupRangeAvailabilityGraphQLType]:
+        """Return per-range slot availability for the group bound to a booking code.
+
+        No org token required.  The code gates access to its bound calendar group only.
+        Reads are repeatable: the code is never consumed by this query.
+        """
+        for r in ranges:
+            _validate_code_gated_range(r.start_time, r.end_time)
+        deps = get_query_dependencies()
+        token = _resolve_code_from_deps(deps, code)
+
+        group = token.calendar_group
+        if group is None and token.event is not None:
+            group = token.event.calendar_group
+        if group is None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
+
+        org = _get_org_from_token(token)
+        calendar_group_service = _prepare_group_service_for_org(deps, org)
+
+        result = calendar_group_service.check_group_availability(
+            group_id=group.id,
+            ranges=[(r.start_time, r.end_time) for r in ranges],
+        )
+        return [
+            CalendarGroupRangeAvailabilityGraphQLType(
+                start_time=r.start_time,
+                end_time=r.end_time,
+                slots=[
+                    CalendarGroupSlotAvailabilityGraphQLType(
+                        slot_id=s.slot_id,
+                        available_calendar_ids=s.available_calendar_ids,
+                        required_count=s.required_count,
+                    )
+                    for s in r.slots
+                ],
+            )
+            for r in result
         ]
 
     @strawberry.field()
