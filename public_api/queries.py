@@ -43,8 +43,8 @@ from public_api.permissions import (
 from public_api.types import ChildOrganizationMetrics, PublicApiHttpRequest, PublicBrandingResult
 from users.graphql import UserGraphQLType
 from users.models import User
-from webhooks.graphql import WebhookConfigurationGraphQLType
-from webhooks.models import WebhookConfiguration
+from webhooks.graphql import WebhookConfigurationGraphQLType, WebhookEventGraphQLType
+from webhooks.models import WebhookConfiguration, WebhookEvent
 
 
 if TYPE_CHECKING:
@@ -633,6 +633,21 @@ class Query:
         )
         return cast(
             list[WebhookConfigurationGraphQLType],
+            list(_slice_qs(qs, offset, limit)),
+        )
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def webhook_delivery_events(
+        self,
+        info: strawberry.Info,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[WebhookEventGraphQLType]:
+        """List outgoing webhook delivery history for the caller's organization (read-only)."""
+        org = _get_org(info)
+        qs = WebhookEvent.objects.filter_by_organization(org.id).order_by("-pk")
+        return cast(
+            list[WebhookEventGraphQLType],
             list(_slice_qs(qs, offset, limit)),
         )
 

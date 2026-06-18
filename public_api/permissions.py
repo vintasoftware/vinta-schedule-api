@@ -52,6 +52,7 @@ class OrganizationResourceAccess(BasePermission):
         "createWebhookConfiguration": PublicAPIResources.WEBHOOK_CONFIGURATION,
         "updateWebhookConfiguration": PublicAPIResources.WEBHOOK_CONFIGURATION,
         "deleteWebhookConfiguration": PublicAPIResources.WEBHOOK_CONFIGURATION,
+        "webhookDeliveryEvents": PublicAPIResources.WEBHOOK_CONFIGURATION,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
