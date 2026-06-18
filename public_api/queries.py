@@ -61,6 +61,10 @@ if TYPE_CHECKING:
 # code exists, is expired, used, revoked, or bound to the wrong scope.
 _CODE_GATED_ERROR_MESSAGE = "Invalid or expired code."
 
+# Maximum client-controlled datetime range for unauthenticated (code-gated) reads.
+# Prevents amplification / DoS via unbounded recurrence expansion.
+MAX_CODE_GATED_RANGE = datetime.timedelta(days=366)
+
 
 @dataclass
 class QueryDependencies:
@@ -136,25 +140,27 @@ def _prepare_service_and_calendar(
 
 
 def _prepare_service_and_calendar_for_org(
-    org: Organization, calendar: Calendar
+    deps: "QueryDependencies", org: Organization, calendar: Calendar
 ) -> "CalendarService":
     """Initialize CalendarService with the given org and return it.
 
     Used by code-gated (unauthenticated) reads where the org + calendar are
     derived from the booking code rather than from the request auth context.
+    Receives an already-resolved ``deps`` object to avoid a second DI resolution.
     """
-    deps = get_query_dependencies()
     deps.calendar_service.initialize_without_provider(user_or_token=None, organization=org)
     return deps.calendar_service
 
 
-def _prepare_group_service_for_org(org: Organization) -> "CalendarGroupService":
+def _prepare_group_service_for_org(
+    deps: "QueryDependencies", org: Organization
+) -> "CalendarGroupService":
     """Initialize CalendarGroupService with the given org and return it.
 
     Used by code-gated (unauthenticated) reads where the org is derived from
     the booking code.
+    Receives an already-resolved ``deps`` object to avoid a second DI resolution.
     """
-    deps = get_query_dependencies()
     deps.calendar_group_service.initialize(organization=org)
     return deps.calendar_group_service
 
@@ -172,6 +178,30 @@ def _resolve_code_from_deps(deps: QueryDependencies, code: str) -> "CalendarMana
     except (InvalidTokenError, TokenExpiredError, TokenAlreadyUsedError, TokenRevokedError):
         raise GraphQLError(_CODE_GATED_ERROR_MESSAGE) from None
     return token
+
+
+def _get_org_from_token(token: "CalendarManagementToken") -> Organization:
+    """Fetch the Organization for the given token, mapping DoesNotExist to the uniform error.
+
+    Guards against hard-deleted organizations, which would otherwise raise an
+    unhandled ``Organization.DoesNotExist`` (→ 500).
+    """
+    try:
+        return Organization.objects.get(id=token.organization_id)
+    except Organization.DoesNotExist:
+        raise GraphQLError(_CODE_GATED_ERROR_MESSAGE) from None
+
+
+def _validate_code_gated_range(start: datetime.datetime, end: datetime.datetime) -> None:
+    """Validate a client-supplied datetime range for code-gated reads.
+
+    Raises ``GraphQLError`` if the range is backwards or exceeds
+    ``MAX_CODE_GATED_RANGE``.  Called BEFORE any expensive service call.
+    """
+    if end <= start:
+        raise GraphQLError("Invalid time range.")
+    if (end - start) > MAX_CODE_GATED_RANGE:
+        raise GraphQLError("Requested time range is too large.")
 
 
 @strawberry.input
@@ -687,6 +717,7 @@ class Query:
         No org token required.  The code gates access to its bound calendar only.
         Reads are repeatable: the code is never consumed by this query.
         """
+        _validate_code_gated_range(start_datetime, end_datetime)
         deps = get_query_dependencies()
         token = _resolve_code_from_deps(deps, code)
 
@@ -697,8 +728,8 @@ class Query:
         if calendar is None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
 
-        org = Organization.objects.get(id=token.organization_id)
-        calendar_service = _prepare_service_and_calendar_for_org(org, calendar)
+        org = _get_org_from_token(token)
+        calendar_service = _prepare_service_and_calendar_for_org(deps, org, calendar)
 
         available_times = calendar_service.get_available_times_expanded(
             calendar,
@@ -719,6 +750,7 @@ class Query:
         No org token required.  The code gates access to its bound calendar only.
         Reads are repeatable: the code is never consumed by this query.
         """
+        _validate_code_gated_range(start_datetime, end_datetime)
         deps = get_query_dependencies()
         token = _resolve_code_from_deps(deps, code)
 
@@ -728,8 +760,8 @@ class Query:
         if calendar is None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
 
-        org = Organization.objects.get(id=token.organization_id)
-        calendar_service = _prepare_service_and_calendar_for_org(org, calendar)
+        org = _get_org_from_token(token)
+        calendar_service = _prepare_service_and_calendar_for_org(deps, org, calendar)
 
         windows = calendar_service.get_availability_windows_in_range(
             calendar=calendar,
@@ -758,6 +790,7 @@ class Query:
         No org token required.  The code gates access to its bound calendar only.
         Reads are repeatable: the code is never consumed by this query.
         """
+        _validate_code_gated_range(start_datetime, end_datetime)
         deps = get_query_dependencies()
         token = _resolve_code_from_deps(deps, code)
 
@@ -767,8 +800,8 @@ class Query:
         if calendar is None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
 
-        org = Organization.objects.get(id=token.organization_id)
-        calendar_service = _prepare_service_and_calendar_for_org(org, calendar)
+        org = _get_org_from_token(token)
+        calendar_service = _prepare_service_and_calendar_for_org(deps, org, calendar)
 
         unavailable = calendar_service.get_unavailable_time_windows_in_range(
             calendar=calendar,
@@ -796,6 +829,7 @@ class Query:
         No org token required.  The code gates access to its bound calendar group only.
         Reads are repeatable: the code is never consumed by this query.
         """
+        _validate_code_gated_range(search_window_start, search_window_end)
         deps = get_query_dependencies()
         token = _resolve_code_from_deps(deps, code)
 
@@ -806,8 +840,8 @@ class Query:
         if group is None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
 
-        org = Organization.objects.get(id=token.organization_id)
-        calendar_group_service = _prepare_group_service_for_org(org)
+        org = _get_org_from_token(token)
+        calendar_group_service = _prepare_group_service_for_org(deps, org)
 
         proposals = calendar_group_service.find_bookable_slots(
             group_id=group.id,
@@ -832,6 +866,8 @@ class Query:
         No org token required.  The code gates access to its bound calendar group only.
         Reads are repeatable: the code is never consumed by this query.
         """
+        for r in ranges:
+            _validate_code_gated_range(r.start_time, r.end_time)
         deps = get_query_dependencies()
         token = _resolve_code_from_deps(deps, code)
 
@@ -841,8 +877,8 @@ class Query:
         if group is None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
 
-        org = Organization.objects.get(id=token.organization_id)
-        calendar_group_service = _prepare_group_service_for_org(org)
+        org = _get_org_from_token(token)
+        calendar_group_service = _prepare_group_service_for_org(deps, org)
 
         result = calendar_group_service.check_group_availability(
             group_id=group.id,

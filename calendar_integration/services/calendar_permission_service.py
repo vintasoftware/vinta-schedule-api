@@ -650,12 +650,9 @@ class CalendarPermissionService:
     def validate_code(self, code: str, organization_id: int) -> CalendarManagementToken:
         """Decode and validate a booking code, returning the active token.
 
-        Performs the same decode/hash/lookup as ``initialize_with_token`` but
-        additionally enforces that the token is still active (not used, not
-        revoked, not expired), and that the token belongs to the given org.
-
-        Delegates decode/verify/lifecycle to ``resolve_code`` then asserts the
-        org matches.
+        Delegates decode/verify/lifecycle to ``resolve_code`` then additionally
+        asserts that the token belongs to the given org.  Use ``resolve_code``
+        directly when the org is unknown and must be derived from the token.
 
         Args:
             code: The base64-encoded plaintext code as returned by

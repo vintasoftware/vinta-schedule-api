@@ -983,3 +983,266 @@ class TestCrossOrgIsolation:
         assert "errors" not in data or len(data.get("errors", [])) == 0
         call_kwargs = mock_calendar_service.initialize_without_provider.call_args[1]
         assert call_kwargs["organization"].id == organization.id
+
+
+# ---------------------------------------------------------------------------
+# SHOULD-FIX 1: tampered-secret test (valid id, wrong secret)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestTamperedSecretCode:
+    """The hash-verify gate must reject a code whose secret half is swapped."""
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_tampered_secret_calendar_field_returns_error(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+        organization,
+        calendar,
+    ):
+        """A code with a valid token_id but a swapped secret is rejected with the uniform error.
+
+        Construction:
+        1. Mint a real code via create_booking_token (base64 of "<id>:<raw_secret>").
+        2. Decode the base64, split on ':', replace the raw_secret with a different value.
+        3. Re-encode base64 → tampered code.
+        The id is real (token exists in DB) but the secret does not match the stored hash.
+        """
+        import base64
+
+        mock_rate_limiter.return_value = iter([None])
+        token, real_code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=calendar.id,
+        )
+
+        # Construct a tampered code: same id, different secret.
+        decoded = base64.b64decode(real_code).decode("utf-8")
+        token_id_part, _real_secret = decoded.split(":", 1)
+        tampered_code = base64.b64encode(f"{token_id_part}:WRONG_SECRET_VALUE".encode()).decode()
+
+        data = post_graphql(
+            anon_client,
+            AVAILABLE_TIMES_WITH_CODE,
+            {
+                "code": tampered_code,
+                "startDatetime": "2025-09-02T00:00:00Z",
+                "endDatetime": "2025-09-02T23:59:59Z",
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid or expired code."
+        # The token must not have been consumed.
+        token.refresh_from_db()
+        assert token.used_at is None
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_tampered_secret_group_field_returns_error(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+        organization,
+        calendar_group,
+    ):
+        """Same tampered-secret test for the group availability field."""
+        import base64
+
+        mock_rate_limiter.return_value = iter([None])
+        token, real_code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_group_id=calendar_group.id,
+        )
+
+        decoded = base64.b64decode(real_code).decode("utf-8")
+        token_id_part, _real_secret = decoded.split(":", 1)
+        tampered_code = base64.b64encode(f"{token_id_part}:WRONG_SECRET_VALUE".encode()).decode()
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_GROUP_AVAILABILITY_WITH_CODE,
+            {
+                "code": tampered_code,
+                "ranges": [
+                    {
+                        "startTime": "2025-09-02T09:00:00Z",
+                        "endTime": "2025-09-02T10:00:00Z",
+                    }
+                ],
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid or expired code."
+        token.refresh_from_db()
+        assert token.used_at is None
+
+
+# ---------------------------------------------------------------------------
+# SHOULD-FIX 2: real (non-mocked) cross-org isolation test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestRealCrossOrgIsolation:
+    """Real DB isolation: org A's code must not return org B's AvailableTime rows."""
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_available_times_with_code_scoped_to_own_org(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+    ):
+        """With real AvailableTime rows in both orgs, the code only returns its own org's data.
+
+        Setup:
+        - Org A: calendar_a + 1 AvailableTime in the window.
+        - Org B: calendar_b + 1 AvailableTime in the same window (different org).
+        - Mint a code on org A's calendar_a.
+        - Call availableTimesWithCode.
+        - Assert only org A's AvailableTime id is in the response (not org B's).
+        """
+        from calendar_integration.models import AvailableTime
+
+        mock_rate_limiter.return_value = iter([None])
+
+        org_a = baker.make(Organization, name="Real Org A")
+        org_b = baker.make(Organization, name="Real Org B")
+
+        calendar_a = baker.make(Calendar, organization=org_a, name="Cal A")
+        calendar_b = baker.make(Calendar, organization=org_b, name="Cal B")
+
+        # AvailableTime for org A (non-recurring, within query window)
+        at_a = baker.make(
+            AvailableTime,
+            organization=org_a,
+            calendar=calendar_a,
+            start_time_tz_unaware=datetime.datetime(2025, 10, 1, 9, 0),
+            end_time_tz_unaware=datetime.datetime(2025, 10, 1, 10, 0),
+            timezone="UTC",
+            recurrence_rule=None,
+        )
+        # AvailableTime for org B in the same window — must NOT appear in org A's results.
+        at_b = baker.make(
+            AvailableTime,
+            organization=org_b,
+            calendar=calendar_b,
+            start_time_tz_unaware=datetime.datetime(2025, 10, 1, 9, 0),
+            end_time_tz_unaware=datetime.datetime(2025, 10, 1, 10, 0),
+            timezone="UTC",
+            recurrence_rule=None,
+        )
+
+        _token, code = permission_service.create_booking_token(
+            organization_id=org_a.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=calendar_a.id,
+        )
+
+        data = post_graphql(
+            anon_client,
+            AVAILABLE_TIMES_WITH_CODE,
+            {
+                "code": code,
+                "startDatetime": "2025-10-01T00:00:00Z",
+                "endDatetime": "2025-10-01T23:59:59Z",
+            },
+        )
+
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["availableTimesWithCode"]
+        returned_ids = [int(r["id"]) for r in result]
+        assert at_a.id in returned_ids, "Org A's AvailableTime must be returned"
+        assert at_b.id not in returned_ids, "Org B's AvailableTime must NOT be returned"
+
+
+# ---------------------------------------------------------------------------
+# SHOULD-FIX 3: range clamp guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestCodeGatedRangeClamp:
+    """Over-maximum and backwards datetime ranges are rejected before hitting the service."""
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_over_max_range_calendar_field_rejected(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        calendar_booking_code,
+    ):
+        """A range exceeding MAX_CODE_GATED_RANGE (366 days) is rejected on a calendar field."""
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = calendar_booking_code
+
+        data = post_graphql(
+            anon_client,
+            AVAILABLE_TIMES_WITH_CODE,
+            {
+                "code": code,
+                "startDatetime": "2025-01-01T00:00:00Z",
+                # 367 days — one day over the 366-day cap
+                "endDatetime": "2026-01-03T00:00:00Z",
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Requested time range is too large."
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_backwards_range_calendar_field_rejected(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        calendar_booking_code,
+    ):
+        """A backwards range (end <= start) is rejected on a calendar field."""
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = calendar_booking_code
+
+        data = post_graphql(
+            anon_client,
+            AVAILABLE_TIMES_WITH_CODE,
+            {
+                "code": code,
+                "startDatetime": "2025-09-02T23:59:59Z",
+                "endDatetime": "2025-09-02T00:00:00Z",
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid time range."
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_over_max_range_group_field_rejected(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        group_booking_code,
+    ):
+        """A range exceeding MAX_CODE_GATED_RANGE (366 days) is rejected on a group field."""
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = group_booking_code
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_GROUP_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": "2025-01-01T00:00:00Z",
+                # 367 days — one day over the 366-day cap
+                "searchWindowEnd": "2026-01-03T00:00:00Z",
+                "durationSeconds": 3600,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Requested time range is too large."
