@@ -144,7 +144,7 @@ For a tenant-scoped model `Foo` in app `bars`:
 6. **`bars/migrations/`** — generate the migration:
 
    ```bash
-   uv run python manage.py makemigrations bars
+   docker compose run --rm api uv run python manage.py makemigrations bars
    ```
 
    Inspect the generated file. For tenant-scoped FKs, both the `<name>_fk` concrete column and the `<name>` `ForeignObject` should be present.
@@ -174,12 +174,12 @@ Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific e
 
 ```bash
 # Migration applies cleanly + rolls back
-uv run python manage.py migrate bars            # apply
-uv run python manage.py migrate bars <prev>     # rollback
-uv run python manage.py migrate bars            # re-apply
+docker compose run --rm api uv run python manage.py migrate bars            # apply
+docker compose run --rm api uv run python manage.py migrate bars <prev>     # rollback
+docker compose run --rm api uv run python manage.py migrate bars            # re-apply
 
 # Scoped tests
-uv run pytest bars/tests/ -n auto
+docker compose run --rm api uv run pytest bars/tests/ -n auto
 ```
 
 Spot-checks:

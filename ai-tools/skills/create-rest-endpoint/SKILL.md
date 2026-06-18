@@ -176,7 +176,7 @@ For a new endpoint `calendar-summaries` in `calendar_integration`:
 
 7. **Regenerate the OpenAPI schema:**
    ```bash
-   uv run python manage.py spectacular --color --file schema.yml
+   docker compose run --rm api uv run python manage.py spectacular --color --file schema.yml
    ```
 
    Pre-commit hook (`backend-schema` in `.pre-commit-config.yaml`) verifies the schema is up-to-date. Run it before committing or CI fails.
@@ -207,11 +207,11 @@ Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific e
 
 ```bash
 # Schema regenerated + diff is exactly the new endpoint
-uv run python manage.py spectacular --color --file schema.yml
+docker compose run --rm api uv run python manage.py spectacular --color --file schema.yml
 git diff schema.yml
 
 # Endpoint reachable (smoke check)
-DJANGO_SETTINGS_MODULE=vinta_schedule_api.settings.local uv run python manage.py shell -c "
+docker compose run --rm -e DJANGO_SETTINGS_MODULE=vinta_schedule_api.settings.local api uv run python manage.py shell -c "
 from rest_framework.test import APIClient
 from users.factories import UserFactory
 client = APIClient()
@@ -221,7 +221,7 @@ print(client.get('/api/calendar-summaries/').status_code)
 "
 
 # Scoped tests
-uv run pytest <app>/tests/test_<name>_endpoint.py -vs
+docker compose run --rm api uv run pytest <app>/tests/test_<name>_endpoint.py -vs
 ```
 
 Spot-checks:

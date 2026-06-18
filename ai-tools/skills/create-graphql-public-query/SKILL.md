@@ -182,16 +182,16 @@ Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific e
 
 ```bash
 # Schema introspects cleanly + shows the new field
-DJANGO_SETTINGS_MODULE=vinta_schedule_api.settings.local uv run python manage.py shell -c "
+docker compose run --rm -e DJANGO_SETTINGS_MODULE=vinta_schedule_api.settings.local api uv run python manage.py shell -c "
 from public_api.schema import schema
 print(str(schema))
 " | grep -i "calendarSummaries"
 
 # REST schema regenerated if mixed surface
-uv run python manage.py spectacular --color --file schema.yml
+docker compose run --rm api uv run python manage.py spectacular --color --file schema.yml
 
 # Scoped tests
-uv run pytest <app>/tests/test_<name>_graphql.py -vs
+docker compose run --rm api uv run pytest <app>/tests/test_<name>_graphql.py -vs
 ```
 
 Spot-checks:

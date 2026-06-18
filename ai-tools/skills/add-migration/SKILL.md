@@ -27,7 +27,7 @@ Background: [AGENTS.md → Architecture → Raw SQL](../../AGENTS.md#raw-sql-fun
 1. Edit the model.
 2. Generate the migration:
    ```bash
-   uv run python manage.py makemigrations <app>
+   docker compose run --rm api uv run python manage.py makemigrations <app>
    ```
 3. **Read the generated file.** Migrations are auto-generated but commit-reviewed. Look for:
    - For tenant-scoped FKs: both the `<name>_fk` concrete column AND the `<name>` `ForeignObject` are present.
@@ -63,9 +63,9 @@ Background: [AGENTS.md → Architecture → Raw SQL](../../AGENTS.md#raw-sql-fun
    - When `db_default` doesn't fit (computed default, conditional), use the two-phase approach across separate migrations: add nullable + backfill in a `RunPython` data migration + then make non-null.
 6. Run the migration, confirm reverse works:
    ```bash
-   uv run python manage.py migrate <app>
-   uv run python manage.py migrate <app> <previous_migration>
-   uv run python manage.py migrate <app>
+   docker compose run --rm api uv run python manage.py migrate <app>
+   docker compose run --rm api uv run python manage.py migrate <app> <previous_migration>
+   docker compose run --rm api uv run python manage.py migrate <app>
    ```
 7. Run the [outer gate](../../AGENTS.md#outer-gate).
 
@@ -147,9 +147,9 @@ Every migration declares a reverse. Auto-generated migrations get sensible rever
 Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
 
 ```bash
-uv run python manage.py migrate <app>                 # apply forward
-uv run python manage.py migrate <app> <prev>          # apply reverse
-uv run python manage.py migrate <app>                 # re-apply forward
+docker compose run --rm api uv run python manage.py migrate <app>                 # apply forward
+docker compose run --rm api uv run python manage.py migrate <app> <prev>          # apply reverse
+docker compose run --rm api uv run python manage.py migrate <app>                 # re-apply forward
 ```
 
 Spot-checks:

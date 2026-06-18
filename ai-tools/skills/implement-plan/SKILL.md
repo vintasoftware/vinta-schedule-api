@@ -13,11 +13,11 @@ Execution counterpart to [plan-feature](../plan-feature/SKILL.md). Plan = contra
 
 - Repo: vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (OrganizationModel), Postgres, deployed to Render). Conventions: [AGENTS.md](AGENTS.md).
 - Plan files: [`ai-plans/YYYY-MM-DD-FEATURE_NAME_IMPLEMENTATION_PLAN.md`](ai-plans/).
-- Lint: `uv run ruff check ./`. Format: `uv run ruff format ./`.
-- Type / build gate: `uv run python manage.py check --deploy` plus full mypy via `uv run mypy .`.
-- Unit / integration tests: `uv run pytest -n auto` (everything); per-app via `uv run pytest <app>/tests/ -n auto`.
+- Lint: `docker compose run --rm api uv run ruff check ./`. Format: `docker compose run --rm api uv run ruff format ./`.
+- Type / build gate: `docker compose run --rm api uv run python manage.py check --deploy` plus full mypy via `docker compose run --rm api uv run mypy .`.
+- Unit / integration tests: `docker compose run --rm api uv run pytest -n auto` (everything); per-app via `docker compose run --rm api uv run pytest <app>/tests/ -n auto`.
 
-- Migrations: `uv run python manage.py makemigrations --check` (gate) + `uv run python manage.py migrate` (apply). Raw-SQL DB code (functions, views, materialized views, triggers, procedures) routes through `common/raw_sql_migration_managers.py` — see [add-migration](../add-migration/SKILL.md).
+- Migrations: `docker compose run --rm api uv run python manage.py makemigrations --check` (gate) + `docker compose run --rm api uv run python manage.py migrate` (apply). Raw-SQL DB code (functions, views, materialized views, triggers, procedures) routes through `common/raw_sql_migration_managers.py` — see [add-migration](../add-migration/SKILL.md).
 - Code host: **GitHub**. PR creation policy: **agents create PRs** — every phase opens a PR via the bundled prs-context file + [open-pr.sh](../open-pr-from-context/scripts/open-pr.sh).
 - Co-author trailer policy: **forbidden**. Commits must not include `Co-Authored-By:` AI trailers.
 
@@ -154,13 +154,13 @@ Transitive deps follow the same rule, but checking every transitive license at i
 1. Read existing code paths your changes touch — do not write before reading.
 2. Implement using Read/Edit/Write. Match existing patterns.
 3. **Inner loop — fast iteration.** Scoped to files/apps you touched:
-   a. `uv run ruff check ./` until clean.
-   b. `uv run pytest <new-test-path> -vs` for new tests individually.
-   c. Scoped suite: `uv run pytest <app>/tests/ -n auto`.
+   a. `docker compose run --rm api uv run ruff check ./` until clean.
+   b. `docker compose run --rm api uv run pytest <new-test-path> -vs` for new tests individually.
+   c. Scoped suite: `docker compose run --rm api uv run pytest <app>/tests/ -n auto`.
 4. Iterate 2–3 until **new tests pass individually** and the scoped suite is green. Do **not** advance to step 5 with red scoped tests.
 5. **Outer gate — full local verification, only after step 4 is green.** All MUST pass before staging:
-   a. **Type / build:** `uv run python manage.py check --deploy`.
-   b. **Full test suite:** `uv run pytest -n auto`.
+   a. **Type / build:** `docker compose run --rm api uv run python manage.py check --deploy`.
+   b. **Full test suite:** `docker compose run --rm api uv run pytest -n auto`.
    
 6. Outer gate fails → return step 2 (fix regression), re-run inner loop, then 5a/5b/5c. **Never** commit, push, or proceed while any gate is red.
 
@@ -311,7 +311,7 @@ Three layers, all required, in order. The orchestrator never edits — every iss
 
 1. `git status` + `git diff --stat`: confirm file list matches the agent's report.
 2. **Read the full diff** for every changed file using `git diff`. Spot-checking is not enough.
-3. **Verify the outer gate** ran + green. Look in the report for explicit confirmation that `uv run python manage.py check --deploy` AND `uv run pytest -n auto` were executed + passed. Vague confirmation → **re-run yourself**.
+3. **Verify the outer gate** ran + green. Look in the report for explicit confirmation that `docker compose run --rm api uv run python manage.py check --deploy` AND `docker compose run --rm api uv run pytest -n auto` were executed + passed. Vague confirmation → **re-run yourself**.
 4. **Scope creep**: file touched outside expected surface area? Unrelated formatting churn? Surface it.
 5. **No-secrets scan**: `git diff` for `password|secret|token|api_key|AKIA|BEGIN [A-Z]+ KEY`.
 6. **Dependency license scan**: `git diff package.json pyproject.toml ...` (project-relevant manifests) — for every added dep look up its SPDX license (`npm view <pkg> license`, PyPI metadata, repo `LICENSE`). A license in `policies.dependency_licenses.forbidden_spdx` and not in `allowed_overrides` is a BLOCKER (when `block`) or a SHOULD-FIX (when `warn`). A missing / `UNKNOWN` / undeclared license is **always a BLOCKER** regardless of enforcement mode — there is no override to silently bless undisclosed terms.
@@ -563,7 +563,7 @@ After all executable phases complete:
 - [ ] Model picked from `**Suggested AI model**:` line (cheapest available); plan tier recorded.
 - [ ] Subagent spawned, report received.
 - [ ] Inner loop green: scoped lint + new tests individually + scoped suite.
-- [ ] **Outer gate green:** `uv run python manage.py check --deploy` AND `uv run pytest -n auto` both passed.
+- [ ] **Outer gate green:** `docker compose run --rm api uv run python manage.py check --deploy` AND `docker compose run --rm api uv run pytest -n auto` both passed.
 - [ ] Layer 1 review: full diff read; no scope creep; no secrets; outer gate confirmed; no AI co-author trailer; **when `use_worktree = true`: main checkout has no stray tracked modifications** (`git -C <main> status --short | grep -vE '^\?\?'` empty) after every implementer AND fixer subagent.
 - [ ] Layer 2 review: every "Changes" ticked; every "Tests" materialized; acceptance line satisfiable; conventions, reusable skills, e2e + screenshot compliance (if applicable), flag wiring all checked.
 - [ ] Layer 3 review: adversarial review run; BLOCKERs fixed; SHOULD-FIX either fixed or noted.

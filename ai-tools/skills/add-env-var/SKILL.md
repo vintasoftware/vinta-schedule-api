@@ -86,10 +86,10 @@ Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific e
 
 ```bash
 # Settings module loads with the new var
-DJANGO_SETTINGS_MODULE=vinta_schedule_api.settings.local uv run python -c "import django; django.setup(); from django.conf import settings; print(getattr(settings, 'MY_NEW_VAR', None))"
+docker compose run --rm -e DJANGO_SETTINGS_MODULE=vinta_schedule_api.settings.local api uv run python -c "import django; django.setup(); from django.conf import settings; print(getattr(settings, 'MY_NEW_VAR', None))"
 
 # Production-settings check passes with the new var injected
-DJANGO_SETTINGS_MODULE=vinta_schedule_api.settings.production MY_NEW_VAR=fake uv run python manage.py check --deploy
+docker compose run --rm -e DJANGO_SETTINGS_MODULE=vinta_schedule_api.settings.production -e MY_NEW_VAR=fake api uv run python manage.py check --deploy
 
 # Docker surface still boots
 make down && make up && docker compose logs api | head -50

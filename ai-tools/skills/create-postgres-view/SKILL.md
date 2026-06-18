@@ -70,7 +70,7 @@ For a view `vw_organization_calendar_summary` in app `calendar_integration`:
 
 4. **Create the Django migration:**
    ```bash
-   uv run python manage.py makemigrations calendar_integration --empty --name add_organization_calendar_summary_view
+   docker compose run --rm api uv run python manage.py makemigrations calendar_integration --empty --name add_organization_calendar_summary_view
    ```
 
    Edit the generated file:
@@ -97,9 +97,9 @@ For a view `vw_organization_calendar_summary` in app `calendar_integration`:
 
 5. **Apply + reverse + re-apply:**
    ```bash
-   uv run python manage.py migrate calendar_integration
-   uv run python manage.py migrate calendar_integration <previous_migration>
-   uv run python manage.py migrate calendar_integration
+   docker compose run --rm api uv run python manage.py migrate calendar_integration
+   docker compose run --rm api uv run python manage.py migrate calendar_integration <previous_migration>
+   docker compose run --rm api uv run python manage.py migrate calendar_integration
    ```
 
    The reverse path runs `DROP VIEW IF EXISTS vw_organization_calendar_summary;` (from the manager's `drop_command_template`) because this is version `0001`.
@@ -198,14 +198,14 @@ Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific e
 
 ```bash
 # Forward apply
-uv run python manage.py migrate calendar_integration
+docker compose run --rm api uv run python manage.py migrate calendar_integration
 
 # Reverse + re-apply
-uv run python manage.py migrate calendar_integration <prev>
-uv run python manage.py migrate calendar_integration
+docker compose run --rm api uv run python manage.py migrate calendar_integration <prev>
+docker compose run --rm api uv run python manage.py migrate calendar_integration
 
 # Confirm the view exists + projected columns match
-DJANGO_SETTINGS_MODULE=vinta_schedule_api.settings.local uv run python -c "
+docker compose run --rm -e DJANGO_SETTINGS_MODULE=vinta_schedule_api.settings.local api uv run python -c "
 from django.db import connection
 with connection.cursor() as cur:
     cur.execute('SELECT column_name FROM information_schema.columns WHERE table_name = %s', ['vw_organization_calendar_summary'])

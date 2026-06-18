@@ -76,10 +76,10 @@ Goal: state the cause in one sentence with a citation (file:line, log line, or t
 
 1. **Read the error completely.** Stack trace from bottom to top. Note every frame in our code — skip framework noise on the first pass, return to it only if our frames don't explain it.
 2. **Reproduce locally.**
-   - Unit / integration: `uv run pytest -n auto`; per-app via `uv run pytest <app>/tests/ -n auto`
-   - Single failing test in isolation: `uv run pytest <new-test-path> -vs`
-   - Type / build gate: `uv run python manage.py check --deploy`
-   - Lint: `uv run ruff check ./`
+   - Unit / integration: `docker compose run --rm api uv run pytest -n auto`; per-app via `docker compose run --rm api uv run pytest <app>/tests/ -n auto`
+   - Single failing test in isolation: `docker compose run --rm api uv run pytest <new-test-path> -vs`
+   - Type / build gate: `docker compose run --rm api uv run python manage.py check --deploy`
+   - Lint: `docker compose run --rm api uv run ruff check ./`
 
    If you cannot reproduce, gather more evidence (Phase 0 logs, traces, user repro steps). Do not propose a fix against a bug you cannot trigger.
 3. **Bisect recent changes.** `git log --oneline main..HEAD` plus `git log -p` on the suspect file. Check the deploy timeline from Phase 0 against commits.
@@ -105,8 +105,8 @@ Goal: a single hypothesis, a single failing test, no speculative changes.
 
 1. State the hypothesis: *"If I change X to Y, the bug stops because Z."*
 2. Write the failing test FIRST.
-   - New test file: `uv run pytest <new-test-path> -vs`
-   - Scoped suite: `uv run pytest <app>/tests/ -n auto`
+   - New test file: `docker compose run --rm api uv run pytest <new-test-path> -vs`
+   - Scoped suite: `docker compose run --rm api uv run pytest <app>/tests/ -n auto`
    - The test must fail today for the same reason production fails. A test that fails for a different reason is a different bug.
 3. Make the smallest possible change. One variable. No drive-by refactors. No "while I'm here".
 4. Re-run the failing test. Did it go green? Re-run the scoped suite — did anything else go red?
@@ -121,9 +121,9 @@ Goal: ship the fix at the right level of abstraction with the right safety net.
 1. **Fix at the source, not the symptom.** If null leaks from a producer, fix the producer. Defensive null-checks at the consumer are an additional layer (see "defense in depth" below), not a replacement for the source fix.
 2. **Defense in depth where the cost is low.** Validation at the boundary, an assertion in the producer, a typed return that forbids the bad shape — pick the layer the codebase already invests in. Don't sprinkle.
 3. **Run the full local gate before pushing.**
-   - `uv run ruff check ./`
-   - `uv run python manage.py check --deploy`
-   - `uv run pytest -n auto`; per-app via `uv run pytest <app>/tests/ -n auto`
+   - `docker compose run --rm api uv run ruff check ./`
+   - `docker compose run --rm api uv run python manage.py check --deploy`
+   - `docker compose run --rm api uv run pytest -n auto`; per-app via `docker compose run --rm api uv run pytest <app>/tests/ -n auto`
 
 4. **Verify on the observability side after deploy.** The error fingerprint from Phase 0 should stop firing. If the platform supports it, mark the issue resolved in the source MCP tool so a regression re-opens it instead of creating a duplicate.
 5. **Document if the fix is non-obvious.** A comment is justified only when the *why* would surprise the next reader — a hidden invariant, a workaround for a known upstream bug, a constraint not visible from the call site. Don't narrate the change.
@@ -163,5 +163,5 @@ For new test scaffolding, defer to the project's test conventions captured in [A
 1. Phase 0 evidence stored or linked in the PR description (trace id / issue link / dashboard URL).
 2. Root cause stated in one sentence in the PR description.
 3. New failing-then-passing test cited by file:line.
-4. Full local gate green: `uv run ruff check ./` + `uv run python manage.py check --deploy` + `uv run pytest -n auto`.
+4. Full local gate green: `docker compose run --rm api uv run ruff check ./` + `docker compose run --rm api uv run python manage.py check --deploy` + `docker compose run --rm api uv run pytest -n auto`.
 5. Observability source updated post-deploy (issue resolved / alert acknowledged) so a recurrence pages instead of silently re-opening.

@@ -29,11 +29,11 @@ Refuse with this guidance; do not proceed.
 
 - Repo: vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (OrganizationModel), Postgres, deployed to Render). Conventions: [AGENTS.md](AGENTS.md).
 - Plan files: [`ai-plans/YYYY-MM-DD-FEATURE_NAME_PLAN.md`](ai-plans/).
-- Lint: `uv run ruff check ./`. Format: `uv run ruff format ./`.
-- Type / build gate: `uv run python manage.py check --deploy` plus full mypy via `uv run mypy .`.
-- Unit / integration tests: `uv run pytest -n auto`; per-app via `uv run pytest <app>/tests/ -n auto`.
+- Lint: `docker compose run --rm api uv run ruff check ./`. Format: `docker compose run --rm api uv run ruff format ./`.
+- Type / build gate: `docker compose run --rm api uv run python manage.py check --deploy` plus full mypy via `docker compose run --rm api uv run mypy .`.
+- Unit / integration tests: `docker compose run --rm api uv run pytest -n auto`; per-app via `docker compose run --rm api uv run pytest <app>/tests/ -n auto`.
 
-- Migrations: `uv run python manage.py makemigrations --check` (gate) + `uv run python manage.py migrate` (apply). Raw-SQL DB code (functions, views, materialized views, triggers, procedures) routes through `common/raw_sql_migration_managers.py` — see [add-migration](../add-migration/SKILL.md).
+- Migrations: `docker compose run --rm api uv run python manage.py makemigrations --check` (gate) + `docker compose run --rm api uv run python manage.py migrate` (apply). Raw-SQL DB code (functions, views, materialized views, triggers, procedures) routes through `common/raw_sql_migration_managers.py` — see [add-migration](../add-migration/SKILL.md).
 - Code host: **GitHub**. PR creation policy: **agents create PRs** — every phase opens a PR via the bundled prs-context file + [open-pr.sh](../open-pr-from-context/scripts/open-pr.sh).
 - Co-author trailer policy: **forbidden**. Commits must not include `Co-Authored-By:` AI trailers.
 - Default branch: `main`.
@@ -258,9 +258,9 @@ Transitive deps follow the same rule, but checking every transitive license at i
 ## Working instructions (same loops as implement-plan)
 1. Read existing code paths your changes touch.
 2. Edit. Match existing patterns.
-3. Inner loop: `uv run ruff check ./` → `uv run pytest <new-test-path> -vs` → scoped suite (`uv run pytest <app>/tests/ -n auto`).
+3. Inner loop: `docker compose run --rm api uv run ruff check ./` → `docker compose run --rm api uv run pytest <new-test-path> -vs` → scoped suite (`docker compose run --rm api uv run pytest <app>/tests/ -n auto`).
 4. Iterate 2–3 until green.
-5. Outer gate: `uv run python manage.py check --deploy` AND `uv run pytest -n auto`.
+5. Outer gate: `docker compose run --rm api uv run python manage.py check --deploy` AND `docker compose run --rm api uv run pytest -n auto`.
 6. Stage explicitly: `git add <app>/... vinta_schedule_api/... ai-plans/... tests/... — explicit per-path`.
 7. Commit. Conventional Commits format: `type(scope): subject` — e.g. `feat(calendar): add bundle availability filter`, `fix(public_api): correct organization scope on bookings query`.
 8. Do **not** add `Co-Authored-By: Claude` (or any other AI) trailer to commits — the project forbids them.

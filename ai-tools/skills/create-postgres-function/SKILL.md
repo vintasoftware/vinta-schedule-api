@@ -90,7 +90,7 @@ For a function `calculate_business_hours_overlap` in app `calendar_integration`:
 
 4. **Create the Django migration:**
    ```bash
-   uv run python manage.py makemigrations calendar_integration --empty --name add_calculate_business_hours_overlap_fn
+   docker compose run --rm api uv run python manage.py makemigrations calendar_integration --empty --name add_calculate_business_hours_overlap_fn
    ```
 
    ```python
@@ -138,9 +138,9 @@ For a function `calculate_business_hours_overlap` in app `calendar_integration`:
 
 6. **Apply + reverse + re-apply:**
    ```bash
-   uv run python manage.py migrate calendar_integration
-   uv run python manage.py migrate calendar_integration <previous>
-   uv run python manage.py migrate calendar_integration
+   docker compose run --rm api uv run python manage.py migrate calendar_integration
+   docker compose run --rm api uv run python manage.py migrate calendar_integration <previous>
+   docker compose run --rm api uv run python manage.py migrate calendar_integration
    ```
 
    Reverse for version `0001` runs `DROP FUNCTION IF EXISTS calculate_business_hours_overlap;` (from the manager's `drop_command_template`).
@@ -188,12 +188,12 @@ Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific e
 
 ```bash
 # Migration runs forward, reverse, forward
-uv run python manage.py migrate calendar_integration
-uv run python manage.py migrate calendar_integration <prev>
-uv run python manage.py migrate calendar_integration
+docker compose run --rm api uv run python manage.py migrate calendar_integration
+docker compose run --rm api uv run python manage.py migrate calendar_integration <prev>
+docker compose run --rm api uv run python manage.py migrate calendar_integration
 
 # Function exists in catalog
-DJANGO_SETTINGS_MODULE=vinta_schedule_api.settings.local uv run python -c "
+docker compose run --rm -e DJANGO_SETTINGS_MODULE=vinta_schedule_api.settings.local api uv run python -c "
 from django.db import connection
 with connection.cursor() as cur:
     cur.execute('SELECT proname, prosrc FROM pg_proc WHERE proname = %s', ['calculate_business_hours_overlap'])
@@ -202,7 +202,7 @@ with connection.cursor() as cur:
 "
 
 # Function-specific test
-uv run pytest <app>/tests/test_<fn>.py -vs
+docker compose run --rm api uv run pytest <app>/tests/test_<fn>.py -vs
 ```
 
 Spot-checks:
