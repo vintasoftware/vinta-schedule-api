@@ -18,6 +18,7 @@ from calendar_integration.exceptions import CalendarIntegrationError
 from calendar_integration.graphql import (
     AvailableTimeGraphQLType,
     BlockedTimeGraphQLType,
+    CalendarBundleGraphQLType,
     CalendarGraphQLType,
 )
 from calendar_integration.models import Calendar
@@ -375,6 +376,33 @@ class DeleteBlockedTimeResult:
 
     success: bool
     error_message: str | None = None
+
+
+@strawberry.input
+class CreateCalendarBundleInput:
+    """Input for creating a bundle calendar from child calendars.
+
+    children_ids: IDs of existing org-scoped calendars to include in the bundle.
+    primary_calendar_id: Optional. The ID of one of the children_ids calendars that will
+        be designated as the primary (hosts the real external event). Must be present in
+        children_ids when provided.
+    No isPrivate — out of scope (non-goal).
+    """
+
+    organization_id: int
+    name: str
+    description: str | None = None
+    children_ids: list[int]
+    primary_calendar_id: int | None = None
+
+
+@strawberry.type
+class CreateCalendarBundleResult:
+    """Result of the createCalendarBundle mutation."""
+
+    success: bool
+    error_message: str | None = None
+    bundle: CalendarBundleGraphQLType | None = None
 
 
 @strawberry.type
@@ -1182,3 +1210,65 @@ class Mutation(CalendarGroupMutations):
             return DeleteBlockedTimeResult(success=False, error_message=str(e))
 
         return DeleteBlockedTimeResult(success=True)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_calendar_bundle(
+        self,
+        info: strawberry.Info,
+        input: CreateCalendarBundleInput,  # noqa: A002
+    ) -> CreateCalendarBundleResult:
+        """Create a bundle calendar from a set of child calendars.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the child calendars org-scoped: all children_ids must belong to the org.
+           If any id is missing or cross-org, returns success=False.
+        3. If primary_calendar_id is provided, verifies it is among children_ids;
+           returns success=False if not.
+        4. Delegates to CalendarService.create_bundle_calendar with name, description
+           (None normalized to ""), child_calendars, and primary_calendar.
+        5. Returns the created bundle CalendarBundleGraphQLType on success, or
+           success=False + errorMessage on failure.
+
+        The token's OrganizationResourceAccess must include the CREATE_CALENDAR_BUNDLE resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        # Fetch child calendars org-scoped (rejects cross-org / missing ids)
+        unique_children_ids = list(dict.fromkeys(input.children_ids))
+        children = list(
+            Calendar.objects.filter_by_organization(org.id).filter(id__in=unique_children_ids)
+        )
+        if len(children) != len(unique_children_ids):
+            return CreateCalendarBundleResult(
+                success=False,
+                error_message="One or more child calendars not found.",
+            )
+
+        # Resolve primary calendar if requested
+        primary: Calendar | None = None
+        if input.primary_calendar_id is not None:
+            if input.primary_calendar_id not in unique_children_ids:
+                return CreateCalendarBundleResult(
+                    success=False,
+                    error_message="primary_calendar_id must be one of the children_ids.",
+                )
+            primary = next((c for c in children if c.id == input.primary_calendar_id), None)
+            if primary is None:
+                return CreateCalendarBundleResult(
+                    success=False,
+                    error_message="Primary calendar not found among the resolved children.",
+                )
+
+        try:
+            bundle = calendar_service.create_bundle_calendar(
+                name=input.name,
+                # Calendar.description is NOT NULL; normalize None -> "" to avoid IntegrityError.
+                description=input.description if input.description is not None else "",
+                child_calendars=children,
+                primary_calendar=primary,
+            )
+        except (CalendarIntegrationError, ValueError, DjangoValidationError, IntegrityError) as e:
+            return CreateCalendarBundleResult(success=False, error_message=str(e))
+
+        return CreateCalendarBundleResult(success=True, bundle=bundle)  # type: ignore[arg-type]

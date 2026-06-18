@@ -48,3 +48,4 @@ class PublicAPIResources(TextChoices):
     UPDATE_BLOCKED_TIME = "update_blocked_time", "Update Blocked Time"
     DELETE_BLOCKED_TIME = "delete_blocked_time", "Delete Blocked Time"
     CALENDAR_BUNDLE = "calendar_bundle", "Calendar Bundle"
+    CREATE_CALENDAR_BUNDLE = "create_calendar_bundle", "Create Calendar Bundle"
