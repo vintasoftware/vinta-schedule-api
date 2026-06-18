@@ -1253,12 +1253,7 @@ class Mutation(CalendarGroupMutations):
                     success=False,
                     error_message="primary_calendar_id must be one of the children_ids.",
                 )
-            primary = next((c for c in children if c.id == input.primary_calendar_id), None)
-            if primary is None:
-                return CreateCalendarBundleResult(
-                    success=False,
-                    error_message="Primary calendar not found among the resolved children.",
-                )
+            primary = next(c for c in children if c.id == input.primary_calendar_id)
 
         try:
             bundle = calendar_service.create_bundle_calendar(
