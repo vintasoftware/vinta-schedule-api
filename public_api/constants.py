@@ -45,3 +45,4 @@ class PublicAPIResources(TextChoices):
         "Batch Update Availability Windows",
     )
     CREATE_BLOCKED_TIME = "create_blocked_time", "Create Blocked Time"
+    UPDATE_BLOCKED_TIME = "update_blocked_time", "Update Blocked Time"

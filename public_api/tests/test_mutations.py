@@ -4274,3 +4274,282 @@ class TestCreateBlockedTimeMutation:
         result = data["data"]["createBlockedTime"]
         assert result["success"] is False
         assert result["errorMessage"] is not None
+
+
+UPDATE_BLOCKED_TIME_MUTATION = """
+mutation UpdateBlockedTime($input: UpdateBlockedTimeInput!) {
+    updateBlockedTime(input: $input) {
+        success
+        errorMessage
+        blockedTime {
+            id
+            startTime
+            endTime
+        }
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestUpdateBlockedTimeMutation:
+    """Tests for the updateBlockedTime mutation (Phase 3f)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_org_and_token(self, resources: list[str] | None = None):
+        """Create an org + system user with the given resource scopes."""
+        if resources is None:
+            resources = [PublicAPIResources.UPDATE_BLOCKED_TIME]
+        org = baker.make(Organization, name="Test Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": UPDATE_BLOCKED_TIME_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def test_update_blocked_time_happy_path(self):
+        """A granted token updates a blocked time; DB reflects new values + payload returned."""
+        from calendar_integration.models import BlockedTime
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        calendar = calendar_service.create_resource_calendar(
+            name="Update Room",
+            description="",
+            manage_available_windows=True,
+        )
+
+        # Create a blocked time via the service
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+        blocked_time = calendar_service.create_blocked_time(
+            calendar=calendar,
+            start_time=start,
+            end_time=end,
+            timezone="UTC",
+            reason="Original reason",
+        )
+
+        new_start = datetime.datetime(2026, 9, 2, 10, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 9, 2, 18, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "blockedTimeId": blocked_time.id,
+                    "startTime": new_start.isoformat(),
+                    "endTime": new_end.isoformat(),
+                    "reason": "Updated reason",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["updateBlockedTime"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+        assert result["blockedTime"] is not None
+        returned_id = int(result["blockedTime"]["id"])
+
+        # Verify DB row reflects the updated values
+        bt = BlockedTime.objects.filter_by_organization(org.id).get(id=returned_id)
+        assert bt.reason == "Updated reason"
+        assert bt.start_time_tz_unaware == new_start
+        assert bt.end_time_tz_unaware == new_end
+
+    def test_update_blocked_time_missing_id_returns_failure(self):
+        """A non-existent blocked_time_id returns success=False."""
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        calendar = calendar_service.create_resource_calendar(
+            name="Missing BT Room",
+            description="",
+            manage_available_windows=True,
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "blockedTimeId": 999999,
+                    "reason": "Should fail",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateBlockedTime"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "not found" in result["errorMessage"].lower()
+
+    def test_update_blocked_time_cross_org_calendar_rejected(self):
+        """A calendar belonging to a different org → success=False 'Calendar not found'."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        other_org = baker.make(Organization, name="Other Org")
+        other_calendar = baker.make(
+            "calendar_integration.Calendar",
+            organization=other_org,
+            calendar_type=CalendarType.RESOURCE,
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": other_calendar.id,
+                    "blockedTimeId": 1,
+                    "reason": "Cross org attempt",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateBlockedTime"]
+        assert result["success"] is False
+        assert "calendar not found" in result["errorMessage"].lower()
+
+    def test_update_blocked_time_permission_denied_without_grant(self):
+        """A token without UPDATE_BLOCKED_TIME grant is denied."""
+        # Grant CALENDAR scope instead, NOT UPDATE_BLOCKED_TIME
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[PublicAPIResources.CALENDAR]
+        )
+
+        other_calendar = baker.make(
+            "calendar_integration.Calendar",
+            organization=org,
+            calendar_type=CalendarType.RESOURCE,
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": other_calendar.id,
+                    "blockedTimeId": 1,
+                    "reason": "Unauthorized",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_update_blocked_time_unauthenticated_denied(self):
+        """An unauthenticated call (no Authorization header) is denied."""
+        response = self.client.post(
+            "/graphql/",
+            data={
+                "query": UPDATE_BLOCKED_TIME_MUTATION,
+                "variables": {
+                    "input": {
+                        "organizationId": 1,
+                        "calendarId": 1,
+                        "blockedTimeId": 1,
+                    }
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+    def test_update_blocked_time_rrule_creates_recurrence_rule(self):
+        """Supplying rruleString via the mutation attaches a RecurrenceRule to the DB row."""
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        calendar = calendar_service.create_resource_calendar(
+            name="Rrule Room",
+            description="",
+            manage_available_windows=True,
+        )
+
+        start = datetime.datetime(2026, 10, 6, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 10, 6, 17, 0, 0, tzinfo=datetime.UTC)
+        blocked_time = calendar_service.create_blocked_time(
+            calendar=calendar,
+            start_time=start,
+            end_time=end,
+            timezone="UTC",
+            reason="No recurrence initially",
+        )
+        assert blocked_time.recurrence_rule is None
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "blockedTimeId": blocked_time.id,
+                    "rruleString": "FREQ=WEEKLY;BYDAY=MO",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateBlockedTime"]
+        assert result["success"] is True
+
+        blocked_time.refresh_from_db()
+        assert blocked_time.recurrence_rule is not None

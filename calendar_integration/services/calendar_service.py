@@ -1347,6 +1347,40 @@ class CalendarService(BaseCalendarService):
             rrule_string=rrule_string,
         )
 
+    def update_blocked_time(
+        self,
+        calendar: Calendar,
+        blocked_time_id: int,
+        start_time: datetime.datetime | None = None,
+        end_time: datetime.datetime | None = None,
+        timezone: str | None = None,
+        reason: str | None = None,
+        rrule_string: str | None = None,
+    ) -> BlockedTime:
+        """Update an existing blocked time's fields (partial update).
+
+        Delegates to AvailabilityService.update_blocked_time.
+
+        :param calendar: The calendar the blocked time belongs to.
+        :param blocked_time_id: The id of the blocked time to update.
+        :param start_time: New start time, or None to leave unchanged.
+        :param end_time: New end time, or None to leave unchanged.
+        :param timezone: New timezone string, or None to leave unchanged.
+        :param reason: New reason string, or None to leave unchanged.
+        :param rrule_string: New recurrence rule string, or None to leave unchanged.
+        :return: The updated BlockedTime instance.
+        :raises ValueError: If blocked_time_id is not found in this calendar.
+        """
+        return self._get_availability_service().update_blocked_time(
+            calendar=calendar,
+            blocked_time_id=blocked_time_id,
+            start_time=start_time,
+            end_time=end_time,
+            timezone=timezone,
+            reason=reason,
+            rrule_string=rrule_string,
+        )
+
     def create_available_time(
         self,
         calendar: Calendar,
