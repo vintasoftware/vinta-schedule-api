@@ -167,6 +167,23 @@ class PublicBrandingResult:
 
 
 @strawberry.type
+class ValidateReturnUrlResult:
+    """Result of validating an OAuth return ("next") URL against a tenant's allowlist.
+
+    Used by the unauthenticated validateReturnUrl query so the OAuth interstitial
+    callback (which has no session yet) can ask a yes/no question WITHOUT the
+    reseller-internal return_url_allowlist ever being serialized into a response.
+
+    Identical shape for every not-allowed case (unknown tenant, no branding,
+    empty allowlist, bad scheme, origin mismatch) so the query is not an
+    enumeration oracle: allowed=False, sanitized_url=None.
+    """
+
+    allowed: bool
+    sanitized_url: str | None = None
+
+
+@strawberry.type
 class ChildOrganizationMetrics:
     """Point-in-time aggregate counts for a child organization.
 

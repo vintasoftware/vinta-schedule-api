@@ -10767,6 +10767,21 @@ components:
       - invitation
       - branding
       - child_org_analytics
+      - calendar_booking_code
+      - create_resource_calendar
+      - disable_resource_calendar
+      - import_resource_calendars
+      - create_availability_window
+      - update_availability_window
+      - delete_availability_window
+      - batch_update_availability_windows
+      - create_blocked_time
+      - update_blocked_time
+      - delete_blocked_time
+      - calendar_bundle
+      - create_calendar_bundle
+      - update_calendar_bundle
+      - disable_calendar_bundle
       type: string
       description: |-
         * `calendar_event` - Calendar Event
@@ -10791,6 +10806,21 @@ components:
         * `invitation` - Invitation
         * `branding` - Branding
         * `child_org_analytics` - Child Organization Analytics
+        * `calendar_booking_code` - Calendar Booking Code
+        * `create_resource_calendar` - Create Resource Calendar
+        * `disable_resource_calendar` - Disable Resource Calendar
+        * `import_resource_calendars` - Import Resource Calendars
+        * `create_availability_window` - Create Availability Window
+        * `update_availability_window` - Update Availability Window
+        * `delete_availability_window` - Delete Availability Window
+        * `batch_update_availability_windows` - Batch Update Availability Windows
+        * `create_blocked_time` - Create Blocked Time
+        * `update_blocked_time` - Update Blocked Time
+        * `delete_blocked_time` - Delete Blocked Time
+        * `calendar_bundle` - Calendar Bundle
+        * `create_calendar_bundle` - Create Calendar Bundle
+        * `update_calendar_bundle` - Update Calendar Bundle
+        * `disable_calendar_bundle` - Disable Calendar Bundle
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.

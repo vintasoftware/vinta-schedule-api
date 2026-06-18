@@ -1,6 +1,7 @@
 import datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, cast
+from urllib.parse import urlsplit
 
 from django.db.models import Count as DjangoCount
 from django.db.models import OuterRef, Subquery, Value
@@ -12,11 +13,19 @@ from dependency_injector.wiring import Provide, inject
 from django_virtual_models import QuerySet
 from graphql import GraphQLError
 
+from calendar_integration.constants import CalendarType
+from calendar_integration.exceptions import (
+    InvalidTokenError,
+    TokenAlreadyUsedError,
+    TokenExpiredError,
+    TokenRevokedError,
+)
 from calendar_integration.graphql import (
     AvailableTimeGraphQLType,
     AvailableTimeWindowGraphQLType,
     BlockedTimeGraphQLType,
     BookableSlotProposalGraphQLType,
+    CalendarBundleGraphQLType,
     CalendarEventGraphQLType,
     CalendarGraphQLType,
     CalendarGroupGraphQLType,
@@ -33,6 +42,7 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    CalendarManagementToken,
 )
 from organizations.models import Organization, OrganizationMembership, resolve_branding
 from public_api.capabilities import assert_org_can_invite
@@ -40,20 +50,35 @@ from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
 )
-from public_api.types import ChildOrganizationMetrics, PublicApiHttpRequest, PublicBrandingResult
+from public_api.types import (
+    ChildOrganizationMetrics,
+    PublicApiHttpRequest,
+    PublicBrandingResult,
+    ValidateReturnUrlResult,
+)
 from users.graphql import UserGraphQLType
 from users.models import User
 
 
 if TYPE_CHECKING:
     from calendar_integration.services.calendar_group_service import CalendarGroupService
+    from calendar_integration.services.calendar_permission_service import CalendarPermissionService
     from calendar_integration.services.calendar_service import CalendarService
+
+# Uniform error message for all code-gated read failures.  Never disclose whether the
+# code exists, is expired, used, revoked, or bound to the wrong scope.
+_CODE_GATED_ERROR_MESSAGE = "Invalid or expired code."
+
+# Maximum client-controlled datetime range for unauthenticated (code-gated) reads.
+# Prevents amplification / DoS via unbounded recurrence expansion.
+MAX_CODE_GATED_RANGE = datetime.timedelta(days=366)
 
 
 @dataclass
 class QueryDependencies:
     calendar_service: "CalendarService"
     calendar_group_service: "CalendarGroupService"
+    calendar_permission_service: "CalendarPermissionService | None" = None
 
 
 @inject
@@ -62,8 +87,11 @@ def get_query_dependencies(
     calendar_group_service: Annotated[
         "CalendarGroupService | None", Provide["calendar_group_service"]
     ] = None,
+    calendar_permission_service: Annotated[
+        "CalendarPermissionService | None", Provide["calendar_permission_service"]
+    ] = None,
 ) -> QueryDependencies:
-    required_dependencies = [calendar_service, calendar_group_service]
+    required_dependencies = [calendar_service, calendar_group_service, calendar_permission_service]
     if any(dep is None for dep in required_dependencies):
         raise GraphQLError(
             f"Missing required dependency {', '.join([str(dep) for dep in required_dependencies if dep is None])}"
@@ -72,6 +100,7 @@ def get_query_dependencies(
     return QueryDependencies(
         calendar_service=cast("CalendarService", calendar_service),
         calendar_group_service=cast("CalendarGroupService", calendar_group_service),
+        calendar_permission_service=cast("CalendarPermissionService", calendar_permission_service),
     )
 
 
@@ -97,6 +126,41 @@ def _vinta_default_branding() -> PublicBrandingResult:
     )
 
 
+_ALLOWED_RETURN_URL_SCHEMES = ("http", "https")
+_DEFAULT_SCHEME_PORTS = {"http": 80, "https": 443}
+
+
+def _return_url_origin(raw: str) -> tuple[str, str, int] | None:
+    """Parse a URL into its (scheme, host, port) origin, or None if not eligible.
+
+    Returns None for anything that can never be an allowed return URL:
+    - non-http/https schemes (javascript:, data:, etc.)
+    - protocol-relative URLs (//host — no scheme)
+    - URLs without a host
+    - unparseable input or out-of-range ports
+
+    The port is normalized to the scheme default when omitted so that
+    https://app.example.com and https://app.example.com:443 share one origin.
+    Host is lowercased; comparison of two origins is then EXACT tuple equality,
+    so https://app.example.com never admits https://app.example.com.evil.com.
+    """
+    try:
+        parts = urlsplit(raw)
+        scheme = parts.scheme.lower()
+        if scheme not in _ALLOWED_RETURN_URL_SCHEMES:
+            return None
+        host = parts.hostname
+        if not host:
+            return None
+        port = parts.port
+    except (ValueError, TypeError):
+        # Malformed URL or out-of-range port (parts.port raises ValueError).
+        return None
+    if port is None:
+        port = _DEFAULT_SCHEME_PORTS[scheme]
+    return (scheme, host.lower(), port)
+
+
 def _slice_qs[TQuerySet: QuerySet](qs: TQuerySet, offset: int, limit: int) -> TQuerySet:
     if offset < 0:
         raise GraphQLError("Offset must be non-negative")
@@ -116,6 +180,71 @@ def _prepare_service_and_calendar(
     )
     cal = Calendar.objects.filter_by_organization(org.id).get(id=calendar_id)
     return deps.calendar_service, cal
+
+
+def _prepare_service_and_calendar_for_org(
+    deps: "QueryDependencies", org: Organization, calendar: Calendar
+) -> "CalendarService":
+    """Initialize CalendarService with the given org and return it.
+
+    Used by code-gated (unauthenticated) reads where the org + calendar are
+    derived from the booking code rather than from the request auth context.
+    Receives an already-resolved ``deps`` object to avoid a second DI resolution.
+    """
+    deps.calendar_service.initialize_without_provider(user_or_token=None, organization=org)
+    return deps.calendar_service
+
+
+def _prepare_group_service_for_org(
+    deps: "QueryDependencies", org: Organization
+) -> "CalendarGroupService":
+    """Initialize CalendarGroupService with the given org and return it.
+
+    Used by code-gated (unauthenticated) reads where the org is derived from
+    the booking code.
+    Receives an already-resolved ``deps`` object to avoid a second DI resolution.
+    """
+    deps.calendar_group_service.initialize(organization=org)
+    return deps.calendar_group_service
+
+
+def _resolve_code_from_deps(deps: QueryDependencies, code: str) -> "CalendarManagementToken":
+    """Decode and validate a booking code, raising GraphQLError on any failure.
+
+    Centralises the None-guard for ``deps.calendar_permission_service`` so the
+    five code-gated read fields share a single call site for mypy purposes.
+    """
+    if deps.calendar_permission_service is None:
+        raise GraphQLError("Internal server error.")
+    try:
+        token: CalendarManagementToken = deps.calendar_permission_service.resolve_code(code)
+    except (InvalidTokenError, TokenExpiredError, TokenAlreadyUsedError, TokenRevokedError):
+        raise GraphQLError(_CODE_GATED_ERROR_MESSAGE) from None
+    return token
+
+
+def _get_org_from_token(token: "CalendarManagementToken") -> Organization:
+    """Fetch the Organization for the given token, mapping DoesNotExist to the uniform error.
+
+    Guards against hard-deleted organizations, which would otherwise raise an
+    unhandled ``Organization.DoesNotExist`` (→ 500).
+    """
+    try:
+        return Organization.objects.get(id=token.organization_id)
+    except Organization.DoesNotExist:
+        raise GraphQLError(_CODE_GATED_ERROR_MESSAGE) from None
+
+
+def _validate_code_gated_range(start: datetime.datetime, end: datetime.datetime) -> None:
+    """Validate a client-supplied datetime range for code-gated reads.
+
+    Raises ``GraphQLError`` if the range is backwards or exceeds
+    ``MAX_CODE_GATED_RANGE``.  Called BEFORE any expensive service call.
+    """
+    if end <= start:
+        raise GraphQLError("Invalid time range.")
+    if (end - start) > MAX_CODE_GATED_RANGE:
+        raise GraphQLError("Requested time range is too large.")
 
 
 @strawberry.input
@@ -460,6 +589,28 @@ class Query:
         qs = CalendarGroup.objects.filter_by_organization(org.id).order_by("pk")
         return cast(list[CalendarGroupGraphQLType], list(_slice_qs(qs, offset, limit)))
 
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def calendar_bundles(
+        self,
+        info: strawberry.Info,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[CalendarBundleGraphQLType]:
+        """List bundle calendars for the caller's organization.
+
+        Returns only Calendar rows with calendar_type=BUNDLE, paginated.
+        Children are prefetched to avoid N+1 queries.
+        """
+        org = _get_org(info)
+        qs = (
+            Calendar.objects.filter_by_organization(org.id)
+            .only_listed()
+            .filter(calendar_type=CalendarType.BUNDLE)
+            .prefetch_related("bundle_children")
+            .order_by("pk")
+        )
+        return cast(list[CalendarBundleGraphQLType], list(_slice_qs(qs, offset, limit)))
+
     @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def calendar_group_availability(
         self,
@@ -615,6 +766,205 @@ class Query:
             for child in qs
         ]
 
+    # ------------------------------------------------------------------
+    # Code-gated read fields (unauthenticated — authorized by booking code)
+    # ------------------------------------------------------------------
+
+    @strawberry.field()
+    def available_times_with_code(
+        self,
+        code: str,
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> list[AvailableTimeGraphQLType]:
+        """Return available times for the calendar bound to a booking code.
+
+        No org token required.  The code gates access to its bound calendar only.
+        Reads are repeatable: the code is never consumed by this query.
+        """
+        _validate_code_gated_range(start_datetime, end_datetime)
+        deps = get_query_dependencies()
+        token = _resolve_code_from_deps(deps, code)
+
+        # Resolve the bound calendar (calendar-scope or event.calendar fallback).
+        calendar = token.calendar
+        if calendar is None and token.event is not None:
+            calendar = token.event.calendar
+        if calendar is None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
+
+        org = _get_org_from_token(token)
+        calendar_service = _prepare_service_and_calendar_for_org(deps, org, calendar)
+
+        available_times = calendar_service.get_available_times_expanded(
+            calendar,
+            start_datetime,
+            end_datetime,
+        )
+        return cast(list[AvailableTimeGraphQLType], available_times)
+
+    @strawberry.field()
+    def availability_windows_with_code(
+        self,
+        code: str,
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> list[AvailableTimeWindowGraphQLType]:
+        """Return availability windows for the calendar bound to a booking code.
+
+        No org token required.  The code gates access to its bound calendar only.
+        Reads are repeatable: the code is never consumed by this query.
+        """
+        _validate_code_gated_range(start_datetime, end_datetime)
+        deps = get_query_dependencies()
+        token = _resolve_code_from_deps(deps, code)
+
+        calendar = token.calendar
+        if calendar is None and token.event is not None:
+            calendar = token.event.calendar
+        if calendar is None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
+
+        org = _get_org_from_token(token)
+        calendar_service = _prepare_service_and_calendar_for_org(deps, org, calendar)
+
+        windows = calendar_service.get_availability_windows_in_range(
+            calendar=calendar,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+        )
+        return [
+            AvailableTimeWindowGraphQLType(
+                start_time=w.start_time,
+                end_time=w.end_time,
+                id=w.id,
+                can_book_partially=w.can_book_partially,
+            )
+            for w in windows
+        ]
+
+    @strawberry.field()
+    def unavailable_windows_with_code(
+        self,
+        code: str,
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> list[UnavailableTimeWindowGraphQLType]:
+        """Return unavailable (blocked/event) windows for the calendar bound to a booking code.
+
+        No org token required.  The code gates access to its bound calendar only.
+        Reads are repeatable: the code is never consumed by this query.
+        """
+        _validate_code_gated_range(start_datetime, end_datetime)
+        deps = get_query_dependencies()
+        token = _resolve_code_from_deps(deps, code)
+
+        calendar = token.calendar
+        if calendar is None and token.event is not None:
+            calendar = token.event.calendar
+        if calendar is None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
+
+        org = _get_org_from_token(token)
+        calendar_service = _prepare_service_and_calendar_for_org(deps, org, calendar)
+
+        unavailable = calendar_service.get_unavailable_time_windows_in_range(
+            calendar=calendar,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+        )
+        return [
+            UnavailableTimeWindowGraphQLType(
+                start_time=w.start_time, end_time=w.end_time, id=w.id, reason=w.reason
+            )
+            for w in unavailable
+        ]
+
+    @strawberry.field()
+    def calendar_group_bookable_slots_with_code(
+        self,
+        code: str,
+        search_window_start: datetime.datetime,
+        search_window_end: datetime.datetime,
+        duration_seconds: int,
+        slot_step_seconds: int = 15 * 60,
+    ) -> list[BookableSlotProposalGraphQLType]:
+        """Return bookable slot proposals for the group bound to a booking code.
+
+        No org token required.  The code gates access to its bound calendar group only.
+        Reads are repeatable: the code is never consumed by this query.
+        """
+        _validate_code_gated_range(search_window_start, search_window_end)
+        deps = get_query_dependencies()
+        token = _resolve_code_from_deps(deps, code)
+
+        # Resolve the bound group (group-scope or event.calendar_group fallback).
+        group = token.calendar_group
+        if group is None and token.event is not None:
+            group = token.event.calendar_group
+        if group is None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
+
+        org = _get_org_from_token(token)
+        calendar_group_service = _prepare_group_service_for_org(deps, org)
+
+        proposals = calendar_group_service.find_bookable_slots(
+            group_id=group.id,
+            search_window_start=search_window_start,
+            search_window_end=search_window_end,
+            duration=datetime.timedelta(seconds=duration_seconds),
+            slot_step=datetime.timedelta(seconds=slot_step_seconds),
+        )
+        return [
+            BookableSlotProposalGraphQLType(start_time=p.start_time, end_time=p.end_time)
+            for p in proposals
+        ]
+
+    @strawberry.field()
+    def calendar_group_availability_with_code(
+        self,
+        code: str,
+        ranges: list[DateTimeRangeInput],
+    ) -> list[CalendarGroupRangeAvailabilityGraphQLType]:
+        """Return per-range slot availability for the group bound to a booking code.
+
+        No org token required.  The code gates access to its bound calendar group only.
+        Reads are repeatable: the code is never consumed by this query.
+        """
+        for r in ranges:
+            _validate_code_gated_range(r.start_time, r.end_time)
+        deps = get_query_dependencies()
+        token = _resolve_code_from_deps(deps, code)
+
+        group = token.calendar_group
+        if group is None and token.event is not None:
+            group = token.event.calendar_group
+        if group is None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
+
+        org = _get_org_from_token(token)
+        calendar_group_service = _prepare_group_service_for_org(deps, org)
+
+        result = calendar_group_service.check_group_availability(
+            group_id=group.id,
+            ranges=[(r.start_time, r.end_time) for r in ranges],
+        )
+        return [
+            CalendarGroupRangeAvailabilityGraphQLType(
+                start_time=r.start_time,
+                end_time=r.end_time,
+                slots=[
+                    CalendarGroupSlotAvailabilityGraphQLType(
+                        slot_id=s.slot_id,
+                        available_calendar_ids=s.available_calendar_ids,
+                        required_count=s.required_count,
+                    )
+                    for s in r.slots
+                ],
+            )
+            for r in result
+        ]
+
     @strawberry.field()
     def branding_for_tenant(self, tenant_id: strawberry.ID) -> PublicBrandingResult:
         """Get resolved branding for a tenant, or vinta default if unbranded.
@@ -653,3 +1003,66 @@ class Query:
             primary_color=branding.primary_color,
             secondary_color=branding.secondary_color,
         )
+
+    @strawberry.field()
+    def validate_return_url(self, tenant_id: strawberry.ID, url: str) -> ValidateReturnUrlResult:
+        """Validate an OAuth return ("next") URL against a tenant's branding allowlist.
+
+        Unauthenticated, rate-limited public query for the OAuth interstitial
+        callback, which has no session yet and so cannot use the reseller-admin
+        REST /branding/ endpoint. Answers a yes/no question WITHOUT ever
+        serializing the reseller-internal return_url_allowlist (preserves §4.6).
+
+        The candidate URL's ORIGIN (scheme + host + port) must EXACTLY equal the
+        origin of an allowlist entry — never a prefix/substring match — so an
+        allowlisted https://app.example.com does NOT admit
+        https://app.example.com.evil.com. Only http/https candidates can ever be
+        allowed; javascript:, data:, protocol-relative //host, and unparseable
+        input are rejected.
+
+        No enumeration oracle: unknown tenant ID, no branding row, empty
+        allowlist, and any not-allowed case ALL return the identical shape
+        {allowed: False, sanitized_url: None} with no error that distinguishes
+        "tenant exists" from "doesn't". Never raises on a bad tenant ID.
+
+        Args:
+            tenant_id: The ID of the organization whose reseller allowlist applies.
+            url: The candidate return URL to validate.
+
+        Returns:
+            ValidateReturnUrlResult with allowed and, when allowed, the echoed url.
+        """
+        not_allowed = ValidateReturnUrlResult(allowed=False, sanitized_url=None)
+
+        # Scheme/parse guard first — never reveals anything about the tenant.
+        candidate_origin = _return_url_origin(url)
+        if candidate_origin is None:
+            return not_allowed
+
+        try:
+            tenant_id_int = int(tenant_id)
+            org = Organization.objects.filter(id=tenant_id_int).first()
+        except (ValueError, TypeError):
+            org = None
+
+        if org is None:
+            # Unknown / unparseable tenant — same shape as not-allowed (no oracle).
+            return not_allowed
+
+        branding = resolve_branding(org)
+        if branding is None:
+            # Unbranded subtree — same shape as not-allowed (no oracle).
+            return not_allowed
+
+        # Build the set of allowed origins; ineligible entries are simply skipped.
+        # The allowlist itself is NEVER serialized into the response (§4.6).
+        allowed_origins = {
+            origin
+            for entry in (branding.return_url_allowlist or [])
+            if (origin := _return_url_origin(entry)) is not None
+        }
+
+        if candidate_origin in allowed_origins:
+            return ValidateReturnUrlResult(allowed=True, sanitized_url=url)
+
+        return not_allowed

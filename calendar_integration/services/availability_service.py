@@ -622,6 +622,88 @@ class AvailabilityService:
         )
         return next(iter(result))
 
+    @transaction.atomic()
+    def update_blocked_time(
+        self,
+        calendar: Calendar,
+        blocked_time_id: int,
+        start_time: datetime.datetime | None = None,
+        end_time: datetime.datetime | None = None,
+        timezone: str | None = None,
+        reason: str | None = None,
+        rrule_string: str | None = None,
+    ) -> BlockedTime:
+        """Update an existing blocked time's fields (partial update — only provided fields change).
+
+        :param calendar: The calendar the blocked time belongs to.
+        :param blocked_time_id: The id of the blocked time to update.
+        :param start_time: New start time (replaces start_time_tz_unaware), or None to leave unchanged.
+        :param end_time: New end time (replaces end_time_tz_unaware), or None to leave unchanged.
+        :param timezone: New timezone string, or None to leave unchanged.
+        :param reason: New reason string, or None to leave unchanged.
+        :param rrule_string: New recurrence rule string, or None to leave unchanged.
+        :return: The updated BlockedTime instance.
+        :raises ValueError: If blocked_time_id is not found in this calendar.
+        """
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
+
+        scoped = BlockedTime.objects.filter_by_organization(context.organization.id).filter(
+            calendar_fk=calendar
+        )
+
+        try:
+            blocked_time = scoped.get(id=blocked_time_id)
+        except BlockedTime.DoesNotExist as e:
+            raise ValueError(f"Blocked time {blocked_time_id} not found in this calendar.") from e
+
+        if start_time is not None:
+            blocked_time.start_time_tz_unaware = start_time
+        if end_time is not None:
+            blocked_time.end_time_tz_unaware = end_time
+        if timezone is not None:
+            blocked_time.timezone = timezone
+        if reason is not None:
+            blocked_time.reason = reason
+        if rrule_string is not None:
+            blocked_time.recurrence_rule = self._host._create_recurrence_rule_if_needed(
+                rrule_string
+            )
+
+        blocked_time.save()
+        return blocked_time
+
+    @transaction.atomic()
+    def delete_blocked_time(
+        self,
+        calendar: Calendar,
+        blocked_time_id: int,
+    ) -> None:
+        """Delete an existing blocked time (single-row delete).
+
+        A recurring blocked time is stored as one row (with an rrule on its RecurrenceRule).
+        Deleting it removes the whole recurrence series; materialized exception rows are not
+        separately handled by this method. If granular per-occurrence deletion is required,
+        use ``create_recurring_blocked_time_exception`` with ``is_cancelled=True``.
+
+        :param calendar: The calendar the blocked time belongs to.
+        :param blocked_time_id: The id of the blocked time to delete.
+        :raises ValueError: If blocked_time_id is not found in this calendar.
+        """
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
+
+        scoped = BlockedTime.objects.filter_by_organization(context.organization.id).filter(
+            calendar_fk=calendar
+        )
+
+        try:
+            scoped.get(id=blocked_time_id).delete()
+        except BlockedTime.DoesNotExist as e:
+            raise ValueError(f"Blocked time {blocked_time_id} not found in this calendar.") from e
+
     def get_blocked_times_expanded(
         self,
         calendar: Calendar,

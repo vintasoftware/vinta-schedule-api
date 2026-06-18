@@ -48,6 +48,28 @@ class OrganizationResourceAccess(BasePermission):
         "createSystemUserToken": PublicAPIResources.SYSTEM_USER,
         "updateBranding": PublicAPIResources.BRANDING,
         "childOrganizations": PublicAPIResources.CHILD_ORG_ANALYTICS,
+        # Single-use booking-code mint / revoke mutations (Phase 0+)
+        "createCalendarBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createCalendarGroupBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createCalendarRescheduleBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createCalendarGroupRescheduleBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createCalendarCancellationBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createCalendarGroupCancellationBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "revokeBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createResourceCalendar": PublicAPIResources.CREATE_RESOURCE_CALENDAR,
+        "disableResourceCalendar": PublicAPIResources.DISABLE_RESOURCE_CALENDAR,
+        "importResourceCalendars": PublicAPIResources.IMPORT_RESOURCE_CALENDARS,
+        "createAvailabilityWindow": PublicAPIResources.CREATE_AVAILABILITY_WINDOW,
+        "updateAvailabilityWindow": PublicAPIResources.UPDATE_AVAILABILITY_WINDOW,
+        "deleteAvailabilityWindow": PublicAPIResources.DELETE_AVAILABILITY_WINDOW,
+        "batchUpdateAvailabilityWindows": PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS,
+        "createBlockedTime": PublicAPIResources.CREATE_BLOCKED_TIME,
+        "updateBlockedTime": PublicAPIResources.UPDATE_BLOCKED_TIME,
+        "deleteBlockedTime": PublicAPIResources.DELETE_BLOCKED_TIME,
+        "calendarBundles": PublicAPIResources.CALENDAR_BUNDLE,
+        "createCalendarBundle": PublicAPIResources.CREATE_CALENDAR_BUNDLE,
+        "updateCalendarBundle": PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
+        "disableCalendarBundle": PublicAPIResources.DISABLE_CALENDAR_BUNDLE,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
