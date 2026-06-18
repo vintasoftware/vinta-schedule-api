@@ -242,6 +242,27 @@ class UpdateAvailabilityWindowResult:
     available_time: AvailableTimeGraphQLType | None = None
 
 
+@strawberry.input
+class DeleteAvailableTimeInput:
+    """Input for deleting a single available time via the batch path.
+
+    Note: the v2 doc proposed a deleteSeries argument, but batch_modify_available_times
+    supports only single-row delete. Series deletion is not implemented here.
+    """
+
+    organization_id: int
+    calendar_id: int
+    available_time_id: int
+
+
+@strawberry.type
+class DeleteAvailabilityWindowResult:
+    """Result of the deleteAvailabilityWindow mutation."""
+
+    success: bool
+    error_message: str | None = None
+
+
 @strawberry.type
 class Mutation(CalendarGroupMutations):
     @strawberry.mutation
@@ -799,3 +820,46 @@ class Mutation(CalendarGroupMutations):
             success=True,
             available_time=updated_time,  # type: ignore[arg-type]
         )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def delete_availability_window(
+        self,
+        info: strawberry.Info,
+        input: DeleteAvailableTimeInput,  # noqa: A002
+    ) -> DeleteAvailabilityWindowResult:
+        """Delete a single available time via the batch path (action=delete).
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Delegates to CalendarService.batch_modify_available_times with a single delete op.
+        4. Returns success=True on success, or success=False + errorMessage on failure.
+           Note: a missing or cross-calendar available_time_id raises ValueError (success=False).
+           Note: the service raises ValueError if calendar.manage_available_windows is False.
+           Note: the v2 doc proposed a deleteSeries argument, but batch_modify_available_times
+           supports only single-row delete. Series deletion is not supported at this time.
+
+        The token's OrganizationResourceAccess must include the DELETE_AVAILABILITY_WINDOW resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return DeleteAvailabilityWindowResult(
+                success=False, error_message="Calendar not found."
+            )
+
+        op: dict[str, object] = {"action": "delete", "id": input.available_time_id}
+
+        try:
+            calendar_service.batch_modify_available_times(calendar=calendar, operations=[op])
+        except (
+            CalendarIntegrationError,
+            ValueError,
+            DjangoValidationError,
+            Calendar.DoesNotExist,
+        ) as e:
+            return DeleteAvailabilityWindowResult(success=False, error_message=str(e))
+
+        return DeleteAvailabilityWindowResult(success=True)

@@ -39,3 +39,4 @@ class PublicAPIResources(TextChoices):
     IMPORT_RESOURCE_CALENDARS = "import_resource_calendars", "Import Resource Calendars"
     CREATE_AVAILABILITY_WINDOW = "create_availability_window", "Create Availability Window"
     UPDATE_AVAILABILITY_WINDOW = "update_availability_window", "Update Availability Window"
+    DELETE_AVAILABILITY_WINDOW = "delete_availability_window", "Delete Availability Window"

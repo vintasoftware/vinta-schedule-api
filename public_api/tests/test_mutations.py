@@ -3168,3 +3168,249 @@ class TestUpdateAvailabilityWindowMutation:
         data = response.json()
         assert "errors" in data
         assert len(data["errors"]) > 0
+
+
+DELETE_AVAILABILITY_WINDOW_MUTATION = """
+mutation DeleteAvailabilityWindow($input: DeleteAvailableTimeInput!) {
+    deleteAvailabilityWindow(input: $input) {
+        success
+        errorMessage
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestDeleteAvailabilityWindowMutation:
+    """Tests for the deleteAvailabilityWindow mutation (Phase 3c)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_org_and_token(self, resources: list[str] | None = None):
+        """Create an org + system user with the given resource scopes."""
+        if resources is None:
+            resources = [PublicAPIResources.DELETE_AVAILABILITY_WINDOW]
+        org = baker.make(Organization, name="Test Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return org, system_user, token, auth_service
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": DELETE_AVAILABILITY_WINDOW_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def _create_managing_calendar_and_available_time(self, org, system_user):
+        """Create a managing resource calendar and an AvailableTime row via the service."""
+        from di_core.containers import container
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        managing_calendar = calendar_service.create_resource_calendar(
+            name="Availability Room",
+            description="",
+            manage_available_windows=True,
+        )
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+        available_time = calendar_service.create_available_time(
+            calendar=managing_calendar,
+            start_time=start,
+            end_time=end,
+            timezone="UTC",
+        )
+        return managing_calendar, available_time
+
+    def test_delete_availability_window_happy_path(self):
+        """A granted token deletes an existing AvailableTime; DB row is gone."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        managing_calendar, available_time = self._create_managing_calendar_and_available_time(
+            org, system_user
+        )
+        available_time_id = available_time.id
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": managing_calendar.id,
+                    "availableTimeId": available_time_id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+
+        result = data["data"]["deleteAvailabilityWindow"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+
+        # Verify the AvailableTime row no longer exists in the DB
+        assert (
+            not AvailableTime.objects.filter_by_organization(org.id)
+            .filter(id=available_time_id)
+            .exists()
+        )
+
+    def test_delete_availability_window_missing_id_returns_failure(self):
+        """A missing/non-existent available_time_id → success=False (service raises ValueError)."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        managing_calendar, _available_time = self._create_managing_calendar_and_available_time(
+            org, system_user
+        )
+
+        non_existent_id = 999999
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": managing_calendar.id,
+                    "availableTimeId": non_existent_id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["deleteAvailabilityWindow"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+    def test_delete_availability_window_cross_org_available_time_rejected(self):
+        """An available_time_id belonging to a different org's calendar → success=False."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create an AvailableTime in a DIFFERENT org
+        other_org = baker.make(Organization, name="Other Org")
+        other_calendar = baker.make(
+            "calendar_integration.Calendar",
+            organization=other_org,
+            calendar_type=CalendarType.RESOURCE,
+            manage_available_windows=True,
+        )
+
+        # Create a calendar in our org to avoid triggering "Calendar not found"
+        from di_core.containers import container
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        our_calendar = calendar_service.create_resource_calendar(
+            name="Our Room",
+            description="",
+            manage_available_windows=True,
+        )
+
+        # Create an available time in the OTHER org's calendar directly
+        other_available_time = baker.make(
+            "calendar_integration.AvailableTime",
+            calendar=other_calendar,
+            organization=other_org,
+            start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": our_calendar.id,
+                    "availableTimeId": other_available_time.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["deleteAvailabilityWindow"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+        # Verify the other org's available time was NOT deleted
+        assert (
+            AvailableTime.objects.filter_by_organization(other_org.id)
+            .filter(id=other_available_time.id)
+            .exists()
+        )
+
+    def test_delete_availability_window_permission_denied_without_grant(self):
+        """A token without DELETE_AVAILABILITY_WINDOW grant is denied."""
+        # Grant CALENDAR scope instead, NOT DELETE_AVAILABILITY_WINDOW
+        org, system_user, token, auth_service = self._setup_org_and_token(
+            resources=[PublicAPIResources.CALENDAR]
+        )
+
+        other_calendar = baker.make(
+            "calendar_integration.Calendar",
+            organization=org,
+            calendar_type=CalendarType.RESOURCE,
+            manage_available_windows=True,
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": other_calendar.id,
+                    "availableTimeId": 1,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_delete_availability_window_unauthenticated_denied(self):
+        """An unauthenticated call (no Authorization header) is denied."""
+        response = self.client.post(
+            "/graphql/",
+            data={
+                "query": DELETE_AVAILABILITY_WINDOW_MUTATION,
+                "variables": {
+                    "input": {
+                        "organizationId": 1,
+                        "calendarId": 1,
+                        "availableTimeId": 1,
+                    }
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
