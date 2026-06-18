@@ -13,6 +13,7 @@ import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
+from calendar_integration.graphql import CalendarGraphQLType
 from calendar_integration.mutations import CalendarGroupMutations
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
@@ -140,6 +141,26 @@ class DeleteSystemUserInput:
 class DeleteSystemUserResult:
     success: bool
     error_message: str | None = None
+
+
+@strawberry.input
+class CreateResourceCalendarInput:
+    """Input for creating a manual resource (room/equipment) calendar."""
+
+    organization_id: int
+    name: str
+    description: str | None = None
+    capacity: int | None = None
+    manage_available_windows: bool = False
+
+
+@strawberry.type
+class CreateResourceCalendarResult:
+    """Result of the createResourceCalendar mutation."""
+
+    success: bool
+    error_message: str | None = None
+    calendar: CalendarGraphQLType | None = None
 
 
 @strawberry.type
@@ -493,3 +514,33 @@ class Mutation(CalendarGroupMutations):
         )
 
         return UpdateBrandingResult(branding=branding_result)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_resource_calendar(
+        self,
+        info: strawberry.Info,
+        input: CreateResourceCalendarInput,  # noqa: A002
+    ) -> CreateResourceCalendarResult:
+        """Create a manual resource (room/equipment) calendar for the acting organization.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Delegates to CalendarService.create_resource_calendar with the supplied parameters.
+        3. Returns the created Calendar on success, or success=False + errorMessage on failure.
+
+        The token's OrganizationResourceAccess must include the CREATE_RESOURCE_CALENDAR resource.
+        """
+        calendar_service, _org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = calendar_service.create_resource_calendar(
+                name=input.name,
+                # Normalize None to "" — the Calendar.description column is NOT NULL (blank=True)
+                description=input.description if input.description is not None else "",
+                capacity=input.capacity,
+                manage_available_windows=input.manage_available_windows,
+            )
+        except (ValueError, DjangoValidationError, IntegrityError) as e:
+            return CreateResourceCalendarResult(success=False, error_message=str(e))
+
+        return CreateResourceCalendarResult(success=True, calendar=calendar)  # type: ignore[arg-type]

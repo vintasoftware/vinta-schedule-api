@@ -48,6 +48,7 @@ class OrganizationResourceAccess(BasePermission):
         "createSystemUserToken": PublicAPIResources.SYSTEM_USER,
         "updateBranding": PublicAPIResources.BRANDING,
         "childOrganizations": PublicAPIResources.CHILD_ORG_ANALYTICS,
+        "createResourceCalendar": PublicAPIResources.CREATE_RESOURCE_CALENDAR,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
