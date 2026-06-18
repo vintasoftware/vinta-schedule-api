@@ -3207,11 +3207,14 @@ def _make_scoped_calendar_event_client(
     owner: User,
 ) -> tuple[APIClient, SystemUser]:
     """Create a scoped API client with CALENDAR_EVENT resource grant."""
+    membership, _ = OrganizationMembership.objects.get_or_create(
+        user=owner, organization=organization, defaults={"is_active": True}
+    )
     token = generate_long_lived_token()
     system_user = baker.make(
         SystemUser,
         organization=organization,
-        scoped_to_user=owner,
+        scoped_to_membership_fk=membership,
         integration_name=f"scoped_ce_{organization.pk}_{owner.pk}",
         long_lived_token_hash=hash_long_lived_token(token),
         is_active=True,

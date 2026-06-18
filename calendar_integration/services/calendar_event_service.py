@@ -247,14 +247,14 @@ class CalendarEventService:
             )
         elif isinstance(context.user_or_token, SystemUser):
             # A provider-scoped Public API token may schedule events ONLY on calendars
-            # owned by the user it is scoped to. Org-wide tokens (scoped_to_user is None)
+            # owned by the user it is scoped to. Org-wide tokens (scoped_to_membership is None)
             # remain blocked — event creation otherwise requires single-use scheduling
             # codes / public-scheduling calendars.
-            owner_id = context.user_or_token.scoped_to_user_id
+            membership_id = context.user_or_token.scoped_to_membership_fk_id
             if (
-                owner_id is not None
+                membership_id is not None
                 and CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
-                .filter(calendar_fk_id=calendar_id, user_id=owner_id)
+                .filter(calendar_fk_id=calendar_id, user__organization_memberships=membership_id)
                 .exists()
             ):
                 owner_scoped_authorized = True
