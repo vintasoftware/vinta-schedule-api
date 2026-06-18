@@ -1933,9 +1933,10 @@ class TestCreateScopedSystemUserMutation:
         assert returned_token is not None
         assert len(returned_token) > 0
 
-        # Verify persisted SystemUser has the correct owner
+        # Verify persisted SystemUser has the correct owner (stored as membership FK)
         minted = SystemUser.objects.get(id=int(result["id"]))
-        assert minted.scoped_to_user_id == owner.id
+        assert minted.scoped_to_membership_fk.user_id == owner.id
+        assert minted.scoped_to_membership_fk.organization_id == org.id
         assert minted.organization_id == org.id
 
         # Verify ResourceAccess rows exactly match the request
@@ -2207,10 +2208,11 @@ class TestCreateScopedSystemUserMutation:
         owner = self._make_org_member(org)
 
         # Directly create a provider-scoped SystemUser with only CALENDAR + AVAILABLE_TIME grants
+        owner_membership = OrganizationMembership.objects.get(user=owner, organization=org)
         scoped_su, scoped_token = auth_service.create_system_user(
             integration_name="provider_scoped_caller",
             organization=org,
-            scoped_to_user=owner,
+            scoped_to_membership=owner_membership,
         )
         baker.make(ResourceAccess, system_user=scoped_su, resource_name="calendar")
         baker.make(ResourceAccess, system_user=scoped_su, resource_name="available_time")

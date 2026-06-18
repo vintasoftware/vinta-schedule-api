@@ -170,7 +170,8 @@ class PublicBrandingResult:
 class CreateScopedSystemUserInput:
     """Input for minting a provider-scoped Public API token.
 
-    scoped_to_user_id must resolve to an active member of the caller's organization.
+    scoped_to_user_id is a User id. Internally it is resolved to the user's active
+    OrganizationMembership in the caller's organization and the membership FK is stored.
     available_resources must be a non-empty list of resources drawn from the
     PROVIDER_SCOPED_RESOURCES allow-list.
     """
@@ -185,7 +186,8 @@ class CreateScopedSystemUserResult:
     """Result of minting a provider-scoped Public API token.
 
     token is the plaintext token — exposed exactly once and never persisted.
-    scoped_to_user_id identifies the provider whose data this token may access.
+    scoped_to_user_id is the User id of the provider whose data this token may access
+    (resolved internally to an OrganizationMembership for storage).
     """
 
     id: int
