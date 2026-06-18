@@ -299,6 +299,51 @@ class TestWebhookConfigurationViewSet:
             assert result is not None
             assert result[0] is not None  # deleted_at should be set
 
+    def test_create_webhook_configuration_for_organization_member_created(
+        self, auth_client, organization
+    ):
+        """Test creating a webhook configuration for the organization_member_created event type."""
+        url = reverse("api:WebhookConfigurations-list")
+        data = {
+            "event_type": WebhookEventType.ORGANIZATION_MEMBER_CREATED,
+            "url": "https://example.com/member-webhook",
+            "headers": {"Authorization": "Bearer token"},
+        }
+
+        response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        response_data = response.json()
+
+        assert response_data["event_type"] == WebhookEventType.ORGANIZATION_MEMBER_CREATED
+        assert response_data["url"] == data["url"]
+        assert response_data["headers"] == data["headers"]
+
+        # Verify configuration was created in database
+        config = WebhookConfiguration.objects.filter(
+            id=response_data["id"], organization=organization
+        ).first()
+        assert config is not None
+        assert config.event_type == WebhookEventType.ORGANIZATION_MEMBER_CREATED
+
+    def test_retrieve_webhook_configuration_for_organization_member_created(
+        self, auth_client, organization
+    ):
+        """Test retrieving a webhook configuration for organization_member_created event type."""
+        config = WebhookTestFactory.create_webhook_configuration(
+            organization=organization,
+            event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
+        )
+
+        url = reverse("api:WebhookConfigurations-detail", kwargs={"pk": config.pk})
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        response_data = response.json()
+
+        assert response_data["event_type"] == WebhookEventType.ORGANIZATION_MEMBER_CREATED
+        assert response_data["id"] == config.id
+
 
 @pytest.mark.django_db
 class TestInactiveMemberWebhookAccess:
