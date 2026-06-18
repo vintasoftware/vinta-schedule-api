@@ -14,6 +14,7 @@ from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
 from calendar_integration.graphql import CalendarGraphQLType
+from calendar_integration.models import Calendar
 from calendar_integration.mutations import CalendarGroupMutations
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
@@ -576,8 +577,6 @@ class Mutation(CalendarGroupMutations):
 
         The token's OrganizationResourceAccess must include the DISABLE_RESOURCE_CALENDAR resource.
         """
-        from calendar_integration.models import Calendar
-
         calendar_service, _org = _get_org_and_init_calendar_service(info)
 
         try:
