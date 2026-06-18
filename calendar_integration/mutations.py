@@ -604,6 +604,13 @@ class RescheduleGroupWithCodeInput:
     timezone: str
 
 
+@strawberry.input
+class CancelWithCodeInput:
+    """Input for the unauthenticated cancelEventWithCode mutation."""
+
+    code: str
+
+
 @strawberry.type
 class CalendarGroupMutations:
     """GraphQL mutations for CalendarGroup CRUD and grouped event booking."""
@@ -1793,3 +1800,154 @@ class CalendarGroupMutations:
             )
 
         return CodeEventResult(success=True, event=event)  # type: ignore[arg-type]
+
+    @strawberry.mutation
+    def cancel_event_with_code(
+        self,
+        info: strawberry.Info,
+        input: CancelWithCodeInput,  # noqa: A002
+    ) -> CodeEventResult:
+        """Cancel an event bound to a single-use CANCEL booking code.
+
+        This is an unauthenticated mutation: no org token is required.  The org
+        context, scope (single-calendar or group), and the specific event to cancel
+        are all derived from the booking code.  On success the code is atomically
+        consumed so it cannot be replayed.
+
+        Handles both a calendar-bound (non-grouped) cancel code and a group-bound
+        (grouped event) cancel code via the SAME mutation.  The routing is determined
+        by whether ``token.calendar_group`` is set.
+
+        For grouped events the non-primary ``BlockedTime`` rows (linked only by the
+        string ``external_id`` convention) are explicitly deleted before the primary
+        event is removed, so no orphaned busy-markers remain.
+        """
+        deps = get_group_booking_code_mutation_dependencies()
+
+        # --- Step 1: resolve and validate the code ---
+        try:
+            token = deps.calendar_permission_service.resolve_code(input.code)
+        except InvalidTokenError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Invalid or unknown booking code.",
+            )
+        except TokenExpiredError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.EXPIRED,
+                error_message="This booking code has expired.",
+            )
+        except TokenAlreadyUsedError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.ALREADY_USED,
+                error_message="This booking code has already been used.",
+            )
+        except TokenRevokedError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.REVOKED,
+                error_message="This booking code has been revoked.",
+            )
+
+        # --- Step 2: check permission — must hold CANCEL ---
+        token_permissions = {p.permission for p in token.permissions.all()}
+        if EventManagementPermissions.CANCEL not in token_permissions:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code does not permit cancellation.",
+            )
+
+        # --- Step 3: scope check — must be event-scoped ---
+        if token.event is None:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code is not bound to a specific event.",
+            )
+
+        # --- Step 4: resolve org ---
+        try:
+            org = Organization.objects.get(id=token.organization_id)
+        except Organization.DoesNotExist:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Invalid or unknown booking code.",
+            )
+
+        # --- Step 5: extract client IP for audit ---
+        source_ip = _client_ip_from_request(info.context.request)
+
+        # --- Step 6: capture event_id and calendar_id BEFORE the atomic block ---
+        # The event will be deleted inside the transaction; capture its id and calendar
+        # now so we can refer to them without querying a deleted row.
+        event_id: int = token.event_fk_id  # type: ignore[assignment]
+        # For single-calendar path only; group path uses cancel_grouped_event.
+        single_calendar_id: int | None = (
+            None if token.calendar_group is not None else token.event.calendar_fk_id
+        )
+
+        # --- Step 7: atomic consume + delete ---
+        # Consume FIRST via SELECT FOR UPDATE so concurrent replays fail under the row
+        # lock before any delete attempt.  The event FK on the token has on_delete=CASCADE,
+        # so deleting the event would cascade-delete the token — making a post-delete
+        # consume impossible.  Consuming first keeps the row alive long enough to lock it,
+        # then the cascade removes the already-consumed token row when the event is deleted.
+        # If the delete step raises (unexpected), the whole transaction.atomic() block rolls
+        # back, including the consume, so the code remains available for retry.
+        try:
+            with transaction.atomic():
+                deps.calendar_permission_service.consume_code(token, source_ip)
+                deps.calendar_service.initialize_without_provider(
+                    user_or_token=input.code, organization=org
+                )
+                if token.calendar_group is not None:
+                    # Group-cancel path: wire the same CalendarService instance so
+                    # that permission checks run against the code's token.
+                    deps.calendar_group_service.calendar_service = deps.calendar_service
+                    deps.calendar_group_service.initialize(organization=org)
+                    deps.calendar_group_service.cancel_grouped_event(
+                        event_id=event_id,
+                        delete_series=False,
+                    )
+                else:
+                    # Single-calendar cancel path.
+                    deps.calendar_service.delete_event(
+                        calendar_id=single_calendar_id,  # type: ignore[arg-type]
+                        event_id=event_id,
+                        delete_series=False,
+                    )
+        except (TokenAlreadyUsedError, TokenExpiredError, TokenRevokedError) as e:
+            # Concurrent consumer won the race, or state changed between resolve and consume.
+            error_code = BookingCodeErrorCode.ALREADY_USED
+            error_message = "This booking code has already been used."
+            if isinstance(e, TokenExpiredError):
+                error_code = BookingCodeErrorCode.EXPIRED
+                error_message = "This booking code has expired."
+            elif isinstance(e, TokenRevokedError):
+                error_code = BookingCodeErrorCode.REVOKED
+                error_message = "This booking code has been revoked."
+            return CodeEventResult(
+                success=False,
+                error_code=error_code,
+                error_message=error_message,
+            )
+        except PermissionDenied:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code does not permit cancellation of this event.",
+            )
+        except (EventManagementError, CalendarGroupError):
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
+                error_message="The event could not be cancelled.",
+            )
+
+        # The event is deleted; return success without attempting to include it.
+        return CodeEventResult(success=True)

@@ -486,6 +486,65 @@ class CalendarGroupService:
 
         return event
 
+    def cancel_grouped_event(self, event_id: int, delete_series: bool = False) -> None:
+        """Cancel a grouped event by deleting the primary event and its linked non-primary BlockedTimes.
+
+        The primary event is deleted via ``CalendarService.delete_event`` which also cascades
+        the ``CalendarEventGroupSelection`` rows (FK on_delete=CASCADE).  Non-primary
+        ``BlockedTime`` rows are linked only by the string ``external_id`` convention
+        (not a FK), so they must be explicitly deleted here BEFORE the primary event is
+        removed (so that the event_id is still meaningful for logging/debugging, though
+        ordering within the caller's transaction does not affect correctness).
+
+        Preconditions:
+          - ``self.calendar_service`` is set and initialized/authenticated for the same
+            organization (mirrors the requirement on ``create_grouped_event``).
+          - The event identified by ``event_id`` must be a grouped event
+            (``calendar_group_fk`` set) belonging to this service's organization.
+        """
+        self._assert_initialized()
+        if self.calendar_service is None:
+            raise CalendarGroupValidationError(
+                "CalendarGroupService.calendar_service must be provided to cancel grouped events."
+            )
+        if self.calendar_service.organization is None:
+            raise CalendarGroupValidationError(
+                "The injected CalendarService is not initialized with an organization."
+            )
+        if self.calendar_service.organization.id != self.organization.id:
+            raise CalendarGroupValidationError(
+                "The injected CalendarService is initialized with a different organization."
+            )
+
+        # Load the grouped event to validate it is truly grouped.
+        try:
+            event = CalendarEvent.objects.filter_by_organization(self.organization.id).get(
+                id=event_id
+            )
+        except CalendarEvent.DoesNotExist:
+            raise CalendarGroupValidationError(
+                f"Event {event_id} not found in this organization."
+            ) from None
+
+        if event.calendar_group_fk_id is None:
+            raise CalendarGroupValidationError(
+                f"Event {event_id} is not a grouped event (calendar_group_fk is not set)."
+            )
+
+        primary_calendar_id: int = event.calendar_fk_id  # type: ignore[assignment]
+
+        # Delete non-primary BlockedTimes first (string-linked, NOT cascaded).
+        BlockedTime.objects.filter_by_organization(self.organization.id).filter(
+            external_id__startswith=f"group-event-{event_id}-cal-"
+        ).delete()
+
+        # Delete the primary event (cascades CalendarEventGroupSelection via FK).
+        self.calendar_service.delete_event(
+            calendar_id=primary_calendar_id,
+            event_id=event_id,
+            delete_series=delete_series,
+        )
+
     def reschedule_grouped_event(
         self,
         event_id: int,
