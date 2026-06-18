@@ -766,7 +766,7 @@ class Mutation(CalendarGroupMutations):
             )
 
         # Build the op dict — always include action + id; include optional fields only when provided.
-        op: dict = {"action": "update", "id": input.available_time_id}
+        op: dict[str, object] = {"action": "update", "id": input.available_time_id}
         if input.start_time is not None:
             op["start_time"] = input.start_time
         if input.end_time is not None:
@@ -790,6 +790,11 @@ class Mutation(CalendarGroupMutations):
 
         # Find the updated row in the returned list.
         updated_time = next((at for at in updated_times if at.id == input.available_time_id), None)
+        if updated_time is None:
+            return UpdateAvailabilityWindowResult(
+                success=False,
+                error_message="Updated available time not found in result set.",
+            )
         return UpdateAvailabilityWindowResult(
             success=True,
             available_time=updated_time,  # type: ignore[arg-type]

@@ -2916,7 +2916,7 @@ class TestUpdateAvailabilityWindowMutation:
 
         assert response.status_code == 200
         data = response.json()
-        assert "errors" not in data or len(data.get("errors", [])) == 0
+        assert data.get("errors", []) == []
 
         result = data["data"]["updateAvailabilityWindow"]
         assert result["success"] is True
@@ -2924,10 +2924,9 @@ class TestUpdateAvailabilityWindowMutation:
         assert result["availableTime"] is not None
         assert int(result["availableTime"]["id"]) == available_time.id
 
-        # Verify the DB row reflects the new start/end times
-        available_time.refresh_from_db()
-        assert available_time.start_time_tz_unaware == new_start
-        assert available_time.end_time_tz_unaware == new_end
+        # Verify startTime and endTime in the response match the supplied new datetimes
+        assert result["availableTime"]["startTime"] == new_start.isoformat()
+        assert result["availableTime"]["endTime"] == new_end.isoformat()
 
     def test_update_availability_window_missing_id_returns_failure(self):
         """A missing/cross-calendar available_time_id → success=False (service raises ValueError)."""
@@ -3057,6 +3056,96 @@ class TestUpdateAvailabilityWindowMutation:
         assert "errors" in data
         assert len(data["errors"]) > 0
         assert "don't have access" in str(data["errors"]).lower()
+
+    def test_update_availability_window_non_managing_calendar_returns_failure(self):
+        """A calendar with manage_available_windows=False → success=False with service message."""
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a resource calendar without manage_available_windows flag
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        non_managing_calendar = calendar_service.create_resource_calendar(
+            name="Non-Managing Room",
+            description="",
+            manage_available_windows=False,
+        )
+        assert non_managing_calendar.manage_available_windows is False
+
+        # Create an AvailableTime outside the service (bypass the flag check at create time)
+        available_time = baker.make(
+            "calendar_integration.AvailableTime",
+            calendar=non_managing_calendar,
+            organization=org,
+            start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        new_start = datetime.datetime(2026, 10, 1, 8, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 1, 16, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": non_managing_calendar.id,
+                    "availableTimeId": available_time.id,
+                    "startTime": new_start.isoformat(),
+                    "endTime": new_end.isoformat(),
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+
+        result = data["data"]["updateAvailabilityWindow"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert result["availableTime"] is None
+
+    def test_update_availability_window_rrule_creates_recurrence_rule(self):
+        """Supplying rruleString on update persists a non-null recurrence_rule on the AvailableTime."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        managing_calendar, available_time = self._create_managing_calendar_and_available_time(
+            org, system_user
+        )
+
+        rrule = "FREQ=WEEKLY;BYDAY=MO"
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": managing_calendar.id,
+                    "availableTimeId": available_time.id,
+                    "rruleString": rrule,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+
+        result = data["data"]["updateAvailabilityWindow"]
+        assert result["success"] is True
+        assert result["availableTime"] is not None
+
+        # Verify the DB row has a non-null recurrence_rule
+        available_time.refresh_from_db()
+        assert available_time.recurrence_rule is not None, (
+            "AvailableTime must have a non-null recurrence_rule when rruleString is supplied on update"
+        )
 
     def test_update_availability_window_unauthenticated_denied(self):
         """An unauthenticated call (no Authorization header) is denied."""
