@@ -173,7 +173,7 @@ class Query:
             end_datetime,
         )
 
-        request: PublicApiHttpRequest = info.context.request
+        request = info.context.request
         allowed_ids = (
             scoped_calendar_ids(request.public_api_system_user, org)
             if request.public_api_system_user is not None
@@ -227,7 +227,7 @@ class Query:
             end_datetime,
         )
 
-        request: PublicApiHttpRequest = info.context.request
+        request = info.context.request
         allowed_ids = (
             scoped_calendar_ids(request.public_api_system_user, org)
             if request.public_api_system_user is not None
@@ -283,7 +283,7 @@ class Query:
             end_datetime,
         )
 
-        request: PublicApiHttpRequest = info.context.request
+        request = info.context.request
         allowed_ids = (
             scoped_calendar_ids(request.public_api_system_user, org)
             if request.public_api_system_user is not None
