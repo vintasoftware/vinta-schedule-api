@@ -273,11 +273,8 @@ class TestCreateCalendarBookingCode:
         db_token = CalendarManagementToken.objects.filter_by_organization(organization.id).get(
             id=result["id"]
         )
-        # Django stores datetimes as timezone-aware UTC
-        assert db_token.expires_at is not None
-        assert db_token.expires_at.year == 2030
-        assert db_token.expires_at.month == 12
-        assert db_token.expires_at.day == 31
+        # Django stores datetimes as timezone-aware UTC; compare full timestamp.
+        assert db_token.expires_at == expires_at
 
     def test_cross_org_calendar_returns_invalid_code(
         self,
@@ -309,6 +306,43 @@ class TestCreateCalendarBookingCode:
 
         # No token row must have been created for the cross-org calendar
         assert not CalendarManagementToken.objects.filter(calendar_fk_id=other_calendar.id).exists()
+
+    def test_organization_id_mismatch_returns_invalid_code(
+        self,
+        organization,
+        calendar,
+        system_user_with_booking_code_resource,
+    ):
+        """Authenticated org token but organizationId in input set to a different org's id.
+
+        The mutation must reject the request without leaking cross-org existence.
+        No CalendarManagementToken row must be created.
+        """
+        system_user, token, auth_service = system_user_with_booking_code_resource
+        other_org = baker.make(Organization, name="Other Org For Mismatch")
+        tokens_before = CalendarManagementToken.objects.filter(
+            organization_id=organization.id
+        ).count()
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": other_org.id, "calendarId": calendar.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createCalendarBookingCode"]
+        assert result["success"] is False
+        assert result["errorCode"] == "INVALID_CODE"
+
+        tokens_after = CalendarManagementToken.objects.filter(
+            organization_id=organization.id
+        ).count()
+        assert tokens_after == tokens_before
 
 
 @pytest.mark.django_db
@@ -456,9 +490,8 @@ class TestCreateCalendarGroupBookingCode:
         db_token = CalendarManagementToken.objects.filter_by_organization(organization.id).get(
             id=result["id"]
         )
-        assert db_token.expires_at is not None
-        assert db_token.expires_at.year == 2031
-        assert db_token.expires_at.month == 6
+        # Django stores datetimes as timezone-aware UTC; compare full timestamp.
+        assert db_token.expires_at == expires_at
 
     def test_cross_org_calendar_group_returns_invalid_code(
         self,
@@ -494,3 +527,45 @@ class TestCreateCalendarGroupBookingCode:
         assert not CalendarManagementToken.objects.filter(
             calendar_group_fk_id=other_group.id
         ).exists()
+
+    def test_organization_id_mismatch_returns_invalid_code(
+        self,
+        organization,
+        calendar_group,
+        system_user_with_booking_code_resource,
+    ):
+        """Authenticated org token but organizationId in input set to a different org's id.
+
+        The mutation must reject the request without leaking cross-org existence.
+        No CalendarManagementToken row must be created.
+        """
+        system_user, token, auth_service = system_user_with_booking_code_resource
+        other_org = baker.make(Organization, name="Other Org For Group Mismatch")
+        tokens_before = CalendarManagementToken.objects.filter(
+            organization_id=organization.id
+        ).count()
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": other_org.id,
+                    "calendarGroupId": calendar_group.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createCalendarGroupBookingCode"]
+        assert result["success"] is False
+        assert result["errorCode"] == "INVALID_CODE"
+
+        tokens_after = CalendarManagementToken.objects.filter(
+            organization_id=organization.id
+        ).count()
+        assert tokens_after == tokens_before

@@ -405,7 +405,7 @@ def get_booking_code_mutation_dependencies(
 ) -> BookingCodeMutationDependencies:
     """Get booking-code mutation dependencies from DI container."""
     if calendar_permission_service is None:
-        raise GraphQLError("Missing required dependency: calendar_permission_service")
+        raise GraphQLError("Internal server error.")
     return BookingCodeMutationDependencies(
         calendar_permission_service=cast("CalendarPermissionService", calendar_permission_service),
     )
@@ -562,6 +562,13 @@ class CalendarGroupMutations:
                 error_message="Organization not found.",
             )
 
+        if input.organization_id != org.id:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Organization not found.",
+            )
+
         # Verify the calendar belongs to the authenticated org.
         try:
             Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
@@ -597,6 +604,13 @@ class CalendarGroupMutations:
         """
         org = info.context.request.public_api_organization
         if org is None:
+            return BookingCodeResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Organization not found.",
+            )
+
+        if input.organization_id != org.id:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
