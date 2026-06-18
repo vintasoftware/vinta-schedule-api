@@ -535,7 +535,7 @@ class Mutation(CalendarGroupMutations):
         try:
             calendar = calendar_service.create_resource_calendar(
                 name=input.name,
-                # Normalize None to "" — the Calendar.description column is NOT NULL (blank=True)
+                # Calendar.description is NOT NULL (no null=True on the field); normalize None -> "" to avoid IntegrityError.
                 description=input.description if input.description is not None else "",
                 capacity=input.capacity,
                 manage_available_windows=input.manage_available_windows,

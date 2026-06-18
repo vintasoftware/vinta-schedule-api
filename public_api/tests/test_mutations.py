@@ -2105,3 +2105,48 @@ class TestCreateResourceCalendarMutation:
         assert cal.organization == org
         assert cal.organization != other_org
         assert cal.calendar_type == CalendarType.RESOURCE
+
+    def test_create_resource_calendar_error_path_service_raises_value_error(self):
+        """An exception from CalendarService.create_resource_calendar returns success=False + errorMessage.
+
+        This tests the error handler catching ValueError/ValidationError/IntegrityError
+        and returning the failure result with the exception message.
+        """
+        from di_core.containers import container
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        # Create a mock calendar service that raises ValueError
+        from calendar_integration.services.calendar_service import CalendarService
+
+        mock_calendar_service = Mock(spec=CalendarService)
+        error_message = "boom"
+        mock_calendar_service.create_resource_calendar.side_effect = ValueError(error_message)
+
+        with (
+            container.public_api_auth_service.override(auth_service),
+            container.calendar_service.override(mock_calendar_service),
+        ):
+            response = self._post_mutation(
+                system_user,
+                token,
+                auth_service,
+                {
+                    "input": {
+                        "organizationId": org.id,
+                        "name": "Will Fail Room",
+                        "description": "This will trigger an error",
+                    }
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        # Should not have GraphQL errors; the mutation should return a result with success=False
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createResourceCalendar"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert error_message in result["errorMessage"]
+        assert result["calendar"] is None
