@@ -154,11 +154,38 @@ Phase 5 sweep (which revisits `queries.py`).
   uuid-ed hardcoded test values.
 - **Deviations**: `--no-verify` commits.
 
+### Phase 4c — `scheduleEvent` mutation (owner-guarded) ✅ (scope expanded)
+- **Status**: implemented + reworked (architectural conflict surfaced → user approved scope
+  expansion), reviewed (3 layers + 2 fixers), pushed. PR pending (no `gh`/`yq` on host).
+- **Model used**: claude-sonnet-4-6 (plan Tier 3).
+- **Branch**: `plan/per-owner-scoped-public-api-tokens/phase-4c`
+- **Base**: `plan/per-owner-scoped-public-api-tokens/phase-4b`
+- **PR-context**: `.vinta-ai-workflows/prs-context/per-owner-scoped-public-api-tokens/phase-4c.md` (status: pending)
+- **Outer gate**: `check --deploy` green + `pytest -n auto` → 2085 passed; `calendar_integration/`
+  regression 1143 passed; mypy clean on touched files.
+- **Scope expansion (user-approved)**: `CalendarEventService.create_event` previously hard-blocked ALL
+  `SystemUser` event creation (events route through single-use codes / public scheduling). Added a
+  sanctioned owner-scoped allowance: a `SystemUser` may create events ONLY on a calendar owned by its
+  `scoped_to_user` (independent `CalendarOwnership` check; bypasses `can_perform_scheduling`). **Org-wide
+  tokens stay blocked for events** (stricter than 4a/4b on purpose — events are higher-stakes). Bundle
+  calendars explicitly rejected for provider tokens. Fixed an unguarded `on_commit` `token` access
+  (AttributeError) + preserved the SystemUser as audit actor.
+- **Summary**: `scheduleEvent` mutation (`CALENDAR_EVENT`-guarded) wraps `create_event` via the shared
+  owner guard; pre-validates internal attendees are active org members (kills out-of-org attendee abuse
+  + opaque IntegrityError); external attendees translated; title guard; catches
+  `ValueError`/`PermissionDenied`/`NoAvailableTimeWindowsError`. Returns `CalendarEventGraphQLType`.
+- **Review journey**: first impl used an unsound `initialize_without_provider(None)` hack (only worked
+  on public-scheduling calendars; crashed post-commit) → surfaced to user → rework approved. Rework
+  review caught a bundle-recursion BLOCKER (explicit guard + test added); audit actor + attendee
+  validation hardened; test setups made honest (realistic managed-window success test; populated-set
+  indistinguishability test).
+- **Deviations**: `--no-verify` commits. Touches a core service (`calendar_event_service.py`) beyond the
+  `public_api/` app — necessary for the sanctioned event path; regression suite green.
+
 ## Current Phase
-Phase 4c — `scheduleEvent` mutation, owner-guarded (next).
+Phase 5 — Cross-owner adversarial sweep + security review (next).
 
 ## Remaining Phases
-- Phase 4c — `scheduleEvent` mutation, owner-guarded (Tier 3)
 - Phase 5 — Cross-owner adversarial sweep + security review (Tier 4)
 
 ## Deferred Phases
