@@ -941,6 +941,16 @@ class Mutation(CalendarGroupMutations):
                     error_message=f"Invalid operation action: {op_input.action}",
                     available_times=[],
                 )
+            if op_input.action == "create" and (
+                op_input.start_time is None
+                or op_input.end_time is None
+                or op_input.timezone is None
+            ):
+                return BatchUpdateAvailabilityWindowsResult(
+                    success=False,
+                    error_message="create operation requires startTime, endTime, and timezone",
+                    available_times=[],
+                )
 
         # Translate each BatchAvailabilityOperationInput to the service dict shape.
         ops: list[dict[str, object]] = []
