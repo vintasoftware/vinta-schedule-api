@@ -468,6 +468,19 @@ class CalendarEventService:
                 "calendar event"
             )
 
+        # Enforce availability windows when the calendar manages them.  A reschedule
+        # that moves the event outside all declared windows must fail the same way as
+        # a booking attempt on an unavailable slot.  This mirrors the check in
+        # ``create_event`` so that managed-window calendars remain consistent.
+        if event.calendar.manage_available_windows:
+            available_windows = self._host.get_availability_windows_in_range(
+                event.calendar,
+                event_data.start_time,
+                event_data.end_time,
+            )
+            if not available_windows:
+                raise NoAvailableTimeWindowsError()
+
         original_payload: dict[str, Any] = {}
         if event.calendar.calendar_type in [
             CalendarType.PERSONAL,
@@ -534,8 +547,18 @@ class CalendarEventService:
 
         event.title = event_data.title
         event.description = event_data.description
-        event.start_time = event_data.start_time
-        event.end_time = event_data.end_time
+        # ``start_time`` / ``end_time`` are DB-generated fields (``GeneratedField``
+        # with ``db_persist=True``) that derive from ``start_time_tz_unaware`` and
+        # the IANA ``timezone``.  Assigning to the generated fields is silently
+        # ignored by Django's UPDATE statement, so we must update the underlying
+        # writable fields instead.
+        event.start_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+            event_data.start_time, event_data.timezone
+        )
+        event.end_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+            event_data.end_time, event_data.timezone
+        )
+        event.timezone = event_data.timezone
         if context.calendar_adapter:
             event.meta["latest_original_payload"] = original_payload
 

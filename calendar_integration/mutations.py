@@ -43,6 +43,7 @@ from calendar_integration.services.dataclasses import (
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
+    ResourceAllocationInputData,
 )
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
 from organizations.models import Organization
@@ -576,6 +577,16 @@ class CreateGroupEventWithCodeInput:
     slot_selections: list[CodeSlotSelectionInput]
     external_attendee: ExternalAttendeeCodeInput
     description: str = ""
+
+
+@strawberry.input
+class RescheduleWithCodeInput:
+    """Input for the unauthenticated rescheduleCalendarEventWithCode mutation."""
+
+    code: str
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
 
 
 @strawberry.type
@@ -1355,6 +1366,208 @@ class CalendarGroupMutations:
             # back), patient may retry with a different slot.
             # Note: NoAvailableTimeWindowsError is a subclass of EventManagementError and
             # is therefore already covered by the EventManagementError branch.
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
+                error_message="The requested time slot is not available.",
+            )
+
+        return CodeEventResult(success=True, event=event)  # type: ignore[arg-type]
+
+    @strawberry.mutation
+    def reschedule_calendar_event_with_code(
+        self,
+        info: strawberry.Info,
+        input: RescheduleWithCodeInput,  # noqa: A002
+    ) -> CodeEventResult:
+        """Reschedule an event bound to a single-use RESCHEDULE booking code.
+
+        This is an unauthenticated mutation: no org token is required.  The org
+        context, calendar scope, and the specific event to reschedule are all
+        derived from the booking code.  On success the code is atomically consumed
+        so it cannot be replayed.  On a failed reschedule (slot outside availability,
+        etc.) the code is NOT consumed and the patient may retry with a different slot.
+
+        Only the start/end/timezone fields change — title, description, attendees,
+        and resource allocations are preserved exactly from the existing event so
+        that the permission check requires exactly {RESCHEDULE} and no other
+        permission.
+        """
+        deps = get_booking_code_mutation_dependencies()
+
+        # --- Step 1: resolve and validate the code ---
+        try:
+            token = deps.calendar_permission_service.resolve_code(input.code)
+        except InvalidTokenError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Invalid or unknown booking code.",
+            )
+        except TokenExpiredError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.EXPIRED,
+                error_message="This booking code has expired.",
+            )
+        except TokenAlreadyUsedError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.ALREADY_USED,
+                error_message="This booking code has already been used.",
+            )
+        except TokenRevokedError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.REVOKED,
+                error_message="This booking code has been revoked.",
+            )
+
+        # --- Step 2: check permission — must hold RESCHEDULE ---
+        token_permissions = {p.permission for p in token.permissions.all()}
+        if EventManagementPermissions.RESCHEDULE not in token_permissions:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code does not permit rescheduling.",
+            )
+
+        # --- Step 3: scope check — must be event-scoped and single-calendar (not group) ---
+        if token.event is None:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code is not bound to a specific event.",
+            )
+
+        # A group-reschedule code has calendar_group set; route to Phase 6b instead.
+        if token.calendar_group is not None:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message=(
+                    "This code is scoped to a calendar group. "
+                    "Use rescheduleCalendarGroupEventWithCode for group-scoped codes."
+                ),
+            )
+
+        # --- Step 4: resolve org ---
+        try:
+            org = Organization.objects.get(id=token.organization_id)
+        except Organization.DoesNotExist:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Invalid or unknown booking code.",
+            )
+
+        # --- Step 5: extract client IP for audit ---
+        source_ip = _client_ip_from_request(info.context.request)
+
+        # --- Step 6: resolve the bound event and its calendar from the token ---
+        # calendar_id and event_id come strictly from the token — not from client input —
+        # so the code can only ever affect the exact event it was minted for.
+        event_id: int = token.event_fk_id  # type: ignore[assignment]
+        calendar_id: int = token.event.calendar_fk_id  # type: ignore[assignment]
+
+        # Load the existing event to snapshot its current details (title, description,
+        # attendances, external_attendances, resource_allocations).  We build the
+        # CalendarEventInputData by COPYING all preserved fields and overriding only
+        # the time fields so that _determine_required_update_permissions yields exactly
+        # {RESCHEDULE}.
+        try:
+            existing_event = (
+                CalendarEvent.objects.filter_by_organization(org.id)
+                .prefetch_related(
+                    "attendances",
+                    "external_attendances__external_attendee",
+                    "resource_allocations",
+                )
+                .get(id=event_id, calendar_fk_id=calendar_id)
+            )
+        except CalendarEvent.DoesNotExist:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Invalid or unknown booking code.",
+            )
+
+        # --- Step 7: build the preserved-details event data ---
+        # Preserve internal attendances.
+        preserved_attendances = [
+            EventAttendanceInputData(user_id=attendance.user_id)
+            for attendance in existing_event.attendances.all()
+        ]
+
+        # Preserve external attendances — include the ExternalAttendee id so that
+        # serialize_event_data_input can correlate the status correctly and produce
+        # a CalendarEventData matching the old event's external_attendees by email,
+        # ensuring _check_attendances_update_necessary_permissions sees no change.
+        preserved_external_attendances = [
+            EventExternalAttendanceInputData(
+                external_attendee=ExternalAttendeeInputData(
+                    email=ea.external_attendee_fk.email,  # type: ignore[union-attr]
+                    name=ea.external_attendee_fk.name or "",  # type: ignore[union-attr]
+                    id=ea.external_attendee_fk_id,  # type: ignore[union-attr]
+                )
+            )
+            for ea in existing_event.external_attendances.select_related("external_attendee")
+        ]
+
+        # Preserve resource allocations.
+        preserved_resource_allocations = [
+            ResourceAllocationInputData(resource_id=ra.calendar_fk_id)  # type: ignore[arg-type]
+            for ra in existing_event.resource_allocations.all()
+        ]
+
+        event_data = CalendarEventInputData(
+            title=existing_event.title,
+            description=existing_event.description or "",
+            start_time=input.start_time,
+            end_time=input.end_time,
+            timezone=input.timezone,
+            attendances=preserved_attendances,
+            external_attendances=preserved_external_attendances,
+            resource_allocations=preserved_resource_allocations,
+        )
+
+        # --- Step 8: atomic update + consume ---
+        # Update FIRST, then consume — so on a race the loser's consume_code raises under
+        # the row lock and the whole transaction (including the just-updated event) rolls
+        # back, leaving exactly one update and the code consumed once.
+        try:
+            with transaction.atomic():
+                deps.calendar_service.initialize_without_provider(
+                    user_or_token=input.code, organization=org
+                )
+                event = deps.calendar_service.update_event(calendar_id, event_id, event_data)
+                deps.calendar_permission_service.consume_code(token, source_ip)
+        except (TokenAlreadyUsedError, TokenExpiredError, TokenRevokedError) as e:
+            # Concurrent consumer won the race, or state changed between resolve and consume.
+            error_code = BookingCodeErrorCode.ALREADY_USED
+            error_message = "This booking code has already been used."
+            if isinstance(e, TokenExpiredError):
+                error_code = BookingCodeErrorCode.EXPIRED
+                error_message = "This booking code has expired."
+            elif isinstance(e, TokenRevokedError):
+                error_code = BookingCodeErrorCode.REVOKED
+                error_message = "This booking code has been revoked."
+            return CodeEventResult(
+                success=False,
+                error_code=error_code,
+                error_message=error_message,
+            )
+        except PermissionDenied:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code does not permit rescheduling this event.",
+            )
+        except (EventManagementError, CalendarGroupError):
+            # Slot outside availability / invalid times — code NOT consumed (txn rolled
+            # back), patient may retry with a different slot.
+            # Note: NoAvailableTimeWindowsError is a subclass of EventManagementError and
+            # is therefore already covered.
             return CodeEventResult(
                 success=False,
                 error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
