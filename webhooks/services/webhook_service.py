@@ -1,10 +1,12 @@
 import datetime
+from typing import Any, cast
 
 import requests
 
 from organizations.models import Organization
 from webhooks.constants import WebhookEventType, WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
+from webhooks.services.payloads import WebhookEnvelope
 from webhooks.tasks import process_webhook_event
 
 
@@ -130,7 +132,7 @@ class WebhookService:
             WebhookEvent: The processed webhook event.
         """
 
-        envelope = {
+        envelope: WebhookEnvelope = {
             "id": str(event.main_event_fk_id or event.id),
             "type": event.event_type,
             "timestamp": event.created.isoformat(),
@@ -141,7 +143,7 @@ class WebhookService:
             response = requests.post(
                 event.url,
                 headers=event.headers,
-                json=envelope,
+                json=cast(dict[str, Any], envelope),
                 timeout=60,
             )
         except requests.RequestException as e:

@@ -651,3 +651,28 @@ class TestWebhookService:
         # The calendar payload is nested under data, not at the top level
         assert posted["data"] == calendar_payload
         assert "calendar_id" not in posted
+
+    @patch("webhooks.services.webhook_service.process_webhook_event.apply_async")
+    @patch("requests.post")
+    def test_envelope_id_stable_for_service_scheduled_retry(
+        self, mock_post, mock_apply_async, webhook_event, webhook_service
+    ):
+        """Envelope id from a service-chained retry equals the original event id."""
+        # Produce a retry via the real service path, not baker
+        webhook_event.status = WebhookStatus.FAILED
+        webhook_event.save()
+        retry_event = webhook_service.schedule_event_retry(
+            event=webhook_event, use_current_configuration=False, is_manual=False
+        )
+        assert retry_event is not None
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}
+        mock_response.headers = {}
+        mock_post.return_value = mock_response
+
+        webhook_service.process_webhook_event(retry_event)
+
+        _, call_kwargs = mock_post.call_args
+        assert call_kwargs["json"]["id"] == str(webhook_event.id)
