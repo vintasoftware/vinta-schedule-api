@@ -5,6 +5,7 @@ from django.db import transaction
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -12,6 +13,7 @@ from rest_framework.viewsets import GenericViewSet
 
 from organizations.models import get_active_organization_membership
 from organizations.permissions import IsOrganizationAdmin
+from public_api.constants import PROVIDER_SCOPED_RESOURCES
 from public_api.models import ResourceAccess, SystemUser
 from public_api.serializers import (
     SystemUserTokenCreateSerializer,
@@ -141,6 +143,20 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
         input_serializer.is_valid(raise_exception=True)
 
         desired_resources: list[str] = input_serializer.validated_data["available_resources"]
+
+        # Guard: scoped tokens may not be updated with resources outside PROVIDER_SCOPED_RESOURCES.
+        if system_user.scoped_to_user_id is not None:
+            over_grant = [r for r in desired_resources if r not in PROVIDER_SCOPED_RESOURCES]
+            if over_grant:
+                raise ValidationError(
+                    {
+                        "available_resources": [
+                            f"Resource(s) not permitted for provider-scoped tokens: "
+                            f"{', '.join(over_grant)}. "
+                            f"Allowed resources are: {', '.join(sorted(PROVIDER_SCOPED_RESOURCES))}."
+                        ]
+                    }
+                )
 
         # Reconcile ResourceAccess rows transactionally
         with transaction.atomic():
