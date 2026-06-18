@@ -12,11 +12,13 @@ from dependency_injector.wiring import Provide, inject
 from django_virtual_models import QuerySet
 from graphql import GraphQLError
 
+from calendar_integration.constants import CalendarType
 from calendar_integration.graphql import (
     AvailableTimeGraphQLType,
     AvailableTimeWindowGraphQLType,
     BlockedTimeGraphQLType,
     BookableSlotProposalGraphQLType,
+    CalendarBundleGraphQLType,
     CalendarEventGraphQLType,
     CalendarGraphQLType,
     CalendarGroupGraphQLType,
@@ -459,6 +461,27 @@ class Query:
         org = _get_org(info)
         qs = CalendarGroup.objects.filter_by_organization(org.id).order_by("pk")
         return cast(list[CalendarGroupGraphQLType], list(_slice_qs(qs, offset, limit)))
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def calendar_bundles(
+        self,
+        info: strawberry.Info,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[CalendarBundleGraphQLType]:
+        """List bundle calendars for the caller's organization.
+
+        Returns only Calendar rows with calendar_type=BUNDLE, paginated.
+        Children are prefetched to avoid N+1 queries.
+        """
+        org = _get_org(info)
+        qs = (
+            Calendar.objects.filter_by_organization(org.id)
+            .filter(calendar_type=CalendarType.BUNDLE)
+            .prefetch_related("bundle_children")
+            .order_by("pk")
+        )
+        return cast(list[CalendarBundleGraphQLType], list(_slice_qs(qs, offset, limit)))
 
     @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def calendar_group_availability(
