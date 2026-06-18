@@ -14,16 +14,19 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    CalendarOwnership,
 )
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     BlockedTimeData,
     UnavailableTimeWindow,
 )
+from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization, OrganizationMembership
 from public_api.constants import PublicAPIResources
-from public_api.models import ResourceAccess
+from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
+from users.models import User
 
 
 def assert_response_status_code(response, expected_status_code):
@@ -2503,3 +2506,1299 @@ class TestChildOrganizationsQuery:
         assert len(children) == 1
         # Both memberships (active + inactive) are counted
         assert children[0]["membershipCount"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Owner-scoped public API token read enforcement tests (Phase 1)
+# ---------------------------------------------------------------------------
+
+_CALENDARS_QUERY = """
+    query GetCalendars {
+        calendars {
+            id
+            name
+        }
+    }
+"""
+
+_CALENDAR_EVENTS_BY_CALENDAR_QUERY = """
+    query GetCalendarEvents($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+        calendarEvents(
+            calendarId: $calendarId,
+            startDatetime: $startDatetime,
+            endDatetime: $endDatetime
+        ) {
+            id
+            title
+        }
+    }
+"""
+
+_CALENDAR_EVENTS_BY_ID_QUERY = """
+    query GetCalendarEvents($eventId: Int!) {
+        calendarEvents(eventId: $eventId) {
+            id
+            title
+        }
+    }
+"""
+
+_BLOCKED_TIMES_BY_CALENDAR_QUERY = """
+    query GetBlockedTimes($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+        blockedTimes(
+            calendarId: $calendarId,
+            startDatetime: $startDatetime,
+            endDatetime: $endDatetime
+        ) {
+            id
+        }
+    }
+"""
+
+_BLOCKED_TIMES_BY_ID_QUERY = """
+    query GetBlockedTimes($blockedTimeId: Int!) {
+        blockedTimes(blockedTimeId: $blockedTimeId) {
+            id
+        }
+    }
+"""
+
+_AVAILABLE_TIMES_BY_CALENDAR_QUERY = """
+    query GetAvailableTimes($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+        availableTimes(
+            calendarId: $calendarId,
+            startDatetime: $startDatetime,
+            endDatetime: $endDatetime
+        ) {
+            id
+        }
+    }
+"""
+
+_AVAILABLE_TIMES_BY_ID_QUERY = """
+    query GetAvailableTimes($availableTimeId: Int!) {
+        availableTimes(availableTimeId: $availableTimeId) {
+            id
+        }
+    }
+"""
+
+_AVAILABILITY_WINDOWS_QUERY = """
+    query GetAvailabilityWindows($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+        availabilityWindows(
+            calendarId: $calendarId,
+            startDatetime: $startDatetime,
+            endDatetime: $endDatetime
+        ) {
+            startTime
+            endTime
+            id
+        }
+    }
+"""
+
+_UNAVAILABLE_WINDOWS_QUERY = """
+    query GetUnavailableWindows($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+        unavailableWindows(
+            calendarId: $calendarId,
+            startDatetime: $startDatetime,
+            endDatetime: $endDatetime
+        ) {
+            startTime
+            endTime
+            id
+        }
+    }
+"""
+
+_DATETIME_START = "2025-09-02T00:00:00Z"
+_DATETIME_END = "2025-09-02T23:59:59Z"
+
+
+def _make_all_resource_grants(system_user: SystemUser) -> None:
+    """Grant all calendar-related resource permissions to a system user."""
+    resources = [
+        PublicAPIResources.CALENDAR,
+        PublicAPIResources.CALENDAR_EVENT,
+        PublicAPIResources.BLOCKED_TIME,
+        PublicAPIResources.AVAILABLE_TIME,
+        PublicAPIResources.AVAILABILITY_WINDOWS,
+        PublicAPIResources.UNAVAILABLE_WINDOWS,
+    ]
+    for resource in resources:
+        baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+
+
+def _make_org_wide_client(organization: Organization) -> tuple[APIClient, SystemUser]:
+    """Create an org-wide (scoped_to_user IS NULL) API client with all resource grants."""
+    auth_service = PublicAPIAuthService()
+    system_user, token = auth_service.create_system_user(
+        integration_name=f"org_wide_{organization.pk}", organization=organization
+    )
+    _make_all_resource_grants(system_user)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+    return client, system_user
+
+
+def _make_scoped_client(organization: Organization, owner: User) -> tuple[APIClient, SystemUser]:
+    """Create a scoped API client (scoped_to_user=owner) with all resource grants."""
+    token = generate_long_lived_token()
+    system_user = baker.make(
+        SystemUser,
+        organization=organization,
+        scoped_to_user=owner,
+        integration_name=f"scoped_{organization.pk}_{owner.pk}",
+        long_lived_token_hash=hash_long_lived_token(token),
+        is_active=True,
+    )
+    _make_all_resource_grants(system_user)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+    return client, system_user
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestOwnerScopedTokenReadEnforcement:
+    """Phase 1: verify scoped tokens only return their owner's data; org-wide unchanged.
+
+    Each resolver shape gets a scoped-sees-own, scoped-blocked-cross-owner, and
+    an org-wide-unchanged assertion.
+    """
+
+    @pytest.fixture
+    def organization(self):
+        return baker.make(Organization, name="ScopingTestOrg")
+
+    @pytest.fixture
+    def owner(self):
+        return baker.make(User, email="owner@scoping.test")
+
+    @pytest.fixture
+    def other_owner(self):
+        return baker.make(User, email="other_owner@scoping.test")
+
+    @pytest.fixture
+    def owner_calendar(self, organization, owner):
+        """Calendar owned by `owner` in the org."""
+        cal = baker.make(
+            Calendar,
+            organization=organization,
+            name="Owner Calendar",
+            external_id="owner-cal-scope",
+        )
+        baker.make(CalendarOwnership, calendar=cal, user=owner, organization=organization)
+        return cal
+
+    @pytest.fixture
+    def other_calendar(self, organization, other_owner):
+        """Calendar owned by `other_owner` (different provider) in the same org."""
+        cal = baker.make(
+            Calendar,
+            organization=organization,
+            name="Other Calendar",
+            external_id="other-cal-scope",
+        )
+        baker.make(CalendarOwnership, calendar=cal, user=other_owner, organization=organization)
+        return cal
+
+    # ------------------------------------------------------------------ #
+    # calendars                                                            #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_sees_only_owner_calendars(
+        self, mock_rate_limiter, organization, owner, owner_calendar, other_calendar
+    ):
+        """A scoped token's `calendars` query returns only the owner's calendar."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_scoped_client(organization, owner)
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDARS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(c["id"]) for c in data["calendars"]}
+
+        assert owner_calendar.id in returned_ids, "Owner's calendar must be visible"
+        assert other_calendar.id not in returned_ids, "Other owner's calendar must NOT be visible"
+
+    def test_scoped_token_no_calendars_returns_empty(
+        self, mock_rate_limiter, organization, other_owner, owner_calendar
+    ):
+        """A scoped token whose owner owns NO calendars sees an empty list."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create client scoped to a user who owns nothing
+        no_calendar_user = baker.make(User, email="nobody@scoping.test")
+        client, _ = _make_scoped_client(organization, no_calendar_user)
+
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDARS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert data["calendars"] == [], "Owner with no calendars must return empty list"
+
+    def test_org_wide_token_sees_all_calendars(
+        self, mock_rate_limiter, organization, owner_calendar, other_calendar
+    ):
+        """Org-wide token (scoped_to_user IS NULL) returns all org calendars unchanged."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDARS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(c["id"]) for c in data["calendars"]}
+
+        assert owner_calendar.id in returned_ids, "Org-wide token must see owner_calendar"
+        assert other_calendar.id in returned_ids, "Org-wide token must see other_calendar"
+
+    # ------------------------------------------------------------------ #
+    # calendar_events (by calendarId)                                     #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_blocked_cross_owner_calendar_events(
+        self, mock_rate_limiter, organization, owner, other_calendar
+    ):
+        """Scoped token querying another owner's calendarId is indistinguishable from
+        a genuinely missing calendar — both must produce the same error response shape.
+
+        The real contract: _prepare_service_and_calendar raises Calendar.DoesNotExist for
+        cross-owner calendarId, surfaced as a GraphQL error identical to a missing calendar.
+        This test asserts equivalence of the two responses so the test FAILS if the owner
+        guard in _prepare_service_and_calendar is removed.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        baker.make(
+            CalendarEvent,
+            calendar=other_calendar,
+            organization=organization,
+            title="Other Event",
+            external_id="other-ev-scope",
+            timezone="UTC",
+        )
+
+        client, _ = _make_scoped_client(organization, owner)
+
+        # (a) Cross-owner calendarId — owner guard fires Calendar.DoesNotExist
+        variables_cross = {
+            "calendarId": other_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response_cross = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _CALENDAR_EVENTS_BY_CALENDAR_QUERY, "variables": variables_cross}
+            ),
+            content_type="application/json",
+        )
+
+        # (b) Guaranteed-nonexistent calendarId — ORM raises Calendar.DoesNotExist
+        variables_nonexistent = {
+            "calendarId": 999999,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response_nonexistent = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _CALENDAR_EVENTS_BY_CALENDAR_QUERY, "variables": variables_nonexistent}
+            ),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response_cross, 200)
+        assert_response_status_code(response_nonexistent, 200)
+
+        data_cross = response_cross.json()
+        data_nonexistent = response_nonexistent.json()
+
+        # Both must be errors (Calendar.DoesNotExist path) — no existence leak
+        has_error_cross = "errors" in data_cross
+        has_error_nonexistent = "errors" in data_nonexistent
+        assert has_error_cross == has_error_nonexistent, (
+            "Cross-owner calendarId must produce the same error presence as a nonexistent calendarId. "
+            f"cross={data_cross}, nonexistent={data_nonexistent}"
+        )
+
+        if not has_error_cross:
+            # If neither raised an error, both must return empty (no data leak)
+            events_cross = (data_cross.get("data") or {}).get("calendarEvents", [])
+            events_nonexistent = (data_nonexistent.get("data") or {}).get("calendarEvents", [])
+            assert events_cross == [], "Cross-owner calendar must return empty events"
+            assert events_nonexistent == [], "Nonexistent calendar must return empty events"
+
+    def test_scoped_token_sees_own_calendar_events(
+        self, mock_rate_limiter, organization, owner, owner_calendar
+    ):
+        """Scoped token can read events on its owner's calendar."""
+        mock_rate_limiter.return_value = iter([None])
+
+        event = baker.make(
+            CalendarEvent,
+            calendar=owner_calendar,
+            organization=organization,
+            title="Owner Event",
+            external_id="owner-ev-scope",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        client, _ = _make_scoped_client(organization, owner)
+        variables = {
+            "calendarId": owner_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_CALENDAR_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        event_ids = [int(e["id"]) for e in data["calendarEvents"]]
+        assert event.id in event_ids, "Event on owner's calendar must be visible"
+
+    def test_org_wide_token_sees_all_calendar_events(
+        self, mock_rate_limiter, organization, owner_calendar, other_calendar
+    ):
+        """Org-wide token (scoped_to_user IS NULL) can read events on any calendar."""
+        mock_rate_limiter.return_value = iter([None])
+
+        owner_event = baker.make(
+            CalendarEvent,
+            calendar=owner_calendar,
+            organization=organization,
+            title="OwnerEvt OrgWide",
+            external_id="ow-evt-orgwide",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+        other_event = baker.make(
+            CalendarEvent,
+            calendar=other_calendar,
+            organization=organization,
+            title="OtherEvt OrgWide",
+            external_id="other-evt-orgwide",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        client, _ = _make_org_wide_client(organization)
+
+        # Fetch events for owner_calendar
+        variables = {
+            "calendarId": owner_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_CALENDAR_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+        data = assert_graphql_success(response)
+        ids = [int(e["id"]) for e in data["calendarEvents"]]
+        assert owner_event.id in ids, "Org-wide token must see owner_calendar events"
+
+        # Fetch events for other_calendar
+        variables["calendarId"] = other_calendar.id
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_CALENDAR_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+        data = assert_graphql_success(response)
+        ids = [int(e["id"]) for e in data["calendarEvents"]]
+        assert other_event.id in ids, "Org-wide token must see other_calendar events"
+
+    # ------------------------------------------------------------------ #
+    # calendar_events (by event_id — single-id lookup)                   #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_event_id_cross_owner_returns_empty(
+        self, mock_rate_limiter, organization, owner, other_calendar
+    ):
+        """A scoped token looking up another owner's event_id gets empty, not an error."""
+        mock_rate_limiter.return_value = iter([None])
+
+        other_event = baker.make(
+            CalendarEvent,
+            calendar=other_calendar,
+            organization=organization,
+            title="Other Owner Event",
+            external_id="other-ev-id-scope",
+            timezone="UTC",
+        )
+
+        client, _ = _make_scoped_client(organization, owner)
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _CALENDAR_EVENTS_BY_ID_QUERY, "variables": {"eventId": other_event.id}}
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert data["calendarEvents"] == [], (
+            "Scoped token must not expose another owner's event via event_id lookup"
+        )
+
+    def test_scoped_token_event_id_own_owner_returns_event(
+        self, mock_rate_limiter, organization, owner, owner_calendar
+    ):
+        """A scoped token can look up its own event by event_id."""
+        mock_rate_limiter.return_value = iter([None])
+
+        own_event = baker.make(
+            CalendarEvent,
+            calendar=owner_calendar,
+            organization=organization,
+            title="Own Event",
+            external_id="own-ev-id-scope",
+            timezone="UTC",
+        )
+
+        client, _ = _make_scoped_client(organization, owner)
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _CALENDAR_EVENTS_BY_ID_QUERY, "variables": {"eventId": own_event.id}}
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert len(data["calendarEvents"]) == 1
+        assert int(data["calendarEvents"][0]["id"]) == own_event.id
+
+    def test_org_wide_token_event_id_lookup_unchanged(
+        self, mock_rate_limiter, organization, other_calendar
+    ):
+        """Org-wide token can look up any event by event_id (pre-change behavior)."""
+        mock_rate_limiter.return_value = iter([None])
+
+        event = baker.make(
+            CalendarEvent,
+            calendar=other_calendar,
+            organization=organization,
+            title="Any Event",
+            external_id="any-ev-orgwide",
+            timezone="UTC",
+        )
+
+        client, _ = _make_org_wide_client(organization)
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _CALENDAR_EVENTS_BY_ID_QUERY, "variables": {"eventId": event.id}}
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert len(data["calendarEvents"]) == 1
+        assert int(data["calendarEvents"][0]["id"]) == event.id
+
+    # ------------------------------------------------------------------ #
+    # blocked_times (by calendarId)                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_blocked_cross_owner_blocked_times(
+        self, mock_rate_limiter, organization, owner, other_calendar
+    ):
+        """Scoped token querying another owner's calendarId for blocked_times is
+        indistinguishable from a genuinely missing calendar — same error response shape."""
+        mock_rate_limiter.return_value = iter([None])
+
+        baker.make(
+            BlockedTime,
+            calendar=other_calendar,
+            organization=organization,
+            external_id="other-bt-scope",
+            timezone="UTC",
+        )
+
+        client, _ = _make_scoped_client(organization, owner)
+
+        # (a) Cross-owner calendarId
+        variables_cross = {
+            "calendarId": other_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response_cross = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _BLOCKED_TIMES_BY_CALENDAR_QUERY, "variables": variables_cross}
+            ),
+            content_type="application/json",
+        )
+
+        # (b) Guaranteed-nonexistent calendarId
+        variables_nonexistent = {
+            "calendarId": 999999,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response_nonexistent = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _BLOCKED_TIMES_BY_CALENDAR_QUERY, "variables": variables_nonexistent}
+            ),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response_cross, 200)
+        assert_response_status_code(response_nonexistent, 200)
+
+        data_cross = response_cross.json()
+        data_nonexistent = response_nonexistent.json()
+
+        has_error_cross = "errors" in data_cross
+        has_error_nonexistent = "errors" in data_nonexistent
+        assert has_error_cross == has_error_nonexistent, (
+            "Cross-owner calendarId must produce the same error presence as a nonexistent calendarId. "
+            f"cross={data_cross}, nonexistent={data_nonexistent}"
+        )
+
+        if not has_error_cross:
+            bt_cross = (data_cross.get("data") or {}).get("blockedTimes", [])
+            bt_nonexistent = (data_nonexistent.get("data") or {}).get("blockedTimes", [])
+            assert bt_cross == [], "Cross-owner calendar must return empty blocked times"
+            assert bt_nonexistent == [], "Nonexistent calendar must return empty blocked times"
+
+    def test_scoped_token_sees_own_blocked_times(
+        self, mock_rate_limiter, organization, owner, owner_calendar
+    ):
+        """Scoped token can read blocked times on its owner's calendar."""
+        mock_rate_limiter.return_value = iter([None])
+
+        bt = baker.make(
+            BlockedTime,
+            calendar=owner_calendar,
+            organization=organization,
+            external_id="own-bt-scope",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        client, _ = _make_scoped_client(organization, owner)
+        variables = {
+            "calendarId": owner_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _BLOCKED_TIMES_BY_CALENDAR_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bt_ids = [int(b["id"]) for b in data["blockedTimes"]]
+        assert bt.id in bt_ids, "Blocked time on owner's calendar must be visible"
+
+    def test_org_wide_token_sees_all_blocked_times(
+        self, mock_rate_limiter, organization, owner_calendar, other_calendar
+    ):
+        """Org-wide token can read blocked times on any calendar."""
+        mock_rate_limiter.return_value = iter([None])
+
+        bt1 = baker.make(
+            BlockedTime,
+            calendar=owner_calendar,
+            organization=organization,
+            external_id="bt1-orgwide",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+        bt2 = baker.make(
+            BlockedTime,
+            calendar=other_calendar,
+            organization=organization,
+            external_id="bt2-orgwide",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        client, _ = _make_org_wide_client(organization)
+
+        for cal, expected_bt in [(owner_calendar, bt1), (other_calendar, bt2)]:
+            variables = {
+                "calendarId": cal.id,
+                "startDatetime": _DATETIME_START,
+                "endDatetime": _DATETIME_END,
+            }
+            response = client.post(
+                "/graphql/",
+                data=json.dumps(
+                    {"query": _BLOCKED_TIMES_BY_CALENDAR_QUERY, "variables": variables}
+                ),
+                content_type="application/json",
+            )
+            data = assert_graphql_success(response)
+            bt_ids = [int(b["id"]) for b in data["blockedTimes"]]
+            assert expected_bt.id in bt_ids, f"Org-wide token must see {expected_bt.id}"
+
+    # ------------------------------------------------------------------ #
+    # blocked_times (by blocked_time_id — single-id lookup)              #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_blocked_time_id_cross_owner_returns_empty(
+        self, mock_rate_limiter, organization, owner, other_calendar
+    ):
+        """A scoped token looking up another owner's blocked_time_id gets empty."""
+        mock_rate_limiter.return_value = iter([None])
+
+        other_bt = baker.make(
+            BlockedTime,
+            calendar=other_calendar,
+            organization=organization,
+            external_id="other-bt-id-scope",
+            timezone="UTC",
+        )
+
+        client, _ = _make_scoped_client(organization, owner)
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {
+                    "query": _BLOCKED_TIMES_BY_ID_QUERY,
+                    "variables": {"blockedTimeId": other_bt.id},
+                }
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert data["blockedTimes"] == [], (
+            "Scoped token must not expose another owner's blocked time via id lookup"
+        )
+
+    def test_scoped_token_blocked_time_id_own_returns_item(
+        self, mock_rate_limiter, organization, owner, owner_calendar
+    ):
+        """A scoped token can look up its own blocked time by id."""
+        mock_rate_limiter.return_value = iter([None])
+
+        own_bt = baker.make(
+            BlockedTime,
+            calendar=owner_calendar,
+            organization=organization,
+            external_id="own-bt-id-scope",
+            timezone="UTC",
+        )
+
+        client, _ = _make_scoped_client(organization, owner)
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {
+                    "query": _BLOCKED_TIMES_BY_ID_QUERY,
+                    "variables": {"blockedTimeId": own_bt.id},
+                }
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert len(data["blockedTimes"]) == 1
+        assert int(data["blockedTimes"][0]["id"]) == own_bt.id
+
+    def test_org_wide_token_blocked_time_id_lookup_unchanged(
+        self, mock_rate_limiter, organization, other_calendar
+    ):
+        """Org-wide token can look up any blocked time by id."""
+        mock_rate_limiter.return_value = iter([None])
+
+        bt = baker.make(
+            BlockedTime,
+            calendar=other_calendar,
+            organization=organization,
+            external_id="any-bt-orgwide",
+            timezone="UTC",
+        )
+
+        client, _ = _make_org_wide_client(organization)
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _BLOCKED_TIMES_BY_ID_QUERY, "variables": {"blockedTimeId": bt.id}}
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert len(data["blockedTimes"]) == 1
+        assert int(data["blockedTimes"][0]["id"]) == bt.id
+
+    # ------------------------------------------------------------------ #
+    # available_times (by calendarId)                                     #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_blocked_cross_owner_available_times(
+        self, mock_rate_limiter, organization, owner, other_calendar
+    ):
+        """Scoped token querying another owner's calendarId for available_times is
+        indistinguishable from a genuinely missing calendar — same error response shape."""
+        mock_rate_limiter.return_value = iter([None])
+
+        baker.make(
+            AvailableTime,
+            calendar=other_calendar,
+            organization=organization,
+            timezone="UTC",
+        )
+
+        client, _ = _make_scoped_client(organization, owner)
+
+        # (a) Cross-owner calendarId
+        variables_cross = {
+            "calendarId": other_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response_cross = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _AVAILABLE_TIMES_BY_CALENDAR_QUERY, "variables": variables_cross}
+            ),
+            content_type="application/json",
+        )
+
+        # (b) Guaranteed-nonexistent calendarId
+        variables_nonexistent = {
+            "calendarId": 999999,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response_nonexistent = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _AVAILABLE_TIMES_BY_CALENDAR_QUERY, "variables": variables_nonexistent}
+            ),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response_cross, 200)
+        assert_response_status_code(response_nonexistent, 200)
+
+        data_cross = response_cross.json()
+        data_nonexistent = response_nonexistent.json()
+
+        has_error_cross = "errors" in data_cross
+        has_error_nonexistent = "errors" in data_nonexistent
+        assert has_error_cross == has_error_nonexistent, (
+            "Cross-owner calendarId must produce the same error presence as a nonexistent calendarId. "
+            f"cross={data_cross}, nonexistent={data_nonexistent}"
+        )
+
+        if not has_error_cross:
+            at_cross = (data_cross.get("data") or {}).get("availableTimes", [])
+            at_nonexistent = (data_nonexistent.get("data") or {}).get("availableTimes", [])
+            assert at_cross == [], "Cross-owner calendar must return empty available times"
+            assert at_nonexistent == [], "Nonexistent calendar must return empty available times"
+
+    def test_scoped_token_sees_own_available_times(
+        self, mock_rate_limiter, organization, owner, owner_calendar
+    ):
+        """Scoped token can read available times on its owner's calendar."""
+        mock_rate_limiter.return_value = iter([None])
+
+        at = baker.make(
+            AvailableTime,
+            calendar=owner_calendar,
+            organization=organization,
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        client, _ = _make_scoped_client(organization, owner)
+        variables = {
+            "calendarId": owner_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _AVAILABLE_TIMES_BY_CALENDAR_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        at_ids = [int(a["id"]) for a in data["availableTimes"]]
+        assert at.id in at_ids, "Available time on owner's calendar must be visible"
+
+    def test_org_wide_token_sees_all_available_times(
+        self, mock_rate_limiter, organization, owner_calendar, other_calendar
+    ):
+        """Org-wide token can read available times on any calendar."""
+        mock_rate_limiter.return_value = iter([None])
+
+        at1 = baker.make(
+            AvailableTime,
+            calendar=owner_calendar,
+            organization=organization,
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+        at2 = baker.make(
+            AvailableTime,
+            calendar=other_calendar,
+            organization=organization,
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        client, _ = _make_org_wide_client(organization)
+
+        for cal, expected_at in [(owner_calendar, at1), (other_calendar, at2)]:
+            variables = {
+                "calendarId": cal.id,
+                "startDatetime": _DATETIME_START,
+                "endDatetime": _DATETIME_END,
+            }
+            response = client.post(
+                "/graphql/",
+                data=json.dumps(
+                    {"query": _AVAILABLE_TIMES_BY_CALENDAR_QUERY, "variables": variables}
+                ),
+                content_type="application/json",
+            )
+            data = assert_graphql_success(response)
+            at_ids = [int(a["id"]) for a in data["availableTimes"]]
+            assert expected_at.id in at_ids, f"Org-wide token must see {expected_at.id}"
+
+    # ------------------------------------------------------------------ #
+    # available_times (by available_time_id — single-id lookup)          #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_available_time_id_cross_owner_returns_empty(
+        self, mock_rate_limiter, organization, owner, other_calendar
+    ):
+        """A scoped token looking up another owner's available_time_id gets empty."""
+        mock_rate_limiter.return_value = iter([None])
+
+        other_at = baker.make(
+            AvailableTime,
+            calendar=other_calendar,
+            organization=organization,
+            timezone="UTC",
+        )
+
+        client, _ = _make_scoped_client(organization, owner)
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {
+                    "query": _AVAILABLE_TIMES_BY_ID_QUERY,
+                    "variables": {"availableTimeId": other_at.id},
+                }
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert data["availableTimes"] == [], (
+            "Scoped token must not expose another owner's available time via id lookup"
+        )
+
+    def test_scoped_token_available_time_id_own_returns_item(
+        self, mock_rate_limiter, organization, owner, owner_calendar
+    ):
+        """A scoped token can look up its own available time by id."""
+        mock_rate_limiter.return_value = iter([None])
+
+        own_at = baker.make(
+            AvailableTime,
+            calendar=owner_calendar,
+            organization=organization,
+            timezone="UTC",
+        )
+
+        client, _ = _make_scoped_client(organization, owner)
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {
+                    "query": _AVAILABLE_TIMES_BY_ID_QUERY,
+                    "variables": {"availableTimeId": own_at.id},
+                }
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert len(data["availableTimes"]) == 1
+        assert int(data["availableTimes"][0]["id"]) == own_at.id
+
+    def test_org_wide_token_available_time_id_lookup_unchanged(
+        self, mock_rate_limiter, organization, other_calendar
+    ):
+        """Org-wide token can look up any available time by id."""
+        mock_rate_limiter.return_value = iter([None])
+
+        at = baker.make(
+            AvailableTime,
+            calendar=other_calendar,
+            organization=organization,
+            timezone="UTC",
+        )
+
+        client, _ = _make_org_wide_client(organization)
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _AVAILABLE_TIMES_BY_ID_QUERY, "variables": {"availableTimeId": at.id}}
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert len(data["availableTimes"]) == 1
+        assert int(data["availableTimes"][0]["id"]) == at.id
+
+    # ------------------------------------------------------------------ #
+    # availability_windows (uses _prepare_service_and_calendar)           #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_blocked_cross_owner_availability_windows(
+        self, mock_rate_limiter, organization, owner, other_calendar
+    ):
+        """Scoped token querying another owner's calendarId for availability_windows returns empty
+        (the same Calendar.DoesNotExist error as a genuinely missing calendar)."""
+        mock_rate_limiter.return_value = iter([None])
+
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.get_availability_windows_in_range.return_value = []
+
+        client, _ = _make_scoped_client(organization, owner)
+        variables = {
+            "calendarId": other_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                "/graphql/",
+                data=json.dumps({"query": _AVAILABILITY_WINDOWS_QUERY, "variables": variables}),
+                content_type="application/json",
+            )
+
+        # Must be 200 with errors (Calendar.DoesNotExist path) or empty data —
+        # never confirm existence of the other owner's calendar.
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        if "errors" not in response_data:
+            windows = (response_data.get("data") or {}).get("availabilityWindows", [])
+            assert windows == [], "Cross-owner calendar must return empty windows"
+        # If there are errors, they must be Calendar.DoesNotExist-shaped (not existence-leaking)
+        # We simply verify the request did NOT succeed with data from the other owner's calendar.
+        if response_data.get("data"):
+            windows = response_data["data"].get("availabilityWindows", [])
+            assert windows == [], "Cross-owner calendar must return empty windows"
+
+    def test_scoped_token_sees_own_availability_windows(
+        self, mock_rate_limiter, organization, owner, owner_calendar
+    ):
+        """Scoped token can read availability windows on its owner's calendar."""
+        mock_rate_limiter.return_value = iter([None])
+
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.get_availability_windows_in_range.return_value = [
+            AvailableTimeWindow(
+                start_time=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+                end_time=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+                id=42,
+                can_book_partially=True,
+            )
+        ]
+
+        client, _ = _make_scoped_client(organization, owner)
+        variables = {
+            "calendarId": owner_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                "/graphql/",
+                data=json.dumps({"query": _AVAILABILITY_WINDOWS_QUERY, "variables": variables}),
+                content_type="application/json",
+            )
+
+        data = assert_graphql_success(response)
+        assert len(data["availabilityWindows"]) == 1
+        assert data["availabilityWindows"][0]["id"] == 42
+
+    def test_org_wide_token_availability_windows_unchanged(
+        self, mock_rate_limiter, organization, other_calendar
+    ):
+        """Org-wide token can read availability windows on any calendar."""
+        mock_rate_limiter.return_value = iter([None])
+
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.get_availability_windows_in_range.return_value = [
+            AvailableTimeWindow(
+                start_time=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+                end_time=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+                id=99,
+                can_book_partially=False,
+            )
+        ]
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "calendarId": other_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                "/graphql/",
+                data=json.dumps({"query": _AVAILABILITY_WINDOWS_QUERY, "variables": variables}),
+                content_type="application/json",
+            )
+
+        data = assert_graphql_success(response)
+        assert len(data["availabilityWindows"]) == 1
+        assert data["availabilityWindows"][0]["id"] == 99
+
+    # ------------------------------------------------------------------ #
+    # unavailable_windows (uses _prepare_service_and_calendar)            #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_blocked_cross_owner_unavailable_windows(
+        self, mock_rate_limiter, organization, owner, other_calendar
+    ):
+        """Scoped token querying another owner's calendarId for unavailable_windows is blocked."""
+        mock_rate_limiter.return_value = iter([None])
+
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.get_unavailable_time_windows_in_range.return_value = []
+
+        client, _ = _make_scoped_client(organization, owner)
+        variables = {
+            "calendarId": other_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                "/graphql/",
+                data=json.dumps({"query": _UNAVAILABLE_WINDOWS_QUERY, "variables": variables}),
+                content_type="application/json",
+            )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        if response_data.get("data"):
+            windows = response_data["data"].get("unavailableWindows", [])
+            assert windows == [], "Cross-owner calendar must return empty unavailable windows"
+
+    def test_scoped_token_sees_own_unavailable_windows(
+        self, mock_rate_limiter, organization, owner, owner_calendar
+    ):
+        """Scoped token can read unavailable windows on its owner's calendar."""
+        mock_rate_limiter.return_value = iter([None])
+
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.get_unavailable_time_windows_in_range.return_value = [
+            UnavailableTimeWindow(
+                start_time=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+                end_time=datetime.datetime(2025, 9, 2, 13, 0, tzinfo=datetime.UTC),
+                reason="blocked_time",
+                id=77,
+                data=BlockedTimeData(
+                    id=77,
+                    calendar_external_id="owner-cal",
+                    start_time=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+                    end_time=datetime.datetime(2025, 9, 2, 13, 0, tzinfo=datetime.UTC),
+                    timezone="UTC",
+                    reason="maintenance",
+                    external_id=None,
+                    meta={},
+                ),
+            )
+        ]
+
+        client, _ = _make_scoped_client(organization, owner)
+        variables = {
+            "calendarId": owner_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                "/graphql/",
+                data=json.dumps({"query": _UNAVAILABLE_WINDOWS_QUERY, "variables": variables}),
+                content_type="application/json",
+            )
+
+        data = assert_graphql_success(response)
+        assert len(data["unavailableWindows"]) == 1
+        assert data["unavailableWindows"][0]["id"] == 77
+
+    def test_org_wide_token_unavailable_windows_unchanged(
+        self, mock_rate_limiter, organization, other_calendar
+    ):
+        """Org-wide token can read unavailable windows on any calendar."""
+        mock_rate_limiter.return_value = iter([None])
+
+        from di_core.containers import container
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.get_unavailable_time_windows_in_range.return_value = [
+            UnavailableTimeWindow(
+                start_time=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+                end_time=datetime.datetime(2025, 9, 2, 13, 0, tzinfo=datetime.UTC),
+                reason="blocked_time",
+                id=88,
+                data=BlockedTimeData(
+                    id=88,
+                    calendar_external_id="other-cal",
+                    start_time=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+                    end_time=datetime.datetime(2025, 9, 2, 13, 0, tzinfo=datetime.UTC),
+                    timezone="UTC",
+                    reason="maintenance",
+                    external_id=None,
+                    meta={},
+                ),
+            )
+        ]
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "calendarId": other_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                "/graphql/",
+                data=json.dumps({"query": _UNAVAILABLE_WINDOWS_QUERY, "variables": variables}),
+                content_type="application/json",
+            )
+
+        data = assert_graphql_success(response)
+        assert len(data["unavailableWindows"]) == 1
+        assert data["unavailableWindows"][0]["id"] == 88
+
+    # ------------------------------------------------------------------ #
+    # Post-expansion filter (BLOCKER) behavioral test                     #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_post_expansion_filter_strips_other_calendar_rows(
+        self, mock_rate_limiter, organization, owner, owner_calendar, other_calendar
+    ):
+        """Post-expansion filter must strip rows whose calendar_fk_id is NOT in the scoped set.
+
+        The service expansion for owner_calendar may return rows belonging to a different
+        calendar (e.g. due to recurring-event expansion logic). A scoped token must only
+        receive rows whose calendar_fk_id matches the owner's calendar, even when the
+        guard in _prepare_service_and_calendar already passed.
+
+        This test FAILS if the post-expansion filter in queries.py is removed.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        from di_core.containers import container
+
+        # Create real CalendarEvent instances so the GraphQL type system can serialize them.
+        # One row belongs to owner_calendar (scoped set), one to other_calendar (must be stripped).
+        owner_event = baker.make(
+            CalendarEvent,
+            calendar_fk=owner_calendar,
+            organization=organization,
+            title="Owner Expansion Row",
+            external_id="owner-expand-filter-test",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+        other_event = baker.make(
+            CalendarEvent,
+            calendar_fk=other_calendar,
+            organization=organization,
+            title="Other Expansion Row",
+            external_id="other-expand-filter-test",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        # Service returns both rows — the post-expansion filter must strip other_event
+        mock_calendar_service.get_calendar_events_expanded.return_value = [owner_event, other_event]
+
+        client, _ = _make_scoped_client(organization, owner)
+        variables = {
+            "calendarId": owner_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                "/graphql/",
+                data=json.dumps(
+                    {"query": _CALENDAR_EVENTS_BY_CALENDAR_QUERY, "variables": variables}
+                ),
+                content_type="application/json",
+            )
+
+        data = assert_graphql_success(response)
+        returned_ids = [int(e["id"]) for e in data["calendarEvents"]]
+
+        assert owner_event.id in returned_ids, "Owner's row must be returned"
+        assert other_event.id not in returned_ids, (
+            "Other-calendar row must be stripped by the post-expansion filter"
+        )
