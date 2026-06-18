@@ -4,6 +4,7 @@ import datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, cast
 
+from django.core.exceptions import PermissionDenied
 from django.db import transaction
 
 import strawberry
@@ -1100,7 +1101,7 @@ class CalendarGroupMutations:
         try:
             with transaction.atomic():
                 deps.calendar_service.initialize_without_provider(
-                    user_or_token=None, organization=org
+                    user_or_token=input.code, organization=org
                 )
                 event = deps.calendar_service.create_event(token.calendar.id, event_data)
                 deps.calendar_permission_service.consume_code(token, source_ip)
@@ -1119,12 +1120,18 @@ class CalendarGroupMutations:
                 error_code=error_code,
                 error_message=error_message,
             )
-        except (NoAvailableTimeWindowsError, EventManagementError) as e:
+        except PermissionDenied:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code does not permit booking on this calendar.",
+            )
+        except (NoAvailableTimeWindowsError, EventManagementError):
             # Slot taken / invalid times — code NOT consumed (txn rolled back), patient may retry.
             return CodeEventResult(
                 success=False,
                 error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
-                error_message=str(e) or "The requested time slot is not available.",
+                error_message="The requested time slot is not available.",
             )
 
         return CodeEventResult(success=True, event=event)  # type: ignore[arg-type]

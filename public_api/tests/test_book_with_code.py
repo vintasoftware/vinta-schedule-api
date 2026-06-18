@@ -14,14 +14,13 @@ Scenario coverage:
 """
 
 import datetime
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
-from calendar_integration.exceptions import NoAvailableTimeWindowsError
 from calendar_integration.models import (
     AvailableTime,
     Calendar,
@@ -76,7 +75,11 @@ def other_organization():
 
 @pytest.fixture
 def calendar(organization):
-    """A calendar that accepts public scheduling and manages its own availability windows."""
+    """A RESTRICTED calendar (accepts_public_scheduling=False) with managed availability windows.
+
+    Tests must seed AvailableTime rows to make a slot bookable; the code-as-token provides
+    the CREATE permission so that can_perform_scheduling returns True via the token path.
+    """
     return baker.make(
         Calendar,
         organization=organization,
@@ -84,7 +87,7 @@ def calendar(organization):
         provider=CalendarProvider.INTERNAL,
         calendar_type=CalendarType.PERSONAL,
         manage_available_windows=True,
-        accepts_public_scheduling=True,
+        accepts_public_scheduling=False,
     )
 
 
@@ -308,7 +311,12 @@ class TestCreateCalendarEventWithCodeReplay:
 
 @pytest.mark.django_db
 class TestCreateCalendarEventWithCodeFailedWriteDoesNotConsume:
-    """Scenario 3: Failed write (SLOT_UNAVAILABLE) leaves the code active for retry."""
+    """Scenario 3: Failed write (SLOT_UNAVAILABLE) leaves the code active for retry.
+
+    Uses the REAL calendar service against a RESTRICTED calendar with an AvailableTime
+    window.  The out-of-window request triggers a genuine NoAvailableTimeWindowsError
+    without any mocking, then a follow-up in-window request succeeds.
+    """
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
     def test_slot_unavailable_does_not_consume_code(
@@ -317,32 +325,37 @@ class TestCreateCalendarEventWithCodeFailedWriteDoesNotConsume:
         anon_client,
         booking_code,
         organization,
-        available_window,  # noqa: ARG002
+        available_window,  # noqa: ARG002 - seeds DB rows; window is 09:00-17:00 UTC
+        calendar,
     ):
-        """When create_event raises NoAvailableTimeWindowsError the code is NOT consumed."""
-        from di_core.containers import container
-
+        """Booking a slot OUTSIDE the availability window returns SLOT_UNAVAILABLE; code stays active."""
         mock_rate_limiter.return_value = iter([None])
         token, code = booking_code
 
-        mock_calendar_service = Mock()
-        mock_calendar_service.initialize_without_provider.return_value = None
-        mock_calendar_service.create_event.side_effect = NoAvailableTimeWindowsError()
+        # Request a slot at 22:00-23:00 UTC - outside the 09:00-17:00 window.
+        out_of_window_input = _booking_input(
+            code,
+            startTime=datetime.datetime(2030, 6, 1, 22, 0, tzinfo=datetime.UTC).isoformat(),
+            endTime=datetime.datetime(2030, 6, 1, 23, 0, tzinfo=datetime.UTC).isoformat(),
+        )
 
-        with container.calendar_service.override(mock_calendar_service):
-            data = post_graphql(
-                anon_client,
-                CREATE_EVENT_WITH_CODE,
-                {"input": _booking_input(code)},
-            )
+        data = post_graphql(
+            anon_client,
+            CREATE_EVENT_WITH_CODE,
+            {"input": out_of_window_input},
+        )
 
         result = data["data"]["createCalendarEventWithCode"]
         assert result["success"] is False
         assert result["errorCode"] == "SLOT_UNAVAILABLE"
+        assert result["errorMessage"] == "The requested time slot is not available."
 
         # The code must still be unused so a subsequent call can succeed.
         token.refresh_from_db()
         assert token.used_at is None
+
+        # No event must have been created.
+        assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
     def test_after_failed_write_code_can_still_be_used(
@@ -351,32 +364,31 @@ class TestCreateCalendarEventWithCodeFailedWriteDoesNotConsume:
         anon_client,
         booking_code,
         organization,
-        available_window,  # noqa: ARG002
+        available_window,  # noqa: ARG002 - window is 09:00-17:00 UTC
+        calendar,
     ):
-        """After a SLOT_UNAVAILABLE failure, the same code succeeds on a valid slot."""
-        from di_core.containers import container
-
+        """After a SLOT_UNAVAILABLE failure on restricted calendar, the same code succeeds on a valid slot."""
         mock_rate_limiter.return_value = iter([None])
         token, code = booking_code
 
-        # First call — simulated failure.
-        mock_fail_service = Mock()
-        mock_fail_service.initialize_without_provider.return_value = None
-        mock_fail_service.create_event.side_effect = NoAvailableTimeWindowsError()
-
-        with container.calendar_service.override(mock_fail_service):
-            fail_result = post_graphql(
-                anon_client,
-                CREATE_EVENT_WITH_CODE,
-                {"input": _booking_input(code)},
-            )
-
+        # First call - slot outside the availability window: SLOT_UNAVAILABLE.
+        out_of_window_input = _booking_input(
+            code,
+            startTime=datetime.datetime(2030, 6, 1, 22, 0, tzinfo=datetime.UTC).isoformat(),
+            endTime=datetime.datetime(2030, 6, 1, 23, 0, tzinfo=datetime.UTC).isoformat(),
+        )
+        fail_result = post_graphql(
+            anon_client,
+            CREATE_EVENT_WITH_CODE,
+            {"input": out_of_window_input},
+        )
         assert fail_result["data"]["createCalendarEventWithCode"]["success"] is False
+        assert fail_result["data"]["createCalendarEventWithCode"]["errorCode"] == "SLOT_UNAVAILABLE"
 
         token.refresh_from_db()
         assert token.used_at is None, "Code must remain active after failed write"
 
-        # Second call — real service with availability seeded; must succeed.
+        # Second call - in-window slot (10:00-11:00 UTC); must succeed.
         data = post_graphql(
             anon_client,
             CREATE_EVENT_WITH_CODE,
@@ -384,9 +396,10 @@ class TestCreateCalendarEventWithCodeFailedWriteDoesNotConsume:
         )
 
         result = data["data"]["createCalendarEventWithCode"]
-        assert result["success"] is True
+        assert result["success"] is True, result
         token.refresh_from_db()
         assert token.used_at is not None
+        assert CalendarEvent.objects.filter_by_organization(organization.id).count() == 1
 
 
 @pytest.mark.django_db
