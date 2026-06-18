@@ -263,6 +263,47 @@ class DeleteAvailabilityWindowResult:
     error_message: str | None = None
 
 
+@strawberry.input
+class BatchAvailabilityOperationInput:
+    """A single create/update/delete operation in a batch availability update.
+
+    For action='create': start_time, end_time, and timezone are required;
+    rrule_string is optional.
+    For action='update': available_time_id is required; other fields are optional
+    (only provided fields are updated).
+    For action='delete': available_time_id is required; no other fields are needed.
+    """
+
+    action: str
+    available_time_id: int | None = None
+    start_time: datetime.datetime | None = None
+    end_time: datetime.datetime | None = None
+    timezone: str | None = None
+    rrule_string: str | None = None
+
+
+@strawberry.input
+class BatchAvailabilityInput:
+    """Input for applying an atomic batch of availability operations to a calendar."""
+
+    organization_id: int
+    calendar_id: int
+    operations: list[BatchAvailabilityOperationInput]
+
+
+@strawberry.type
+class BatchUpdateAvailabilityWindowsResult:
+    """Result of the batchUpdateAvailabilityWindows mutation.
+
+    On success, available_times contains the full list of the calendar's available times
+    after the batch is applied. On failure, available_times is an empty list.
+    """
+
+    success: bool
+    error_message: str | None = None
+    available_times: list[AvailableTimeGraphQLType]
+
+
 @strawberry.type
 class Mutation(CalendarGroupMutations):
     @strawberry.mutation
@@ -858,3 +899,80 @@ class Mutation(CalendarGroupMutations):
             return DeleteAvailabilityWindowResult(success=False, error_message=str(e))
 
         return DeleteAvailabilityWindowResult(success=True)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def batch_update_availability_windows(
+        self,
+        info: strawberry.Info,
+        input: BatchAvailabilityInput,  # noqa: A002
+    ) -> BatchUpdateAvailabilityWindowsResult:
+        """Apply an atomic create/update/delete batch of available times on a calendar.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Validates every operation's action is one of {create, update, delete}.
+        4. Translates each BatchAvailabilityOperationInput into the service dict shape
+           (mapping available_time_id -> id; including only fields that are not None).
+        5. Delegates to CalendarService.batch_modify_available_times with the full ops list.
+        6. Returns the calendar's full AvailableTime list after the batch is applied.
+           The entire batch is rolled back if any operation fails (ATOMIC_REQUESTS = True
+           means the request transaction wraps the whole mutation).
+
+        The token's OrganizationResourceAccess must include the BATCH_UPDATE_AVAILABILITY_WINDOWS
+        resource.
+        """
+        _valid_actions = {"create", "update", "delete"}
+
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return BatchUpdateAvailabilityWindowsResult(
+                success=False, error_message="Calendar not found.", available_times=[]
+            )
+
+        # Validate all actions before calling the service — fail fast on invalid action.
+        for op_input in input.operations:
+            if op_input.action not in _valid_actions:
+                return BatchUpdateAvailabilityWindowsResult(
+                    success=False,
+                    error_message=f"Invalid operation action: {op_input.action}",
+                    available_times=[],
+                )
+
+        # Translate each BatchAvailabilityOperationInput to the service dict shape.
+        ops: list[dict[str, object]] = []
+        for op_input in input.operations:
+            op: dict[str, object] = {"action": op_input.action}
+            if op_input.available_time_id is not None:
+                op["id"] = op_input.available_time_id
+            if op_input.start_time is not None:
+                op["start_time"] = op_input.start_time
+            if op_input.end_time is not None:
+                op["end_time"] = op_input.end_time
+            if op_input.timezone is not None:
+                op["timezone"] = op_input.timezone
+            if op_input.rrule_string is not None:
+                op["rrule_string"] = op_input.rrule_string
+            ops.append(op)
+
+        try:
+            available_times = calendar_service.batch_modify_available_times(
+                calendar=calendar, operations=ops
+            )
+        except (
+            CalendarIntegrationError,
+            ValueError,
+            DjangoValidationError,
+            Calendar.DoesNotExist,
+        ) as e:
+            return BatchUpdateAvailabilityWindowsResult(
+                success=False, error_message=str(e), available_times=[]
+            )
+
+        return BatchUpdateAvailabilityWindowsResult(
+            success=True,
+            available_times=available_times,  # type: ignore[arg-type]
+        )

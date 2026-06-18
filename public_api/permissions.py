@@ -54,6 +54,7 @@ class OrganizationResourceAccess(BasePermission):
         "createAvailabilityWindow": PublicAPIResources.CREATE_AVAILABILITY_WINDOW,
         "updateAvailabilityWindow": PublicAPIResources.UPDATE_AVAILABILITY_WINDOW,
         "deleteAvailabilityWindow": PublicAPIResources.DELETE_AVAILABILITY_WINDOW,
+        "batchUpdateAvailabilityWindows": PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
