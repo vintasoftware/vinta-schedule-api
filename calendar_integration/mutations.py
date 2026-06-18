@@ -589,6 +589,21 @@ class RescheduleWithCodeInput:
     timezone: str
 
 
+@strawberry.input
+class RescheduleGroupWithCodeInput:
+    """Input for the unauthenticated rescheduleCalendarGroupEventWithCode mutation.
+
+    Slot selections are NOT included: v1 keeps existing group/calendar selections
+    and changes ONLY the event times.  Full slot re-selection is deferred to a
+    future version (see Open Question 3 in the implementation plan).
+    """
+
+    code: str
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+
+
 @strawberry.type
 class CalendarGroupMutations:
     """GraphQL mutations for CalendarGroup CRUD and grouped event booking."""
@@ -1562,6 +1577,188 @@ class CalendarGroupMutations:
                     user_or_token=input.code, organization=org
                 )
                 event = deps.calendar_service.update_event(calendar_id, event_id, event_data)
+                deps.calendar_permission_service.consume_code(token, source_ip)
+        except (TokenAlreadyUsedError, TokenExpiredError, TokenRevokedError) as e:
+            # Concurrent consumer won the race, or state changed between resolve and consume.
+            error_code = BookingCodeErrorCode.ALREADY_USED
+            error_message = "This booking code has already been used."
+            if isinstance(e, TokenExpiredError):
+                error_code = BookingCodeErrorCode.EXPIRED
+                error_message = "This booking code has expired."
+            elif isinstance(e, TokenRevokedError):
+                error_code = BookingCodeErrorCode.REVOKED
+                error_message = "This booking code has been revoked."
+            return CodeEventResult(
+                success=False,
+                error_code=error_code,
+                error_message=error_message,
+            )
+        except PermissionDenied:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code does not permit rescheduling this event.",
+            )
+        except (EventManagementError, CalendarGroupError):
+            # Slot outside availability / invalid times — code NOT consumed (txn rolled
+            # back), patient may retry with a different slot.
+            # Note: NoAvailableTimeWindowsError is a subclass of EventManagementError and
+            # is therefore already covered.
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
+                error_message="The requested time slot is not available.",
+            )
+
+        return CodeEventResult(success=True, event=event)  # type: ignore[arg-type]
+
+    @strawberry.mutation
+    def reschedule_calendar_group_event_with_code(
+        self,
+        info: strawberry.Info,
+        input: RescheduleGroupWithCodeInput,  # noqa: A002
+    ) -> CodeEventResult:
+        """Reschedule a grouped event bound to a single-use GROUP RESCHEDULE code.
+
+        This is an unauthenticated mutation: no org token is required.  The org
+        context, calendar-group scope, and the specific grouped event to reschedule
+        are all derived from the booking code.  On success the code is atomically
+        consumed so it cannot be replayed.  On a failed reschedule (slot outside
+        availability, etc.) the code is NOT consumed and the patient may retry.
+
+        Only the start/end/timezone fields change — title, description, attendees,
+        resource allocations, and the group's calendar selections are preserved
+        exactly from the existing event (time-only v1; full slot re-selection is
+        deferred per Open Question 3).  The event id is preserved so that external
+        integrations (e.g. Building Blocks) continue to reference the same event.
+        """
+        deps = get_group_booking_code_mutation_dependencies()
+
+        # --- Step 1: resolve and validate the code ---
+        try:
+            token = deps.calendar_permission_service.resolve_code(input.code)
+        except InvalidTokenError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Invalid or unknown booking code.",
+            )
+        except TokenExpiredError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.EXPIRED,
+                error_message="This booking code has expired.",
+            )
+        except TokenAlreadyUsedError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.ALREADY_USED,
+                error_message="This booking code has already been used.",
+            )
+        except TokenRevokedError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.REVOKED,
+                error_message="This booking code has been revoked.",
+            )
+
+        # --- Step 2: check permission — must hold RESCHEDULE ---
+        token_permissions = {p.permission for p in token.permissions.all()}
+        if EventManagementPermissions.RESCHEDULE not in token_permissions:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code does not permit rescheduling.",
+            )
+
+        # --- Step 3: scope check — must be event-scoped AND group-scoped ---
+        if token.event is None:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code is not bound to a specific event.",
+            )
+
+        # A single-calendar reschedule code has no calendar_group; route to Phase 6a.
+        if token.calendar_group is None:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message=(
+                    "This code is not scoped to a calendar group. "
+                    "Use rescheduleCalendarEventWithCode for single-calendar codes."
+                ),
+            )
+
+        # --- Step 4: resolve org ---
+        try:
+            org = Organization.objects.get(id=token.organization_id)
+        except Organization.DoesNotExist:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Invalid or unknown booking code.",
+            )
+
+        # --- Step 5: extract client IP for audit ---
+        source_ip = _client_ip_from_request(info.context.request)
+
+        # --- Step 6: event_id from token (not client input) ---
+        # calendar_id and event_id come strictly from the token so the code can
+        # only ever affect the exact grouped event it was minted for.
+        event_id: int = token.event_fk_id  # type: ignore[assignment]
+
+        # --- Step 7: availability pre-check (code-path only) ---
+        # For the primary calendar of the bound grouped event: if it manages
+        # availability windows, verify the new times fall within a declared window
+        # BEFORE entering the atomic block.  This keeps the code alive on failure.
+        try:
+            bound_event = (
+                CalendarEvent.objects.filter_by_organization(org.id)
+                .select_related("calendar")
+                .get(id=event_id)
+            )
+        except CalendarEvent.DoesNotExist:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Invalid or unknown booking code.",
+            )
+
+        primary_calendar = bound_event.calendar
+        if primary_calendar is not None and primary_calendar.manage_available_windows:
+            deps.calendar_service.initialize_without_provider(organization=org)
+            available_windows = deps.calendar_service.get_availability_windows_in_range(
+                primary_calendar,
+                input.start_time,
+                input.end_time,
+            )
+            if not available_windows:
+                return CodeEventResult(
+                    success=False,
+                    error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
+                    error_message="The requested time slot is not available.",
+                )
+
+        # --- Step 8: atomic update + consume ---
+        # Update FIRST, then consume — so on a race the loser's consume_code raises under
+        # the row lock and the whole transaction (including the just-updated event) rolls
+        # back, leaving exactly one update and the code consumed once.
+        # ``deps.calendar_service`` is explicitly wired into ``deps.calendar_group_service``
+        # so that the update runs on the same code-initialized CalendarService instance.
+        try:
+            with transaction.atomic():
+                deps.calendar_service.initialize_without_provider(
+                    user_or_token=input.code, organization=org
+                )
+                deps.calendar_group_service.calendar_service = deps.calendar_service
+                deps.calendar_group_service.initialize(organization=org)
+                event = deps.calendar_group_service.reschedule_grouped_event(
+                    event_id=event_id,
+                    start_time=input.start_time,
+                    end_time=input.end_time,
+                    tz=input.timezone,
+                )
                 deps.calendar_permission_service.consume_code(token, source_ip)
         except (TokenAlreadyUsedError, TokenExpiredError, TokenRevokedError) as e:
             # Concurrent consumer won the race, or state changed between resolve and consume.
