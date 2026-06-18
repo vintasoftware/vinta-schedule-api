@@ -79,15 +79,25 @@
 - Review: no BLOCKER (tenant isolation verified for all 4 ops); 3 SHOULD-FIX fixed; NITs left.
 - PR-context: `.vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-6.md` (pending).
 
-## Current phase
-- Phase 7 — GraphQL WebhookEvent history read. Tier 2 (sonnet).
+### Phase 7 — GraphQL WebhookEvent history read ✅
+- Status: implemented, fixed (3 test SHOULD-FIX), verified, reviewed, pushed. PR pending.
+- Model: Tier 3 (sonnet). Branch `phase-7` → base `phase-6`. Commits `c247d94` (feat) + `b49fb52` (test hardening).
+- Read-only `webhookDeliveryEvents` query (renamed from `webhookEvents` to avoid the existing CalendarWebhookEvent resolver collision), org-scoped, mapped to WEBHOOK_CONFIGURATION. Type omits payload/response_body/headers (no leak).
+- Verify: ruff/mypy clean (0 new); full suite 2072 passed; makemigrations clean.
+- Review: no BLOCKER (tenant isolation + no data leak confirmed); 3 test SHOULD-FIX fixed; NITs left.
+- PR-context: `.vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-7.md` (pending).
 
-## Remaining phases
-- Phase 3 — Org-creator (admin) emission
-- Phase 4 — Provision-path coverage + multi-org refire
-- Phase 5 — GraphQL foundation: resource + WebhookConfiguration type
-- Phase 6 — GraphQL WebhookConfiguration CRUD
-- Phase 7 — GraphQL WebhookEvent history read
+## Status: ALL 8 PHASES COMPLETE ✅
+Implemented, reviewed (3-layer adversarial), and pushed. No cross-repo or flag-removal phases. Full suite green at every phase (latest 2072 passed). Executed Docker-based (`./dr`) against a forked Docker DB — host loopback was unreliable.
+
+### PRs pending publication
+`gh` was unavailable here, so PR-context files were written but PRs NOT opened. To publish all 8 in stack order (phase-0 bases on main; phase-N bases on phase-(N-1)) from a session with `gh`:
+```
+for p in 0 1 2 3 4 5 6 7; do
+  bash ai-tools/skills/open-pr-from-context/scripts/open-pr.sh \
+    .vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-$p.md
+done
+```
 
 ## Deferred phases
 - None (no cross-repo, no flag-removal phase).
