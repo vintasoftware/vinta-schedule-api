@@ -679,14 +679,14 @@ class CalendarGroupMutations:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Organization not found.",
+                error_message="Not found.",
             )
 
         if input.organization_id != org.id:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Organization not found.",
+                error_message="Not found.",
             )
 
         # Verify the calendar belongs to the authenticated org.
@@ -696,20 +696,21 @@ class CalendarGroupMutations:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Calendar or event not found.",
+                error_message="Not found.",
             )
 
-        # Verify the event belongs to this org AND to the named calendar.
+        # Verify the event belongs to this org AND to the named calendar, and is not a grouped event.
         try:
             CalendarEvent.objects.filter_by_organization(org.id).get(
                 id=input.event_id,
                 calendar_fk_id=input.calendar_id,
+                calendar_group_fk_id__isnull=True,
             )
         except CalendarEvent.DoesNotExist:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Calendar or event not found.",
+                error_message="Not found.",
             )
 
         minted_by = getattr(info.context.request, "public_api_system_user", None)
@@ -740,14 +741,14 @@ class CalendarGroupMutations:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Organization not found.",
+                error_message="Not found.",
             )
 
         if input.organization_id != org.id:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Organization not found.",
+                error_message="Not found.",
             )
 
         # Verify the calendar group belongs to the authenticated org.
@@ -757,7 +758,7 @@ class CalendarGroupMutations:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Calendar group or event not found.",
+                error_message="Not found.",
             )
 
         # Verify the event belongs to this org AND to the named calendar group.
@@ -770,7 +771,7 @@ class CalendarGroupMutations:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Calendar group or event not found.",
+                error_message="Not found.",
             )
 
         minted_by = getattr(info.context.request, "public_api_system_user", None)
@@ -801,14 +802,14 @@ class CalendarGroupMutations:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Organization not found.",
+                error_message="Not found.",
             )
 
         if input.organization_id != org.id:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Organization not found.",
+                error_message="Not found.",
             )
 
         # Verify the calendar belongs to the authenticated org.
@@ -818,20 +819,21 @@ class CalendarGroupMutations:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Calendar or event not found.",
+                error_message="Not found.",
             )
 
-        # Verify the event belongs to this org AND to the named calendar.
+        # Verify the event belongs to this org AND to the named calendar, and is not a grouped event.
         try:
             CalendarEvent.objects.filter_by_organization(org.id).get(
                 id=input.event_id,
                 calendar_fk_id=input.calendar_id,
+                calendar_group_fk_id__isnull=True,
             )
         except CalendarEvent.DoesNotExist:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Calendar or event not found.",
+                error_message="Not found.",
             )
 
         minted_by = getattr(info.context.request, "public_api_system_user", None)
@@ -862,14 +864,14 @@ class CalendarGroupMutations:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Organization not found.",
+                error_message="Not found.",
             )
 
         if input.organization_id != org.id:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Organization not found.",
+                error_message="Not found.",
             )
 
         # Verify the calendar group belongs to the authenticated org.
@@ -879,7 +881,7 @@ class CalendarGroupMutations:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Calendar group or event not found.",
+                error_message="Not found.",
             )
 
         # Verify the event belongs to this org AND to the named calendar group.
@@ -892,7 +894,7 @@ class CalendarGroupMutations:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Calendar group or event not found.",
+                error_message="Not found.",
             )
 
         minted_by = getattr(info.context.request, "public_api_system_user", None)

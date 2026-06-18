@@ -271,8 +271,8 @@ class TestCreateCalendarRescheduleBookingCode:
             end_time_tz_unaware=now + datetime.timedelta(hours=1),
             timezone="UTC",
         )
-        tokens_before = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_before = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
 
         response = self._post(
@@ -294,8 +294,8 @@ class TestCreateCalendarRescheduleBookingCode:
         assert result["success"] is False
         assert result["errorCode"] == "INVALID_CODE"
 
-        tokens_after = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_after = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
         assert tokens_after == tokens_before
 
@@ -348,8 +348,8 @@ class TestCreateCalendarRescheduleBookingCode:
     ):
         """Org token WITHOUT CALENDAR_BOOKING_CODE is rejected; no token row created."""
         system_user, token, auth_service = system_user_without_booking_code_resource
-        tokens_before = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_before = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
 
         response = self._post(
@@ -370,8 +370,8 @@ class TestCreateCalendarRescheduleBookingCode:
         assert "errors" in data and len(data["errors"]) > 0
         assert "don't have access" in str(data["errors"]).lower()
 
-        tokens_after = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_after = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
         assert tokens_after == tokens_before
 
@@ -404,6 +404,48 @@ class TestCreateCalendarRescheduleBookingCode:
         result = data["data"]["createCalendarRescheduleBookingCode"]
         assert result["success"] is False
         assert result["errorCode"] == "INVALID_CODE"
+
+    def test_grouped_event_is_rejected(
+        self,
+        organization,
+        calendar,
+        calendar_group,
+        group_event,
+        system_user_with_booking_code_resource,
+    ):
+        """Calendar reschedule code for a grouped event returns INVALID_CODE; no token created.
+
+        A grouped event has calendar_group_fk set.  The calendar variant must not
+        bind to it even though the event's calendar_fk points to a valid calendar.
+        """
+        system_user, token, auth_service = system_user_with_booking_code_resource
+        tokens_before = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
+        ).count()
+
+        response = self._post(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": organization.id,
+                    "calendarId": group_event.calendar_fk_id,
+                    "eventId": group_event.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        result = data["data"]["createCalendarRescheduleBookingCode"]
+        assert result["success"] is False
+        assert result["errorCode"] == "INVALID_CODE"
+
+        tokens_after = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
+        ).count()
+        assert tokens_after == tokens_before
 
 
 # ---------------------------------------------------------------------------
@@ -487,8 +529,8 @@ class TestCreateCalendarGroupRescheduleBookingCode:
         """An event not linked to the named group returns INVALID_CODE; no token created."""
         system_user, token, auth_service = system_user_with_booking_code_resource
         # `event` fixture has no calendar_group set
-        tokens_before = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_before = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
 
         response = self._post(
@@ -510,8 +552,8 @@ class TestCreateCalendarGroupRescheduleBookingCode:
         assert result["success"] is False
         assert result["errorCode"] == "INVALID_CODE"
 
-        tokens_after = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_after = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
         assert tokens_after == tokens_before
 
@@ -688,8 +730,8 @@ class TestCreateCalendarCancellationBookingCode:
             end_time_tz_unaware=now + datetime.timedelta(hours=1),
             timezone="UTC",
         )
-        tokens_before = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_before = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
 
         response = self._post(
@@ -711,8 +753,8 @@ class TestCreateCalendarCancellationBookingCode:
         assert result["success"] is False
         assert result["errorCode"] == "INVALID_CODE"
 
-        tokens_after = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_after = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
         assert tokens_after == tokens_before
 
@@ -812,6 +854,48 @@ class TestCreateCalendarCancellationBookingCode:
         assert result["success"] is False
         assert result["errorCode"] == "INVALID_CODE"
 
+    def test_grouped_event_is_rejected(
+        self,
+        organization,
+        calendar,
+        calendar_group,
+        group_event,
+        system_user_with_booking_code_resource,
+    ):
+        """Calendar cancellation code for a grouped event returns INVALID_CODE; no token created.
+
+        A grouped event has calendar_group_fk set.  The calendar variant must not
+        bind to it even though the event's calendar_fk points to a valid calendar.
+        """
+        system_user, token, auth_service = system_user_with_booking_code_resource
+        tokens_before = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
+        ).count()
+
+        response = self._post(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": organization.id,
+                    "calendarId": group_event.calendar_fk_id,
+                    "eventId": group_event.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        result = data["data"]["createCalendarCancellationBookingCode"]
+        assert result["success"] is False
+        assert result["errorCode"] == "INVALID_CODE"
+
+        tokens_after = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
+        ).count()
+        assert tokens_after == tokens_before
+
 
 # ---------------------------------------------------------------------------
 # createCalendarGroupCancellationBookingCode
@@ -894,8 +978,8 @@ class TestCreateCalendarGroupCancellationBookingCode:
     ):
         """An event not linked to the named group returns INVALID_CODE; no token created."""
         system_user, token, auth_service = system_user_with_booking_code_resource
-        tokens_before = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_before = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
 
         response = self._post(
@@ -917,8 +1001,8 @@ class TestCreateCalendarGroupCancellationBookingCode:
         assert result["success"] is False
         assert result["errorCode"] == "INVALID_CODE"
 
-        tokens_after = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_after = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
         assert tokens_after == tokens_before
 
