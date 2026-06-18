@@ -4,17 +4,28 @@ import datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, cast
 
+from django.db import transaction
+
 import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
-from calendar_integration.exceptions import CalendarGroupError, InvalidTokenError
+from calendar_integration.exceptions import (
+    CalendarGroupError,
+    EventManagementError,
+    InvalidTokenError,
+    NoAvailableTimeWindowsError,
+    TokenAlreadyUsedError,
+    TokenExpiredError,
+    TokenRevokedError,
+)
 from calendar_integration.graphql import (
     BookingCodeErrorCode,
     BookingCodeResult,
     CalendarEventGraphQLType,
     CalendarGroupGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
+    CodeEventResult,
 )
 from calendar_integration.models import (
     Calendar,
@@ -23,6 +34,7 @@ from calendar_integration.models import (
     EventManagementPermissions,
 )
 from calendar_integration.services.dataclasses import (
+    CalendarEventInputData,
     CalendarGroupEventInputData,
     CalendarGroupInputData,
     CalendarGroupSlotInputData,
@@ -397,9 +409,10 @@ def _load_organization(organization_id: int) -> Organization | None:
 
 @dataclass
 class BookingCodeMutationDependencies:
-    """Dependencies for booking-code mint mutations."""
+    """Dependencies for booking-code mint and with-code mutations."""
 
     calendar_permission_service: "CalendarPermissionService"
+    calendar_service: "CalendarService"
 
 
 @inject
@@ -407,12 +420,14 @@ def get_booking_code_mutation_dependencies(
     calendar_permission_service: Annotated[
         "CalendarPermissionService | None", Provide["calendar_permission_service"]
     ] = None,
+    calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
 ) -> BookingCodeMutationDependencies:
     """Get booking-code mutation dependencies from DI container."""
-    if calendar_permission_service is None:
+    if calendar_permission_service is None or calendar_service is None:
         raise GraphQLError("Internal server error.")
     return BookingCodeMutationDependencies(
         calendar_permission_service=cast("CalendarPermissionService", calendar_permission_service),
+        calendar_service=cast("CalendarService", calendar_service),
     )
 
 
@@ -460,6 +475,32 @@ class RevokeBookingCodeInput:
 
     organization_id: int
     id: int  # noqa: A002
+
+
+# ---------------------------------------------------------------------------
+# With-code booking inputs (Phase 5a)
+# ---------------------------------------------------------------------------
+
+
+@strawberry.input
+class ExternalAttendeeCodeInput:
+    """External attendee input for unauthenticated code-bearing booking mutations."""
+
+    email: str
+    name: str = ""
+
+
+@strawberry.input
+class CreateEventWithCodeInput:
+    """Input for the unauthenticated createCalendarEventWithCode mutation."""
+
+    code: str
+    title: str
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+    external_attendee: ExternalAttendeeCodeInput
+    description: str = ""
 
 
 @strawberry.type
@@ -955,3 +996,135 @@ class CalendarGroupMutations:
             )
 
         return BookingCodeResult(success=True)
+
+    @strawberry.mutation
+    def create_calendar_event_with_code(
+        self,
+        info: strawberry.Info,
+        input: CreateEventWithCodeInput,  # noqa: A002
+    ) -> CodeEventResult:
+        """Book a single-calendar event using a single-use booking code.
+
+        This is an unauthenticated mutation: no org token is required.  The org
+        context, permissions, and calendar scope are all derived from the booking
+        code.  On success the code is atomically consumed so it cannot be replayed.
+        On a failed create (slot unavailable, invalid time range, etc.) the code is
+        NOT consumed and the patient may retry with a different slot.
+        """
+        deps = get_booking_code_mutation_dependencies()
+
+        # --- Step 1: resolve and validate the code ---
+        try:
+            token = deps.calendar_permission_service.resolve_code(input.code)
+        except InvalidTokenError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Invalid or unknown booking code.",
+            )
+        except TokenExpiredError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.EXPIRED,
+                error_message="This booking code has expired.",
+            )
+        except TokenAlreadyUsedError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.ALREADY_USED,
+                error_message="This booking code has already been used.",
+            )
+        except TokenRevokedError:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.REVOKED,
+                error_message="This booking code has been revoked.",
+            )
+
+        # --- Step 2: check permission ---
+        token_permissions = {p.permission for p in token.permissions.all()}
+        if EventManagementPermissions.CREATE not in token_permissions:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code does not permit booking.",
+            )
+
+        # --- Step 3: scope check — must be single-calendar (not group) ---
+        if token.calendar is None:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.NOT_PERMITTED,
+                error_message="This code is not scoped to a single calendar.",
+            )
+
+        # --- Step 4: resolve org ---
+        try:
+            org = Organization.objects.get(id=token.organization_id)
+        except Organization.DoesNotExist:
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.INVALID_CODE,
+                error_message="Invalid or unknown booking code.",
+            )
+
+        # --- Step 5: extract client IP for audit ---
+        request = info.context.request
+        forwarded_for = getattr(request, "META", {}).get("HTTP_X_FORWARDED_FOR", "")
+        if forwarded_for:
+            source_ip = forwarded_for.split(",")[0].strip()
+        else:
+            source_ip = getattr(request, "META", {}).get("REMOTE_ADDR", "")
+
+        # --- Step 6: build event data ---
+        event_data = CalendarEventInputData(
+            title=input.title,
+            description=input.description or "",
+            start_time=input.start_time,
+            end_time=input.end_time,
+            timezone=input.timezone,
+            external_attendances=[
+                EventExternalAttendanceInputData(
+                    external_attendee=ExternalAttendeeInputData(
+                        email=input.external_attendee.email,
+                        name=input.external_attendee.name or "",
+                    )
+                )
+            ],
+        )
+
+        # --- Step 7: atomic create + consume ---
+        # Create FIRST, then consume — so on a race the loser's consume_code raises under
+        # the row lock and the whole transaction (including the just-created event) rolls
+        # back, leaving exactly one event and the code consumed once.
+        try:
+            with transaction.atomic():
+                deps.calendar_service.initialize_without_provider(
+                    user_or_token=None, organization=org
+                )
+                event = deps.calendar_service.create_event(token.calendar.id, event_data)
+                deps.calendar_permission_service.consume_code(token, source_ip)
+        except (TokenAlreadyUsedError, TokenExpiredError, TokenRevokedError) as e:
+            # Concurrent consumer won the race, or state changed between resolve and consume.
+            error_code = BookingCodeErrorCode.ALREADY_USED
+            error_message = "This booking code has already been used."
+            if isinstance(e, TokenExpiredError):
+                error_code = BookingCodeErrorCode.EXPIRED
+                error_message = "This booking code has expired."
+            elif isinstance(e, TokenRevokedError):
+                error_code = BookingCodeErrorCode.REVOKED
+                error_message = "This booking code has been revoked."
+            return CodeEventResult(
+                success=False,
+                error_code=error_code,
+                error_message=error_message,
+            )
+        except (NoAvailableTimeWindowsError, EventManagementError) as e:
+            # Slot taken / invalid times — code NOT consumed (txn rolled back), patient may retry.
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
+                error_message=str(e) or "The requested time slot is not available.",
+            )
+
+        return CodeEventResult(success=True, event=event)  # type: ignore[arg-type]
