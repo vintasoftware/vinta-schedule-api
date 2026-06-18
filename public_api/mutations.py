@@ -65,8 +65,9 @@ def get_mutation_dependencies(
 ) -> MutationDependencies:
     required_dependencies = [public_api_auth_service, organization_service]
     if any(dep is None for dep in required_dependencies):
-        missing = [d for d in required_dependencies if d is None]
-        raise GraphQLError(f"Missing required dependencies: {missing}")
+        raise GraphQLError(
+            f"Missing required dependency {', '.join([str(dep) for dep in required_dependencies if dep is None])}"
+        )
 
     return MutationDependencies(
         public_api_auth_service=cast(PublicAPIAuthService, public_api_auth_service),

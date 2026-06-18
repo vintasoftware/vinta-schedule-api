@@ -15,6 +15,10 @@ from organizations.models import (
 )
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
+from public_api.mutations import (
+    _get_org_and_init_calendar_service,
+    get_calendar_mutation_dependencies,
+)
 from public_api.services import PublicAPIAuthService
 
 
@@ -1844,8 +1848,6 @@ class TestGetCalendarMutationDependencies:
 
     def test_get_calendar_mutation_dependencies_success(self):
         """Happy path: get_calendar_mutation_dependencies returns both services."""
-        from public_api.mutations import get_calendar_mutation_dependencies
-
         deps = get_calendar_mutation_dependencies()
         assert deps is not None
         assert deps.calendar_service is not None
@@ -1854,35 +1856,27 @@ class TestGetCalendarMutationDependencies:
     def test_get_calendar_mutation_dependencies_missing_calendar_service(self):
         """Missing calendar_service raises GraphQLError."""
         from di_core.containers import container
-        from public_api.mutations import get_calendar_mutation_dependencies
 
         # Override with None to simulate missing dependency
         with container.calendar_service.override(None):
-            with pytest.raises(Exception) as exc_info:
+            with pytest.raises(GraphQLError) as exc_info:
                 get_calendar_mutation_dependencies()
-            # The error should mention the missing dependency
-            assert "Missing required dependency" in str(exc_info.value) or "None" in str(
-                exc_info.value
-            )
+            # The error should mention the missing dependencies
+            assert "Missing required dependencies" in str(exc_info.value)
 
     def test_get_calendar_mutation_dependencies_missing_calendar_group_service(self):
         """Missing calendar_group_service raises GraphQLError."""
         from di_core.containers import container
-        from public_api.mutations import get_calendar_mutation_dependencies
 
         # Override with None to simulate missing dependency
         with container.calendar_group_service.override(None):
-            with pytest.raises(Exception) as exc_info:
+            with pytest.raises(GraphQLError) as exc_info:
                 get_calendar_mutation_dependencies()
-            # The error should mention the missing dependency
-            assert "Missing required dependency" in str(exc_info.value) or "None" in str(
-                exc_info.value
-            )
+            # The error should mention the missing dependencies
+            assert "Missing required dependencies" in str(exc_info.value)
 
     def test_get_org_and_init_calendar_service_success(self):
         """Happy path: _get_org_and_init_calendar_service returns service and org."""
-        from public_api.mutations import _get_org_and_init_calendar_service
-
         # Create a test organization
         test_org = baker.make(Organization, name="Test Org")
 
@@ -1902,11 +1896,12 @@ class TestGetCalendarMutationDependencies:
         # Assert returns match expectations
         assert calendar_service is not None
         assert org == test_org
+        # Assert the service was initialized with the org and user
+        assert calendar_service.organization == test_org
+        assert calendar_service.user_or_token == mock_system_user
 
     def test_get_org_and_init_calendar_service_missing_org_raises_error(self):
         """Missing organization in request context raises GraphQLError."""
-        from public_api.mutations import _get_org_and_init_calendar_service
-
         # Create a mock strawberry.Info with NO public_api_organization
         mock_request = Mock()
         mock_request.public_api_organization = None
