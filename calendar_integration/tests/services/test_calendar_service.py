@@ -1,4 +1,5 @@
 import datetime
+import uuid
 import zoneinfo
 from datetime import timedelta
 from unittest.mock import MagicMock, Mock, patch
@@ -9552,8 +9553,6 @@ class TestUpdateBlockedTimeService:
 
     def _make_blocked_time(self, calendar: Calendar, organization: Organization) -> BlockedTime:
         """Create a blocked time on the given calendar."""
-        import uuid
-
         return BlockedTime.objects.create(
             calendar=calendar,
             organization_id=organization.id,
@@ -9699,3 +9698,118 @@ class TestUpdateBlockedTimeService:
 
         updated.refresh_from_db()
         assert updated.recurrence_rule is not None
+
+
+@pytest.mark.django_db
+class TestDeleteBlockedTimeService:
+    """Unit tests for CalendarService.delete_blocked_time (Phase 3g)."""
+
+    def _make_calendar(self, organization: Organization) -> Calendar:
+        """Create a resource calendar for testing."""
+        return Calendar.objects.create(
+            name="Test Room",
+            external_id=f"room-delete-{organization.id}",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            organization=organization,
+        )
+
+    def _make_blocked_time(self, calendar: Calendar, organization: Organization) -> BlockedTime:
+        """Create a blocked time on the given calendar."""
+        return BlockedTime.objects.create(
+            calendar=calendar,
+            organization_id=organization.id,
+            start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            reason="Original reason",
+            external_id=f"manual-delete-test-{uuid.uuid4()}",
+        )
+
+    def test_happy_path_deletes_row(self, organization):
+        """The blocked time row is removed from the DB after deletion."""
+        calendar = self._make_calendar(organization)
+        blocked_time = self._make_blocked_time(calendar, organization)
+        blocked_time_id = blocked_time.id
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        service.delete_blocked_time(
+            calendar=calendar,
+            blocked_time_id=blocked_time_id,
+        )
+
+        assert not BlockedTime.objects.filter(id=blocked_time_id).exists()
+
+    def test_missing_id_raises_value_error(self, organization):
+        """A non-existent blocked_time_id raises ValueError."""
+        calendar = self._make_calendar(organization)
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(ValueError, match="not found in this calendar"):
+            service.delete_blocked_time(
+                calendar=calendar,
+                blocked_time_id=999999,
+            )
+
+    def test_cross_calendar_id_raises_value_error(self, organization):
+        """A blocked time from a different calendar in the same org raises ValueError."""
+        calendar_a = self._make_calendar(organization)
+        calendar_b = Calendar.objects.create(
+            name="Other Room",
+            external_id=f"room-delete-b-{organization.id}",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            organization=organization,
+        )
+        blocked_time_a = self._make_blocked_time(calendar_a, organization)
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        # Pass calendar_b but the blocked time belongs to calendar_a
+        with pytest.raises(ValueError, match="not found in this calendar"):
+            service.delete_blocked_time(
+                calendar=calendar_b,
+                blocked_time_id=blocked_time_a.id,
+            )
+
+        # Confirm the row in calendar_a is still intact
+        assert BlockedTime.objects.filter(id=blocked_time_a.id).exists()
+
+    def test_org_scoping_rejects_cross_org_id(self, organization):
+        """A blocked time from a different org raises ValueError and other org's row is preserved."""
+        other_org = Organization.objects.create(name="Other Org Delete Test")
+        other_calendar = Calendar.objects.create(
+            name="Other Room",
+            external_id="room-other-org-delete",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            organization=other_org,
+        )
+        other_blocked_time = BlockedTime.objects.create(
+            calendar=other_calendar,
+            organization_id=other_org.id,
+            start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            reason="Cross-org blocked time",
+            external_id=f"manual-cross-org-delete-{uuid.uuid4()}",
+        )
+
+        my_calendar = self._make_calendar(organization)
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(ValueError, match="not found in this calendar"):
+            service.delete_blocked_time(
+                calendar=my_calendar,
+                blocked_time_id=other_blocked_time.id,
+            )
+
+        # Confirm the other org's row was not deleted
+        assert BlockedTime.objects.filter(id=other_blocked_time.id).exists()

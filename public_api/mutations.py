@@ -353,6 +353,30 @@ class UpdateBlockedTimeResult:
     blocked_time: BlockedTimeGraphQLType | None = None
 
 
+@strawberry.input
+class DeleteBlockedTimeInput:
+    """Input for deleting a blocked time (single-row delete).
+
+    Note: a recurring blocked time is stored as one row (rrule on RecurrenceRule).
+    Deleting it removes the whole recurrence series. Materialized exception rows are not
+    separately handled. The v2 doc proposed a deleteSeries arg, but since a recurring
+    blocked time is one row (not a series of rows), there is no robust series-delete
+    backing distinct from single-row delete — ``deleteSeries`` is intentionally omitted.
+    """
+
+    organization_id: int
+    calendar_id: int
+    blocked_time_id: int
+
+
+@strawberry.type
+class DeleteBlockedTimeResult:
+    """Result of the deleteBlockedTime mutation."""
+
+    success: bool
+    error_message: str | None = None
+
+
 @strawberry.type
 class Mutation(CalendarGroupMutations):
     @strawberry.mutation
@@ -1118,3 +1142,43 @@ class Mutation(CalendarGroupMutations):
             success=True,
             blocked_time=blocked_time,  # type: ignore[arg-type]
         )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def delete_blocked_time(
+        self,
+        info: strawberry.Info,
+        input: DeleteBlockedTimeInput,  # noqa: A002
+    ) -> DeleteBlockedTimeResult:
+        """Delete a blocked time (single-row delete).
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Fetches the calendar org-scoped to prevent cross-org access.
+        3. Delegates to CalendarService.delete_blocked_time with the supplied blocked_time_id.
+        4. Returns success=True on success, or success=False + errorMessage on failure.
+           Note: a missing or cross-calendar blocked_time_id raises ValueError (success=False).
+
+        Note on recurrence: a recurring blocked time is stored as one row (rrule on
+        RecurrenceRule). Deleting it removes the whole recurrence series; materialized
+        exception rows are not separately handled. The v2 doc proposed a deleteSeries arg,
+        but since a recurring blocked time is one row, single-row delete already covers the
+        series — the arg is intentionally omitted.
+
+        The token's OrganizationResourceAccess must include the DELETE_BLOCKED_TIME resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return DeleteBlockedTimeResult(success=False, error_message="Calendar not found.")
+
+        try:
+            calendar_service.delete_blocked_time(
+                calendar=calendar,
+                blocked_time_id=input.blocked_time_id,
+            )
+        except (CalendarIntegrationError, ValueError, DjangoValidationError) as e:
+            return DeleteBlockedTimeResult(success=False, error_message=str(e))
+
+        return DeleteBlockedTimeResult(success=True)

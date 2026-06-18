@@ -674,6 +674,36 @@ class AvailabilityService:
         blocked_time.save()
         return blocked_time
 
+    @transaction.atomic()
+    def delete_blocked_time(
+        self,
+        calendar: Calendar,
+        blocked_time_id: int,
+    ) -> None:
+        """Delete an existing blocked time (single-row delete).
+
+        A recurring blocked time is stored as one row (with an rrule on its RecurrenceRule).
+        Deleting it removes the whole recurrence series; materialized exception rows are not
+        separately handled by this method. If granular per-occurrence deletion is required,
+        use ``create_recurring_blocked_time_exception`` with ``is_cancelled=True``.
+
+        :param calendar: The calendar the blocked time belongs to.
+        :param blocked_time_id: The id of the blocked time to delete.
+        :raises ValueError: If blocked_time_id is not found in this calendar.
+        """
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
+
+        scoped = BlockedTime.objects.filter_by_organization(context.organization.id).filter(
+            calendar_fk=calendar
+        )
+
+        try:
+            scoped.get(id=blocked_time_id).delete()
+        except BlockedTime.DoesNotExist as e:
+            raise ValueError(f"Blocked time {blocked_time_id} not found in this calendar.") from e
+
     def get_blocked_times_expanded(
         self,
         calendar: Calendar,
