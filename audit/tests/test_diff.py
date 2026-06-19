@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 from audit.diff import compute_diff
 
 
@@ -144,5 +146,22 @@ class TestComputeDiff:
             "config": {
                 "old": {"deep": {"nested": {"value": [1, 2, 3, {"a": 1}]}}},
                 "new": {"deep": {"nested": {"value": [1, 2, 3, {"a": 2}]}}},
+            }
+        }
+
+    def test_added_key_with_none_value(self):
+        """A key with explicit None value in 'after' is recorded as an addition."""
+        diff = compute_diff({}, {"k": None})
+        assert diff == {"k": {"old": None, "new": None}}
+
+    def test_non_serializable_values_preserved(self):
+        """Non-serializable values like datetime objects are preserved as-is in diff."""
+        before = {"created_at": dt.datetime(2020, 1, 1)}
+        after = {"created_at": dt.datetime(2021, 1, 1)}
+        diff = compute_diff(before, after)
+        assert diff == {
+            "created_at": {
+                "old": dt.datetime(2020, 1, 1),
+                "new": dt.datetime(2021, 1, 1),
             }
         }

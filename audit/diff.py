@@ -15,6 +15,9 @@ def compute_diff(before: dict, after: dict) -> dict | None:
     Keys with identical values (compared via ==) are omitted from the result.
     Nested dicts and lists are compared by equality, not recursively inspected.
 
+    When a key has a None value in 'before' and is absent from 'after', no change is
+    recorded — None is treated as equivalent to an absent key, representing an unset value.
+
     Returns None (not an empty dict) when there are no differences. This upholds the
     locked diff invariant: diff is always None or a NON-EMPTY dict. The None return
     value ensures that has_diff filters (using diff__isnull) stay meaningful.
