@@ -57,6 +57,8 @@ class OrganizationResourceAccess(BasePermission):
         "createCalendarCancellationBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
         "createCalendarGroupCancellationBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
         "revokeBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createCalendar": PublicAPIResources.CALENDAR,
+        "updateCalendar": PublicAPIResources.CALENDAR,
         "createResourceCalendar": PublicAPIResources.CREATE_RESOURCE_CALENDAR,
         "disableResourceCalendar": PublicAPIResources.DISABLE_RESOURCE_CALENDAR,
         "importResourceCalendars": PublicAPIResources.IMPORT_RESOURCE_CALENDARS,
