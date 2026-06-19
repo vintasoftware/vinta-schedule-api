@@ -1182,6 +1182,212 @@ class TestOrganizationService:
 
         assert OrganizationMembership.objects.filter(user=user).count() == 1
 
+    # -----------------------------------------------------------------------
+    # Phase 2 — organization_member_created webhook emission on accept_invitation
+    # -----------------------------------------------------------------------
+
+    @pytest.fixture
+    def mock_webhook_membership_side_effects_service(self):
+        """Return a MagicMock that stands in for WebhookMembershipSideEffectsService."""
+        from unittest.mock import MagicMock
+
+        mock = MagicMock()
+        mock.on_member_created.return_value = None
+        return mock
+
+    @pytest.fixture
+    def organization_service_with_webhook_mock(
+        self, mock_calendar_service, mock_webhook_membership_side_effects_service
+    ):
+        """OrganizationService with both calendar and webhook side-effects mocked."""
+        from di_core.containers import container
+
+        with (
+            container.calendar_service.override(mock_calendar_service),
+            container.webhook_membership_side_effects_service.override(
+                mock_webhook_membership_side_effects_service
+            ),
+        ):
+            yield OrganizationService()
+
+    def test_accept_invitation_calls_on_member_created_for_active_membership(
+        self,
+        organization_service_with_webhook_mock,
+        mock_webhook_membership_side_effects_service,
+        organization,
+    ):
+        """Integration: accepting a valid invitation calls on_member_created with the created membership."""
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+
+        invitee = baker.make(User, email="webhook_invitee@example.com")
+        token = generate_long_lived_token()
+        token_hash = hash_long_lived_token(token)
+        baker.make(
+            OrganizationInvitation,
+            email=invitee.email,
+            organization=organization,
+            token_hash=token_hash,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+            role=OrganizationRole.MEMBER,
+        )
+
+        membership = organization_service_with_webhook_mock.accept_invitation(
+            token=token, user=invitee
+        )
+
+        mock_webhook_membership_side_effects_service.on_member_created.assert_called_once_with(
+            membership
+        )
+        # The created membership must be active (default).
+        assert membership.is_active is True
+
+    def test_accept_invitation_webhook_payload_carries_correct_role(
+        self,
+        organization_service_with_webhook_mock,
+        mock_webhook_membership_side_effects_service,
+        organization,
+    ):
+        """Integration: the membership passed to on_member_created has the invitation's role."""
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+
+        admin_invitee = baker.make(User, email="webhook_admin_invitee@example.com")
+        token = generate_long_lived_token()
+        token_hash = hash_long_lived_token(token)
+        baker.make(
+            OrganizationInvitation,
+            email=admin_invitee.email,
+            organization=organization,
+            token_hash=token_hash,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+            role=OrganizationRole.ADMIN,
+        )
+
+        membership = organization_service_with_webhook_mock.accept_invitation(
+            token=token, user=admin_invitee
+        )
+
+        call_args = mock_webhook_membership_side_effects_service.on_member_created.call_args
+        passed_membership = call_args[0][0]
+        assert passed_membership == membership
+        assert passed_membership.role == OrganizationRole.ADMIN
+
+    def test_accept_invitation_no_webhook_emission_when_no_subscribed_config(
+        self,
+        organization,
+        django_capture_on_commit_callbacks,
+    ):
+        """Integration: no WebhookEvent rows when no WebhookConfiguration subscribes to the event type.
+
+        This test exercises the full stack down to WebhookService.send_event — no mock —
+        and asserts that accepting an invitation with no matching configuration produces
+        zero WebhookEvent rows.
+        """
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+        from di_core.containers import container
+        from webhooks.models import WebhookEvent
+
+        invitee = baker.make(User, email="no_config_invitee@example.com")
+        token = generate_long_lived_token()
+        token_hash = hash_long_lived_token(token)
+        baker.make(
+            OrganizationInvitation,
+            email=invitee.email,
+            organization=organization,
+            token_hash=token_hash,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+        )
+
+        with container.calendar_service.override(Mock()):
+            service = OrganizationService()
+
+        from unittest.mock import patch
+
+        with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
+            with django_capture_on_commit_callbacks(execute=True):
+                service.accept_invitation(token=token, user=invitee)
+
+        assert WebhookEvent.objects.filter(organization=organization).count() == 0
+
+    def test_accept_invitation_webhook_emission_with_subscribed_config(
+        self,
+        organization,
+        django_capture_on_commit_callbacks,
+    ):
+        """Integration: exactly one WebhookEvent row per subscribed config on invitation-accept.
+
+        Creates a WebhookConfiguration for ORGANIZATION_MEMBER_CREATED, accepts an
+        invitation that creates an active membership, and asserts that exactly one
+        WebhookEvent row exists with the correct payload and organization scope.
+        """
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+        from di_core.containers import container
+        from webhooks.constants import WebhookEventType
+        from webhooks.models import WebhookConfiguration, WebhookEvent
+
+        invitee = baker.make(User, email="with_config_invitee@example.com")
+        token = generate_long_lived_token()
+        token_hash = hash_long_lived_token(token)
+        baker.make(
+            OrganizationInvitation,
+            email=invitee.email,
+            organization=organization,
+            token_hash=token_hash,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership=None,
+            role=OrganizationRole.MEMBER,
+        )
+        baker.make(
+            WebhookConfiguration,
+            organization=organization,
+            event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
+            url="https://example.com/webhook",
+            headers={},
+            deleted_at=None,
+        )
+
+        with container.calendar_service.override(Mock()):
+            service = OrganizationService()
+
+        from unittest.mock import patch
+
+        with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
+            with django_capture_on_commit_callbacks(execute=True):
+                membership = service.accept_invitation(token=token, user=invitee)
+
+        events = WebhookEvent.objects.filter(
+            organization=organization,
+            event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
+        )
+        assert events.count() == 1
+
+        event = events.first()
+        assert event is not None
+        assert event.payload["user_id"] == invitee.id
+        assert event.payload["email"] == invitee.email
+        assert event.payload["organization_id"] == organization.id
+        assert event.payload["organization_name"] == organization.name
+        assert event.payload["membership_role"] == OrganizationRole.MEMBER
+        assert event.payload["membership_id"] == membership.id
+
 
 @pytest.mark.django_db
 class TestRequestAllCalendarsSync:
