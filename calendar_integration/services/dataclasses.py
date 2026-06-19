@@ -279,6 +279,7 @@ class CalendarGroupInputData:
     name: str
     description: str = ""
     slots: list[CalendarGroupSlotInputData] = dataclass_field(default_factory=list)
+    accepts_public_scheduling: bool | None = None
 
 
 @dataclass

@@ -309,6 +309,7 @@ class CalendarGroupInput:
     name: str
     description: str = ""
     slots: list[CalendarGroupSlotInput] = strawberry.field(default_factory=list)
+    is_private: bool = True
 
 
 @strawberry.input
@@ -318,6 +319,7 @@ class UpdateCalendarGroupInput:
     name: str
     description: str = ""
     slots: list[CalendarGroupSlotInput] = strawberry.field(default_factory=list)
+    is_private: bool | None = None
 
 
 @strawberry.input
@@ -632,6 +634,7 @@ class CalendarGroupMutations:
                     name=input.name,
                     description=input.description,
                     slots=_to_slot_input_data(input.slots),
+                    accepts_public_scheduling=not input.is_private,
                 )
             )
         except CalendarGroupError as e:
@@ -649,12 +652,16 @@ class CalendarGroupMutations:
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_group_service.initialize(organization=organization)
         try:
+            # Translate is_private to accepts_public_scheduling: when is_private is None,
+            # pass None to leave accepts_public_scheduling untouched; otherwise invert it.
+            accepts_public_scheduling = None if input.is_private is None else not input.is_private
             group = deps.calendar_group_service.update_group(
                 group_id=input.group_id,
                 data=CalendarGroupInputData(
                     name=input.name,
                     description=input.description,
                     slots=_to_slot_input_data(input.slots),
+                    accepts_public_scheduling=accepts_public_scheduling,
                 ),
             )
         except CalendarGroup.DoesNotExist:

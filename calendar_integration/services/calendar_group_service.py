@@ -182,10 +182,16 @@ class CalendarGroupService:
         self._assert_initialized()
         slots_data, _ = self._validate_slots_input(data.slots)
 
+        # When accepts_public_scheduling is provided, use it; otherwise default to False (private).
+        accepts_public_scheduling = (
+            data.accepts_public_scheduling if data.accepts_public_scheduling is not None else False
+        )
+
         group = CalendarGroup.objects.create(
             organization=self.organization,
             name=data.name,
             description=data.description,
+            accepts_public_scheduling=accepts_public_scheduling,
         )
         self._create_slots(group, slots_data)
         return group
@@ -203,7 +209,17 @@ class CalendarGroupService:
 
         group.name = data.name
         group.description = data.description
-        group.save(update_fields=["name", "description", "modified"])
+        # Only update accepts_public_scheduling if it is provided (not None).
+        if data.accepts_public_scheduling is not None:
+            group.accepts_public_scheduling = data.accepts_public_scheduling
+        group.save(
+            update_fields=[
+                "name",
+                "description",
+                "accepts_public_scheduling",
+                "modified",
+            ]
+        )
 
         existing_slots = {s.name: s for s in group.slots.all()}
         incoming_names = {s.name for s in slots_data}
