@@ -4591,7 +4591,7 @@ class TestCalendarOwnersField:
         overhead).  With prefetch_related working correctly, adding more calendars
         must NOT add per-calendar owner/user/profile queries.
         """
-        mock_rate_limiter.return_value = iter([None])
+        mock_rate_limiter.side_effect = lambda *a, **k: iter([None])
 
         def _make_calendar_with_owners(index):
             cal = baker.make(
@@ -4869,7 +4869,7 @@ class TestCalendarGroupOwnersN1:
         Two-point comparison: 1 slot calendar vs 3 slot calendars in a group.
         With prefetch_related wiring the count must not grow per slot calendar.
         """
-        mock_rate_limiter.return_value = iter([None])
+        mock_rate_limiter.side_effect = lambda *a, **k: iter([None])
 
         # Point 1: group with 1 slot calendar
         _make_group_with_owned_slot_calendars(organization, group_name="N1Group1", calendar_count=1)
@@ -5092,7 +5092,7 @@ class TestCalendarBundleOwnersN1:
         Two-point comparison: bundle with 1 child vs bundle with 4 children.
         With bundle_children__ownerships__user__profile prefetch the count must not grow.
         """
-        mock_rate_limiter.return_value = iter([None])
+        mock_rate_limiter.side_effect = lambda *a, **k: iter([None])
 
         def _make_bundle_with_owned_children(name: str, child_count: int):
             bundle, children = _make_bundle_calendar(
@@ -5460,7 +5460,7 @@ class TestCalendarBundleParentOwners:
         overhead). With prefetch_related working correctly, adding more bundles
         must NOT add per-bundle owner/user/profile queries.
         """
-        mock_rate_limiter.return_value = iter([None])
+        mock_rate_limiter.side_effect = lambda *a, **k: iter([None])
 
         def _make_bundle_with_owners(index):
             bundle, _ = _make_bundle_calendar(
