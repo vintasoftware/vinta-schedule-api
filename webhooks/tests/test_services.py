@@ -11,6 +11,16 @@ from webhooks.models import WebhookConfiguration, WebhookEvent
 from webhooks.services.webhook_service import WebhookService
 
 
+def _make_expected_envelope(event: WebhookEvent) -> dict:
+    """Build the expected envelope dict for a given WebhookEvent."""
+    return {
+        "id": str(event.main_event_fk_id or event.id),
+        "type": event.event_type,
+        "timestamp": event.created.isoformat(),
+        "data": event.payload,
+    }
+
+
 @pytest.mark.django_db
 class TestWebhookService:
     """Test suite for WebhookService."""
@@ -244,7 +254,7 @@ class TestWebhookService:
 
     @patch("requests.post")
     def test_process_webhook_event_success(self, mock_post, webhook_event, webhook_service):
-        """Test successful webhook event processing."""
+        """Test successful webhook event processing — body is the envelope, not the raw payload."""
         # Mock successful response
         mock_response = Mock()
         mock_response.status_code = 200
@@ -261,19 +271,22 @@ class TestWebhookService:
         assert webhook_event.response_body == {"body": {"success": True}}
         assert webhook_event.response_headers == {"Content-Type": "application/json"}
 
-        # Verify the request was made correctly
+        # Verify the request was made with the envelope, not the raw payload
+        expected_envelope = _make_expected_envelope(webhook_event)
         mock_post.assert_called_once_with(
             webhook_event.url,
             headers=webhook_event.headers,
-            json=webhook_event.payload,
+            json=expected_envelope,
             timeout=60,
         )
+        # Confirm payload is not stored as envelope — only data dict
+        assert webhook_event.payload == {"event": "test"}
 
     @patch("requests.post")
     def test_process_webhook_event_success_non_serializable_response(
         self, mock_post, webhook_event, webhook_service
     ):
-        """Test successful webhook event processing."""
+        """Test successful webhook event processing when response body is non-JSON."""
         # Mock successful response
         mock_response = Mock()
         mock_response.status_code = 200
@@ -290,11 +303,12 @@ class TestWebhookService:
         assert webhook_event.response_body == {"body": "Success"}
         assert webhook_event.response_headers == {"Content-Type": "application/json"}
 
-        # Verify the request was made correctly
+        # Verify the request was made with the envelope
+        expected_envelope = _make_expected_envelope(webhook_event)
         mock_post.assert_called_once_with(
             webhook_event.url,
             headers=webhook_event.headers,
-            json=webhook_event.payload,
+            json=expected_envelope,
             timeout=60,
         )
 
@@ -422,3 +436,243 @@ class TestWebhookService:
                 assert call_kwargs["countdown"] == expected_backoff, (
                     f"Retry {initial_retry_number} should have {expected_backoff}s backoff"
                 )
+
+    # --- Envelope unit tests ---
+
+    @patch("requests.post")
+    def test_process_webhook_event_posts_envelope_shape(
+        self, mock_post, webhook_event, webhook_service
+    ):
+        """Delivery body is the envelope {id, type, timestamp, data}, not the raw payload."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}
+        mock_response.headers = {}
+        mock_post.return_value = mock_response
+
+        webhook_service.process_webhook_event(webhook_event)
+
+        _, call_kwargs = mock_post.call_args
+        posted_json = call_kwargs["json"]
+
+        assert set(posted_json.keys()) == {"id", "type", "timestamp", "data"}
+        assert posted_json["type"] == webhook_event.event_type
+        assert posted_json["data"] == webhook_event.payload
+        # timestamp must be an ISO 8601 string
+        datetime.datetime.fromisoformat(posted_json["timestamp"])
+
+    @patch("requests.post")
+    def test_envelope_id_is_event_id_for_first_attempt(
+        self, mock_post, webhook_event, webhook_service
+    ):
+        """For a first attempt (no main_event), envelope id equals the event's own id."""
+        assert webhook_event.main_event_fk_id is None
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}
+        mock_response.headers = {}
+        mock_post.return_value = mock_response
+
+        webhook_service.process_webhook_event(webhook_event)
+
+        _, call_kwargs = mock_post.call_args
+        posted_json = call_kwargs["json"]
+        assert posted_json["id"] == str(webhook_event.id)
+
+    @patch("requests.post")
+    def test_envelope_id_is_main_event_id_for_retry(
+        self, mock_post, organization, webhook_configuration, webhook_service
+    ):
+        """For a retry event, envelope id equals the main_event's id (stable across the chain)."""
+        main_event = baker.make(
+            WebhookEvent,
+            organization=organization,
+            configuration=webhook_configuration,
+            event_type=WebhookEventType.CALENDAR_EVENT_CREATED,
+            url="https://example.com/webhook",
+            headers={"Authorization": "Bearer token123"},
+            payload={"event": "original"},
+            status=WebhookStatus.FAILED,
+        )
+        retry_event = baker.make(
+            WebhookEvent,
+            organization=organization,
+            configuration=webhook_configuration,
+            event_type=WebhookEventType.CALENDAR_EVENT_CREATED,
+            url="https://example.com/webhook",
+            headers={"Authorization": "Bearer token123"},
+            payload={"event": "original"},
+            status=WebhookStatus.PENDING,
+            main_event=main_event,
+            retry_number=1,
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}
+        mock_response.headers = {}
+        mock_post.return_value = mock_response
+
+        webhook_service.process_webhook_event(retry_event)
+
+        _, call_kwargs = mock_post.call_args
+        posted_json = call_kwargs["json"]
+        assert posted_json["id"] == str(main_event.id)
+        assert posted_json["id"] != str(retry_event.id)
+
+    @patch("requests.post")
+    def test_envelope_id_stable_across_retry_chain(
+        self, mock_post, organization, webhook_configuration, webhook_service
+    ):
+        """The envelope id is identical for all attempts in a retry chain."""
+        main_event = baker.make(
+            WebhookEvent,
+            organization=organization,
+            configuration=webhook_configuration,
+            event_type=WebhookEventType.CALENDAR_EVENT_CREATED,
+            url="https://example.com/webhook",
+            headers={"Authorization": "Bearer token123"},
+            payload={"event": "chain_test"},
+            status=WebhookStatus.FAILED,
+            main_event=None,
+        )
+        retry_event = baker.make(
+            WebhookEvent,
+            organization=organization,
+            configuration=webhook_configuration,
+            event_type=WebhookEventType.CALENDAR_EVENT_CREATED,
+            url="https://example.com/webhook",
+            headers={"Authorization": "Bearer token123"},
+            payload={"event": "chain_test"},
+            status=WebhookStatus.PENDING,
+            main_event=main_event,
+            retry_number=1,
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}
+        mock_response.headers = {}
+        mock_post.return_value = mock_response
+
+        # Process original attempt
+        webhook_service.process_webhook_event(main_event)
+        first_id = mock_post.call_args[1]["json"]["id"]
+
+        mock_post.reset_mock()
+
+        # Process retry — must share the same envelope id
+        webhook_service.process_webhook_event(retry_event)
+        retry_id = mock_post.call_args[1]["json"]["id"]
+
+        assert first_id == retry_id == str(main_event.id)
+
+    @patch("requests.post")
+    def test_envelope_data_equals_stored_payload(self, mock_post, webhook_event, webhook_service):
+        """envelope.data is the stored payload dict, not a nested envelope."""
+        stored_payload = {"calendar_id": 42, "title": "Team sync"}
+        webhook_event.payload = stored_payload
+        webhook_event.save()
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}
+        mock_response.headers = {}
+        mock_post.return_value = mock_response
+
+        webhook_service.process_webhook_event(webhook_event)
+
+        # Verify payload in DB is still the plain data dict (no envelope persisted)
+        webhook_event.refresh_from_db()
+        assert webhook_event.payload == stored_payload
+
+        _, call_kwargs = mock_post.call_args
+        assert call_kwargs["json"]["data"] == stored_payload
+        # envelope keys must not appear inside data
+        assert "id" not in call_kwargs["json"]["data"]
+        assert "type" not in call_kwargs["json"]["data"]
+        assert "timestamp" not in call_kwargs["json"]["data"]
+
+    @patch("requests.post")
+    def test_calendar_event_delivery_produces_enveloped_body(
+        self, mock_post, organization, webhook_service
+    ):
+        """
+        Integration: an existing calendar-event delivery now produces the enveloped shape.
+
+        This is the intentional breaking change for Phase 1. Any previously registered
+        consumer receiving the raw calendar payload now receives it inside data{}.
+        """
+        config = baker.make(
+            WebhookConfiguration,
+            organization=organization,
+            event_type=WebhookEventType.CALENDAR_EVENT_CREATED,
+            url="https://example.com/webhook",
+            headers={"Content-Type": "application/json"},
+        )
+        calendar_payload = {
+            "id": 99,
+            "calendar_id": 7,
+            "is_recurring": False,
+            "recurring_event_id": None,
+            "start_time": "2026-01-01T09:00:00",
+            "end_time": "2026-01-01T10:00:00",
+            "timezone": "America/New_York",
+            "title": "Sprint Review",
+            "description": None,
+        }
+        event = baker.make(
+            WebhookEvent,
+            organization=organization,
+            configuration=config,
+            event_type=WebhookEventType.CALENDAR_EVENT_CREATED,
+            url=config.url,
+            headers=config.headers,
+            payload=calendar_payload,
+            status=WebhookStatus.PENDING,
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True}
+        mock_response.headers = {"Content-Type": "application/json"}
+        mock_post.return_value = mock_response
+
+        webhook_service.process_webhook_event(event)
+
+        _, call_kwargs = mock_post.call_args
+        posted = call_kwargs["json"]
+
+        # Top-level keys are the envelope
+        assert set(posted.keys()) == {"id", "type", "timestamp", "data"}
+        assert posted["type"] == WebhookEventType.CALENDAR_EVENT_CREATED
+        assert posted["id"] == str(event.id)
+        # The calendar payload is nested under data, not at the top level
+        assert posted["data"] == calendar_payload
+        assert "calendar_id" not in posted
+
+    @patch("webhooks.services.webhook_service.process_webhook_event.apply_async")
+    @patch("requests.post")
+    def test_envelope_id_stable_for_service_scheduled_retry(
+        self, mock_post, mock_apply_async, webhook_event, webhook_service
+    ):
+        """Envelope id from a service-chained retry equals the original event id."""
+        # Produce a retry via the real service path, not baker
+        webhook_event.status = WebhookStatus.FAILED
+        webhook_event.save()
+        retry_event = webhook_service.schedule_event_retry(
+            event=webhook_event, use_current_configuration=False, is_manual=False
+        )
+        assert retry_event is not None
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}
+        mock_response.headers = {}
+        mock_post.return_value = mock_response
+
+        webhook_service.process_webhook_event(retry_event)
+
+        _, call_kwargs = mock_post.call_args
+        assert call_kwargs["json"]["id"] == str(webhook_event.id)

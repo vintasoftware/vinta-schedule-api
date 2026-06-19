@@ -1,4 +1,4 @@
-from typing import TypedDict
+from typing import Any, TypedDict
 
 
 class CalendarEventWebhookPayload(TypedDict):
@@ -34,4 +34,4 @@ class WebhookEnvelope(TypedDict):
     id: str
     type: str
     timestamp: str
-    data: dict
+    data: dict[str, Any]
