@@ -50,11 +50,16 @@ merged plans). Phase 1 adds `0008_merge_20260619_0111` + `0009_alter_resourceacc
 - **Commit**: `b11855c` (feat: owner-scoped scheduleEvent mutation)
 - **Summary**: Relaxed the blanket `SystemUser` `PermissionDenied` in `calendar_event_service.create_event` (the scheduleEvent path; left `update_event`/`delete_event` blocks intact) to allow ONLY an owner-scoped token whose owner independently owns the calendar — verified via `_scoped_system_user_owns_calendar` (a `CalendarOwnership` query filtered by the calendar's org, membership→user join; org-wide tokens return False → stay blocked). Bundle calendars rejected up front (avoids cross-provider fan-out). Skipped `can_perform_scheduling` ONLY on the verified-ownership path (`is_owner_scoped_system_user`) — that method is a pure token-permission gate, NOT availability enforcement (availability still runs at create_event:319-325). Fixed the on_commit audit actor (getattr-guard the permission token, fall back to the SystemUser). Added `scheduleEvent` mutation (`ScheduleEventInput`) guarded by `assert_calendar_in_owner_scope` (defense-in-depth; cross-owner/non-owned → "Calendar not found." identical to missing, BEFORE the service PermissionDenied can leak existence), de-duplicated active-org-member attendee validation, external-attendee translation, title-length guard, clean GraphQL error mapping. Mapped `scheduleEvent → CALENDAR_EVENT`. Tests: 4 service unit + 10 integration (scoped success/recurring/attendees, out-of-org attendee no-row, cross-owner not-found no-row, org-wide denied no-row, bundle no-row, no-availability error, missing-grant denied). Full suite 2469 passed.
 
-## Current Phase
-Phase 4 — Nested-field owner-scope sweep + security review.
+### Phase 4 — Nested-field owner-scope sweep + security review ✅
+- **Status**: complete, reviewed (Layers 1–3 clean; adversarial completeness walk found no leak; 1 SHOULD-FIX test-pin applied; 2 perf NITs deferred to a follow-up — per-resolver `scoped_calendar_ids` re-query / N+1 on nested list fields)
+- **Model**: claude-opus-4-8 (plan tier 4)
+- **Branch**: `plan/per-owner-scoped-public-api-token-writes/phase-4` (base phase-3)
+- **Commits**: `419a6fe` (feat: owner-scope nested GraphQL traversal), `3304b09` (test: pin slot.calendars pool filter)
+- **Summary**: Added `_owner_scoped_calendar_ids(info)` (None = no-op for org-wide AND internal/non-public-API requests; owner's `set[int]` for scoped tokens; lazy-imports `public_api.scoping` to break the cycle) + 6 DRY filter helpers, then converted every cross-owner-reachable nested field on the shared GraphQL types into `@strawberry.field` resolvers. Guarded on `CalendarEventGraphQLType`: calendar, bundleCalendar, bundlePrimaryEvent, bulkModificationParent, parentRecurringObject, resources, resourceAllocations, groupSelections, bundleRepresentations, bulkModifications, recurringInstances; calendarGroup suppressed. **Second hop** closed two ways: `CalendarEventGroupSelection.slot` suppressed for scoped tokens + `CalendarGroupSlot.calendars` pool filtered. Also guarded BlockedTime/AvailableTime `calendar` + recurrence-exception `parent_*/modified_*` back-pointers, `EventExternalAttendance.event`. Proven-safe (documented): scalars, people (UserGraphQLType is a leaf), CalendarGroup.slots (unreachable — both entry points suppressed + CALENDAR_GROUP not provider-scoped). Fixed a latent `recurringInstances` accessor bug. New `public_api/tests/test_scoping_security.py` (23 tests, each fails if its guard is reverted) + `ai-plans/2026-06-18-PER_OWNER_SCOPED_PUBLIC_API_TOKEN_WRITES_SECURITY_REVIEW.md` sign-off doc. Full suite 2492 passed.
+- **Reviewer note**: an auditable transitive reachability walk from every scoped entry point confirmed no unguarded cross-owner nested field remains.
 
-## Remaining Phases
-- Phase 4 — Nested-field owner-scope sweep + security review (Tier 4)
+## Plan complete
+All four executable phases shipped. No cross-repo or flag-removal phases. PRs: #138 (phase 1), #139 (phase 2), #140 (phase 3), phase 4 below.
 
 ## Deferred Phases
 _(none — no cross-repo, no flag-removal)_
