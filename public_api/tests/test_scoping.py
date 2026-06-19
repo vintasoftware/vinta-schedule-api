@@ -4,7 +4,7 @@ from model_bakery import baker
 from calendar_integration.models import Calendar, CalendarOwnership
 from organizations.models import Organization, OrganizationMembership
 from public_api.models import SystemUser
-from public_api.scoping import scoped_calendar_ids
+from public_api.scoping import assert_calendar_in_owner_scope, scoped_calendar_ids
 from public_api.services import PublicAPIAuthService
 from users.models import User
 
@@ -198,3 +198,116 @@ class TestScopedCalendarIds:
         assert system_user.organization_id == membership.organization_id
         # The scalar id is always accessible regardless of the FK join path.
         assert system_user.scoped_to_membership_fk_id == membership.id
+
+
+@pytest.mark.django_db
+class TestAssertCalendarInOwnerScope:
+    """Unit tests for the assert_calendar_in_owner_scope write-side guard."""
+
+    @pytest.fixture
+    def organization(self):
+        """Create a test organization."""
+        return baker.make(Organization, name="Test Organization")
+
+    @pytest.fixture
+    def user(self, organization):
+        """Create a test user."""
+        return baker.make(User, email="provider@example.com")
+
+    @pytest.fixture
+    def other_user(self, organization):
+        """Create another test user (different provider)."""
+        return baker.make(User, email="other_provider@example.com")
+
+    @pytest.fixture
+    def membership(self, organization, user):
+        """Create an active membership for the main user."""
+        return baker.make(
+            OrganizationMembership, user=user, organization=organization, is_active=True
+        )
+
+    @pytest.fixture
+    def other_membership(self, organization, other_user):
+        """Create an active membership for the other user."""
+        return baker.make(
+            OrganizationMembership, user=other_user, organization=organization, is_active=True
+        )
+
+    @pytest.fixture
+    def owned_calendar(self, organization, user):
+        """Create a calendar owned by the main user."""
+        calendar = baker.make(
+            Calendar, organization=organization, name="Owned Calendar", external_id="owned-cal"
+        )
+        baker.make(CalendarOwnership, calendar=calendar, user=user, organization=organization)
+        return calendar
+
+    @pytest.fixture
+    def other_calendar(self, organization, other_user):
+        """Create a calendar owned by the other user (cross-owner target)."""
+        calendar = baker.make(
+            Calendar,
+            organization=organization,
+            name="Other Calendar",
+            external_id="other-cal",
+        )
+        baker.make(CalendarOwnership, calendar=calendar, user=other_user, organization=organization)
+        return calendar
+
+    @pytest.fixture
+    def org_wide_system_user(self, organization):
+        """Create an org-wide system user (no owner scope)."""
+        auth_service = PublicAPIAuthService()
+        system_user, _ = auth_service.create_system_user(
+            integration_name="org_wide_write_token", organization=organization
+        )
+        return system_user
+
+    @pytest.fixture
+    def scoped_system_user(self, organization, membership):
+        """Create a system user scoped to the main user's membership."""
+        return baker.make(
+            SystemUser,
+            organization=organization,
+            scoped_to_membership_fk=membership,
+            integration_name="scoped_write_token",
+        )
+
+    def test_no_raise_when_system_user_is_none(self, organization, owned_calendar):
+        """Guard is a no-op when system_user is None (no auth context)."""
+        # Must not raise regardless of calendar_id
+        assert_calendar_in_owner_scope(None, organization, owned_calendar.id)
+
+    def test_no_raise_for_org_wide_token(self, org_wide_system_user, organization, other_calendar):
+        """Guard is a no-op for org-wide tokens (scoped_calendar_ids returns None).
+
+        An org-wide token can target any calendar without the guard raising — this is
+        the no-regression assertion that ensures org-wide behavior is structurally unchanged.
+        """
+        assert_calendar_in_owner_scope(org_wide_system_user, organization, other_calendar.id)
+
+    def test_no_raise_for_in_scope_calendar(self, scoped_system_user, organization, owned_calendar):
+        """Guard does not raise when the calendar is within the token owner's scope."""
+        assert_calendar_in_owner_scope(scoped_system_user, organization, owned_calendar.id)
+
+    def test_raises_does_not_exist_for_out_of_scope_calendar(
+        self, scoped_system_user, organization, other_calendar
+    ):
+        """Guard raises Calendar.DoesNotExist for a cross-owner calendar_id when scoped.
+
+        The raised exception uses the same message as a genuinely missing calendar to
+        prevent existence leaks.
+        """
+        with pytest.raises(
+            Calendar.DoesNotExist, match=r"Calendar matching query does not exist\."
+        ):
+            assert_calendar_in_owner_scope(scoped_system_user, organization, other_calendar.id)
+
+    def test_raises_for_nonexistent_calendar_id_when_scoped(self, scoped_system_user, organization):
+        """Guard raises Calendar.DoesNotExist for a nonexistent calendar_id when scoped.
+
+        A nonexistent id is not in the allowed set, so the same exception is raised.
+        """
+        nonexistent_id = 999999
+        with pytest.raises(Calendar.DoesNotExist):
+            assert_calendar_in_owner_scope(scoped_system_user, organization, nonexistent_id)

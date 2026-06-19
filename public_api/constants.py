@@ -63,5 +63,8 @@ PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
         PublicAPIResources.AVAILABILITY_WINDOWS,
         PublicAPIResources.UNAVAILABLE_WINDOWS,
         PublicAPIResources.CALENDAR,
+        PublicAPIResources.CREATE_BLOCKED_TIME,
+        PublicAPIResources.UPDATE_BLOCKED_TIME,
+        PublicAPIResources.DELETE_BLOCKED_TIME,
     ]
 )

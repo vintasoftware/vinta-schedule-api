@@ -31,6 +31,7 @@ from public_api.capabilities import assert_org_can_invite, assert_target_in_subt
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
+from public_api.scoping import assert_calendar_in_owner_scope
 from public_api.services import PublicAPIAuthService
 from public_api.types import (
     BrandingResult,
@@ -1452,15 +1453,21 @@ class Mutation(CalendarGroupMutations):
 
         The mutation:
         1. Resolves the organization and initializes the calendar service via the system-user token.
-        2. Fetches the calendar org-scoped to prevent cross-org access.
-        3. Delegates to CalendarService.create_blocked_time with the supplied parameters.
-        4. Returns the created BlockedTime on success, or success=False + errorMessage on failure.
+        2. Asserts the calendar is within the token owner's scope (no-op for org-wide tokens).
+        3. Fetches the calendar org-scoped to prevent cross-org access.
+        4. Delegates to CalendarService.create_blocked_time with the supplied parameters.
+        5. Returns the created BlockedTime on success, or success=False + errorMessage on failure.
 
         The token's OrganizationResourceAccess must include the CREATE_BLOCKED_TIME resource.
         """
         calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
 
         try:
+            # Owner-scope guard: a scoped token may only write to its owner's calendars.
+            # Raises Calendar.DoesNotExist (same as a genuinely missing calendar) so a
+            # cross-owner attempt reveals nothing about the target's existence.
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, input.calendar_id)
             calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
         except Calendar.DoesNotExist:
             return CreateBlockedTimeResult(success=False, error_message="Calendar not found.")
@@ -1492,17 +1499,23 @@ class Mutation(CalendarGroupMutations):
 
         The mutation:
         1. Resolves the organization and initializes the calendar service via the system-user token.
-        2. Fetches the calendar org-scoped to prevent cross-org access.
-        3. Delegates to CalendarService.update_blocked_time with the supplied parameters.
+        2. Asserts the calendar is within the token owner's scope (no-op for org-wide tokens).
+        3. Fetches the calendar org-scoped to prevent cross-org access.
+        4. Delegates to CalendarService.update_blocked_time with the supplied parameters.
            Only fields present (non-None) in the input are applied; others are left unchanged.
-        4. Returns the updated BlockedTime on success, or success=False + errorMessage on failure.
+        5. Returns the updated BlockedTime on success, or success=False + errorMessage on failure.
            Note: a missing or cross-calendar blocked_time_id raises ValueError (success=False).
 
         The token's OrganizationResourceAccess must include the UPDATE_BLOCKED_TIME resource.
         """
         calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
 
         try:
+            # Owner-scope guard: a scoped token may only write to its owner's calendars.
+            # Raises Calendar.DoesNotExist (same as a genuinely missing calendar) so a
+            # cross-owner attempt reveals nothing about the target's existence.
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, input.calendar_id)
             calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
         except Calendar.DoesNotExist:
             return UpdateBlockedTimeResult(success=False, error_message="Calendar not found.")
@@ -1535,9 +1548,10 @@ class Mutation(CalendarGroupMutations):
 
         The mutation:
         1. Resolves the organization and initializes the calendar service via the system-user token.
-        2. Fetches the calendar org-scoped to prevent cross-org access.
-        3. Delegates to CalendarService.delete_blocked_time with the supplied blocked_time_id.
-        4. Returns success=True on success, or success=False + errorMessage on failure.
+        2. Asserts the calendar is within the token owner's scope (no-op for org-wide tokens).
+        3. Fetches the calendar org-scoped to prevent cross-org access.
+        4. Delegates to CalendarService.delete_blocked_time with the supplied blocked_time_id.
+        5. Returns success=True on success, or success=False + errorMessage on failure.
            Note: a missing or cross-calendar blocked_time_id raises ValueError (success=False).
 
         Note on recurrence: a recurring blocked time is stored as one row (rrule on
@@ -1549,8 +1563,13 @@ class Mutation(CalendarGroupMutations):
         The token's OrganizationResourceAccess must include the DELETE_BLOCKED_TIME resource.
         """
         calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
 
         try:
+            # Owner-scope guard: a scoped token may only write to its owner's calendars.
+            # Raises Calendar.DoesNotExist (same as a genuinely missing calendar) so a
+            # cross-owner attempt reveals nothing about the target's existence.
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, input.calendar_id)
             calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
         except Calendar.DoesNotExist:
             return DeleteBlockedTimeResult(success=False, error_message="Calendar not found.")
