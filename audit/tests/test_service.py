@@ -276,7 +276,9 @@ class TestSystemActor:
 class TestRecordEnqueues:
     """record() enqueues a correct JSON-serializable payload."""
 
-    def test_enqueues_with_json_serializable_payload(self) -> None:
+    def test_enqueues_with_json_serializable_payload(
+        self, django_capture_on_commit_callbacks
+    ) -> None:
         """The payload passed to persist_audit_record.delay() must be JSON-safe."""
         service = make_service()
         org = baker.make(Organization)
@@ -286,14 +288,15 @@ class TestRecordEnqueues:
         subject = make_subject()
 
         with patch("audit.tasks.persist_audit_record") as mock_task:
-            service.record(
-                organization_id=org.pk,
-                action=AuditAction.UPDATE,
-                actor=actor,
-                subject=subject,
-                affected_membership_ids=[membership.pk],
-                diff={"name": {"old": "Alice", "new": "Bob"}},
-            )
+            with django_capture_on_commit_callbacks(execute=True):
+                service.record(
+                    organization_id=org.pk,
+                    action=AuditAction.UPDATE,
+                    actor=actor,
+                    subject=subject,
+                    affected_membership_ids=[membership.pk],
+                    diff={"name": {"old": "Alice", "new": "Bob"}},
+                )
 
         mock_task.delay.assert_called_once()
         payload = mock_task.delay.call_args[0][0]
@@ -303,7 +306,7 @@ class TestRecordEnqueues:
         round_tripped = json.loads(json_str)
         assert round_tripped == payload
 
-    def test_payload_has_correct_actor_fields(self) -> None:
+    def test_payload_has_correct_actor_fields(self, django_capture_on_commit_callbacks) -> None:
         service = make_service()
         org = baker.make(Organization)
         user = baker.make("users.User")
@@ -314,19 +317,20 @@ class TestRecordEnqueues:
         subject = make_subject()
 
         with patch("audit.tasks.persist_audit_record") as mock_task:
-            service.record(
-                organization_id=org.pk,
-                action=AuditAction.CREATE,
-                actor=actor,
-                subject=subject,
-            )
+            with django_capture_on_commit_callbacks(execute=True):
+                service.record(
+                    organization_id=org.pk,
+                    action=AuditAction.CREATE,
+                    actor=actor,
+                    subject=subject,
+                )
 
         payload = mock_task.delay.call_args[0][0]
         assert payload["actor"]["actor_type"] == AuditActorType.MEMBERSHIP
         assert payload["actor"]["actor_id"] == membership.pk
         assert payload["actor"]["actor_role"] == OrganizationRole.ADMIN
 
-    def test_payload_has_correct_subject_fields(self) -> None:
+    def test_payload_has_correct_subject_fields(self, django_capture_on_commit_callbacks) -> None:
         service = make_service()
         org = baker.make(Organization)
         actor = AuditService.system_actor()
@@ -337,19 +341,22 @@ class TestRecordEnqueues:
         )
 
         with patch("audit.tasks.persist_audit_record") as mock_task:
-            service.record(
-                organization_id=org.pk,
-                action=AuditAction.DELETE,
-                actor=actor,
-                subject=subject,
-            )
+            with django_capture_on_commit_callbacks(execute=True):
+                service.record(
+                    organization_id=org.pk,
+                    action=AuditAction.DELETE,
+                    actor=actor,
+                    subject=subject,
+                )
 
         payload = mock_task.delay.call_args[0][0]
         assert payload["subject"]["subject_type"] == "organizations.Organization"
         assert payload["subject"]["subject_id"] == str(org.pk)
         assert payload["subject"]["subject_label"] == "ACME Corp"
 
-    def test_payload_affected_membership_ids_is_list(self) -> None:
+    def test_payload_affected_membership_ids_is_list(
+        self, django_capture_on_commit_callbacks
+    ) -> None:
         service = make_service()
         org = baker.make(Organization)
         actor = AuditService.system_actor()
@@ -358,19 +365,20 @@ class TestRecordEnqueues:
         membership = OrganizationMembership.objects.create(user=user, organization=org)
 
         with patch("audit.tasks.persist_audit_record") as mock_task:
-            service.record(
-                organization_id=org.pk,
-                action=AuditAction.UPDATE,
-                actor=actor,
-                subject=subject,
-                affected_membership_ids=(membership.pk,),  # tuple input
-            )
+            with django_capture_on_commit_callbacks(execute=True):
+                service.record(
+                    organization_id=org.pk,
+                    action=AuditAction.UPDATE,
+                    actor=actor,
+                    subject=subject,
+                    affected_membership_ids=(membership.pk,),  # tuple input
+                )
 
         payload = mock_task.delay.call_args[0][0]
         assert isinstance(payload["affected_membership_ids"], list)
         assert payload["affected_membership_ids"] == [membership.pk]
 
-    def test_payload_diff_is_present(self) -> None:
+    def test_payload_diff_is_present(self, django_capture_on_commit_callbacks) -> None:
         service = make_service()
         org = baker.make(Organization)
         actor = AuditService.system_actor()
@@ -378,30 +386,32 @@ class TestRecordEnqueues:
         diff = {"role": {"old": "member", "new": "admin"}}
 
         with patch("audit.tasks.persist_audit_record") as mock_task:
-            service.record(
-                organization_id=org.pk,
-                action=AuditAction.UPDATE,
-                actor=actor,
-                subject=subject,
-                diff=diff,
-            )
+            with django_capture_on_commit_callbacks(execute=True):
+                service.record(
+                    organization_id=org.pk,
+                    action=AuditAction.UPDATE,
+                    actor=actor,
+                    subject=subject,
+                    diff=diff,
+                )
 
         payload = mock_task.delay.call_args[0][0]
         assert payload["diff"] == diff
 
-    def test_payload_organization_id_and_action(self) -> None:
+    def test_payload_organization_id_and_action(self, django_capture_on_commit_callbacks) -> None:
         service = make_service()
         org = baker.make(Organization)
         actor = AuditService.system_actor()
         subject = make_subject()
 
         with patch("audit.tasks.persist_audit_record") as mock_task:
-            service.record(
-                organization_id=org.pk,
-                action=AuditAction.CREATE,
-                actor=actor,
-                subject=subject,
-            )
+            with django_capture_on_commit_callbacks(execute=True):
+                service.record(
+                    organization_id=org.pk,
+                    action=AuditAction.CREATE,
+                    actor=actor,
+                    subject=subject,
+                )
 
         payload = mock_task.delay.call_args[0][0]
         assert payload["organization_id"] == org.pk
@@ -417,7 +427,9 @@ class TestRecordEnqueues:
 class TestRecordSwallowsEnqueueError:
     """record() must not propagate broker / enqueue errors to the caller."""
 
-    def test_record_does_not_raise_on_delay_error(self, caplog) -> None:
+    def test_record_does_not_raise_on_delay_error(
+        self, caplog, django_capture_on_commit_callbacks
+    ) -> None:
         """A broker error during .delay() is swallowed; record() returns None."""
         service = make_service()
         org = baker.make(Organization)
@@ -428,16 +440,17 @@ class TestRecordSwallowsEnqueueError:
             mock_task.delay.side_effect = RuntimeError("broker unavailable")
 
             with caplog.at_level(logging.ERROR, logger="audit.services"):
-                result = service.record(
-                    organization_id=org.pk,
-                    action=AuditAction.CREATE,
-                    actor=actor,
-                    subject=subject,
-                )
+                with django_capture_on_commit_callbacks(execute=True):
+                    result = service.record(
+                        organization_id=org.pk,
+                        action=AuditAction.CREATE,
+                        actor=actor,
+                        subject=subject,
+                    )
 
         assert result is None  # fire-and-forget, always returns None
 
-    def test_record_logs_on_delay_error(self, caplog) -> None:
+    def test_record_logs_on_delay_error(self, caplog, django_capture_on_commit_callbacks) -> None:
         """An enqueue error must be logged (not silently swallowed)."""
         service = make_service()
         org = baker.make(Organization)
@@ -448,11 +461,12 @@ class TestRecordSwallowsEnqueueError:
             mock_task.delay.side_effect = OSError("connection refused")
 
             with caplog.at_level(logging.ERROR, logger="audit.services"):
-                service.record(
-                    organization_id=org.pk,
-                    action=AuditAction.CREATE,
-                    actor=actor,
-                    subject=subject,
-                )
+                with django_capture_on_commit_callbacks(execute=True):
+                    service.record(
+                        organization_id=org.pk,
+                        action=AuditAction.CREATE,
+                        actor=actor,
+                        subject=subject,
+                    )
 
         assert any("Failed to enqueue audit record" in r.message for r in caplog.records)

@@ -175,7 +175,7 @@ class TestPersistAuditRecordTask:
         assert audit.system_user_scopes == scopes
         assert audit.system_user_scoped_to_membership == membership.pk
 
-    def test_full_round_trip_via_service_record(self) -> None:
+    def test_full_round_trip_via_service_record(self, django_capture_on_commit_callbacks) -> None:
         """AuditService.record() + eager task results in a correct persisted Audit."""
         from audit.repositories import DjangoORMAuditRepository
 
@@ -196,15 +196,17 @@ class TestPersistAuditRecordTask:
         )
         diff = {"role": {"old": "member", "new": "admin"}}
 
-        # With CELERY_TASK_ALWAYS_EAGER, .delay() runs the task body synchronously.
-        service.record(
-            organization_id=org.pk,
-            action=AuditAction.UPDATE,
-            actor=actor,
-            subject=subject,
-            affected_membership_ids=[membership.pk],
-            diff=diff,
-        )
+        # record() registers an on_commit callback; execute=True fires it immediately
+        # so the eager task runs and we can assert DB state right after.
+        with django_capture_on_commit_callbacks(execute=True):
+            service.record(
+                organization_id=org.pk,
+                action=AuditAction.UPDATE,
+                actor=actor,
+                subject=subject,
+                affected_membership_ids=[membership.pk],
+                diff=diff,
+            )
 
         audit = Audit.original_manager.filter(organization_id=org.pk).first()
         assert audit is not None
@@ -284,14 +286,18 @@ class TestPersistAuditRecordErrorHandling:
 
     def test_malformed_payload_is_logged_and_swallowed(self, caplog) -> None:
         """A payload missing required keys logs an error and does not re-raise."""
+        import di_core.containers
+
+        # Confirm the container is initialized so the test exercises the malformed-payload
+        # path, not the None-guard early-return path.
+        assert di_core.containers.container is not None
+
         with caplog.at_level(logging.ERROR, logger="audit.tasks"):
             # Call the underlying task function directly (bypassing Celery's eager
             # propagation) so we can test the error-handling path directly.
             persist_audit_record({"bad": "payload"})
 
-        assert any(
-            "malformed payload" in r.message or "DI container" in r.message for r in caplog.records
-        )
+        assert any("malformed payload" in r.message for r in caplog.records)
 
     def test_task_swallows_repository_failure(self, caplog) -> None:
         """A repository.add() failure is logged and swallowed."""

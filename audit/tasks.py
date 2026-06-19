@@ -86,7 +86,7 @@ def persist_audit_record(payload: dict) -> None:
             affected_membership_ids=payload.get("affected_membership_ids") or [],
             diff=payload.get("diff"),
         )
-    except (KeyError, TypeError):
+    except Exception:
         logger.exception(
             "persist_audit_record: malformed payload, cannot reconstruct AuditRecordData. "
             "Payload: %r",

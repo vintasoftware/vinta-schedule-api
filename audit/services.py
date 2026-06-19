@@ -25,9 +25,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING
 
-from dependency_injector.wiring import Provide, inject
+from django.db import transaction
 
 from audit.constants import AuditActorType
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
@@ -48,10 +48,9 @@ class AuditService:
     may have changed or been deleted by the time it runs.
     """
 
-    @inject
     def __init__(
         self,
-        repository: Annotated[AuditRepository, Provide["audit_repository"]],
+        repository: AuditRepository,
     ) -> None:
         self.repository = repository
 
@@ -184,12 +183,15 @@ class AuditService:
 
         payload = dataclasses.asdict(data)
 
-        try:
-            persist_audit_record.delay(payload)
-        except Exception:
-            logger.exception(
-                "Failed to enqueue audit record for action %r on organization %s. "
-                "The record will not be persisted.",
-                action,
-                organization_id,
-            )
+        def _enqueue() -> None:
+            try:
+                persist_audit_record.delay(payload)
+            except Exception:
+                logger.exception(
+                    "Failed to enqueue audit record for action %r on organization %s. "
+                    "The record will not be persisted.",
+                    action,
+                    organization_id,
+                )
+
+        transaction.on_commit(_enqueue)
