@@ -4,7 +4,10 @@ Covers:
 - createCalendar: default is_private, explicit is_private=False, explicit is_private=True.
 - updateCalendar: toggle is_private both directions, partial update (name/description only),
   omit is_private leaves privacy unchanged (both seeded directions).
-- Authorization: token without CALENDAR resource is denied; token with it succeeds.
+- Authorization: token without the relevant write resource is denied; token with it succeeds.
+  A token holding only CALENDAR (read) is denied createCalendar/updateCalendar (escalation
+  prevention). A provider-scoped token cannot be granted CREATE_CALENDAR/UPDATE_CALENDAR
+  because those resources are not in PROVIDER_SCOPED_RESOURCES.
 - Cross-org negative: a token for org A cannot operate on a calendar in org B.
 """
 
@@ -15,7 +18,7 @@ from rest_framework.test import APIClient
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import Calendar
 from organizations.models import Organization
-from public_api.constants import PublicAPIResources
+from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
 
@@ -68,7 +71,7 @@ def _setup_org_and_token(
 ) -> tuple[Organization, object, str, PublicAPIAuthService]:
     """Return (org, system_user, token, auth_service) with the given resource grants."""
     if resources is None:
-        resources = [PublicAPIResources.CALENDAR]
+        resources = [PublicAPIResources.CREATE_CALENDAR]
     org = baker.make(Organization, name="Test Org")
     auth_service = PublicAPIAuthService()
     system_user, token = auth_service.create_system_user(
@@ -202,11 +205,15 @@ class TestCreateCalendarMutation:
         assert cal.accepts_public_scheduling is False
         assert result["calendar"]["isPrivate"] is True
 
-    def test_create_calendar_without_calendar_resource_denied(self):
-        """A token without the CALENDAR resource is denied (permission class gate)."""
-        # Grant a different resource — NOT CALENDAR
+    def test_create_calendar_without_create_calendar_resource_denied(self):
+        """A token without CREATE_CALENDAR is denied (permission class gate).
+
+        Specifically, a token holding only CALENDAR (read) must NOT be permitted to
+        create calendars — that would be a read→write privilege escalation.
+        """
+        # Grant only the read resource — NOT the write resource
         org, system_user, token, auth_service = _setup_org_and_token(
-            resources=[PublicAPIResources.CALENDAR_EVENT]
+            resources=[PublicAPIResources.CALENDAR]
         )
 
         response = _post_mutation(
@@ -221,6 +228,17 @@ class TestCreateCalendarMutation:
         data = response.json()
         assert "errors" in data and len(data["errors"]) > 0
         assert "don't have access" in str(data["errors"]).lower()
+
+    def test_create_calendar_write_resource_not_provider_scoped(self):
+        """CREATE_CALENDAR is NOT in PROVIDER_SCOPED_RESOURCES.
+
+        This means a per-owner scoped token cannot be granted it, so there is no
+        path for a scoped token to call createCalendar. The resource restriction
+        is the mechanism that closes the cross-owner write BLOCKER: scoped tokens
+        are limited to PROVIDER_SCOPED_RESOURCES, and CREATE_CALENDAR is not in
+        that set, so the mutation is org-wide-token-only.
+        """
+        assert PublicAPIResources.CREATE_CALENDAR not in PROVIDER_SCOPED_RESOURCES
 
     def test_create_calendar_unauthenticated_denied(self):
         """An unauthenticated call is denied."""
@@ -296,7 +314,9 @@ class TestUpdateCalendarMutation:
 
     def test_update_calendar_toggle_is_private_false_to_true(self):
         """Toggle is_private from False (public) to True (private)."""
-        org, system_user, token, auth_service = _setup_org_and_token()
+        org, system_user, token, auth_service = _setup_org_and_token(
+            resources=[PublicAPIResources.UPDATE_CALENDAR]
+        )
         cal = self._make_personal_calendar(org, accepts_public_scheduling=True)
         assert cal.accepts_public_scheduling is True
 
@@ -327,7 +347,9 @@ class TestUpdateCalendarMutation:
 
     def test_update_calendar_toggle_is_private_true_to_false(self):
         """Toggle is_private from True (private) to False (public)."""
-        org, system_user, token, auth_service = _setup_org_and_token()
+        org, system_user, token, auth_service = _setup_org_and_token(
+            resources=[PublicAPIResources.UPDATE_CALENDAR]
+        )
         cal = self._make_personal_calendar(org, accepts_public_scheduling=False)
 
         response = _post_mutation(
@@ -355,7 +377,9 @@ class TestUpdateCalendarMutation:
 
     def test_update_calendar_name_and_description(self):
         """Update name and description without touching is_private."""
-        org, system_user, token, auth_service = _setup_org_and_token()
+        org, system_user, token, auth_service = _setup_org_and_token(
+            resources=[PublicAPIResources.UPDATE_CALENDAR]
+        )
         cal = self._make_personal_calendar(org, accepts_public_scheduling=False)
 
         response = _post_mutation(
@@ -389,7 +413,9 @@ class TestUpdateCalendarMutation:
 
     def test_update_calendar_omit_is_private_leaves_unchanged_when_private(self):
         """Omitting is_private (None) leaves accepts_public_scheduling unchanged when private."""
-        org, system_user, token, auth_service = _setup_org_and_token()
+        org, system_user, token, auth_service = _setup_org_and_token(
+            resources=[PublicAPIResources.UPDATE_CALENDAR]
+        )
         # Seed as private
         cal = self._make_personal_calendar(org, accepts_public_scheduling=False)
 
@@ -420,7 +446,9 @@ class TestUpdateCalendarMutation:
 
     def test_update_calendar_omit_is_private_leaves_unchanged_when_public(self):
         """Omitting is_private (None) leaves accepts_public_scheduling unchanged when public."""
-        org, system_user, token, auth_service = _setup_org_and_token()
+        org, system_user, token, auth_service = _setup_org_and_token(
+            resources=[PublicAPIResources.UPDATE_CALENDAR]
+        )
         # Seed as public
         cal = self._make_personal_calendar(org, accepts_public_scheduling=True)
 
@@ -451,7 +479,9 @@ class TestUpdateCalendarMutation:
 
     def test_update_calendar_not_found(self):
         """Updating a non-existent calendar returns success=False with 'not found' message."""
-        org, system_user, token, auth_service = _setup_org_and_token()
+        org, system_user, token, auth_service = _setup_org_and_token(
+            resources=[PublicAPIResources.UPDATE_CALENDAR]
+        )
 
         response = _post_mutation(
             UPDATE_CALENDAR_MUTATION,
@@ -476,7 +506,9 @@ class TestUpdateCalendarMutation:
 
     def test_update_calendar_wrong_type_rejected(self):
         """Updating a non-PERSONAL calendar returns success=False."""
-        org, system_user, token, auth_service = _setup_org_and_token()
+        org, system_user, token, auth_service = _setup_org_and_token(
+            resources=[PublicAPIResources.UPDATE_CALENDAR]
+        )
         # Create a RESOURCE calendar — must not be updatable via updateCalendar
         resource_cal = baker.make(
             Calendar,
@@ -505,10 +537,15 @@ class TestUpdateCalendarMutation:
         assert result["success"] is False
         assert result["errorMessage"] is not None
 
-    def test_update_calendar_without_calendar_resource_denied(self):
-        """A token without the CALENDAR resource is denied."""
+    def test_update_calendar_without_update_calendar_resource_denied(self):
+        """A token without UPDATE_CALENDAR is denied.
+
+        Specifically, a token holding only CALENDAR (read) must NOT be permitted to
+        update calendars — that would be a read→write privilege escalation.
+        """
+        # Grant only the read resource — NOT the write resource
         org, system_user, token, auth_service = _setup_org_and_token(
-            resources=[PublicAPIResources.CALENDAR_EVENT]
+            resources=[PublicAPIResources.CALENDAR]
         )
         cal = self._make_personal_calendar(org)
 
@@ -531,13 +568,26 @@ class TestUpdateCalendarMutation:
         assert "errors" in data and len(data["errors"]) > 0
         assert "don't have access" in str(data["errors"]).lower()
 
+    def test_update_calendar_write_resource_not_provider_scoped(self):
+        """UPDATE_CALENDAR is NOT in PROVIDER_SCOPED_RESOURCES.
+
+        This means a per-owner scoped token cannot be granted it, so there is no
+        path for a scoped token to call updateCalendar on any calendar in the org.
+        The resource restriction is the mechanism that closes the cross-owner write
+        BLOCKER: scoped tokens are limited to PROVIDER_SCOPED_RESOURCES, and
+        UPDATE_CALENDAR is not in that set, so the mutation is org-wide-token-only.
+        """
+        assert PublicAPIResources.UPDATE_CALENDAR not in PROVIDER_SCOPED_RESOURCES
+
     def test_update_calendar_cross_org_denied(self):
         """A token for org A cannot update a calendar in org B.
 
         Calendar lookup is org-scoped, so a cross-org update returns 'Calendar not found.'
         — the same response as a genuinely missing calendar, revealing nothing.
         """
-        _org_a, system_user, token, auth_service = _setup_org_and_token()
+        _org_a, system_user, token, auth_service = _setup_org_and_token(
+            resources=[PublicAPIResources.UPDATE_CALENDAR]
+        )
         org_b = baker.make(Organization, name="Org B")
         # Create a calendar in org B
         cal_in_b = baker.make(
@@ -574,7 +624,9 @@ class TestUpdateCalendarMutation:
 
     def test_create_calendar_and_update_privacy_round_trip(self):
         """Create a calendar then update its privacy via updateCalendar; assert both round-trips."""
-        org, system_user, token, auth_service = _setup_org_and_token()
+        org, system_user, token, auth_service = _setup_org_and_token(
+            resources=[PublicAPIResources.CREATE_CALENDAR, PublicAPIResources.UPDATE_CALENDAR]
+        )
 
         # Step 1: create with default is_private (True)
         create_response = _post_mutation(
