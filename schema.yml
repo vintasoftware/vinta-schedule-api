@@ -13329,8 +13329,14 @@ components:
         scoped_to_user:
           type: integer
           nullable: true
-          description: Return the owner's User id derived from the stored membership
-            FK, or None.
+          description: |-
+            Return the owner's User id from the queryset annotation when present.
+
+            For list/retrieve the viewset annotates ``scoped_to_user_id_value`` via an
+            F-expression JOIN, so no extra query is issued per token.  For any other
+            call path (e.g. the revoke action that constructs the serializer from a
+            freshly-fetched instance without the annotation) we fall back to a single
+            membership lookup.
           readOnly: true
       required:
       - available_resources

@@ -26,6 +26,112 @@ from calendar_integration.models import (
 from users.graphql import UserGraphQLType
 
 
+# ---------------------------------------------------------------------------
+# Owner-scope helpers for nested GraphQL field traversal
+# ---------------------------------------------------------------------------
+#
+# Strawberry runs the top-level field's permission/resolver logic only on the
+# decorated field. A provider-scoped public-API token that fetches one of its
+# OWN objects can therefore traverse NESTED GraphQL fields to reach data on
+# calendars it does NOT own (an event on a non-owned calendar reached via a
+# back-pointer, the cross-provider candidate pool of a group slot, etc.).
+#
+# The resolvers below close those nested leaks. They are a strict NO-OP for
+# org-wide tokens and for internal (non-public-API) GraphQL requests: when
+# ``_owner_scoped_calendar_ids(info)`` returns ``None`` every resolver returns
+# the original value untouched, so existing consumers are byte-for-byte
+# unchanged. Only a provider-scoped token (which yields a concrete ``set[int]``
+# of the owner's calendar ids) triggers any filtering.
+
+
+def _owner_scoped_calendar_ids(info: strawberry.Info) -> set[int] | None:
+    """Return the owner's allowed calendar-id set, or ``None`` for no filtering.
+
+    ``None`` means "do not filter" and is returned for BOTH:
+      * internal / non-public-API GraphQL requests — the request carries no
+        ``public_api_system_user`` attribute (e.g. internal callers or tests
+        that mock the request), so there is nothing to scope; and
+      * org-wide public-API tokens — ``scoped_calendar_ids`` returns ``None``.
+
+    A concrete ``set[int]`` (possibly empty) is returned only for a
+    provider-scoped token; nested resolvers then restrict returned objects to
+    that owner's calendars.
+
+    The import of ``public_api.scoping`` is deferred to avoid an import cycle
+    between ``calendar_integration`` and ``public_api``.
+    """
+    request = getattr(info.context, "request", None)
+    if request is None:
+        return None
+    system_user = getattr(request, "public_api_system_user", None)
+    if system_user is None:
+        return None
+    organization = getattr(request, "public_api_organization", None)
+    if organization is None:
+        return None
+
+    # Lazy import to break the public_api <-> calendar_integration import cycle.
+    from public_api.scoping import scoped_calendar_ids
+
+    return scoped_calendar_ids(system_user, organization)
+
+
+def _scoped_calendar_or_none(
+    calendar: "Calendar | None", allowed_ids: set[int] | None
+) -> "Calendar | None":
+    """Return ``calendar`` unless it is outside the owner's allowed set."""
+    if allowed_ids is None or calendar is None:
+        return calendar
+    return calendar if calendar.id in allowed_ids else None
+
+
+def _scoped_event_or_none(
+    event: "CalendarEvent | None", allowed_ids: set[int] | None
+) -> "CalendarEvent | None":
+    """Return ``event`` unless its calendar is outside the owner's allowed set."""
+    if allowed_ids is None or event is None:
+        return event
+    return event if getattr(event, "calendar_fk_id", None) in allowed_ids else None
+
+
+def _scoped_event_list(
+    events: "list[CalendarEvent]", allowed_ids: set[int] | None
+) -> "list[CalendarEvent]":
+    """Filter a list of events to those whose calendar is in the owner's set."""
+    if allowed_ids is None:
+        return events
+    return [e for e in events if getattr(e, "calendar_fk_id", None) in allowed_ids]
+
+
+def _scoped_blocked_time_or_none(
+    blocked_time: "BlockedTime | None", allowed_ids: set[int] | None
+) -> "BlockedTime | None":
+    """Return ``blocked_time`` unless its calendar is outside the owner's set."""
+    if allowed_ids is None or blocked_time is None:
+        return blocked_time
+    return blocked_time if getattr(blocked_time, "calendar_fk_id", None) in allowed_ids else None
+
+
+def _scoped_available_time_or_none(
+    available_time: "AvailableTime | None", allowed_ids: set[int] | None
+) -> "AvailableTime | None":
+    """Return ``available_time`` unless its calendar is outside the owner's set."""
+    if allowed_ids is None or available_time is None:
+        return available_time
+    return (
+        available_time if getattr(available_time, "calendar_fk_id", None) in allowed_ids else None
+    )
+
+
+def _scoped_calendar_list(
+    calendars: "list[Calendar]", allowed_ids: set[int] | None
+) -> "list[Calendar]":
+    """Filter a list of calendars to those in the owner's set."""
+    if allowed_ids is None:
+        return calendars
+    return [c for c in calendars if c.id in allowed_ids]
+
+
 @strawberry_django.type(Calendar)
 class CalendarGraphQLType:
     id: strawberry.auto  # noqa: A003
@@ -92,8 +198,12 @@ class EventExternalAttendanceGraphQLType:
     created: datetime.datetime
     modified: datetime.datetime
 
-    event: "CalendarEventGraphQLType" = strawberry_django.field()
     external_attendee: ExternalAttendeeGraphQLType = strawberry_django.field()
+
+    @strawberry.field
+    def event(self, info: strawberry.Info) -> "CalendarEventGraphQLType | None":
+        """The event back-pointer, suppressed when its calendar is outside the owner's scope."""
+        return _scoped_event_or_none(self.event, _owner_scoped_calendar_ids(info))  # type: ignore
 
 
 @strawberry_django.type(ResourceAllocation)
@@ -103,7 +213,10 @@ class ResourceAllocationGraphQLType:
     created: datetime.datetime
     modified: datetime.datetime
 
-    calendar: CalendarGraphQLType = strawberry_django.field()
+    @strawberry.field
+    def calendar(self, info: strawberry.Info) -> "CalendarGraphQLType | None":
+        """The allocated calendar, suppressed when outside the owner's scope."""
+        return _scoped_calendar_or_none(self.calendar, _owner_scoped_calendar_ids(info))  # type: ignore
 
 
 @strawberry_django.type(EventRecurrenceException)
@@ -114,8 +227,15 @@ class EventRecurrenceExceptionGraphQLType:
     created: datetime.datetime
     modified: datetime.datetime
 
-    parent_event: "CalendarEventGraphQLType" = strawberry_django.field()
-    modified_event: "CalendarEventGraphQLType" = strawberry_django.field()
+    @strawberry.field
+    def parent_event(self, info: strawberry.Info) -> "CalendarEventGraphQLType | None":
+        """Parent recurring event, suppressed when its calendar is outside the owner's scope."""
+        return _scoped_event_or_none(self.parent_event, _owner_scoped_calendar_ids(info))  # type: ignore
+
+    @strawberry.field
+    def modified_event(self, info: strawberry.Info) -> "CalendarEventGraphQLType | None":
+        """Modified-occurrence event, suppressed when its calendar is outside the owner's scope."""
+        return _scoped_event_or_none(self.modified_event, _owner_scoped_calendar_ids(info))  # type: ignore
 
 
 @strawberry_django.type(CalendarEvent)
@@ -132,37 +252,113 @@ class CalendarEventGraphQLType:
     created: datetime.datetime
     modified: datetime.datetime
 
-    # Relationships
-    calendar: CalendarGraphQLType = strawberry_django.field()
-    bundle_calendar: CalendarGraphQLType = strawberry_django.field()
-    bundle_primary_event: "CalendarEventGraphQLType" = strawberry_django.field()
-    bulk_modification_parent: "CalendarEventGraphQLType" = strawberry_django.field()
-    parent_recurring_object: "CalendarEventGraphQLType" = strawberry_django.field()
     recurrence_rule: RecurrenceRuleGraphQLType = strawberry_django.field()
 
     # Many-to-many relationships through intermediary models
     attendances: list[EventAttendanceGraphQLType] = strawberry_django.field()
     external_attendances: list[EventExternalAttendanceGraphQLType] = strawberry_django.field()
-    resource_allocations: list[ResourceAllocationGraphQLType] = strawberry_django.field()
     recurrence_exceptions: list[EventRecurrenceExceptionGraphQLType] = strawberry_django.field()
 
     # Direct many-to-many relationships (simplified access)
+    # attendees/external_attendees return PEOPLE (not calendars) — no cross-owner
+    # calendar leak, so they stay plain field exposures.
     attendees: list[UserGraphQLType] = strawberry_django.field()
     external_attendees: list[ExternalAttendeeGraphQLType] = strawberry_django.field()
-    resources: list[CalendarGraphQLType] = strawberry_django.field()
 
-    # Calendar group linkage (when booked through a CalendarGroup)
-    calendar_group: "CalendarGroupGraphQLType | None" = strawberry_django.field()
-    group_selections: list["CalendarEventGroupSelectionGraphQLType"] = strawberry_django.field()
+    # -- Owner-scoped relationship resolvers ---------------------------------
+    # Each is a strict no-op for org-wide/internal requests (allowed_ids is None);
+    # for a provider-scoped token it filters to the owner's calendar set.
 
-    # Bundle representations - events that represent this primary event in child calendars
-    bundle_representations: list["CalendarEventGraphQLType"] = strawberry_django.field()
+    @strawberry.field
+    def calendar(self, info: strawberry.Info) -> "CalendarGraphQLType | None":
+        """The event's own calendar, suppressed when outside the owner's scope."""
+        return _scoped_calendar_or_none(self.calendar, _owner_scoped_calendar_ids(info))  # type: ignore
 
-    # Bulk modifications - continuation events created by bulk modifications
-    bulk_modifications: list["CalendarEventGraphQLType"] = strawberry_django.field()
+    @strawberry.field
+    def bundle_calendar(self, info: strawberry.Info) -> "CalendarGraphQLType | None":
+        """The bundle calendar this event belongs to, suppressed when outside the owner's scope."""
+        return _scoped_calendar_or_none(self.bundle_calendar, _owner_scoped_calendar_ids(info))  # type: ignore
 
-    # Recurring instances - individual instances of this recurring event
-    recurring_instances: list["CalendarEventGraphQLType"] = strawberry_django.field()
+    @strawberry.field
+    def bundle_primary_event(self, info: strawberry.Info) -> "CalendarEventGraphQLType | None":
+        """The bundle primary event, suppressed when its calendar is outside the owner's scope."""
+        return _scoped_event_or_none(self.bundle_primary_event, _owner_scoped_calendar_ids(info))  # type: ignore
+
+    @strawberry.field
+    def bulk_modification_parent(self, info: strawberry.Info) -> "CalendarEventGraphQLType | None":
+        """The bulk-modification parent event, suppressed when outside the owner's scope."""
+        parent = self.bulk_modification_parent  # type: ignore[attr-defined]
+        return _scoped_event_or_none(parent, _owner_scoped_calendar_ids(info))  # type: ignore[return-value,arg-type]
+
+    @strawberry.field
+    def parent_recurring_object(self, info: strawberry.Info) -> "CalendarEventGraphQLType | None":
+        """The parent recurring event, suppressed when its calendar is outside the owner's scope."""
+        parent = self.parent_recurring_object  # type: ignore[attr-defined]
+        return _scoped_event_or_none(parent, _owner_scoped_calendar_ids(info))  # type: ignore[return-value,arg-type]
+
+    @strawberry.field
+    def resource_allocations(self, info: strawberry.Info) -> list["ResourceAllocationGraphQLType"]:
+        """Resource allocations, restricted to those on the owner's calendars."""
+        allocations = list(self.resource_allocations.all())  # type: ignore[attr-defined]
+        allowed_ids = _owner_scoped_calendar_ids(info)
+        if allowed_ids is not None:
+            allocations = [
+                a for a in allocations if getattr(a, "calendar_fk_id", None) in allowed_ids
+            ]
+        return allocations  # type: ignore
+
+    @strawberry.field
+    def resources(self, info: strawberry.Info) -> list["CalendarGraphQLType"]:
+        """Resource calendars allocated to this event, restricted to the owner's set."""
+        return _scoped_calendar_list(list(self.resources.all()), _owner_scoped_calendar_ids(info))  # type: ignore
+
+    @strawberry.field
+    def calendar_group(self, info: strawberry.Info) -> "CalendarGroupGraphQLType | None":
+        """The booking CalendarGroup. Suppressed entirely for scoped tokens: a group
+        aggregates calendars across providers, so exposing it (and its slots' candidate
+        pool) would leak other owners' calendars."""
+        if _owner_scoped_calendar_ids(info) is not None:
+            return None
+        return self.calendar_group  # type: ignore[attr-defined,return-value]
+
+    @strawberry.field
+    def group_selections(
+        self, info: strawberry.Info
+    ) -> list["CalendarEventGroupSelectionGraphQLType"]:
+        """Per-slot calendar picks for a group booking, restricted to the owner's calendars.
+
+        Each selection also routes its ``slot`` and ``calendar`` through scoped
+        resolvers so the second-hop ``group_selections.slot.calendars`` pool cannot
+        leak other owners' calendars."""
+        selections = list(self.group_selections.all())  # type: ignore[attr-defined]
+        allowed_ids = _owner_scoped_calendar_ids(info)
+        if allowed_ids is not None:
+            selections = [
+                s for s in selections if getattr(s, "calendar_fk_id", None) in allowed_ids
+            ]
+        return selections  # type: ignore
+
+    @strawberry.field
+    def bundle_representations(self, info: strawberry.Info) -> list["CalendarEventGraphQLType"]:
+        """Bundle representation events, restricted to the owner's calendars."""
+        reps = list(self.bundle_representations.all())  # type: ignore[attr-defined]
+        return _scoped_event_list(reps, _owner_scoped_calendar_ids(info))  # type: ignore[return-value]
+
+    @strawberry.field
+    def bulk_modifications(self, info: strawberry.Info) -> list["CalendarEventGraphQLType"]:
+        """Continuation events from bulk modifications, restricted to the owner's calendars."""
+        mods = list(self.bulk_modifications.all())  # type: ignore[attr-defined]
+        return _scoped_event_list(mods, _owner_scoped_calendar_ids(info))  # type: ignore[return-value]
+
+    @strawberry.field
+    def recurring_instances(self, info: strawberry.Info) -> list["CalendarEventGraphQLType"]:
+        """Individual recurring instances, restricted to the owner's calendars.
+
+        The reverse accessor for ``parent_recurring_object`` is the model-derived
+        ``calendarevent_recurring_instances`` (``related_name`` uses ``%(class)s``);
+        the GraphQL field name ``recurringInstances`` is preserved for the client."""
+        instances = list(self.calendarevent_recurring_instances.all())  # type: ignore[attr-defined]
+        return _scoped_event_list(instances, _owner_scoped_calendar_ids(info))  # type: ignore
 
     # Properties
     @strawberry.field
@@ -189,13 +385,23 @@ class CalendarEventGraphQLType:
 
 @strawberry_django.type(BlockedTimeRecurrenceException)
 class BlockedTimeRecurringExceptionGraphQLType:
-    parent_blocked_time: "BlockedTimeGraphQLType" = strawberry_django.field()
-    modified_blocked_time: "BlockedTimeGraphQLType" = strawberry_django.field()
     id: strawberry.auto  # noqa: A003
     exception_date: strawberry.auto
     is_cancelled: strawberry.auto
     created: datetime.datetime
     modified: datetime.datetime
+
+    @strawberry.field
+    def parent_blocked_time(self, info: strawberry.Info) -> "BlockedTimeGraphQLType | None":
+        """Parent recurring blocked time, suppressed when its calendar is outside the owner's scope."""
+        parent = self.parent_blocked_time  # type: ignore[attr-defined]
+        return _scoped_blocked_time_or_none(parent, _owner_scoped_calendar_ids(info))  # type: ignore[return-value,arg-type]
+
+    @strawberry.field
+    def modified_blocked_time(self, info: strawberry.Info) -> "BlockedTimeGraphQLType | None":
+        """Modified-occurrence blocked time, suppressed when its calendar is outside the owner's scope."""
+        modified = self.modified_blocked_time  # type: ignore[attr-defined]
+        return _scoped_blocked_time_or_none(modified, _owner_scoped_calendar_ids(info))  # type: ignore[return-value,arg-type]
 
 
 @strawberry_django.type(BlockedTime)
@@ -208,22 +414,36 @@ class BlockedTimeGraphQLType:
     modified: datetime.datetime
 
     user: UserGraphQLType = strawberry_django.field()
-    calendar: CalendarGraphQLType = strawberry_django.field()
     recurrence_rule: RecurrenceRuleGraphQLType = strawberry_django.field()
     recurrence_exceptions: list[BlockedTimeRecurringExceptionGraphQLType] = (
         strawberry_django.field()
     )
 
+    @strawberry.field
+    def calendar(self, info: strawberry.Info) -> "CalendarGraphQLType | None":
+        """The blocked time's calendar, suppressed when outside the owner's scope."""
+        return _scoped_calendar_or_none(self.calendar, _owner_scoped_calendar_ids(info))  # type: ignore
+
 
 @strawberry_django.type(AvailableTimeRecurrenceException)
 class AvailableTimeRecurringExceptionGraphQLType:
-    parent_available_time: "AvailableTimeGraphQLType" = strawberry_django.field()
-    modified_available_time: "AvailableTimeGraphQLType" = strawberry_django.field()
     id: strawberry.auto  # noqa: A003
     exception_date: strawberry.auto
     is_cancelled: strawberry.auto
     created: datetime.datetime
     modified: datetime.datetime
+
+    @strawberry.field
+    def parent_available_time(self, info: strawberry.Info) -> "AvailableTimeGraphQLType | None":
+        """Parent recurring available time, suppressed when its calendar is outside the owner's scope."""
+        parent = self.parent_available_time  # type: ignore[attr-defined]
+        return _scoped_available_time_or_none(parent, _owner_scoped_calendar_ids(info))  # type: ignore[return-value,arg-type]
+
+    @strawberry.field
+    def modified_available_time(self, info: strawberry.Info) -> "AvailableTimeGraphQLType | None":
+        """Modified-occurrence available time, suppressed when its calendar is outside the owner's scope."""
+        modified = self.modified_available_time  # type: ignore[attr-defined]
+        return _scoped_available_time_or_none(modified, _owner_scoped_calendar_ids(info))  # type: ignore[return-value,arg-type]
 
 
 @strawberry_django.type(AvailableTime)
@@ -235,11 +455,15 @@ class AvailableTimeGraphQLType:
     modified: datetime.datetime
 
     user: UserGraphQLType = strawberry_django.field()
-    calendar: CalendarGraphQLType = strawberry_django.field()
     recurrence_rule: RecurrenceRuleGraphQLType = strawberry_django.field()
     recurrence_exceptions: list[AvailableTimeRecurringExceptionGraphQLType] = (
         strawberry_django.field()
     )
+
+    @strawberry.field
+    def calendar(self, info: strawberry.Info) -> "CalendarGraphQLType | None":
+        """The available time's calendar, suppressed when outside the owner's scope."""
+        return _scoped_calendar_or_none(self.calendar, _owner_scoped_calendar_ids(info))  # type: ignore
 
 
 @strawberry.type
@@ -332,7 +556,15 @@ class CalendarGroupSlotGraphQLType:
     created: datetime.datetime
     modified: datetime.datetime
 
-    calendars: list[CalendarGraphQLType] = strawberry_django.field()
+    @strawberry.field
+    def calendars(self, info: strawberry.Info) -> list["CalendarGraphQLType"]:
+        """The slot's candidate-calendar pool, filtered to the owner's set for scoped tokens.
+
+        This is the SECOND-HOP leak: a scoped token cannot reach a slot via the
+        suppressed ``calendar_group``, but it can still reach one through the sibling
+        path ``calendarEvent.groupSelections.slot.calendars``. Filtering the pool here
+        closes that path; the entire cross-provider candidate pool is otherwise exposed."""
+        return _scoped_calendar_list(list(self.calendars.all()), _owner_scoped_calendar_ids(info))  # type: ignore
 
 
 @strawberry_django.type(CalendarGroup)
@@ -373,8 +605,21 @@ class CalendarEventGroupSelectionGraphQLType:
     created: datetime.datetime
     modified: datetime.datetime
 
-    slot: CalendarGroupSlotGraphQLType = strawberry_django.field()
-    calendar: CalendarGraphQLType = strawberry_django.field()
+    @strawberry.field
+    def slot(self, info: strawberry.Info) -> "CalendarGroupSlotGraphQLType | None":
+        """The slot this selection belongs to. Suppressed for scoped tokens: a slot's
+        candidate pool aggregates calendars across providers, and reaching it via
+        ``groupSelections.slot`` is the second-hop bypass of the ``calendar_group``
+        suppression. The pool itself is also filtered in
+        ``CalendarGroupSlotGraphQLType.calendars`` as defence in depth."""
+        if _owner_scoped_calendar_ids(info) is not None:
+            return None
+        return self.slot  # type: ignore[attr-defined,return-value]
+
+    @strawberry.field
+    def calendar(self, info: strawberry.Info) -> "CalendarGraphQLType | None":
+        """The selected calendar, suppressed when outside the owner's scope."""
+        return _scoped_calendar_or_none(self.calendar, _owner_scoped_calendar_ids(info))  # type: ignore
 
 
 @strawberry.type
