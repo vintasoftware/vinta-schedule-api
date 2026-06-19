@@ -75,11 +75,12 @@ class OrganizationService:
         )
         # The creator of the organization is its first admin — every org must
         # have at least one admin, and no one else exists yet to promote them.
-        OrganizationMembership.objects.create(
+        admin_membership = OrganizationMembership.objects.create(
             user=creator,
             organization=self.organization,
             role=OrganizationRole.ADMIN,
         )
+        self.webhook_membership_side_effects_service.on_member_created(admin_membership)
 
         if should_sync_rooms:
             # A newly created organization cannot have a service account yet, so

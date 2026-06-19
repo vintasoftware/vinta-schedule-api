@@ -37,11 +37,19 @@
 - Review: no BLOCKER; 1 SHOULD-FIX (use WebhookEnvelope TypedDict) fixed; NITs addressed (e2e retry test, `data: dict[str, Any]`).
 - PR-context: `.vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-1.md` (pending).
 
+### Phase 2 — Membership side-effects service + invitation-accept emission ✅
+- Status: implemented, fixed (1 BLOCKER + 2 SHOULD-FIX), verified, reviewed, pushed. PR pending (gh unavailable).
+- Model: Tier 3 (sonnet).
+- Branch: `plan/organization-member-created-webhook/phase-2` → base `phase-1`.
+- Commits: `e8a8807` (feat) + `0b0c748` (fix: defer to transaction.on_commit).
+- BLOCKER fixed: prod ATOMIC_REQUESTS=True meant the synchronous `send_event` raced the Celery worker before commit (lost delivery). Now `transaction.on_commit` inside `on_member_created` (protects Phase 3/4 callers too). Regression test added (capture execute=False).
+- Verify: ruff/mypy clean (0 new); makemigrations clean; full suite 2022 passed; check --deploy only dev warnings.
+- PR-context: `.vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-2.md` (pending).
+
 ## Current phase
-- Phase 2 — Membership side-effects service + invitation-accept emission. Tier 3 (sonnet).
+- Phase 3 — Org-creator (admin) emission. Tier 2 (sonnet/haiku).
 
 ## Remaining phases
-- Phase 2 — Membership side-effects service + invitation-accept emission
 - Phase 3 — Org-creator (admin) emission
 - Phase 4 — Provision-path coverage + multi-org refire
 - Phase 5 — GraphQL foundation: resource + WebhookConfiguration type
