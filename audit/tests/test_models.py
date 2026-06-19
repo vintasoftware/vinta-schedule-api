@@ -168,7 +168,9 @@ class TestAuditAffectedMemberships:
 
         # Intentional: membership_fk is the concrete FK column; original_manager is
         # unscoped, so filtering on the concrete column is correct here.
-        assert AuditAffectedMembership.original_manager.filter(membership_fk=membership).count() == 2
+        assert (
+            AuditAffectedMembership.original_manager.filter(membership_fk=membership).count() == 2
+        )
 
     def test_audit_affected_membership_factory_str_does_not_crash(self) -> None:
         """__str__ on AuditAffectedMembership must return a non-empty string."""

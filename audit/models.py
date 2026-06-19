@@ -116,4 +116,6 @@ class AuditAffectedMembership(OrganizationModel):
         ]
 
     def __str__(self) -> str:
-        return f"AuditAffectedMembership(audit={self.audit_fk_id}, membership={self.membership_fk_id})"
+        return (
+            f"AuditAffectedMembership(audit={self.audit_fk_id}, membership={self.membership_fk_id})"
+        )
