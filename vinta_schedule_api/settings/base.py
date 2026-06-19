@@ -34,6 +34,7 @@ INTERNAL_INSTALLED_APPS = [
     "accounts",
     "users",
     "organizations",
+    "audit",
     "payments",
     "notifications",
     "calendar_integration",
