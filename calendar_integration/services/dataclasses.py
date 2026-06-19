@@ -68,6 +68,12 @@ class CalendarEventInputData:
     recurrence_rule: str | None = None  # RRULE string
     parent_event_id: int | None = None  # For creating instances/exceptions
     is_recurring_exception: bool = False
+    # Group-booking authorization flag. When True, the per-calendar
+    # ``accepts_public_scheduling`` gate is bypassed because the group-level
+    # authorization check has already been performed by ``CalendarGroupService``
+    # before delegating to ``CalendarEventService``. Must NOT be set by external
+    # callers outside of the group-booking flow.
+    group_authorized: bool = False
 
 
 @dataclass
@@ -279,6 +285,7 @@ class CalendarGroupInputData:
     name: str
     description: str = ""
     slots: list[CalendarGroupSlotInputData] = dataclass_field(default_factory=list)
+    accepts_public_scheduling: bool | None = None
 
 
 @dataclass

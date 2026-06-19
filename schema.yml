@@ -10779,6 +10779,8 @@ components:
       - update_blocked_time
       - delete_blocked_time
       - calendar_bundle
+      - create_calendar
+      - update_calendar
       - create_calendar_bundle
       - update_calendar_bundle
       - disable_calendar_bundle
@@ -10819,6 +10821,8 @@ components:
         * `update_blocked_time` - Update Blocked Time
         * `delete_blocked_time` - Delete Blocked Time
         * `calendar_bundle` - Calendar Bundle
+        * `create_calendar` - Create Calendar
+        * `update_calendar` - Update Calendar
         * `create_calendar_bundle` - Create Calendar Bundle
         * `update_calendar_bundle` - Update Calendar Bundle
         * `disable_calendar_bundle` - Disable Calendar Bundle

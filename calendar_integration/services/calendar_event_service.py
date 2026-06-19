@@ -301,14 +301,24 @@ class CalendarEventService:
         # The permission-token scheduling check applies to the User / token flows. The
         # owner-scoped path's authorization is the independently-verified ownership above,
         # so it bypasses this check (the permission service has no token initialized for it).
-        if not is_owner_scoped_system_user and (
-            not context.calendar_permission_service.can_perform_scheduling(
-                calendar_id=calendar_id,
-                calendar_settings=CalendarSettingsData(
-                    manage_available_windows=calendar.manage_available_windows,
-                    accepts_public_scheduling=calendar.accepts_public_scheduling,
-                ),
-                event=event_data,
+        #
+        # The group-authorized path bypasses the per-calendar ``accepts_public_scheduling``
+        # gate when CalendarGroupService has already performed a group-level authorization
+        # check. This prevents a private member calendar from blocking a booking the group
+        # itself permits. It does NOT skip the owner-scoped check (which runs before this
+        # point) nor the availability check (which follows below).
+        if (
+            not is_owner_scoped_system_user
+            and not event_data.group_authorized
+            and (
+                not context.calendar_permission_service.can_perform_scheduling(
+                    calendar_id=calendar_id,
+                    calendar_settings=CalendarSettingsData(
+                        manage_available_windows=calendar.manage_available_windows,
+                        accepts_public_scheduling=calendar.accepts_public_scheduling,
+                    ),
+                    event=event_data,
+                )
             )
         ):
             raise PermissionDenied("You do not have permission to update this event.")

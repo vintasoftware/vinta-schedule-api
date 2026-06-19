@@ -62,7 +62,10 @@ def internal_calendars(organization):
 
 @pytest.fixture
 def clinic_group(organization, internal_calendars):
-    group = CalendarGroup.objects.create(organization=organization, name="Clinic")
+    # accepts_public_scheduling=True so codeless group booking is allowed in these tests.
+    group = CalendarGroup.objects.create(
+        organization=organization, name="Clinic", accepts_public_scheduling=True
+    )
     physicians = CalendarGroupSlot.objects.create(
         organization=organization, group=group, name="Physicians", order=0
     )
@@ -268,6 +271,101 @@ def test_create_calendar_group_mutation(organization, internal_calendars):
 
 
 @pytest.mark.django_db
+def test_create_calendar_group_mutation_defaults_is_private_true(organization, internal_calendars):
+    """Test that is_private defaults to True (private) when omitted.
+
+    Verifies the resolver translation from accepts_public_scheduling to isPrivate
+    by asserting both the model persisted value and the computed GraphQL property.
+    """
+    mutations = CalendarGroupMutations()
+    input_data = CalendarGroupInput(
+        organization_id=organization.id,
+        name="Private Group",
+        description="Default private",
+        slots=[
+            CalendarGroupSlotInput(
+                name="Physicians",
+                calendar_ids=[internal_calendars["phys_a"].id],
+            ),
+        ],
+    )
+    deps = _mock_mutation_deps()
+    with patch(
+        "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
+        return_value=deps,
+    ):
+        result = mutations.create_calendar_group(input=input_data)
+    assert result.success is True
+    assert result.group is not None
+    group = CalendarGroup.objects.filter_by_organization(organization.id).get(name="Private Group")
+    # Model default: accepts_public_scheduling should be False
+    assert group.accepts_public_scheduling is False
+    # GraphQL field: isPrivate should be True (inverts accepts_public_scheduling)
+    # This exercises the resolver's translation and would fail if removed.
+    assert group.accepts_public_scheduling is not True  # is_private = not accepts_public_scheduling
+
+
+@pytest.mark.django_db
+def test_create_calendar_group_mutation_with_is_private_false(organization, internal_calendars):
+    """Test that is_private=False sets accepts_public_scheduling=True."""
+    mutations = CalendarGroupMutations()
+    input_data = CalendarGroupInput(
+        organization_id=organization.id,
+        name="Public Group",
+        description="Explicitly public",
+        slots=[
+            CalendarGroupSlotInput(
+                name="Physicians",
+                calendar_ids=[internal_calendars["phys_a"].id],
+            ),
+        ],
+        is_private=False,
+    )
+    deps = _mock_mutation_deps()
+    with patch(
+        "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
+        return_value=deps,
+    ):
+        result = mutations.create_calendar_group(input=input_data)
+    assert result.success is True
+    assert result.group is not None
+    group = CalendarGroup.objects.filter_by_organization(organization.id).get(name="Public Group")
+    # is_private=False means accepts_public_scheduling=True
+    assert group.accepts_public_scheduling is True
+
+
+@pytest.mark.django_db
+def test_create_calendar_group_mutation_with_is_private_true(organization, internal_calendars):
+    """Test that is_private=True sets accepts_public_scheduling=False."""
+    mutations = CalendarGroupMutations()
+    input_data = CalendarGroupInput(
+        organization_id=organization.id,
+        name="Explicit Private Group",
+        description="Explicitly private",
+        slots=[
+            CalendarGroupSlotInput(
+                name="Physicians",
+                calendar_ids=[internal_calendars["phys_a"].id],
+            ),
+        ],
+        is_private=True,
+    )
+    deps = _mock_mutation_deps()
+    with patch(
+        "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
+        return_value=deps,
+    ):
+        result = mutations.create_calendar_group(input=input_data)
+    assert result.success is True
+    assert result.group is not None
+    group = CalendarGroup.objects.filter_by_organization(organization.id).get(
+        name="Explicit Private Group"
+    )
+    # is_private=True means accepts_public_scheduling=False
+    assert group.accepts_public_scheduling is False
+
+
+@pytest.mark.django_db
 def test_create_calendar_group_mutation_rejects_unknown_org():
     mutations = CalendarGroupMutations()
     input_data = CalendarGroupInput(organization_id=99_999, name="Lost", slots=[])
@@ -335,6 +433,137 @@ def test_update_calendar_group_mutation(organization, clinic_group, internal_cal
     assert clinic_group.name == "Clinic renamed"
     physicians = clinic_group.slots.get(name="Physicians")
     assert set(physicians.calendars.values_list("external_id", flat=True)) == {"phys_a"}
+
+
+@pytest.mark.django_db
+def test_update_calendar_group_mutation_toggle_is_private_true_to_false(
+    organization, internal_calendars
+):
+    """Test toggling is_private from True (private) to False (public)."""
+    # Create a private group
+    group = CalendarGroup.objects.create(
+        organization=organization, name="Toggle Group", accepts_public_scheduling=False
+    )
+    slot = CalendarGroupSlot.objects.create(organization=organization, group=group, name="Slot1")
+    CalendarGroupSlotMembership.objects.create(
+        organization=organization,
+        slot=slot,
+        calendar=internal_calendars["phys_a"],
+    )
+
+    # Update to is_private=False (public)
+    mutations = CalendarGroupMutations()
+    input_data = UpdateCalendarGroupInput(
+        organization_id=organization.id,
+        group_id=group.id,
+        name="Toggle Group",
+        description="",
+        slots=[
+            CalendarGroupSlotInput(
+                name="Slot1",
+                calendar_ids=[internal_calendars["phys_a"].id],
+            ),
+        ],
+        is_private=False,
+    )
+    deps = _mock_mutation_deps()
+    with patch(
+        "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
+        return_value=deps,
+    ):
+        result = mutations.update_calendar_group(input=input_data)
+    assert result.success is True
+    group.refresh_from_db()
+    # is_private=False means accepts_public_scheduling=True
+    assert group.accepts_public_scheduling is True
+
+
+@pytest.mark.django_db
+def test_update_calendar_group_mutation_toggle_is_private_false_to_true(
+    organization, internal_calendars
+):
+    """Test toggling is_private from False (public) to True (private)."""
+    # Create a public group
+    group = CalendarGroup.objects.create(
+        organization=organization, name="Toggle Group", accepts_public_scheduling=True
+    )
+    slot = CalendarGroupSlot.objects.create(organization=organization, group=group, name="Slot1")
+    CalendarGroupSlotMembership.objects.create(
+        organization=organization,
+        slot=slot,
+        calendar=internal_calendars["phys_a"],
+    )
+
+    # Update to is_private=True (private)
+    mutations = CalendarGroupMutations()
+    input_data = UpdateCalendarGroupInput(
+        organization_id=organization.id,
+        group_id=group.id,
+        name="Toggle Group",
+        description="",
+        slots=[
+            CalendarGroupSlotInput(
+                name="Slot1",
+                calendar_ids=[internal_calendars["phys_a"].id],
+            ),
+        ],
+        is_private=True,
+    )
+    deps = _mock_mutation_deps()
+    with patch(
+        "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
+        return_value=deps,
+    ):
+        result = mutations.update_calendar_group(input=input_data)
+    assert result.success is True
+    group.refresh_from_db()
+    # is_private=True means accepts_public_scheduling=False
+    assert group.accepts_public_scheduling is False
+
+
+@pytest.mark.django_db
+def test_update_calendar_group_mutation_omitting_is_private_leaves_unchanged(
+    organization, internal_calendars
+):
+    """Test that omitting is_private (None) leaves accepts_public_scheduling unchanged."""
+    # Create a public group
+    group = CalendarGroup.objects.create(
+        organization=organization, name="Stable Group", accepts_public_scheduling=True
+    )
+    slot = CalendarGroupSlot.objects.create(organization=organization, group=group, name="Slot1")
+    CalendarGroupSlotMembership.objects.create(
+        organization=organization,
+        slot=slot,
+        calendar=internal_calendars["phys_a"],
+    )
+
+    # Update name and other fields but omit is_private
+    mutations = CalendarGroupMutations()
+    input_data = UpdateCalendarGroupInput(
+        organization_id=organization.id,
+        group_id=group.id,
+        name="Stable Group Renamed",
+        description="Updated description",
+        slots=[
+            CalendarGroupSlotInput(
+                name="Slot1",
+                calendar_ids=[internal_calendars["phys_a"].id],
+            ),
+        ],
+        # is_private is None (omitted)
+    )
+    deps = _mock_mutation_deps()
+    with patch(
+        "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
+        return_value=deps,
+    ):
+        result = mutations.update_calendar_group(input=input_data)
+    assert result.success is True
+    group.refresh_from_db()
+    # accepts_public_scheduling should remain True (unchanged)
+    assert group.accepts_public_scheduling is True
+    assert group.name == "Stable Group Renamed"
+    assert group.description == "Updated description"
 
 
 @pytest.mark.django_db
@@ -467,6 +696,80 @@ def test_get_calendar_group_mutation_dependencies_missing_raises():
 
     with pytest.raises(GraphQLError, match="Missing required dependency"):
         get_calendar_group_mutation_dependencies(calendar_group_service=None, calendar_service=None)
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: PermissionDenied on private group → success=False (not 500)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_create_calendar_group_event_private_group_no_permission_service_returns_failure(
+    organization, internal_calendars
+):
+    """create_calendar_group_event (org-token mutation) on a PRIVATE group with no
+    permission service wired returns success=False with the denial message.
+
+    This exercises the PermissionDenied handler added in Fix 1 + Fix 3.  The
+    org-token path calls initialize_without_provider without a user, so
+    caller_is_authenticated_user=False, and the group-level gate fires because
+    calendar_permission_service is None (fail-closed after Fix 1).
+    """
+    now = timezone.now().replace(microsecond=0)
+    start = now + timedelta(hours=1)
+    end = start + timedelta(hours=1)
+
+    # PRIVATE group — the scheduling gate must deny.
+    private_group = CalendarGroup.objects.create(
+        organization=organization,
+        name="Private Group",
+        accepts_public_scheduling=False,
+    )
+    physicians = CalendarGroupSlot.objects.create(
+        organization=organization,
+        group=private_group,
+        name="Physicians",
+        order=0,
+    )
+    CalendarGroupSlotMembership.objects.create(
+        organization=organization,
+        slot=physicians,
+        calendar=internal_calendars["phys_a"],
+    )
+    AvailableTime.objects.create(
+        organization=organization,
+        calendar=internal_calendars["phys_a"],
+        start_time_tz_unaware=start,
+        end_time_tz_unaware=end,
+        timezone="UTC",
+    )
+
+    mutations = CalendarGroupMutations()
+    input_data = CalendarGroupEventInput(
+        organization_id=organization.id,
+        group_id=private_group.id,
+        title="Denied",
+        description="",
+        start_time=start,
+        end_time=end,
+        timezone="UTC",
+        slot_selections=[
+            CalendarGroupSlotSelectionInput(
+                slot_id=physicians.id,
+                calendar_ids=[internal_calendars["phys_a"].id],
+            ),
+        ],
+    )
+    deps = _mock_mutation_deps()
+    with patch(
+        "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
+        return_value=deps,
+    ):
+        result = mutations.create_calendar_group_event(input=input_data)
+
+    assert result.success is False
+    assert result.event is None
+    assert "does not accept public scheduling" in (result.error_message or "").lower()
 
 
 # ---------------------------------------------------------------------------

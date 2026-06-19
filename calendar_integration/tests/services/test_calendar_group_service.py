@@ -719,9 +719,13 @@ def grouped_service(organization, calendar_service):
 
 @pytest.fixture
 def clinic_group(grouped_service, internal_calendars):
+    # accepts_public_scheduling=True so codeless group booking is allowed in these tests.
+    # Tests that verify the gate itself (private group → PermissionDenied) create
+    # their own group with the default (False) and are in a separate test module.
     return grouped_service.create_group(
         CalendarGroupInputData(
             name="Clinic Appointments",
+            accepts_public_scheduling=True,
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -822,9 +826,11 @@ def test_create_grouped_event_primary_follows_slot_order(
     grouped_service, internal_calendars, organization
 ):
     # Rooms is ordered before Physicians — so primary picks from Rooms.
+    # accepts_public_scheduling=True: codeless booking is the path under test.
     group = grouped_service.create_group(
         CalendarGroupInputData(
             name="Rooms-first",
+            accepts_public_scheduling=True,
             slots=[
                 CalendarGroupSlotInputData(
                     name="Rooms",
@@ -912,9 +918,11 @@ def test_create_grouped_event_rejects_calendar_not_in_pool(
 @pytest.mark.django_db
 def test_create_grouped_event_rejects_underfilled_slot(grouped_service, internal_calendars):
     # Physicians requires 2; selection only provides 1 → reject.
+    # accepts_public_scheduling=True: gate must pass so the slot-validation error fires.
     group = grouped_service.create_group(
         CalendarGroupInputData(
             name="Strict",
+            accepts_public_scheduling=True,
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1027,9 +1035,12 @@ def test_create_grouped_event_rejects_slot_from_other_group(
     grouped_service, clinic_group, internal_calendars
 ):
     # Slot from another group.
+    # other_group: accepts_public_scheduling=True so the gate passes and
+    # the slot-mismatch error is the one that fires (not the gate).
     other_group = grouped_service.create_group(
         CalendarGroupInputData(
             name="Other",
+            accepts_public_scheduling=True,
             slots=[
                 CalendarGroupSlotInputData(
                     name="Extra",
@@ -1119,9 +1130,11 @@ def test_create_grouped_event_requires_matching_org_on_calendar_service(
 def test_create_grouped_event_multi_pick_slot(grouped_service, internal_calendars):
     # Slot requires 2 physicians; we also want to verify BlockedTimes are created
     # for every non-primary pick.
+    # accepts_public_scheduling=True: codeless booking is the path under test.
     group = grouped_service.create_group(
         CalendarGroupInputData(
             name="Two-physician",
+            accepts_public_scheduling=True,
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1314,9 +1327,11 @@ def test_create_grouped_event_skips_blocked_time_when_provider_will_sync(
     svc = CalendarGroupService(calendar_service=cs)
     svc.initialize(organization=organization)
 
+    # accepts_public_scheduling=True: codeless booking is the path under test.
     group = svc.create_group(
         CalendarGroupInputData(
             name="Two Google",
+            accepts_public_scheduling=True,
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1389,9 +1404,11 @@ def test_create_grouped_event_skips_blocked_time_for_microsoft_pair(organization
     svc = CalendarGroupService(calendar_service=cs)
     svc.initialize(organization=organization)
 
+    # accepts_public_scheduling=True: codeless booking is the path under test.
     group = svc.create_group(
         CalendarGroupInputData(
             name="Two MS",
+            accepts_public_scheduling=True,
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1464,9 +1481,11 @@ def test_create_grouped_event_blocks_cross_provider_pair(organization):
     svc = CalendarGroupService(calendar_service=cs)
     svc.initialize(organization=organization)
 
+    # accepts_public_scheduling=True: codeless booking is the path under test.
     group = svc.create_group(
         CalendarGroupInputData(
             name="Mixed provider",
+            accepts_public_scheduling=True,
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1537,9 +1556,11 @@ def test_create_grouped_event_still_blocks_resource_calendar_with_provider(
     svc = CalendarGroupService(calendar_service=cs)
     svc.initialize(organization=organization)
 
+    # accepts_public_scheduling=True: codeless booking is the path under test.
     group = svc.create_group(
         CalendarGroupInputData(
             name="Doc+Room",
+            accepts_public_scheduling=True,
             slots=[
                 CalendarGroupSlotInputData(name="Physicians", calendar_ids=[primary.id], order=0),
                 CalendarGroupSlotInputData(name="Rooms", calendar_ids=[room.id], order=1),
@@ -1607,9 +1628,11 @@ def test_create_grouped_event_blocks_when_primary_is_internal(organization):
     svc = CalendarGroupService(calendar_service=cs)
     svc.initialize(organization=organization)
 
+    # accepts_public_scheduling=True: codeless booking is the path under test.
     group = svc.create_group(
         CalendarGroupInputData(
             name="Internal Primary",
+            accepts_public_scheduling=True,
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",

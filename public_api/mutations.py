@@ -242,6 +242,7 @@ class CreateResourceCalendarInput:
     description: str | None = None
     capacity: int | None = None
     manage_available_windows: bool = False
+    is_private: bool = True
 
 
 @strawberry.type
@@ -461,6 +462,58 @@ class DeleteBlockedTimeResult:
 
 
 @strawberry.input
+class CreateCalendarInput:
+    """Input for creating a plain (personal) calendar.
+
+    Creates an internal PERSONAL calendar scoped to the token's organization.
+    is_private controls whether the calendar can be booked via codeless public scheduling
+    links. Defaults to True (private) — public scheduling is opt-in.
+    """
+
+    organization_id: int
+    name: str
+    description: str | None = None
+    is_private: bool = True
+
+
+@strawberry.type
+class CreateCalendarResult:
+    """Result of the createCalendar mutation."""
+
+    success: bool
+    error_message: str | None = None
+    calendar: CalendarGraphQLType | None = None
+
+
+@strawberry.input
+class UpdateCalendarInput:
+    """Input for partially updating a plain (personal) calendar.
+
+    Only provided (non-None) fields are updated; omitted fields leave the calendar unchanged.
+    The target calendar must belong to the token's organization and must be a PERSONAL type.
+    is_private: If provided (non-None), updates the calendar's privacy.
+        True -> accepts_public_scheduling=False (private, codeless booking disallowed).
+        False -> accepts_public_scheduling=True (public, codeless booking allowed).
+        Omit (None) to leave accepts_public_scheduling unchanged.
+    """
+
+    organization_id: int
+    calendar_id: int
+    name: str | None = None
+    description: str | None = None
+    is_private: bool | None = None
+
+
+@strawberry.type
+class UpdateCalendarResult:
+    """Result of the updateCalendar mutation."""
+
+    success: bool
+    error_message: str | None = None
+    calendar: CalendarGraphQLType | None = None
+
+
+@strawberry.input
 class CreateCalendarBundleInput:
     """Input for creating a bundle calendar from child calendars.
 
@@ -468,7 +521,8 @@ class CreateCalendarBundleInput:
     primary_calendar_id: Optional. The ID of one of the children_ids calendars that will
         be designated as the primary (hosts the real external event). Must be present in
         children_ids when provided.
-    No isPrivate — out of scope (non-goal).
+    is_private: Boolean indicating whether this bundle is private (default: True).
+        When True, codeless public scheduling is disabled for this bundle.
     """
 
     organization_id: int
@@ -476,6 +530,7 @@ class CreateCalendarBundleInput:
     description: str | None = None
     children_ids: list[int]
     primary_calendar_id: int | None = None
+    is_private: bool = True
 
 
 @strawberry.type
@@ -495,7 +550,8 @@ class UpdateCalendarBundleInput:
     description: If provided (non-None), updates the bundle's description.
     children_ids: Full desired set of child calendar IDs (reconciles adds/removals).
     primary_calendar_id: Optional. Must be present in children_ids when provided.
-    No isPrivate — out of scope (non-goal).
+    is_private: Optional. If provided (non-None), updates the bundle's privacy setting.
+        Omit to leave accepts_public_scheduling unchanged.
     """
 
     organization_id: int
@@ -504,6 +560,7 @@ class UpdateCalendarBundleInput:
     description: str | None = None
     children_ids: list[int]
     primary_calendar_id: int | None = None
+    is_private: bool | None = None
 
 
 @strawberry.type
@@ -1183,11 +1240,81 @@ class Mutation(CalendarGroupMutations):
                 description=input.description if input.description is not None else "",
                 capacity=input.capacity,
                 manage_available_windows=input.manage_available_windows,
+                accepts_public_scheduling=not input.is_private,
             )
         except (ValueError, DjangoValidationError, IntegrityError) as e:
             return CreateResourceCalendarResult(success=False, error_message=str(e))
 
         return CreateResourceCalendarResult(success=True, calendar=calendar)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_calendar(
+        self,
+        info: strawberry.Info,
+        input: CreateCalendarInput,  # noqa: A002
+    ) -> CreateCalendarResult:
+        """Create a plain (personal) internal calendar for the acting organization.
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Delegates to CalendarService.create_calendar with the supplied parameters.
+           is_private is translated to accepts_public_scheduling = not is_private.
+        3. Returns the created CalendarGraphQLType on success, or success=False + errorMessage
+           on failure.
+
+        The token's OrganizationResourceAccess must include the CALENDAR resource.
+        """
+        calendar_service, _org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = calendar_service.create_calendar(
+                name=input.name,
+                # Calendar.description is NOT NULL; normalize None -> "" to avoid IntegrityError.
+                description=input.description if input.description is not None else "",
+                accepts_public_scheduling=not input.is_private,
+            )
+        except (ValueError, DjangoValidationError, IntegrityError) as e:
+            return CreateCalendarResult(success=False, error_message=str(e))
+
+        return CreateCalendarResult(success=True, calendar=calendar)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def update_calendar(
+        self,
+        info: strawberry.Info,
+        input: UpdateCalendarInput,  # noqa: A002
+    ) -> UpdateCalendarResult:
+        """Partially update a plain (personal) calendar (org-scoped).
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Delegates to CalendarService.update_calendar with the supplied parameters.
+           Only provided (non-None) fields are written; omitted fields leave the calendar unchanged.
+           is_private (when provided) is translated to accepts_public_scheduling = not is_private.
+        3. Returns the updated CalendarGraphQLType on success, or success=False + errorMessage
+           on failure.
+
+        The token's OrganizationResourceAccess must include the CALENDAR resource.
+        """
+        calendar_service, _org = _get_org_and_init_calendar_service(info)
+
+        accepts_public_scheduling: bool | None = None
+        if input.is_private is not None:
+            accepts_public_scheduling = not input.is_private
+
+        try:
+            calendar = calendar_service.update_calendar(
+                calendar_id=input.calendar_id,
+                name=input.name,
+                description=input.description,
+                accepts_public_scheduling=accepts_public_scheduling,
+            )
+        except Calendar.DoesNotExist:
+            return UpdateCalendarResult(success=False, error_message="Calendar not found.")
+        except (ValueError, DjangoValidationError, IntegrityError) as e:
+            return UpdateCalendarResult(success=False, error_message=str(e))
+
+        return UpdateCalendarResult(success=True, calendar=calendar)  # type: ignore[arg-type]
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def disable_resource_calendar(
@@ -1711,6 +1838,7 @@ class Mutation(CalendarGroupMutations):
                 description=input.description if input.description is not None else "",
                 child_calendars=children,
                 primary_calendar=primary,
+                accepts_public_scheduling=not input.is_private,
             )
         except (CalendarIntegrationError, ValueError, DjangoValidationError, IntegrityError) as e:
             return CreateCalendarBundleResult(success=False, error_message=str(e))
@@ -1775,7 +1903,7 @@ class Mutation(CalendarGroupMutations):
                     .get(id=input.bundle_id)
                 )
 
-                # Update name/description in the resolver (the service does NOT update these).
+                # Update name/description/privacy in the resolver (the service does NOT update these).
                 # Runs inside the atomic block so a subsequent service failure rolls back the save.
                 update_fields: list[str] = []
                 if input.name is not None:
@@ -1784,6 +1912,9 @@ class Mutation(CalendarGroupMutations):
                 if input.description is not None:
                     bundle.description = input.description
                     update_fields.append("description")
+                if input.is_private is not None:
+                    bundle.accepts_public_scheduling = not input.is_private
+                    update_fields.append("accepts_public_scheduling")
                 if update_fields:
                     bundle.save(update_fields=update_fields)
 

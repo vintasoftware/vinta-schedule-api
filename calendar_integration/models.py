@@ -259,6 +259,14 @@ class CalendarGroup(OrganizationModel):
 
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    accepts_public_scheduling = models.BooleanField(
+        default=False,
+        help_text=(
+            "If true, this group can be booked by external users through public scheduling "
+            "links without a scheduling code. If false (default), the group is restricted: "
+            "booking requires a token or a single-use scheduling code."
+        ),
+    )
 
     objects: CalendarGroupManager = CalendarGroupManager()
 

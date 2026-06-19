@@ -17,6 +17,7 @@ from calendar_integration.exceptions import (
     EventManagementError,
     InvalidTokenError,
     NoAvailableTimeWindowsError,
+    PermissionServiceInitializationError,
     TokenAlreadyUsedError,
     TokenExpiredError,
     TokenRevokedError,
@@ -309,6 +310,7 @@ class CalendarGroupInput:
     name: str
     description: str = ""
     slots: list[CalendarGroupSlotInput] = strawberry.field(default_factory=list)
+    is_private: bool = True
 
 
 @strawberry.input
@@ -318,6 +320,7 @@ class UpdateCalendarGroupInput:
     name: str
     description: str = ""
     slots: list[CalendarGroupSlotInput] = strawberry.field(default_factory=list)
+    is_private: bool | None = None
 
 
 @strawberry.input
@@ -632,6 +635,7 @@ class CalendarGroupMutations:
                     name=input.name,
                     description=input.description,
                     slots=_to_slot_input_data(input.slots),
+                    accepts_public_scheduling=not input.is_private,
                 )
             )
         except CalendarGroupError as e:
@@ -649,12 +653,14 @@ class CalendarGroupMutations:
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_group_service.initialize(organization=organization)
         try:
+            accepts_public_scheduling = None if input.is_private is None else not input.is_private
             group = deps.calendar_group_service.update_group(
                 group_id=input.group_id,
                 data=CalendarGroupInputData(
                     name=input.name,
                     description=input.description,
                     slots=_to_slot_input_data(input.slots),
+                    accepts_public_scheduling=accepts_public_scheduling,
                 ),
             )
         except CalendarGroup.DoesNotExist:
@@ -721,6 +727,16 @@ class CalendarGroupMutations:
             event = deps.calendar_group_service.create_grouped_event(data)
         except CalendarGroup.DoesNotExist:
             return CalendarGroupEventResult(success=False, error_message="Group not found")
+        except PermissionDenied as e:
+            return CalendarGroupEventResult(success=False, error_message=str(e))
+        except PermissionServiceInitializationError:
+            return CalendarGroupEventResult(
+                success=False,
+                error_message=(
+                    "This group does not accept public scheduling. "
+                    "A token or scheduling code is required."
+                ),
+            )
         except CalendarGroupError as e:
             return CalendarGroupEventResult(success=False, error_message=str(e))
         return CalendarGroupEventResult(success=True, event=event)  # type: ignore[arg-type]
@@ -1360,6 +1376,14 @@ class CalendarGroupMutations:
                     user_or_token=input.code, organization=org
                 )
                 deps.calendar_group_service.calendar_service = deps.calendar_service
+                # Share the token-initialized permission service so the group-level
+                # ``can_perform_group_scheduling`` gate can read the group-scoped token.
+                # Without this the group service would hold a separate, uninitialized
+                # CalendarPermissionService instance and deny private-group bookings
+                # even when a valid group-scoped code was provided.
+                deps.calendar_group_service.calendar_permission_service = (
+                    deps.calendar_service.calendar_permission_service
+                )
                 deps.calendar_group_service.initialize(organization=org)
                 event = deps.calendar_group_service.create_grouped_event(group_event_data)
                 deps.calendar_permission_service.consume_code(token, source_ip)

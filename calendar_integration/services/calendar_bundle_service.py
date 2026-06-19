@@ -149,6 +149,7 @@ class CalendarBundleService:
         description: str | None = None,
         child_calendars: Iterable[Calendar] | None = None,
         primary_calendar: Calendar | None = None,
+        accepts_public_scheduling: bool = False,
     ) -> Calendar:
         """
         Create a new bundle calendar in the application without linking to an external provider.
@@ -158,6 +159,8 @@ class CalendarBundleService:
         :param child_calendars: Iterable of child Calendar instances to include in the bundle.
         :param primary_calendar: The child calendar to be designated as primary. Must be in
             child_calendars.
+        :param accepts_public_scheduling: If True, the bundle can be booked via codeless public
+            scheduling links. Defaults to False (private).
         :return: Created Calendar instance.
         """
         context = cast("BaseCalendarService", self._context)
@@ -176,6 +179,7 @@ class CalendarBundleService:
             description=description or "",
             provider=CalendarProvider.INTERNAL,
             calendar_type=CalendarType.BUNDLE,
+            accepts_public_scheduling=accepts_public_scheduling,
         )
 
         for calendar in child_calendars_list:
