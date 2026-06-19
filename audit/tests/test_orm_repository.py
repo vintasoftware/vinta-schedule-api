@@ -331,6 +331,41 @@ class TestDjangoORMAuditRepositoryAddDiff:
         db_audit = Audit.original_manager.get(pk=record.id)
         assert db_audit.diff == diff_payload
 
+    def test_add_with_empty_dict_diff_normalizes_to_none(self) -> None:
+        """add() with diff={} persists null (normalized) so has_diff=False matches it.
+
+        Diff invariant: diff is always either None or a NON-EMPTY dict.  An
+        empty dict ({}) carries no change information and is normalized to None
+        at write time so that the has_diff filter (diff__isnull) is correct.
+        """
+        from audit.types import AuditQuery
+
+        org = baker.make(Organization)
+        repo = DjangoORMAuditRepository()
+
+        data = AuditRecordData(
+            organization_id=org.pk,
+            action=AuditAction.UPDATE,
+            actor=make_system_actor(),
+            subject=make_subject(),
+            diff={},
+        )
+        record = repo.add(data)
+
+        # The DTO should reflect the normalized value.
+        assert record.diff is None
+
+        # The DB row must also have diff=NULL.
+        db_audit = Audit.original_manager.get(pk=record.id)
+        assert db_audit.diff is None
+
+        # has_diff=False must include this record; has_diff=True must exclude it.
+        page_no_diff = repo.query(AuditQuery(organization_id=org.pk, has_diff=False))
+        assert any(r.id == record.id for r in page_no_diff.items)
+
+        page_with_diff = repo.query(AuditQuery(organization_id=org.pk, has_diff=True))
+        assert all(r.id != record.id for r in page_with_diff.items)
+
 
 # ---------------------------------------------------------------------------
 # add() — returned AuditRecord completeness

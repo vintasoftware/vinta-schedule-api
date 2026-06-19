@@ -14,9 +14,12 @@ Covers:
 
 from __future__ import annotations
 
+import datetime as dt
+
 from django.contrib.auth import get_user_model
 
 import pytest
+from freezegun import freeze_time
 from model_bakery import baker
 
 from audit.constants import AuditAction, AuditActorType
@@ -322,6 +325,33 @@ class TestQueryAffectedMembershipIdFilter:
         # Confirm total is 1, not inflated by JOIN multiplication.
         assert page.total == 1
 
+    def test_affected_membership_id_filter_counts_multiple_audits_distinct(self) -> None:
+        """distinct() + count() interaction is correct when multiple audits share a membership.
+
+        Creates 3 audits in one org: 2 linked to membership M, 1 linked to a
+        different membership.  Querying by M must return exactly 2 results in
+        both total and items — proving that distinct() prevents JOIN inflation
+        while count() reflects the real match set.
+        """
+        org = baker.make(Organization)
+        m_target = make_membership(org)
+        m_other = make_membership(org)
+        repo = DjangoORMAuditRepository()
+
+        linked_1 = add_record(repo, org, affected_membership_ids=[m_target.pk])
+        linked_2 = add_record(repo, org, affected_membership_ids=[m_target.pk])
+        add_record(repo, org, affected_membership_ids=[m_other.pk])
+
+        page = repo.query(
+            AuditQuery(organization_id=org.pk, affected_membership_id=m_target.pk),
+            limit=100,
+        )
+        assert page.total == 2
+        assert len(page.items) == 2
+        ids = {r.id for r in page.items}
+        assert linked_1.id in ids
+        assert linked_2.id in ids
+
 
 # ---------------------------------------------------------------------------
 # created_after / created_before filters
@@ -480,15 +510,52 @@ class TestQuerySearch:
         page = repo.query(AuditQuery(organization_id=org.pk, search="not-a-number"), limit=100)
         assert isinstance(page.total, int)
 
-    def test_search_empty_string_does_not_raise(self) -> None:
-        """An empty search string must not raise (matches everything via icontains)."""
+    def test_search_empty_string_matches_all_records(self) -> None:
+        """An empty search string matches all records (icontains of "" matches anything)."""
         org = baker.make(Organization)
         repo = DjangoORMAuditRepository()
 
-        add_record(repo, org)
+        created = add_record(repo, org, subject=make_subject(subject_type="search.Target"))
 
         page = repo.query(AuditQuery(organization_id=org.pk, search=""), limit=100)
-        assert isinstance(page.total, int)
+        assert page.total >= 1
+        ids = {r.id for r in page.items}
+        assert created.id in ids
+
+    def test_search_combines_with_other_filter_via_and(self) -> None:
+        """search Q(OR) is ANDed with other AuditQuery filters.
+
+        Two audits share the same subject_type keyword; only the one matching
+        the action filter is returned when both filters are active.
+        """
+        org = baker.make(Organization)
+        repo = DjangoORMAuditRepository()
+
+        shared_subject_type = "shared.SharedModel"
+        create_rec = add_record(
+            repo,
+            org,
+            action=AuditAction.CREATE,
+            subject=make_subject(subject_type=shared_subject_type),
+        )
+        delete_rec = add_record(
+            repo,
+            org,
+            action=AuditAction.DELETE,
+            subject=make_subject(subject_type=shared_subject_type),
+        )
+
+        page = repo.query(
+            AuditQuery(
+                organization_id=org.pk,
+                search="SharedModel",
+                actions=[AuditAction.DELETE],
+            ),
+            limit=100,
+        )
+        ids = {r.id for r in page.items}
+        assert delete_rec.id in ids
+        assert create_rec.id not in ids
 
     def test_search_case_insensitive(self) -> None:
         """search is case-insensitive (icontains)."""
@@ -595,35 +662,37 @@ class TestQueryOrdering:
         org = baker.make(Organization)
         repo = DjangoORMAuditRepository()
 
-        first = add_record(repo, org)
-        second = add_record(repo, org)
+        ts_a = dt.datetime(2025, 1, 1, 10, 0, 0, tzinfo=dt.UTC)
+        ts_b = dt.datetime(2025, 1, 1, 11, 0, 0, tzinfo=dt.UTC)
+
+        with freeze_time(ts_a):
+            first = add_record(repo, org)
+        with freeze_time(ts_b):
+            second = add_record(repo, org)
 
         page = repo.query(AuditQuery(organization_id=org.pk), limit=10)
-        # Most recently created should appear first (or both have the same ts in fast tests).
         ids = [r.id for r in page.items]
-        if second.created_at > first.created_at:
-            # Strict ordering: second is newer, should come first.
-            assert ids.index(second.id) < ids.index(first.id)
-        # If same timestamp, order is DB-determined — we just check no crash.
-        assert len(ids) >= 2
+        # second was created at a later timestamp so must appear before first.
+        assert ids.index(second.id) < ids.index(first.id)
 
     def test_ascending_ordering_created_at(self) -> None:
         """ordering=created_at returns oldest record first."""
         org = baker.make(Organization)
         repo = DjangoORMAuditRepository()
 
-        # Use AuditFactory directly to get two persisted records via baker.
-        # They should have created_at timestamps that match DB insertion order.
+        ts_a = dt.datetime(2025, 1, 1, 10, 0, 0, tzinfo=dt.UTC)
+        ts_b = dt.datetime(2025, 1, 1, 11, 0, 0, tzinfo=dt.UTC)
+
         factory = AuditFactory()
-        a1 = factory.create(organization=org)
-        a2 = factory.create(organization=org)
+        with freeze_time(ts_a):
+            a1 = factory.create(organization=org)
+        with freeze_time(ts_b):
+            a2 = factory.create(organization=org)
 
         page = repo.query(AuditQuery(organization_id=org.pk), ordering="created_at", limit=10)
         ids = [r.id for r in page.items]
-        if a1.created_at < a2.created_at:
-            # Strict: a1 (older) should come before a2.
-            assert ids.index(a1.id) < ids.index(a2.id)
-        # If equal timestamps, just confirm no crash.
+        # a1 is older so must appear before a2 in ascending order.
+        assert ids.index(a1.id) < ids.index(a2.id)
 
     def test_invalid_ordering_falls_back_to_default(self) -> None:
         """An invalid ordering value falls back to -created_at without raising."""

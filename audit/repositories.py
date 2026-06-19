@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 
 # Ordered set of allowed ordering fields. Only these values are accepted in
 # DjangoORMAuditRepository.query; anything else falls back to the default.
+# Phase 6 (admin) must extend this whitelist if it needs to order by additional
+# fields (e.g. action, actor_type); unknown orderings silently fall back to
+# _DEFAULT_ORDERING rather than raising.
 _ALLOWED_ORDERING_FIELDS: frozenset[str] = frozenset(
     [
         "created_at",
@@ -113,6 +116,12 @@ class DjangoORMAuditRepository(AuditRepository):
         deduplicated before bulk_create to avoid violating the unique constraint
         (organization, audit_fk, membership_fk).
 
+        Diff invariant: diff is always either None or a NON-EMPTY dict.  An
+        empty dict ({}) means "no changes" and is normalized to None here so
+        that the has_diff filter (which uses diff__isnull) is meaningful.
+        Phase 4's compute_diff returns None for no-change, so callers should
+        rarely pass {} — but we normalize defensively.
+
         Returns:
             The persisted AuditRecord.
         """
@@ -126,6 +135,7 @@ class DjangoORMAuditRepository(AuditRepository):
             # Audit.objects.create requires organization_id or organization to be
             # supplied (BaseOrganizationModelManager.create guard). We pass
             # organization_id=data.organization_id which satisfies that check.
+            # Normalize diff: empty dict → None so diff__isnull reflects has_diff.
             audit = Audit.objects.create(
                 organization_id=data.organization_id,
                 action=data.action,
@@ -137,7 +147,7 @@ class DjangoORMAuditRepository(AuditRepository):
                 subject_type=data.subject.subject_type,
                 subject_id=data.subject.subject_id,
                 subject_label=data.subject.subject_label,
-                diff=data.diff,
+                diff=(data.diff or None),
             )
 
             # Deduplicate membership ids to avoid hitting the unique constraint.
@@ -156,7 +166,11 @@ class DjangoORMAuditRepository(AuditRepository):
                 )
 
         # Reload from DB with prefetched links to build the canonical DTO.
-        return self._fetch_and_map(audit.pk)  # type: ignore[return-value]
+        # Use self.get() to avoid duplicating the fetch-and-map logic.
+        result = self.get(audit.pk)
+        if result is None:
+            raise RuntimeError(f"Audit row {audit.pk} disappeared immediately after creation")
+        return result
 
     # ------------------------------------------------------------------
     # Read path
@@ -253,6 +267,8 @@ class DjangoORMAuditRepository(AuditRepository):
             qs = qs.filter(created_at__lt=q.created_before)
 
         if q.has_diff is not None:
+            # Relies on the diff invariant enforced by add(): diff is None or a
+            # NON-EMPTY dict; empty dicts are normalized to None at write time.
             qs = qs.filter(diff__isnull=not q.has_diff)
 
         if q.search is not None:
@@ -287,23 +303,6 @@ class DjangoORMAuditRepository(AuditRepository):
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
-
-    def _fetch_and_map(self, audit_id: int) -> AuditRecord | None:
-        """Fetch a persisted Audit by pk (with prefetched links) and map to DTO.
-
-        Used internally after add() to return a fully-populated AuditRecord
-        without relying on the in-memory state of the just-created instance
-        (which may not have related objects attached).
-        """
-        from audit.models import Audit
-
-        try:
-            audit = Audit.original_manager.prefetch_related("affected_membership_links").get(
-                pk=audit_id
-            )
-        except Audit.DoesNotExist:
-            return None
-        return self._to_record(audit)
 
     def _to_record(self, audit: Audit) -> AuditRecord:
         """Map an Audit model instance to the portable AuditRecord DTO.
