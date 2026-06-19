@@ -9,7 +9,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
-from public_api.constants import PublicAPIResources
+from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from users.models import Profile
 
@@ -472,6 +472,50 @@ class TestSystemUserTokenViewSetList:
         token_data = results[0]
         assert "token" not in token_data
         assert "long_lived_token_hash" not in token_data
+
+    def test_list_scoped_to_user_field_does_not_scale_with_token_count(
+        self, admin_client, organization, django_assert_max_num_queries
+    ):
+        """Listing N scoped tokens must NOT issue N extra membership queries.
+
+        The viewset annotates ``scoped_to_user_id_value`` via a JOIN so the
+        serializer never executes a per-token OrganizationMembership lookup.
+        We create 3 scoped tokens and assert the total query count is bounded
+        by a small constant that cannot scale with the number of tokens.
+        """
+        # Create the owner membership used for all scoped tokens
+        owner_user = baker.make(User, email="perf_owner@example.com")
+        baker.make(Profile, user=owner_user)
+        owner_membership = baker.make(
+            OrganizationMembership,
+            user=owner_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        # Create 3 scoped SystemUser tokens
+        for _i in range(3):
+            su = baker.make(
+                SystemUser,
+                organization=organization,
+                is_active=True,
+                scoped_to_membership_fk=owner_membership,
+            )
+            baker.make(ResourceAccess, system_user=su, resource_name=PublicAPIResources.CALENDAR)
+
+        # 10 queries is a generous ceiling that is still constant w.r.t. token count.
+        # Without the annotation fix a 3-token list would issue ≥3 extra membership
+        # queries, easily exceeding this bound if we added more tokens.
+        with django_assert_max_num_queries(10):
+            response = admin_client.get(self._url())
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        results = response.json()["results"]
+        assert len(results) == 3
+        # Every token must return the owner's user id — not null
+        for token in results:
+            assert token["scoped_to_user"] == owner_user.id
 
     def test_list_excludes_cross_org_tokens(self, admin_client, organization, other_organization):
         """List excludes tokens from other organizations."""
@@ -1190,3 +1234,414 @@ class TestSystemUserTokenViewSetPartialUpdate:
         payload = {"available_resources": [PublicAPIResources.USER]}
         response = admin_client.put(self._url(system_user.id), payload, format="json")
         assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+
+@pytest.mark.django_db
+class TestSystemUserTokenViewSetScopedCreate:
+    """POST /public-api-tokens/ — Phase 3 owner-scoped token creation."""
+
+    CREATE_URL = "api:PublicAPITokens-list"
+
+    def _url(self):
+        return reverse(self.CREATE_URL)
+
+    def _detail_url(self, token_id):
+        return reverse("api:PublicAPITokens-detail", kwargs={"pk": token_id})
+
+    @pytest.fixture
+    def provider_user(self, organization):
+        """A User that is an active member of the test organization (the owner to scope to)."""
+        user = baker.make(User, email="provider@example.com")
+        baker.make(Profile, user=user)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        return user
+
+    @pytest.fixture
+    def outside_user(self, other_organization):
+        """A User that belongs to a different organization (cross-org isolation test)."""
+        user = baker.make(User, email="outside@example.com")
+        baker.make(Profile, user=user)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=other_organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        return user
+
+    # ------------------------------------------------------------------
+    # Happy path — scoped token creation
+    # ------------------------------------------------------------------
+
+    def test_admin_creates_scoped_token_returns_201(
+        self, admin_client, organization, provider_user
+    ):
+        """Admin can create a scoped token; 201 returned with scoped_to_user set."""
+        # Use two resources from PROVIDER_SCOPED_RESOURCES
+        provider_resources = [PublicAPIResources.CALENDAR, PublicAPIResources.AVAILABLE_TIME]
+        assert all(r in PROVIDER_SCOPED_RESOURCES for r in provider_resources)
+
+        payload = {
+            "integration_name": "scoped_token_test",
+            "available_resources": provider_resources,
+            "scoped_to_user": provider_user.id,
+        }
+        response = admin_client.post(self._url(), payload, format="json")
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+
+    def test_scoped_token_response_includes_owner_id(
+        self, admin_client, organization, provider_user
+    ):
+        """Response scoped_to_user matches the supplied owner id."""
+        payload = {
+            "integration_name": "scoped_owner_check",
+            "available_resources": [PublicAPIResources.CALENDAR],
+            "scoped_to_user": provider_user.id,
+        }
+        response = admin_client.post(self._url(), payload, format="json")
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.json()["scoped_to_user"] == provider_user.id
+
+    def test_scoped_token_db_has_owner_and_token(self, admin_client, organization, provider_user):
+        """DB SystemUser membership FK resolves to the owner; token is non-empty in response."""
+        payload = {
+            "integration_name": "scoped_db_check",
+            "available_resources": [PublicAPIResources.CALENDAR],
+            "scoped_to_user": provider_user.id,
+        }
+        response = admin_client.post(self._url(), payload, format="json")
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        data = response.json()
+        # DB row must reference the owner via the membership FK
+        system_user = SystemUser.original_manager.select_related("scoped_to_membership_fk").get(
+            integration_name="scoped_db_check"
+        )
+        assert system_user.scoped_to_membership_fk.user_id == provider_user.id
+        assert system_user.scoped_to_membership_fk.organization_id == organization.id
+        # Plaintext token must be present in response exactly once
+        assert "token" in data
+        assert data["token"]  # non-empty string
+
+    # ------------------------------------------------------------------
+    # Backward-compat: no-owner path unchanged
+    # ------------------------------------------------------------------
+
+    def test_no_owner_create_returns_201_with_null_scoped_to_user(self, admin_client, organization):
+        """Create without scoped_to_user returns 201; response scoped_to_user is null."""
+        payload = {
+            "integration_name": "unscoped_token",
+            "available_resources": [PublicAPIResources.CALENDAR],
+        }
+        response = admin_client.post(self._url(), payload, format="json")
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.json()["scoped_to_user"] is None
+
+    def test_explicit_null_owner_create_returns_201(self, admin_client, organization):
+        """POSTing scoped_to_user: null explicitly is identical to omitting it — 201, null back."""
+        payload = {
+            "integration_name": "explicit_null_owner",
+            "available_resources": [PublicAPIResources.CALENDAR],
+            "scoped_to_user": None,
+        }
+        response = admin_client.post(self._url(), payload, format="json")
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.json()["scoped_to_user"] is None
+
+    def test_no_owner_create_accepts_non_provider_resource(self, admin_client, organization):
+        """Create without owner accepts resources outside PROVIDER_SCOPED_RESOURCES (e.g. user).
+
+        This proves the provider allow-list did NOT leak onto the no-owner path.
+        """
+        non_provider_resource = PublicAPIResources.USER
+        assert non_provider_resource not in PROVIDER_SCOPED_RESOURCES
+
+        payload = {
+            "integration_name": "unscoped_user_resource",
+            "available_resources": [non_provider_resource],
+        }
+        response = admin_client.post(self._url(), payload, format="json")
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        returned_resources = response.json()["available_resources"]
+        assert non_provider_resource in returned_resources
+
+    # ------------------------------------------------------------------
+    # Validation errors — scoped path
+    # ------------------------------------------------------------------
+
+    def test_over_grant_with_owner_returns_400(self, admin_client, organization, provider_user):
+        """Supplying a resource outside PROVIDER_SCOPED_RESOURCES with an owner yields 400."""
+        non_provider_resource = PublicAPIResources.USER
+        assert non_provider_resource not in PROVIDER_SCOPED_RESOURCES
+
+        payload = {
+            "integration_name": "over_grant_test",
+            "available_resources": [non_provider_resource],
+            "scoped_to_user": provider_user.id,
+        }
+        response = admin_client.post(self._url(), payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_over_grant_with_owner_does_not_create_system_user(
+        self, admin_client, organization, provider_user
+    ):
+        """A rejected over-grant must not leave a SystemUser row in the DB."""
+        payload = {
+            "integration_name": "over_grant_no_create",
+            "available_resources": [PublicAPIResources.USER],
+            "scoped_to_user": provider_user.id,
+        }
+        admin_client.post(self._url(), payload, format="json")
+        assert not SystemUser.objects.filter(integration_name="over_grant_no_create").exists()
+
+    def test_owner_outside_org_returns_400(self, admin_client, organization, outside_user):
+        """Owner from a different org yields 400 (cross-org mint rejected)."""
+        payload = {
+            "integration_name": "cross_org_owner_test",
+            "available_resources": [PublicAPIResources.CALENDAR],
+            "scoped_to_user": outside_user.id,
+        }
+        response = admin_client.post(self._url(), payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_owner_outside_org_does_not_create_system_user(
+        self, admin_client, organization, outside_user
+    ):
+        """A cross-org owner rejection must not leave a SystemUser row in the DB."""
+        payload = {
+            "integration_name": "cross_org_no_create",
+            "available_resources": [PublicAPIResources.CALENDAR],
+            "scoped_to_user": outside_user.id,
+        }
+        admin_client.post(self._url(), payload, format="json")
+        assert not SystemUser.objects.filter(integration_name="cross_org_no_create").exists()
+
+    def test_nonexistent_owner_id_returns_400(self, admin_client, organization):
+        """A scoped_to_user id that does not exist in the DB yields 400."""
+        payload = {
+            "integration_name": "nonexistent_owner_test",
+            "available_resources": [PublicAPIResources.CALENDAR],
+            "scoped_to_user": 999999999,
+        }
+        response = admin_client.post(self._url(), payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_nonexistent_owner_does_not_create_system_user(self, admin_client, organization):
+        """A nonexistent owner rejection must not leave a SystemUser row in the DB."""
+        payload = {
+            "integration_name": "nonexistent_owner_no_create",
+            "available_resources": [PublicAPIResources.CALENDAR],
+            "scoped_to_user": 999999999,
+        }
+        admin_client.post(self._url(), payload, format="json")
+        assert not SystemUser.objects.filter(
+            integration_name="nonexistent_owner_no_create"
+        ).exists()
+
+    # ------------------------------------------------------------------
+    # Owner immutability on update (PUT + PATCH)
+    # ------------------------------------------------------------------
+
+    def test_put_cannot_change_owner(self, admin_client, organization, provider_user):
+        """PUT with a different scoped_to_user in the body must not change the stored owner."""
+        # Create another org member to use as the "attempted replacement" owner
+        replacement_user = baker.make(User, email="replacement@example.com")
+        baker.make(Profile, user=replacement_user)
+        baker.make(
+            OrganizationMembership,
+            user=replacement_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        # Create a scoped token
+        create_response = admin_client.post(
+            self._url(),
+            {
+                "integration_name": "immutable_owner_put",
+                "available_resources": [PublicAPIResources.CALENDAR],
+                "scoped_to_user": provider_user.id,
+            },
+            format="json",
+        )
+        assert_response_status_code(create_response, status.HTTP_201_CREATED)
+        token_id = create_response.json()["id"]
+
+        # Attempt PUT with a different scoped_to_user
+        put_response = admin_client.put(
+            self._detail_url(token_id),
+            {
+                "available_resources": [PublicAPIResources.AVAILABLE_TIME],
+                "scoped_to_user": replacement_user.id,
+            },
+            format="json",
+        )
+        assert_response_status_code(put_response, status.HTTP_200_OK)
+
+        # Owner must remain the original provider_user (checked via the membership FK)
+        system_user = SystemUser.original_manager.select_related("scoped_to_membership_fk").get(
+            pk=token_id
+        )
+        assert system_user.scoped_to_membership_fk.user_id == provider_user.id
+
+    def test_patch_cannot_change_owner(self, admin_client, organization, provider_user):
+        """PATCH with a different scoped_to_user in the body must not change the stored owner."""
+        replacement_user = baker.make(User, email="patch_replacement@example.com")
+        baker.make(Profile, user=replacement_user)
+        baker.make(
+            OrganizationMembership,
+            user=replacement_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        # Create a scoped token
+        create_response = admin_client.post(
+            self._url(),
+            {
+                "integration_name": "immutable_owner_patch",
+                "available_resources": [PublicAPIResources.CALENDAR],
+                "scoped_to_user": provider_user.id,
+            },
+            format="json",
+        )
+        assert_response_status_code(create_response, status.HTTP_201_CREATED)
+        token_id = create_response.json()["id"]
+
+        # Attempt PATCH with a different scoped_to_user
+        patch_response = admin_client.patch(
+            self._detail_url(token_id),
+            {
+                "available_resources": [PublicAPIResources.AVAILABLE_TIME],
+                "scoped_to_user": replacement_user.id,
+            },
+            format="json",
+        )
+        assert_response_status_code(patch_response, status.HTTP_200_OK)
+
+        # Owner must remain the original provider_user (checked via the membership FK)
+        system_user = SystemUser.original_manager.select_related("scoped_to_membership_fk").get(
+            pk=token_id
+        )
+        assert system_user.scoped_to_membership_fk.user_id == provider_user.id
+
+
+@pytest.mark.django_db
+class TestSystemUserTokenUpdateEscalationGuard:
+    """Update-path allow-list guard: scoped tokens cannot gain non-provider resources."""
+
+    def _list_url(self):
+        return reverse("api:PublicAPITokens-list")
+
+    def _detail_url(self, token_id):
+        return reverse("api:PublicAPITokens-detail", kwargs={"pk": token_id})
+
+    @pytest.fixture
+    def provider_user(self, organization):
+        """A User that is an active member of the test organization."""
+        user = baker.make(User, email="guard_provider@example.com")
+        baker.make(Profile, user=user)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        return user
+
+    def test_update_cannot_add_non_provider_resource_to_scoped_token(
+        self, admin_client, organization, provider_user
+    ):
+        """PUT/PATCH a scoped token with a resource outside PROVIDER_SCOPED_RESOURCES returns 400
+        AND the persisted grants are unchanged."""
+        non_provider_resource = PublicAPIResources.USER
+        assert non_provider_resource not in PROVIDER_SCOPED_RESOURCES
+
+        # Create a scoped token with a safe provider resource.
+        create_response = admin_client.post(
+            self._list_url(),
+            {
+                "integration_name": "guard_scoped_token",
+                "available_resources": [PublicAPIResources.CALENDAR],
+                "scoped_to_user": provider_user.id,
+            },
+            format="json",
+        )
+        assert_response_status_code(create_response, status.HTTP_201_CREATED)
+        token_id = create_response.json()["id"]
+
+        # Capture grants before the attempted escalation.
+        grants_before = set(
+            ResourceAccess.objects.filter(system_user_id=token_id).values_list(
+                "resource_name", flat=True
+            )
+        )
+
+        # Attempt to PATCH in a non-provider resource.
+        patch_response = admin_client.patch(
+            self._detail_url(token_id),
+            {"available_resources": [PublicAPIResources.CALENDAR, non_provider_resource]},
+            format="json",
+        )
+        assert_response_status_code(patch_response, status.HTTP_400_BAD_REQUEST)
+
+        # Grants must be unchanged.
+        grants_after = set(
+            ResourceAccess.objects.filter(system_user_id=token_id).values_list(
+                "resource_name", flat=True
+            )
+        )
+        assert grants_after == grants_before
+
+        # Also verify PUT is blocked.
+        put_response = admin_client.put(
+            self._detail_url(token_id),
+            {"available_resources": [non_provider_resource]},
+            format="json",
+        )
+        assert_response_status_code(put_response, status.HTTP_400_BAD_REQUEST)
+
+        # Grants still unchanged after PUT attempt.
+        grants_final = set(
+            ResourceAccess.objects.filter(system_user_id=token_id).values_list(
+                "resource_name", flat=True
+            )
+        )
+        assert grants_final == grants_before
+
+    def test_update_org_wide_token_still_accepts_any_resource(self, admin_client, organization):
+        """An org-wide token (no owner) can be updated to include a non-provider resource.
+        This proves the guard is scoped-only and did not break org-wide editing."""
+        non_provider_resource = PublicAPIResources.USER
+        assert non_provider_resource not in PROVIDER_SCOPED_RESOURCES
+
+        # Create an org-wide token (no scoped_to_membership_fk).
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        # PATCH in a non-provider resource — must succeed.
+        patch_response = admin_client.patch(
+            self._detail_url(system_user.id),
+            {"available_resources": [non_provider_resource]},
+            format="json",
+        )
+        assert_response_status_code(patch_response, status.HTTP_200_OK)
+
+        # Verify the non-provider resource is now persisted.
+        persisted = set(
+            ResourceAccess.objects.filter(system_user=system_user).values_list(
+                "resource_name", flat=True
+            )
+        )
+        assert non_provider_resource in persisted
