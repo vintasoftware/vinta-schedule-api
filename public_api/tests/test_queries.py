@@ -4,6 +4,8 @@ import uuid
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 
 import pytest
 from model_bakery import baker
@@ -16,6 +18,8 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    CalendarGroupSlot,
+    CalendarGroupSlotMembership,
     CalendarOwnership,
     ChildrenCalendarRelationship,
 )
@@ -29,6 +33,7 @@ from organizations.models import Organization, OrganizationMembership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
+from users.factories import UserFactory
 from users.models import User
 
 
@@ -4344,4 +4349,1781 @@ class TestOwnerScopedTokenReadEnforcement:
         assert owner_event.id in returned_ids, "Owner's row must be returned"
         assert other_event.id not in returned_ids, (
             "Other-calendar row must be stripped by the post-expansion filter"
+        )
+
+
+# ---------------------------------------------------------------------------
+# owners field on CalendarGraphQLType
+# ---------------------------------------------------------------------------
+
+_CALENDARS_WITH_OWNERS_QUERY = """
+    query GetCalendarsWithOwners {
+        calendars {
+            id
+            name
+            owners {
+                id
+                isDefault
+                user {
+                    id
+                    email
+                    profile {
+                        firstName
+                        lastName
+                        profilePicture
+                    }
+                }
+            }
+        }
+    }
+"""
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestCalendarOwnersField:
+    """Phase 1: CalendarGraphQLType.owners — shape, org-scoping, and N+1 guard.
+
+    Tests:
+        (a) Shape: a calendar with two ownership rows returns both with the
+            correct ownership id (not user id), isDefault, and nested user/profile.
+        (b) Org-scoping: an org-A token never sees org-B owner data — not the
+            calendar, not the ownership row, not the user email, not the profile.
+        (c) N+1: resolving owners for N calendars issues a constant number of
+            queries, proving the prefetch_related wiring works.
+    """
+
+    @pytest.fixture
+    def organization(self):
+        return baker.make(Organization, name="OwnersTestOrg")
+
+    @pytest.fixture
+    def org_wide_client(self, organization):
+        client, _ = _make_org_wide_client(organization)
+        return client
+
+    # ------------------------------------------------------------------ #
+    # (a) Shape test                                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_owners_field_returns_correct_shape(
+        self, mock_rate_limiter, organization, org_wide_client
+    ):
+        """A calendar with two ownership rows returns both with correct ids and nested user/profile.
+
+        The `id` on each ownership record must be the CalendarOwnership pk, NOT the user id.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        calendar = baker.make(
+            Calendar,
+            organization=organization,
+            name="Owned Calendar",
+            external_id="owned-cal-shape-test",
+        )
+
+        user_a = UserFactory().create_user(
+            email="owner_a@shape.test", first_name="Alice", last_name="Smith"
+        )
+        user_b = UserFactory().create_user(
+            email="owner_b@shape.test", first_name="Bob", last_name="Jones"
+        )
+
+        ownership_a = baker.make(
+            CalendarOwnership,
+            calendar=calendar,
+            user=user_a,
+            organization=organization,
+            is_default=True,
+        )
+        ownership_b = baker.make(
+            CalendarOwnership,
+            calendar=calendar,
+            user=user_b,
+            organization=organization,
+            is_default=False,
+        )
+
+        response = org_wide_client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDARS_WITH_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        calendars = data["calendars"]
+
+        # Filter to the calendar we created (other tests may have left unrelated calendars)
+        target = next((c for c in calendars if int(c["id"]) == calendar.id), None)
+        assert target is not None, "Calendar not found in response"
+
+        owners = target["owners"]
+        assert len(owners) == 2, f"Expected 2 ownership rows, got {len(owners)}: {owners}"
+
+        owners_by_user_email = {o["user"]["email"]: o for o in owners}
+
+        # Verify ownership A
+        owner_a = owners_by_user_email["owner_a@shape.test"]
+        assert int(owner_a["id"]) == ownership_a.id, (
+            "Ownership id must be CalendarOwnership pk, not user id"
+        )
+        assert owner_a["isDefault"] is True
+        assert owner_a["user"]["id"] == str(user_a.id)
+        assert owner_a["user"]["profile"]["firstName"] == "Alice"
+        assert owner_a["user"]["profile"]["lastName"] == "Smith"
+        # UserFactory creates profiles via baker.make without an explicit profile_picture,
+        # so the field is empty/None; the GraphQL type resolves it as None.
+        assert owner_a["user"]["profile"]["profilePicture"] is None
+
+        # Verify ownership B
+        owner_b = owners_by_user_email["owner_b@shape.test"]
+        assert int(owner_b["id"]) == ownership_b.id, (
+            "Ownership id must be CalendarOwnership pk, not user id"
+        )
+        assert owner_b["isDefault"] is False
+        assert owner_b["user"]["id"] == str(user_b.id)
+        assert owner_b["user"]["profile"]["firstName"] == "Bob"
+        assert owner_b["user"]["profile"]["lastName"] == "Jones"
+        assert owner_b["user"]["profile"]["profilePicture"] is None
+
+    # ------------------------------------------------------------------ #
+    # (b) Org-scoping / cross-org leak                                    #
+    # ------------------------------------------------------------------ #
+
+    def test_owners_field_org_scoping_no_cross_org_leak(self, mock_rate_limiter):
+        """An org-A token querying calendars never receives org-B calendar or owner data.
+
+        This is the highest-priority correctness test: proves that traversing
+        CalendarOwnership rows from org-filtered calendars cannot leak org-B user
+        emails or profiles to an org-A token.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        org_a = baker.make(Organization, name="OrgA")
+        org_b = baker.make(Organization, name="OrgB")
+
+        user_a = UserFactory().create_user(
+            email="owner@org-a.test", first_name="OrgAFirst", last_name="OrgALast"
+        )
+        user_b = UserFactory().create_user(
+            email="owner@org-b.test", first_name="OrgBFirst", last_name="OrgBLast"
+        )
+
+        cal_a = baker.make(
+            Calendar,
+            organization=org_a,
+            name="Org A Calendar",
+            external_id="cal-org-a",
+        )
+        cal_b = baker.make(
+            Calendar,
+            organization=org_b,
+            name="Org B Calendar",
+            external_id="cal-org-b",
+        )
+
+        baker.make(
+            CalendarOwnership,
+            calendar=cal_a,
+            user=user_a,
+            organization=org_a,
+            is_default=True,
+        )
+        baker.make(
+            CalendarOwnership,
+            calendar=cal_b,
+            user=user_b,
+            organization=org_b,
+            is_default=True,
+        )
+
+        # Build a client scoped to org_a only
+        client_a, _ = _make_org_wide_client(org_a)
+
+        response = client_a.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDARS_WITH_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        calendars = data["calendars"]
+
+        # Collect all calendar ids and all owner user emails returned
+        returned_calendar_ids = {int(c["id"]) for c in calendars}
+        returned_owner_emails = {o["user"]["email"] for c in calendars for o in c["owners"]}
+        returned_profile_first_names = {
+            o["user"]["profile"]["firstName"]
+            for c in calendars
+            for o in c["owners"]
+            if o["user"]["profile"] is not None
+        }
+
+        # Org A's calendar must appear
+        assert cal_a.id in returned_calendar_ids, "Org A calendar should be returned"
+
+        # Org B's calendar must NOT appear
+        assert cal_b.id not in returned_calendar_ids, (
+            "Org B calendar must not be visible to an org-A token"
+        )
+
+        # Org B owner data must not appear anywhere in the response
+        assert "owner@org-b.test" not in returned_owner_emails, (
+            "Org B owner email must not leak to org-A token"
+        )
+        assert "OrgBFirst" not in returned_profile_first_names, (
+            "Org B owner profile must not leak to org-A token"
+        )
+
+        # Org A owner data must appear
+        assert "owner@org-a.test" in returned_owner_emails, "Org A owner email should be returned"
+
+    # ------------------------------------------------------------------ #
+    # (c) N+1 guard                                                        #
+    # ------------------------------------------------------------------ #
+
+    def test_owners_field_no_n_plus_1(self, mock_rate_limiter, organization, org_wide_client):
+        """Resolving owners for N calendars issues a constant number of queries.
+
+        Two-point comparison: captures the query count for 1 calendar (2 ownership
+        rows) and for 4 calendars (each with 2 ownership rows), then asserts the
+        two counts are equal (or differ by at most 1 for incidental per-row
+        overhead).  With prefetch_related working correctly, adding more calendars
+        must NOT add per-calendar owner/user/profile queries.
+        """
+        mock_rate_limiter.side_effect = lambda *a, **k: iter([None])
+
+        def _make_calendar_with_owners(index):
+            cal = baker.make(
+                Calendar,
+                organization=organization,
+                name=f"N+1 Calendar {index}",
+                external_id=f"n1-cal-{index}",
+            )
+            for j in range(2):
+                u = UserFactory().create_user(
+                    email=f"n1_owner_{index}_{j}@n1test.local",
+                    first_name=f"F{index}{j}",
+                    last_name=f"L{index}{j}",
+                )
+                baker.make(
+                    CalendarOwnership,
+                    calendar=cal,
+                    user=u,
+                    organization=organization,
+                    is_default=(j == 0),
+                )
+
+        # --- Point 1: N=1 calendar with 2 owners ---
+        _make_calendar_with_owners(0)
+
+        with CaptureQueriesContext(connection) as ctx_1:
+            response_1 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDARS_WITH_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_1)
+        queries_n1 = len(ctx_1.captured_queries)
+
+        # --- Point 2: N=4 calendars with 2 owners each (3 more added, total 4) ---
+        for i in range(1, 4):
+            _make_calendar_with_owners(i)
+
+        with CaptureQueriesContext(connection) as ctx_4:
+            response_4 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDARS_WITH_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_4)
+        queries_n4 = len(ctx_4.captured_queries)
+
+        # With prefetch_related the ownership/user/profile lookups are batched and
+        # the query count must not grow with the number of calendars.  Allow a slack
+        # of 1 to tolerate minor incidental per-row overhead.
+        assert abs(queries_n4 - queries_n1) <= 1, (
+            f"N+1 detected: N=1 calendar used {queries_n1} queries, "
+            f"N=4 calendars used {queries_n4} queries. "
+            "With prefetch_related the counts must be equal (or differ by at most 1). "
+            "Check prefetch_related wiring in the owners resolver."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — N+1 hardening: calendarGroups and calendarBundles entry points
+# ---------------------------------------------------------------------------
+
+_CALENDAR_GROUPS_WITH_OWNERS_QUERY = """
+    query GetCalendarGroupsWithOwners {
+        calendarGroups {
+            id
+            name
+            slots {
+                id
+                name
+                calendars {
+                    id
+                    name
+                    owners {
+                        id
+                        isDefault
+                        user {
+                            id
+                            email
+                            profile {
+                                firstName
+                                lastName
+                                profilePicture
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+"""
+
+_CALENDAR_BUNDLES_WITH_OWNERS_QUERY = """
+    query GetCalendarBundlesWithOwners {
+        calendarBundles {
+            id
+            name
+            children {
+                id
+                name
+                owners {
+                    id
+                    isDefault
+                    user {
+                        id
+                        email
+                        profile {
+                            firstName
+                            lastName
+                            profilePicture
+                        }
+                    }
+                }
+            }
+        }
+    }
+"""
+
+
+def _make_group_with_owned_slot_calendars(
+    organization: Organization,
+    group_name: str,
+    calendar_count: int = 2,
+) -> tuple[CalendarGroup, CalendarGroupSlot, list[Calendar], list[CalendarOwnership]]:
+    """Create a CalendarGroup with one slot holding `calendar_count` calendars, each with one owner.
+
+    Uses .objects.create() for OrganizationForeignKey models (baker.make cannot resolve the
+    virtual ForeignObject field on CalendarGroupSlot.group and CalendarGroupSlotMembership.slot).
+
+    Returns (group, slot, calendars, ownerships).
+    """
+    group = baker.make(CalendarGroup, organization=organization, name=group_name)
+    slot = CalendarGroupSlot.objects.create(
+        organization=organization,
+        group=group,
+        name=f"{group_name} slot",
+    )
+    calendars = []
+    ownerships = []
+    for i in range(calendar_count):
+        cal = baker.make(
+            Calendar,
+            organization=organization,
+            name=f"{group_name} cal {i}",
+            external_id=str(uuid.uuid4()),
+        )
+        CalendarGroupSlotMembership.objects.create(
+            organization=organization,
+            slot=slot,
+            calendar=cal,
+        )
+        owner = UserFactory().create_user(
+            email=f"owner_{group_name.lower().replace(' ', '_')}_{i}@test.local",
+            first_name=f"First{i}",
+            last_name=f"Last{i}",
+        )
+        ownership = baker.make(
+            CalendarOwnership,
+            organization=organization,
+            calendar=cal,
+            user=owner,
+            is_default=True,
+        )
+        calendars.append(cal)
+        ownerships.append(ownership)
+    return group, slot, calendars, ownerships
+
+
+def _make_group_wide_client(organization: Organization) -> tuple[APIClient, SystemUser]:
+    """Create an org-wide API client with CALENDAR_GROUP resource grant.
+
+    Only CALENDAR_GROUP is needed: the calendarGroups resolver checks that resource;
+    there is no separate CALENDAR gate on the slots/calendars sub-fields.
+    """
+    auth_service = PublicAPIAuthService()
+    system_user, token = auth_service.create_system_user(
+        integration_name=f"group_wide_{organization.pk}", organization=organization
+    )
+    baker.make(
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR_GROUP
+    )
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+    return client, system_user
+
+
+def _make_bundle_wide_client(organization: Organization) -> tuple[APIClient, SystemUser]:
+    """Create an org-wide API client with CALENDAR_BUNDLE resource grant.
+
+    Only CALENDAR_BUNDLE is needed: the calendarBundles resolver checks that resource;
+    there is no separate CALENDAR gate on the children/owners sub-fields.
+    """
+    auth_service = PublicAPIAuthService()
+    system_user, token = auth_service.create_system_user(
+        integration_name=f"bundle_wide_{organization.pk}", organization=organization
+    )
+    baker.make(
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR_BUNDLE
+    )
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+    return client, system_user
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestCalendarGroupOwnersN1:
+    """Phase 2: calendarGroups -> slots -> calendars -> owners is N+1-free.
+
+    Tests:
+        (a) Shape: owners are returned correctly through the group -> slot -> calendar path.
+        (b) N+1: resolving owners for N slot calendars in groups issues a constant
+            number of queries.
+    """
+
+    @pytest.fixture
+    def organization(self):
+        return baker.make(Organization, name="GroupOwnersTestOrg")
+
+    @pytest.fixture
+    def org_wide_client(self, organization):
+        client, _ = _make_group_wide_client(organization)
+        return client
+
+    # ------------------------------------------------------------------ #
+    # (a) Shape test                                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_group_slot_calendars_owners_shape(
+        self, mock_rate_limiter, organization, org_wide_client
+    ):
+        """Owners are returned for slot calendars when queried through calendarGroups."""
+        mock_rate_limiter.return_value = iter([None])
+
+        _group, _slot, _calendars, _ownerships = _make_group_with_owned_slot_calendars(
+            organization, group_name="ShapeGroup", calendar_count=2
+        )
+
+        response = org_wide_client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_GROUPS_WITH_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        groups = data["calendarGroups"]
+        assert len(groups) >= 1
+
+        # Find the group we created
+        target_group = next((g for g in groups if g["name"] == "ShapeGroup"), None)
+        assert target_group is not None, "ShapeGroup not found in calendarGroups response"
+
+        assert len(target_group["slots"]) == 1
+        slot_data = target_group["slots"][0]
+        returned_calendars = slot_data["calendars"]
+        assert len(returned_calendars) == 2
+
+        # Each calendar must have exactly 1 owner
+        for cal_data in returned_calendars:
+            assert len(cal_data["owners"]) == 1
+            owner_data = cal_data["owners"][0]
+            assert owner_data["isDefault"] is True
+            assert owner_data["user"]["email"].endswith("@test.local")
+            assert owner_data["user"]["profile"]["firstName"].startswith("First")
+
+    # ------------------------------------------------------------------ #
+    # (b) N+1 guard                                                        #
+    # ------------------------------------------------------------------ #
+
+    def test_group_slot_calendars_owners_no_n_plus_1(
+        self, mock_rate_limiter, organization, org_wide_client
+    ):
+        """Resolving owners through calendarGroups issues a constant number of queries.
+
+        Two-point comparison: 1 slot calendar vs 3 slot calendars in a group.
+        With prefetch_related wiring the count must not grow per slot calendar.
+        """
+        mock_rate_limiter.side_effect = lambda *a, **k: iter([None])
+
+        # Point 1: group with 1 slot calendar
+        _make_group_with_owned_slot_calendars(organization, group_name="N1Group1", calendar_count=1)
+
+        with CaptureQueriesContext(connection) as ctx_1:
+            response_1 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_GROUPS_WITH_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_1)
+        queries_n1 = len(ctx_1.captured_queries)
+
+        # Point 2: add another group with 3 slot calendars (total groups = 2)
+        _make_group_with_owned_slot_calendars(organization, group_name="N1Group3", calendar_count=3)
+
+        with CaptureQueriesContext(connection) as ctx_2:
+            response_2 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_GROUPS_WITH_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_2)
+        queries_n2 = len(ctx_2.captured_queries)
+
+        # Query count must not grow per slot calendar added.
+        # With correct prefetch there is no per-group/per-item overhead; allow a slack of 1
+        # only to tolerate incidental auth/middleware jitter between the two requests.
+        assert abs(queries_n2 - queries_n1) <= 1, (
+            f"N+1 detected through calendarGroups: 1 slot-cal used {queries_n1} queries, "
+            f"adding 3 more slot-cals used {queries_n2} queries. "
+            "With prefetch_related the count must not grow per calendar. "
+            "Check slots__calendars__ownerships__user__profile prefetch on calendar_groups resolver."
+        )
+
+    # ------------------------------------------------------------------ #
+    # (c) Org-scoping                                                      #
+    # ------------------------------------------------------------------ #
+
+    def test_group_slot_calendars_owners_org_scoping(self, mock_rate_limiter):
+        """An org-A token querying calendarGroups sees no org-B group, calendar, or owner data."""
+        mock_rate_limiter.return_value = iter([None])
+
+        org_a = baker.make(Organization, name="OrgA-GroupOwners")
+        org_b = baker.make(Organization, name="OrgB-GroupOwners")
+
+        # Org A: group with 1 owned slot calendar
+        _group_a, _slot_a, _calendars_a, ownerships_a = _make_group_with_owned_slot_calendars(
+            org_a, group_name="GroupA", calendar_count=1
+        )
+
+        # Org B: group with 1 slot calendar owned by a distinctly-named user —
+        # must never appear in org-A response.
+        group_b = baker.make(CalendarGroup, organization=org_b, name="GroupB")
+        slot_b = CalendarGroupSlot.objects.create(
+            organization=org_b, group=group_b, name="GroupB slot"
+        )
+        cal_b = baker.make(
+            Calendar,
+            organization=org_b,
+            name="GroupB cal 0",
+            external_id=str(uuid.uuid4()),
+        )
+        CalendarGroupSlotMembership.objects.create(organization=org_b, slot=slot_b, calendar=cal_b)
+        owner_b = UserFactory().create_user(
+            email="owner_b@group_scope.test",
+            first_name="OrgBGroupFirst",
+            last_name="OrgBGroupLast",
+        )
+        baker.make(
+            CalendarOwnership,
+            organization=org_b,
+            calendar=cal_b,
+            user=owner_b,
+            is_default=True,
+        )
+
+        client_a, _ = _make_group_wide_client(org_a)
+
+        response = client_a.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_GROUPS_WITH_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        groups = data["calendarGroups"]
+
+        returned_group_ids = {int(g["id"]) for g in groups}
+        all_calendar_ids = {
+            int(c["id"]) for g in groups for s in g["slots"] for c in s["calendars"]
+        }
+        all_owner_emails = {
+            o["user"]["email"]
+            for g in groups
+            for s in g["slots"]
+            for c in s["calendars"]
+            for o in c["owners"]
+        }
+        all_owner_first_names = {
+            o["user"]["profile"]["firstName"]
+            for g in groups
+            for s in g["slots"]
+            for c in s["calendars"]
+            for o in c["owners"]
+            if o["user"]["profile"] is not None
+        }
+
+        # Org A group must appear
+        assert _group_a.id in returned_group_ids, "Org A group must be visible"
+
+        # Org B group must NOT appear
+        assert group_b.id not in returned_group_ids, (
+            "Org B group must not be visible to an org-A token"
+        )
+
+        # Org B calendar must NOT appear
+        assert cal_b.id not in all_calendar_ids, (
+            "Org B calendar must not be visible to an org-A token"
+        )
+
+        # Org B owner data must not leak
+        assert "owner_b@group_scope.test" not in all_owner_emails, (
+            "Org B slot-calendar owner email must not leak to org-A token"
+        )
+        assert "OrgBGroupFirst" not in all_owner_first_names, (
+            "Org B slot-calendar owner profile must not leak to org-A token"
+        )
+
+        # Org A owner data must appear
+        owner_a_email = ownerships_a[0].user.email
+        assert owner_a_email in all_owner_emails, "Org A slot-calendar owner email must be returned"
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestCalendarBundleOwnersN1:
+    """Phase 2: calendarBundles -> children -> owners is N+1-free.
+
+    Tests:
+        (a) Shape: owners are returned correctly for both bundle children through the
+            calendarBundles query.
+        (b) N+1: resolving owners for N children is query-count-bounded.
+        (c) Org-scoping: an org-A token sees no org-B child or owner data.
+    """
+
+    @pytest.fixture
+    def organization(self):
+        return baker.make(Organization, name="BundleOwnersTestOrg")
+
+    @pytest.fixture
+    def org_wide_client(self, organization):
+        client, _ = _make_bundle_wide_client(organization)
+        return client
+
+    # ------------------------------------------------------------------ #
+    # (a) Shape test                                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_bundle_children_owners_shape(self, mock_rate_limiter, organization, org_wide_client):
+        """Owners are returned for bundle children when queried through calendarBundles."""
+        mock_rate_limiter.return_value = iter([None])
+
+        bundle, children = _make_bundle_calendar(organization, name="ShapeBundle", child_count=2)
+
+        # Add an owner to each child
+        child_ownerships = []
+        for i, child in enumerate(children):
+            owner = UserFactory().create_user(
+                email=f"child_owner_{i}@bundle_shape.test",
+                first_name=f"Child{i}First",
+                last_name=f"Child{i}Last",
+            )
+            ownership = baker.make(
+                CalendarOwnership,
+                organization=organization,
+                calendar=child,
+                user=owner,
+                is_default=True,
+            )
+            child_ownerships.append(ownership)
+
+        response = org_wide_client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_WITH_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+
+        target = next((b for b in bundles if int(b["id"]) == bundle.id), None)
+        assert target is not None, "Bundle not found in calendarBundles response"
+
+        returned_children = target["children"]
+        assert len(returned_children) == 2
+
+        # Each child must expose exactly 1 owner
+        for child_data in returned_children:
+            assert len(child_data["owners"]) == 1, (
+                f"Child {child_data['id']} expected 1 owner, got {len(child_data['owners'])}"
+            )
+            owner_data = child_data["owners"][0]
+            assert owner_data["isDefault"] is True
+            assert "@bundle_shape.test" in owner_data["user"]["email"]
+            assert owner_data["user"]["profile"]["firstName"].startswith("Child")
+            # UserFactory creates profiles via baker.make without an explicit profile_picture,
+            # so the field is empty/None; the GraphQL type resolves it as None.
+            assert owner_data["user"]["profile"]["profilePicture"] is None
+
+    # ------------------------------------------------------------------ #
+    # (b) N+1 guard                                                        #
+    # ------------------------------------------------------------------ #
+
+    def test_bundle_children_owners_no_n_plus_1(
+        self, mock_rate_limiter, organization, org_wide_client
+    ):
+        """Resolving owners through calendarBundles children issues a constant number of queries.
+
+        Two-point comparison: bundle with 1 child vs bundle with 4 children.
+        With bundle_children__ownerships__user__profile prefetch the count must not grow.
+        """
+        mock_rate_limiter.side_effect = lambda *a, **k: iter([None])
+
+        def _make_bundle_with_owned_children(name: str, child_count: int):
+            bundle, children = _make_bundle_calendar(
+                organization, name=name, child_count=child_count
+            )
+            for i, child in enumerate(children):
+                owner = UserFactory().create_user(
+                    email=f"n1_{name.lower().replace(' ', '_')}_{i}@n1bundle.test",
+                    first_name=f"BF{i}",
+                    last_name=f"BL{i}",
+                )
+                baker.make(
+                    CalendarOwnership,
+                    organization=organization,
+                    calendar=child,
+                    user=owner,
+                    is_default=True,
+                )
+            return bundle
+
+        # Point 1: bundle with 1 child
+        _make_bundle_with_owned_children("N1Bundle1", child_count=1)
+
+        with CaptureQueriesContext(connection) as ctx_1:
+            response_1 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_BUNDLES_WITH_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_1)
+        queries_n1 = len(ctx_1.captured_queries)
+
+        # Point 2: add another bundle with 4 children (total bundles = 2)
+        _make_bundle_with_owned_children("N1Bundle4", child_count=4)
+
+        with CaptureQueriesContext(connection) as ctx_2:
+            response_2 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_BUNDLES_WITH_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_2)
+        queries_n2 = len(ctx_2.captured_queries)
+
+        # Query count must not grow per child added.
+        # With correct prefetch there is no per-bundle/per-item overhead; allow a slack of 1
+        # only to tolerate incidental auth/middleware jitter between the two requests.
+        assert abs(queries_n2 - queries_n1) <= 1, (
+            f"N+1 detected through calendarBundles children: 1 child used {queries_n1} queries, "
+            f"adding 4 more children used {queries_n2} queries. "
+            "With prefetch_related the count must not grow per child. "
+            "Check bundle_children__ownerships__user__profile prefetch on calendar_bundles resolver."
+        )
+
+    # ------------------------------------------------------------------ #
+    # (c) Org-scoping                                                      #
+    # ------------------------------------------------------------------ #
+
+    def test_bundle_children_owners_org_scoping(self, mock_rate_limiter):
+        """An org-A token querying calendarBundles sees no org-B child or owner data."""
+        mock_rate_limiter.return_value = iter([None])
+
+        org_a = baker.make(Organization, name="OrgA-BundleOwners")
+        org_b = baker.make(Organization, name="OrgB-BundleOwners")
+
+        # Org A: bundle with 1 owned child
+        bundle_a, children_a = _make_bundle_calendar(org_a, name="BundleA", child_count=1)
+        owner_a = UserFactory().create_user(
+            email="owner_a@bundle_scope.test",
+            first_name="OrgABundleFirst",
+            last_name="OrgABundleLast",
+        )
+        baker.make(
+            CalendarOwnership,
+            organization=org_a,
+            calendar=children_a[0],
+            user=owner_a,
+            is_default=True,
+        )
+
+        # Org B: bundle with 1 owned child — must never appear in org-A response
+        bundle_b, children_b = _make_bundle_calendar(org_b, name="BundleB", child_count=1)
+        owner_b = UserFactory().create_user(
+            email="owner_b@bundle_scope.test",
+            first_name="OrgBBundleFirst",
+            last_name="OrgBBundleLast",
+        )
+        baker.make(
+            CalendarOwnership,
+            organization=org_b,
+            calendar=children_b[0],
+            user=owner_b,
+            is_default=True,
+        )
+
+        client_a, _ = _make_bundle_wide_client(org_a)
+
+        response = client_a.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_WITH_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+
+        returned_bundle_ids = {int(b["id"]) for b in bundles}
+        all_child_owner_emails = {
+            o["user"]["email"] for b in bundles for c in b["children"] for o in c["owners"]
+        }
+        all_child_owner_first_names = {
+            o["user"]["profile"]["firstName"]
+            for b in bundles
+            for c in b["children"]
+            for o in c["owners"]
+        }
+
+        # Org A bundle appears
+        assert bundle_a.id in returned_bundle_ids, "Org A bundle must be visible"
+        # Org B bundle must NOT appear
+        assert bundle_b.id not in returned_bundle_ids, (
+            "Org B bundle must not be visible to org-A token"
+        )
+        # Org B owner data must not leak
+        assert "owner_b@bundle_scope.test" not in all_child_owner_emails, (
+            "Org B child owner email must not leak to org-A token"
+        )
+        assert "OrgBBundleFirst" not in all_child_owner_first_names, (
+            "Org B child owner profile must not leak to org-A token"
+        )
+        # Org A owner data appears
+        assert "owner_a@bundle_scope.test" in all_child_owner_emails, (
+            "Org A child owner email must be returned"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — owners on CalendarBundleGraphQLType (bundle parent)
+# ---------------------------------------------------------------------------
+
+_CALENDAR_BUNDLES_PARENT_OWNERS_QUERY = """
+    query GetCalendarBundlesParentOwners {
+        calendarBundles {
+            id
+            name
+            owners {
+                id
+                isDefault
+                user {
+                    id
+                    email
+                    profile {
+                        firstName
+                        lastName
+                        profilePicture
+                    }
+                }
+            }
+        }
+    }
+"""
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestCalendarBundleParentOwners:
+    """Phase 3: CalendarBundleGraphQLType.owners — shape, org-scoping, and N+1 guard.
+
+    Tests:
+        (a) Shape: a bundle calendar with one or two ownership rows returns both
+            with the correct ownership id (not user id), isDefault, and nested
+            user/profile.
+        (b) Org-scoping: an org-A token never sees org-B bundle or owner data.
+        (c) N+1: resolving owners for N bundles issues a constant number of
+            queries, proving the prefetch_related wiring works.
+    """
+
+    @pytest.fixture
+    def organization(self):
+        return baker.make(Organization, name="BundleParentOwnersTestOrg")
+
+    @pytest.fixture
+    def org_wide_client(self, organization):
+        client, _ = _make_bundle_wide_client(organization)
+        return client
+
+    # ------------------------------------------------------------------ #
+    # (a) Shape test                                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_bundle_parent_owners_field_returns_correct_shape(
+        self, mock_rate_limiter, organization, org_wide_client
+    ):
+        """A bundle with one or two ownership rows returns both with correct ids and
+        nested user/profile.
+
+        The `id` on each ownership record must be the CalendarOwnership pk, NOT the user id.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        bundle, _ = _make_bundle_calendar(organization, name="Owned Bundle", child_count=1)
+
+        user_a = UserFactory().create_user(
+            email="bundle_owner_a@shape.test", first_name="BundleAlice", last_name="BundleSmith"
+        )
+        user_b = UserFactory().create_user(
+            email="bundle_owner_b@shape.test", first_name="BundleBob", last_name="BundleJones"
+        )
+
+        ownership_a = baker.make(
+            CalendarOwnership,
+            calendar=bundle,
+            user=user_a,
+            organization=organization,
+            is_default=True,
+        )
+        ownership_b = baker.make(
+            CalendarOwnership,
+            calendar=bundle,
+            user=user_b,
+            organization=organization,
+            is_default=False,
+        )
+
+        response = org_wide_client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+
+        # Filter to the bundle we created
+        target = next((b for b in bundles if int(b["id"]) == bundle.id), None)
+        assert target is not None, "Bundle not found in response"
+
+        owners = target["owners"]
+        assert len(owners) == 2, f"Expected 2 ownership rows, got {len(owners)}: {owners}"
+
+        owners_by_user_email = {o["user"]["email"]: o for o in owners}
+
+        # Verify ownership A
+        owner_a = owners_by_user_email["bundle_owner_a@shape.test"]
+        assert int(owner_a["id"]) == ownership_a.id, (
+            "Ownership id must be CalendarOwnership pk, not user id"
+        )
+        assert owner_a["isDefault"] is True
+        assert owner_a["user"]["id"] == str(user_a.id)
+        assert owner_a["user"]["profile"]["firstName"] == "BundleAlice"
+        assert owner_a["user"]["profile"]["lastName"] == "BundleSmith"
+        assert owner_a["user"]["profile"]["profilePicture"] is None
+
+        # Verify ownership B
+        owner_b = owners_by_user_email["bundle_owner_b@shape.test"]
+        assert int(owner_b["id"]) == ownership_b.id, (
+            "Ownership id must be CalendarOwnership pk, not user id"
+        )
+        assert owner_b["isDefault"] is False
+        assert owner_b["user"]["id"] == str(user_b.id)
+        assert owner_b["user"]["profile"]["firstName"] == "BundleBob"
+        assert owner_b["user"]["profile"]["lastName"] == "BundleJones"
+        assert owner_b["user"]["profile"]["profilePicture"] is None
+
+    # ------------------------------------------------------------------ #
+    # (b) Org-scoping / cross-org leak                                    #
+    # ------------------------------------------------------------------ #
+
+    def test_bundle_parent_owners_field_org_scoping_no_cross_org_leak(self, mock_rate_limiter):
+        """An org-A token querying calendarBundles never receives org-B bundle or owner data.
+
+        This is the highest-priority correctness test: proves that traversing
+        CalendarOwnership rows from org-filtered bundles cannot leak org-B user
+        emails or profiles to an org-A token.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        org_a = baker.make(Organization, name="OrgA-BundleParentOwners")
+        org_b = baker.make(Organization, name="OrgB-BundleParentOwners")
+
+        user_a = UserFactory().create_user(
+            email="bundle_owner@org-a.test",
+            first_name="OrgABundleFirst",
+            last_name="OrgABundleLast",
+        )
+        user_b = UserFactory().create_user(
+            email="bundle_owner@org-b.test",
+            first_name="OrgBBundleFirst",
+            last_name="OrgBBundleLast",
+        )
+
+        bundle_a, _ = _make_bundle_calendar(org_a, name="Org A Bundle", child_count=1)
+        bundle_b, _ = _make_bundle_calendar(org_b, name="Org B Bundle", child_count=1)
+
+        baker.make(
+            CalendarOwnership,
+            calendar=bundle_a,
+            user=user_a,
+            organization=org_a,
+            is_default=True,
+        )
+        baker.make(
+            CalendarOwnership,
+            calendar=bundle_b,
+            user=user_b,
+            organization=org_b,
+            is_default=True,
+        )
+
+        # Build a client scoped to org_a only
+        client_a, _ = _make_bundle_wide_client(org_a)
+
+        response = client_a.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+
+        # Collect all bundle ids and all owner user emails returned
+        returned_bundle_ids = {int(b["id"]) for b in bundles}
+        returned_owner_emails = {o["user"]["email"] for b in bundles for o in b["owners"]}
+        returned_profile_first_names = {
+            o["user"]["profile"]["firstName"]
+            for b in bundles
+            for o in b["owners"]
+            if o["user"]["profile"] is not None
+        }
+
+        # Org A's bundle must appear
+        assert bundle_a.id in returned_bundle_ids, "Org A bundle should be returned"
+
+        # Org B's bundle must NOT appear
+        assert bundle_b.id not in returned_bundle_ids, (
+            "Org B bundle must not be visible to an org-A token"
+        )
+
+        # Org B owner data must not appear anywhere in the response
+        assert "bundle_owner@org-b.test" not in returned_owner_emails, (
+            "Org B bundle owner email must not leak to org-A token"
+        )
+        assert "OrgBBundleFirst" not in returned_profile_first_names, (
+            "Org B bundle owner profile must not leak to org-A token"
+        )
+
+        # Org A owner data must appear
+        assert "bundle_owner@org-a.test" in returned_owner_emails, (
+            "Org A bundle owner email should be returned"
+        )
+
+    # ------------------------------------------------------------------ #
+    # (c) N+1 guard                                                        #
+    # ------------------------------------------------------------------ #
+
+    def test_bundle_parent_owners_field_no_n_plus_1(
+        self, mock_rate_limiter, organization, org_wide_client
+    ):
+        """Resolving owners for N bundles issues a constant number of queries.
+
+        Two-point comparison: captures the query count for 1 bundle (2 ownership
+        rows) and for 4 bundles (each with 2 ownership rows), then asserts the
+        two counts are equal (or differ by at most 1 for incidental per-row
+        overhead). With prefetch_related working correctly, adding more bundles
+        must NOT add per-bundle owner/user/profile queries.
+        """
+        mock_rate_limiter.side_effect = lambda *a, **k: iter([None])
+
+        def _make_bundle_with_owners(index):
+            bundle, _ = _make_bundle_calendar(
+                organization, name=f"N+1 Bundle {index}", child_count=1
+            )
+            for j in range(2):
+                u = UserFactory().create_user(
+                    email=f"n1_bundle_owner_{index}_{j}@n1test.local",
+                    first_name=f"BF{index}{j}",
+                    last_name=f"BL{index}{j}",
+                )
+                baker.make(
+                    CalendarOwnership,
+                    calendar=bundle,
+                    user=u,
+                    organization=organization,
+                    is_default=(j == 0),
+                )
+
+        # --- Point 1: N=1 bundle with 2 owners ---
+        _make_bundle_with_owners(0)
+
+        with CaptureQueriesContext(connection) as ctx_1:
+            response_1 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_1)
+        queries_n1 = len(ctx_1.captured_queries)
+
+        # --- Point 2: N=4 bundles with 2 owners each (3 more added, total 4) ---
+        for i in range(1, 4):
+            _make_bundle_with_owners(i)
+
+        with CaptureQueriesContext(connection) as ctx_4:
+            response_4 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_4)
+        queries_n4 = len(ctx_4.captured_queries)
+
+        # With prefetch_related the ownership/user/profile lookups are batched and
+        # the query count must not grow with the number of bundles. Allow a slack
+        # of 1 to tolerate minor incidental per-row overhead.
+        assert abs(queries_n4 - queries_n1) <= 1, (
+            f"N+1 detected: N=1 bundle used {queries_n1} queries, "
+            f"N=4 bundles used {queries_n4} queries. "
+            "With prefetch_related the counts must be equal (or differ by at most 1). "
+            "Check prefetch_related wiring in the owners resolver on CalendarBundleGraphQLType."
+        )
+
+
+# ---------------------------------------------------------------------------
+# calendarEvents userId filter integration tests (Phase 2)
+# ---------------------------------------------------------------------------
+
+_CALENDAR_EVENTS_BY_USER_QUERY = """
+    query GetCalendarEvents($userId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+        calendarEvents(
+            userId: $userId,
+            startDatetime: $startDatetime,
+            endDatetime: $endDatetime
+        ) {
+            id
+            title
+        }
+    }
+"""
+
+_CALENDAR_EVENTS_BY_USER_AND_CALENDAR_QUERY = """
+    query GetCalendarEvents(
+        $userId: Int!,
+        $calendarId: Int!,
+        $startDatetime: DateTime!,
+        $endDatetime: DateTime!
+    ) {
+        calendarEvents(
+            userId: $userId,
+            calendarId: $calendarId,
+            startDatetime: $startDatetime,
+            endDatetime: $endDatetime
+        ) {
+            id
+            title
+        }
+    }
+"""
+
+_CALENDAR_EVENTS_BY_CALENDAR_ONLY_QUERY = """
+    query GetCalendarEvents($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+        calendarEvents(
+            calendarId: $calendarId,
+            startDatetime: $startDatetime,
+            endDatetime: $endDatetime
+        ) {
+            id
+            title
+        }
+    }
+"""
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestCalendarEventsUserIdFilter:
+    """Integration tests for the userId filter on calendarEvents.
+
+    Covers: own-user events returned, org boundary, calendarId intersection,
+    recurring expansion, scoped-token enforcement, backwards-compat.
+    """
+
+    @pytest.fixture
+    def organization(self):
+        return baker.make(Organization, name="UserFilterTestOrg")
+
+    @pytest.fixture
+    def owner(self):
+        return baker.make(User, email="owner@userfilter.test")
+
+    @pytest.fixture
+    def other_owner(self):
+        return baker.make(User, email="other@userfilter.test")
+
+    @pytest.fixture
+    def owner_calendar(self, organization, owner):
+        """Calendar owned by `owner` in the test org."""
+        cal = baker.make(
+            Calendar,
+            organization=organization,
+            name="Owner Calendar (userId tests)",
+            external_id="owner-cal-userid-test",
+        )
+        baker.make(CalendarOwnership, calendar=cal, user=owner, organization=organization)
+        return cal
+
+    @pytest.fixture
+    def other_calendar(self, organization, other_owner):
+        """Calendar owned by `other_owner` in the same org."""
+        cal = baker.make(
+            Calendar,
+            organization=organization,
+            name="Other Calendar (userId tests)",
+            external_id="other-cal-userid-test",
+        )
+        baker.make(CalendarOwnership, calendar=cal, user=other_owner, organization=organization)
+        return cal
+
+    @pytest.fixture
+    def owner_event(self, organization, owner_calendar):
+        """An event on the owner's calendar."""
+        return baker.make(
+            CalendarEvent,
+            calendar=owner_calendar,
+            organization=organization,
+            title="Owner Event (userId tests)",
+            external_id="owner-evt-userid-test",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+    @pytest.fixture
+    def other_event(self, organization, other_calendar):
+        """An event on the other owner's calendar."""
+        return baker.make(
+            CalendarEvent,
+            calendar=other_calendar,
+            organization=organization,
+            title="Other Event (userId tests)",
+            external_id="other-evt-userid-test",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+    # ------------------------------------------------------------------ #
+    # userId returns only that user's events                               #
+    # ------------------------------------------------------------------ #
+
+    def test_user_id_returns_only_owner_events(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        other_calendar,
+        owner_event,
+        other_event,
+    ):
+        """calendarEvents(userId) returns only events on calendars owned by that user."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "userId": owner.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+
+        assert owner_event.id in returned_ids, "Owner's event must be returned via userId"
+        assert other_event.id not in returned_ids, (
+            "Event on another user's calendar must NOT be returned via userId"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Organization boundary                                                #
+    # ------------------------------------------------------------------ #
+
+    def test_user_id_org_boundary_no_cross_org_leak(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+    ):
+        """A userId whose owned calendars belong to another org returns empty; no cross-org leak."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create a second org; the *same* `owner` user ID does NOT own any calendars there.
+        other_org = baker.make(Organization, name="Other Org (userId boundary)")
+        client, _ = _make_org_wide_client(other_org)
+
+        variables = {
+            "userId": owner.id,  # user owns calendars only in `organization`, not `other_org`
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert data["calendarEvents"] == [], (
+            "No events must be returned when the user owns no calendars in the requesting org"
+        )
+
+    # ------------------------------------------------------------------ #
+    # calendarId + userId intersection                                     #
+    # ------------------------------------------------------------------ #
+
+    def test_calendar_id_and_user_id_intersection_owned(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+    ):
+        """calendarId + userId where the calendar IS owned by the user returns events."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "userId": owner.id,
+            "calendarId": owner_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _CALENDAR_EVENTS_BY_USER_AND_CALENDAR_QUERY, "variables": variables}
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+        assert owner_event.id in returned_ids, (
+            "Event on calendar owned by userId must be returned when both args are supplied"
+        )
+
+    def test_calendar_id_and_user_id_intersection_not_owned(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        other_calendar,
+        other_event,
+    ):
+        """calendarId + userId where the calendar is NOT owned by the user returns empty."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "userId": owner.id,
+            "calendarId": other_calendar.id,  # owned by other_owner, not owner
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _CALENDAR_EVENTS_BY_USER_AND_CALENDAR_QUERY, "variables": variables}
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert data["calendarEvents"] == [], (
+            "Intersection of userId-owned-calendars and a non-owned calendarId must be empty"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Recurring expansion through the userId path                          #
+    # ------------------------------------------------------------------ #
+
+    def test_user_id_recurring_expansion(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+    ):
+        """Recurring master on a user-owned calendar expands to in-range instances via userId.
+
+        Uses a mock service to isolate the resolver branching logic from
+        the Postgres recurrence-expansion functions.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        from di_core.containers import container
+
+        # Build two CalendarEvent instances to represent expanded recurring occurrences.
+        occ1 = baker.make(
+            CalendarEvent,
+            calendar_fk=owner_calendar,
+            organization=organization,
+            title="Recurring Occurrence 1",
+            external_id="recur-occ-1-userid",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+        occ2 = baker.make(
+            CalendarEvent,
+            calendar_fk=owner_calendar,
+            organization=organization,
+            title="Recurring Occurrence 2",
+            external_id="recur-occ-2-userid",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.get_calendar_events_expanded_for_calendars.return_value = [occ1, occ2]
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "userId": owner.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+                content_type="application/json",
+            )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+
+        assert occ1.id in returned_ids, "First recurring occurrence must be in the result"
+        assert occ2.id in returned_ids, "Second recurring occurrence must be in the result"
+        mock_calendar_service.get_calendar_events_expanded_for_calendars.assert_called_once()
+
+        # The resolver must forward the owner's calendar id and the unchanged date range
+        # to the expansion service. Inspect the actual call args.
+        call_args = mock_calendar_service.get_calendar_events_expanded_for_calendars.call_args
+        passed_owned_ids = call_args.args[0]
+        assert owner_calendar.id in passed_owned_ids, (
+            "owned_ids passed to the expansion service must contain the owner's calendar id"
+        )
+        passed_start = call_args.args[1]
+        passed_end = call_args.args[2]
+        assert passed_start == datetime.datetime(2025, 9, 2, 0, 0, tzinfo=datetime.UTC), (
+            "startDatetime must be forwarded to the expansion service unchanged"
+        )
+        assert passed_end == datetime.datetime(2025, 9, 2, 23, 59, 59, tzinfo=datetime.UTC), (
+            "endDatetime must be forwarded to the expansion service unchanged"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Scoped-token enforcement                                             #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_own_user_id_sees_own_events(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+    ):
+        """A per-owner scoped token requesting its own userId sees its events."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_scoped_client(organization, owner)
+        variables = {
+            "userId": owner.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+        assert owner_event.id in returned_ids, (
+            "Scoped token for the owner must see its own events via userId"
+        )
+
+    def test_scoped_token_different_user_id_returns_empty(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+        other_owner,
+        other_calendar,
+        other_event,
+    ):
+        """A per-owner scoped token requesting a DIFFERENT userId gets empty (no existence leak).
+
+        The token owner here DOES own a calendar with an event (non-empty allowed set),
+        so the empty result for a different userId is not over-determined: it proves the
+        intersection is keyed on the TOKEN owner, not on the requested userId. A bug that
+        intersected against the requested user (`other_owner`, who owns `other_calendar`)
+        would surface `other_event` here and fail this assertion.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        # Token scoped to `owner`, but requesting `other_owner`'s userId
+        client, _ = _make_scoped_client(organization, owner)
+        variables = {
+            "userId": other_owner.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+        assert data["calendarEvents"] == [], (
+            "Scoped token must not expose another user's events when a different userId is requested"
+        )
+        assert other_event.id not in returned_ids, (
+            "The other user's event must never appear for a token scoped to a different owner"
+        )
+
+    def test_org_wide_token_user_id_sees_full_owned_set(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+        other_calendar,
+        other_event,
+    ):
+        """An org-wide token requesting a userId sees all calendars owned by that user."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "userId": owner.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+
+        assert owner_event.id in returned_ids, "Org-wide token must see owner's events via userId"
+        assert other_event.id not in returned_ids, (
+            "Org-wide token must NOT see other owner's events when userId is owner's"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Backwards-compat: calendarId-only path unchanged                     #
+    # ------------------------------------------------------------------ #
+
+    def test_backwards_compat_calendar_id_only_unchanged(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner_calendar,
+        owner_event,
+    ):
+        """calendarId-only query (userId omitted) returns the same result as before."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "calendarId": owner_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _CALENDAR_EVENTS_BY_CALENDAR_ONLY_QUERY, "variables": variables}
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+        assert owner_event.id in returned_ids, (
+            "calendarId-only query must still return events (backwards compat check)"
+        )
+
+    # ------------------------------------------------------------------ #
+    # user with no owned calendars → empty, not an error                   #
+    # ------------------------------------------------------------------ #
+
+    def test_user_id_no_owned_calendars_returns_empty(
+        self,
+        mock_rate_limiter,
+        organization,
+    ):
+        """userId referring to a user with no owned calendars in the org returns []."""
+        mock_rate_limiter.return_value = iter([None])
+
+        no_calendar_user = baker.make(User, email="nobody@userfilter.test")
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "userId": no_calendar_user.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert data["calendarEvents"] == [], (
+            "userId with no owned calendars must return empty list, not raise an error"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Precedence: eventId wins over userId                                 #
+    # ------------------------------------------------------------------ #
+
+    def test_event_id_takes_precedence_over_user_id(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+        other_owner,
+        other_calendar,
+        other_event,
+    ):
+        """When both eventId and userId are supplied, eventId wins and userId is ignored."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        # eventId points at `other_event` (on a calendar NOT owned by `owner`),
+        # while userId is `owner`. If eventId wins, only `other_event` is returned.
+        query = """
+            query GetCalendarEvents($eventId: Int!, $userId: Int!) {
+                calendarEvents(eventId: $eventId, userId: $userId) {
+                    id
+                    title
+                }
+            }
+        """
+        variables = {"eventId": other_event.id, "userId": owner.id}
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+        assert returned_ids == {other_event.id}, (
+            "eventId must take precedence: only the single event-by-id is returned, userId ignored"
+        )
+        assert owner_event.id not in returned_ids, (
+            "userId's owned events must NOT be returned when eventId is supplied"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Required-args guard: userId without start/end datetimes              #
+    # ------------------------------------------------------------------ #
+
+    def test_user_id_without_datetimes_raises_required_params_error(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+    ):
+        """userId without startDatetime/endDatetime errors in the userId branch.
+
+        The error must be the 'Missing required parameters …' message, and the
+        request must NOT fall through to the calendarId branch (which would raise
+        a different, calendar-not-found error).
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        query = """
+            query GetCalendarEvents($userId: Int) {
+                calendarEvents(userId: $userId) {
+                    id
+                    title
+                }
+            }
+        """
+        variables = {"userId": owner.id}
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+        error_messages = [error.get("message", "") for error in response_data["errors"]]
+        assert any(
+            "Missing required parameters" in message
+            and "calendarId or userId, startDatetime, and endDatetime" in message
+            for message in error_messages
+        ), (
+            "userId without datetimes must raise the missing-required-parameters error, "
+            f"got: {error_messages}"
         )

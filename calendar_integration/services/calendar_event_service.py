@@ -1160,6 +1160,131 @@ class CalendarEventService:
 
         return events
 
+    def get_calendar_events_expanded_for_calendars(
+        self,
+        calendar_ids: Iterable[int],
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        optimize_queryset: Callable[[CalendarEventQuerySet], CalendarEventQuerySet] | None = None,
+    ) -> list[CalendarEvent]:
+        """
+        Get all calendar events in a date range across multiple calendars, with recurring
+        events expanded to instances and occurrences deduped by (event id, start_time).
+
+        This is the multi-calendar generalisation of ``get_calendar_events_expanded``.
+        It filters by ``organization_id`` defensively so a caller cannot cross tenant
+        boundaries by passing calendar ids from another organisation.
+
+        Dedup rules (applied after expansion and sort):
+        - Events where ``is_bundle_representation`` is True are dropped entirely.
+        - Events where ``is_bundle_primary`` is True are kept only once per ``event.id``
+          (the first occurrence encountered after sorting by start_time).
+        - Real persisted rows (``event.id is not None``) are deduped by ``event.id``;
+          a persisted row is unique by id.
+        - Generated recurring occurrences (``event.id is None``) are kept unconditionally:
+          a recurring master has a single ``calendar_fk`` and the flat ``calendar_fk__in``
+          query returns it exactly once, so its generated occurrences are produced exactly
+          once and are distinct by construction (they cannot be true cross-calendar
+          duplicates).
+
+        :param calendar_ids: Iterable of calendar PKs to include. Empty or None → ``[]``
+            without issuing any DB query.
+        :param start_date: Start of the date range (inclusive).
+        :param end_date: End of the date range (inclusive).
+        :param optimize_queryset: Optional callable applied to the recurring-master
+            queryset so prefetched relations are inherited by generated occurrences.
+        :return: Deduplicated, sorted list of event instances in the range.
+        """
+        if not is_initialized_or_authenticated_calendar_service(
+            cast("BaseCalendarService", self._context)
+        ):
+            raise PermissionDenied("Calendar service is not initialized.")
+
+        # Materialise to a set so we can cheaply check emptiness and avoid repeated
+        # iteration over a generator.
+        id_set: set[int] = set(calendar_ids) if calendar_ids is not None else set()
+        if not id_set:
+            return []
+
+        org_id = self._context.organization.id
+
+        base_qs = (
+            CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
+            .select_related("recurrence_rule")
+            .filter(
+                parent_recurring_object__isnull=True,  # Master events only
+                organization_id=org_id,
+                calendar_fk__in=id_set,
+            )
+        )
+
+        # Get non-recurring events within the date range
+        non_recurring_events = base_qs.filter(
+            Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
+            recurrence_rule__isnull=True,  # Non-recurring only
+            is_recurring_exception=False,  # Exclude exception objects
+        )
+
+        # Get recurring master events and generate their instances.
+        recurring_events = base_qs.filter(
+            recurrence_rule__isnull=False,  # Recurring only
+        ).filter(
+            Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start_date),
+            start_time__lte=end_date,
+        )
+        if optimize_queryset is not None:
+            recurring_events = optimize_queryset(recurring_events)
+
+        events: list[CalendarEvent] = list(non_recurring_events)
+
+        for master_event in recurring_events:
+            instances = master_event.get_occurrences_in_range(
+                start_date, end_date, include_self=False, include_exceptions=True
+            )
+            # Occurrences are in-memory copies of the master (pk=None). Reuse the
+            # master's prefetched relations so each occurrence serializes without
+            # re-querying attendances/resources.
+            master_cache = getattr(master_event, "_prefetched_objects_cache", None)
+            if master_cache:
+                for instance in instances:
+                    instance._prefetched_objects_cache = master_cache
+            events.extend(instances)
+
+        # Sort by start time before dedup so the "first seen" for bundle-primary events
+        # is deterministic (earliest occurrence).
+        events.sort(key=lambda x: x.start_time)
+
+        # General dedup:
+        #   - is_bundle_representation → drop (representation of a bundle primary event)
+        #   - is_bundle_primary        → keep first occurrence per event.id
+        #   - persisted rows (id set)  → dedup by event.id (unique by id)
+        #   - generated occurrences    → keep all (distinct by construction, see docstring)
+        seen_bundle_primary_ids: set[int] = set()
+        seen_event_ids: set[int] = set()
+        unique_events: list[CalendarEvent] = []
+
+        for event in events:
+            if event.is_bundle_representation:
+                # Drop representations — the primary event carries the canonical copy.
+                continue
+            elif event.is_bundle_primary:
+                if event.id not in seen_bundle_primary_ids:
+                    seen_bundle_primary_ids.add(event.id)
+                    unique_events.append(event)
+            elif event.id is not None:
+                # Persisted row — unique by id; collapse repeats reached via the union.
+                if event.id not in seen_event_ids:
+                    seen_event_ids.add(event.id)
+                    unique_events.append(event)
+            else:
+                # Generated recurring occurrence (pk=None) — distinct by construction;
+                # never collapse, so two series producing occurrences at the same
+                # start_time both survive.
+                unique_events.append(event)
+
+        # Already sorted above; preserve sort order (unique_events retains it).
+        return unique_events
+
     @transaction.atomic()
     def delete_event(self, calendar_id: int, event_id: int, delete_series: bool = False) -> None:
         """
