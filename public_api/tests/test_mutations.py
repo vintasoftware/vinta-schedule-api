@@ -7090,6 +7090,92 @@ class TestScopedTokenBlockedTimeWrites:
         assert BlockedTime.objects.filter(id=bt_b_id).exists()
 
     # ------------------------------------------------------------------
+    # blockedTimeId / calendarId mismatch — service-layer filter is load-bearing
+    # ------------------------------------------------------------------
+
+    def test_update_delete_blocked_time_in_scope_calendar_with_foreign_blocked_time_id_rejected(
+        self,
+    ):
+        """A scoped token passing its OWN calendar_id but a foreign blocked_time_id is rejected.
+
+        This pins the service-layer ``calendar_fk=calendar`` filter (the load-bearing
+        constraint for the new threat model). The new owner guard does NOT trip here
+        because ``calendarId`` is the token's in-scope calendar A; the only thing
+        rejecting the write is the service scoping the BlockedTime lookup to the
+        supplied calendar, so a foreign ``blocked_time_id`` on calendar B yields
+        ``success=False`` and leaves B's row untouched.
+        """
+        from calendar_integration.models import BlockedTime
+
+        org = self._setup_org()
+        # Provider A: scoped token, owns calendar A (in-scope for the token)
+        _owner_a, membership_a, calendar_a = self._make_owner_with_calendar(org)
+        # Provider B: a different owner with a real BlockedTime row on calendar B
+        org_wide_su_b, _, _org_wide_auth_b = self._make_org_wide_system_user(
+            org, [PublicAPIResources.UPDATE_BLOCKED_TIME, PublicAPIResources.DELETE_BLOCKED_TIME]
+        )
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_calendar(org)
+        blocked_time_b = self._create_blocked_time_on_calendar(org, org_wide_su_b, calendar_b)
+        bt_b_id = blocked_time_b.id
+
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org,
+            membership_a,
+            [PublicAPIResources.UPDATE_BLOCKED_TIME, PublicAPIResources.DELETE_BLOCKED_TIME],
+        )
+
+        new_start = datetime.datetime(2026, 10, 9, 9, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 9, 17, 0, 0, tzinfo=datetime.UTC)
+
+        # updateBlockedTime: in-scope calendar A id, foreign blocked_time id on B
+        update_response = self._post(
+            _UPDATE_BLOCKED_TIME_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_a.id,
+                    "blockedTimeId": bt_b_id,
+                    "startTime": new_start.isoformat(),
+                    "endTime": new_end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert update_response.status_code == 200
+        update_data = update_response.json()
+        assert "errors" not in update_data or len(update_data.get("errors", [])) == 0
+        assert update_data["data"]["updateBlockedTime"]["success"] is False
+        # B's row must be unchanged by the rejected update
+        blocked_time_b.refresh_from_db()
+        assert blocked_time_b.reason == "Scoped test block"
+
+        # deleteBlockedTime: in-scope calendar A id, foreign blocked_time id on B
+        delete_response = self._post(
+            _DELETE_BLOCKED_TIME_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_a.id,
+                    "blockedTimeId": bt_b_id,
+                }
+            },
+        )
+
+        assert delete_response.status_code == 200
+        delete_data = delete_response.json()
+        assert "errors" not in delete_data or len(delete_data.get("errors", [])) == 0
+        assert delete_data["data"]["deleteBlockedTime"]["success"] is False
+        # B's row must still exist — the foreign delete must NOT have succeeded
+        assert BlockedTime.objects.filter(id=bt_b_id).exists()
+
+    # ------------------------------------------------------------------
     # Org-wide token — no-regression assertions for all three verbs
     # ------------------------------------------------------------------
 
