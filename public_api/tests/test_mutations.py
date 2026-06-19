@@ -7775,6 +7775,12 @@ class TestScopedTokenAvailabilityWrites:
         _owner_b, _membership_b, calendar_b = self._make_owner_with_managing_calendar(org)
         available_time_b = self._create_available_time_on_calendar(org, org_wide_su_b, calendar_b)
 
+        # Capture B's row field values BEFORE the cross-owner attempt so the
+        # unchanged-check compares like-for-like (naive stored field to naive).
+        available_time_b.refresh_from_db()
+        start_before = available_time_b.start_time_tz_unaware
+        end_before = available_time_b.end_time_tz_unaware
+
         # Token scoped to provider A — must not update B's calendar
         system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
             org, membership_a, [PublicAPIResources.UPDATE_AVAILABILITY_WINDOW]
@@ -7830,11 +7836,10 @@ class TestScopedTokenAvailabilityWrites:
         missing_msg = missing_response.json()["data"]["updateAvailabilityWindow"]["errorMessage"]
         assert cross_msg == missing_msg
 
-        # The available time row must be unchanged
+        # The available time row must be unchanged (compare against pre-attempt values).
         available_time_b.refresh_from_db()
-        assert available_time_b.start_time_tz_unaware == datetime.datetime(
-            2026, 10, 1, 9, 0, 0, tzinfo=datetime.UTC
-        )
+        assert available_time_b.start_time_tz_unaware == start_before
+        assert available_time_b.end_time_tz_unaware == end_before
 
     # ------------------------------------------------------------------
     # deleteAvailabilityWindow — scoped happy path
@@ -8007,7 +8012,17 @@ class TestScopedTokenAvailabilityWrites:
         """
         org = self._setup_org()
         _owner_a, membership_a, _calendar_a = self._make_owner_with_managing_calendar(org)
+        org_wide_su_b, _, _org_wide_auth_b = self._make_org_wide_system_user(
+            org, [PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS]
+        )
         _owner_b, _membership_b, calendar_b = self._make_owner_with_managing_calendar(org)
+
+        # Seed a pre-existing AvailableTime row on B's calendar so a partial
+        # update/delete (not just a stray create) would be detectable.
+        existing_time_b = self._create_available_time_on_calendar(org, org_wide_su_b, calendar_b)
+        existing_time_b.refresh_from_db()
+        existing_start_before = existing_time_b.start_time_tz_unaware
+        existing_end_before = existing_time_b.end_time_tz_unaware
 
         # Count rows on B's calendar before the cross-owner attempt (org-scoped query)
         rows_before = (
@@ -8024,7 +8039,12 @@ class TestScopedTokenAvailabilityWrites:
         create_start = datetime.datetime(2026, 12, 1, 9, 0, 0, tzinfo=datetime.UTC)
         create_end = datetime.datetime(2026, 12, 1, 17, 0, 0, tzinfo=datetime.UTC)
 
-        # Cross-owner attempt: calendar_id = B's calendar, batch includes a create op
+        update_start = datetime.datetime(2026, 12, 2, 9, 0, 0, tzinfo=datetime.UTC)
+        update_end = datetime.datetime(2026, 12, 2, 17, 0, 0, tzinfo=datetime.UTC)
+
+        # Cross-owner attempt: calendar_id = B's calendar, batch mixes create,
+        # update, and delete ops — an update/delete targets B's pre-existing row,
+        # so a partial write (not just a stray create) would be caught.
         cross_owner_response = self._post(
             _BATCH_UPDATE_AVAILABILITY_WINDOWS_SCOPED,
             system_user_a,
@@ -8040,7 +8060,17 @@ class TestScopedTokenAvailabilityWrites:
                             "startTime": create_start.isoformat(),
                             "endTime": create_end.isoformat(),
                             "timezone": "UTC",
-                        }
+                        },
+                        {
+                            "action": "update",
+                            "availableTimeId": existing_time_b.id,
+                            "startTime": update_start.isoformat(),
+                            "endTime": update_end.isoformat(),
+                        },
+                        {
+                            "action": "delete",
+                            "availableTimeId": existing_time_b.id,
+                        },
                     ],
                 }
             },
@@ -8063,7 +8093,17 @@ class TestScopedTokenAvailabilityWrites:
                             "startTime": create_start.isoformat(),
                             "endTime": create_end.isoformat(),
                             "timezone": "UTC",
-                        }
+                        },
+                        {
+                            "action": "update",
+                            "availableTimeId": existing_time_b.id,
+                            "startTime": update_start.isoformat(),
+                            "endTime": update_end.isoformat(),
+                        },
+                        {
+                            "action": "delete",
+                            "availableTimeId": existing_time_b.id,
+                        },
                     ],
                 }
             },
@@ -8096,6 +8136,21 @@ class TestScopedTokenAvailabilityWrites:
         assert rows_after == rows_before, (
             f"Partial write detected: row count on B's calendar changed from "
             f"{rows_before} to {rows_after}"
+        )
+
+        # The pre-existing B row must NOT have been updated or deleted: it still
+        # exists and retains its original field values.
+        assert (
+            AvailableTime.objects.filter_by_organization(org.id)
+            .filter(id=existing_time_b.id)
+            .exists()
+        ), "Partial write detected: pre-existing B row was deleted"
+        existing_time_b.refresh_from_db()
+        assert existing_time_b.start_time_tz_unaware == existing_start_before, (
+            "Partial write detected: pre-existing B row's start time was updated"
+        )
+        assert existing_time_b.end_time_tz_unaware == existing_end_before, (
+            "Partial write detected: pre-existing B row's end time was updated"
         )
 
     # ------------------------------------------------------------------
