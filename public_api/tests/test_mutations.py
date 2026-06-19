@@ -6121,3 +6121,460 @@ class TestDisableCalendarBundleMutation:
         assert "errors" in data
         assert len(data["errors"]) > 0
         assert "authenticated" in str(data["errors"]).lower()
+
+
+CREATE_SCOPED_SYSTEM_USER_MUTATION = """
+mutation CreateScopedSystemUser($input: CreateScopedSystemUserInput!) {
+    createScopedSystemUser(input: $input) {
+        id
+        integrationName
+        isActive
+        availableResources
+        scopedToUserId
+        token
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestCreateScopedSystemUserMutation:
+    """Integration tests for the createScopedSystemUser mutation (Phase 2)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _setup_caller(self, resources: list[str] | None = None):
+        """Create an organization + system user token with the given resource scopes."""
+        if resources is None:
+            resources = ["system_user"]
+        org = baker.make(Organization, name="Caller Org")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="caller_integration", organization=org
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return org, system_user, token, auth_service
+
+    def _make_org_member(self, org):
+        """Create a user and make them an active member of the given org."""
+        user_model = get_user_model()
+        user = baker.make(user_model, email=f"member_{org.id}_{id(org)}@example.com")
+        baker.make(OrganizationMembership, user=user, organization=org, is_active=True)
+        return user
+
+    def _post_mutation(self, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": CREATE_SCOPED_SYSTEM_USER_MUTATION, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def test_happy_path_mints_scoped_token_returns_once(self):
+        """A caller with SYSTEM_USER scope mints a scoped token; token returned exactly once.
+
+        Asserts:
+        - The response contains a non-null token.
+        - The persisted SystemUser has scoped_to_user == the given owner.
+        - The persisted ResourceAccess rows exactly match the requested grants.
+        - The plaintext token is NOT stored in the DB (only the hash).
+        """
+        from common.utils.authentication_utils import verify_long_lived_token
+        from public_api.models import SystemUser
+
+        org, caller_su, caller_token, auth_service = self._setup_caller()
+        owner = self._make_org_member(org)
+
+        response = self._post_mutation(
+            caller_su,
+            caller_token,
+            auth_service,
+            {
+                "input": {
+                    "integrationName": "provider_integration",
+                    "scopedToUserId": owner.id,
+                    "availableResources": ["calendar", "available_time"],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createScopedSystemUser"]
+        assert result["id"] is not None
+        assert result["integrationName"] == "provider_integration"
+        assert result["isActive"] is True
+        assert result["scopedToUserId"] == owner.id
+        assert set(result["availableResources"]) == {"calendar", "available_time"}
+
+        # Token must be non-null and non-empty
+        returned_token = result["token"]
+        assert returned_token is not None
+        assert len(returned_token) > 0
+
+        # Verify persisted SystemUser has the correct owner (stored as membership FK)
+        minted = SystemUser.original_manager.get(id=int(result["id"]))
+        assert minted.scoped_to_membership_fk.user_id == owner.id
+        assert minted.scoped_to_membership_fk.organization_id == org.id
+        assert minted.organization_id == org.id
+
+        # Verify ResourceAccess rows exactly match the request
+        attached = set(
+            ResourceAccess.objects.filter(system_user=minted).values_list(
+                "resource_name", flat=True
+            )
+        )
+        assert attached == {"calendar", "available_time"}
+
+        # Verify plaintext token was NOT stored — only the hash is in the DB
+        assert verify_long_lived_token(returned_token, minted.long_lived_token_hash)
+        assert minted.long_lived_token_hash != returned_token
+
+    def test_missing_system_user_scope_denied(self):
+        """A token lacking SYSTEM_USER scope cannot call createScopedSystemUser."""
+        org, caller_su, caller_token, auth_service = self._setup_caller(resources=["calendar"])
+        owner = self._make_org_member(org)
+
+        response = self._post_mutation(
+            caller_su,
+            caller_token,
+            auth_service,
+            {
+                "input": {
+                    "integrationName": "no_scope_provider",
+                    "scopedToUserId": owner.id,
+                    "availableResources": ["calendar"],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+        # No SystemUser should have been created
+        from public_api.models import SystemUser
+
+        assert not SystemUser.objects.filter(integration_name="no_scope_provider").exists()
+
+    def test_owner_not_member_of_org_rejected(self):
+        """Owner id that belongs to a different org is rejected; no token created."""
+        from public_api.models import SystemUser
+
+        _org, caller_su, caller_token, auth_service = self._setup_caller()
+
+        # Create a user in a different org — not a member of the caller's org
+        other_org = baker.make(Organization, name="Other Org")
+        user_model = get_user_model()
+        outsider = baker.make(user_model, email="outsider@example.com")
+        baker.make(OrganizationMembership, user=outsider, organization=other_org, is_active=True)
+
+        response = self._post_mutation(
+            caller_su,
+            caller_token,
+            auth_service,
+            {
+                "input": {
+                    "integrationName": "cross_org_provider",
+                    "scopedToUserId": outsider.id,
+                    "availableResources": ["calendar"],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "not an active member" in str(data["errors"]).lower()
+
+        # No SystemUser should have been created
+        assert not SystemUser.objects.filter(integration_name="cross_org_provider").exists()
+
+    def test_nonexistent_owner_id_rejected(self):
+        """A totally nonexistent user id is rejected; no token created."""
+        from public_api.models import SystemUser
+
+        _org, caller_su, caller_token, auth_service = self._setup_caller()
+
+        nonexistent_user_id = 99999999
+
+        response = self._post_mutation(
+            caller_su,
+            caller_token,
+            auth_service,
+            {
+                "input": {
+                    "integrationName": "nonexistent_owner_provider",
+                    "scopedToUserId": nonexistent_user_id,
+                    "availableResources": ["calendar"],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "not an active member" in str(data["errors"]).lower()
+
+        assert not SystemUser.objects.filter(integration_name="nonexistent_owner_provider").exists()
+
+    def test_over_grant_resource_outside_allow_list_rejected(self):
+        """availableResources containing a resource NOT in PROVIDER_SCOPED_RESOURCES is rejected.
+
+        E.g. USER or SYSTEM_USER are not in the provider allow-list.
+        """
+        from public_api.models import SystemUser
+
+        org, caller_su, caller_token, auth_service = self._setup_caller()
+        owner = self._make_org_member(org)
+
+        response = self._post_mutation(
+            caller_su,
+            caller_token,
+            auth_service,
+            {
+                "input": {
+                    "integrationName": "over_grant_provider",
+                    "scopedToUserId": owner.id,
+                    "availableResources": ["calendar", "user"],  # "user" is NOT in allow-list
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "not permitted for provider-scoped tokens" in str(data["errors"]).lower()
+
+        assert not SystemUser.objects.filter(integration_name="over_grant_provider").exists()
+
+    def test_system_user_resource_in_available_resources_rejected(self):
+        """SYSTEM_USER in availableResources is not in the provider allow-list → rejected."""
+        from public_api.models import SystemUser
+
+        org, caller_su, caller_token, auth_service = self._setup_caller()
+        owner = self._make_org_member(org)
+
+        response = self._post_mutation(
+            caller_su,
+            caller_token,
+            auth_service,
+            {
+                "input": {
+                    "integrationName": "system_user_grant_provider",
+                    "scopedToUserId": owner.id,
+                    "availableResources": ["system_user"],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "not permitted for provider-scoped tokens" in str(data["errors"]).lower()
+
+        assert not SystemUser.objects.filter(integration_name="system_user_grant_provider").exists()
+
+    def test_duplicate_integration_name_rejected_no_orphan(self):
+        """Minting a second token with the same integration_name is rejected.
+
+        Asserts:
+        - The mutation returns a GraphQL error mentioning 'already exists'.
+        - Exactly ONE SystemUser with that integration_name exists.
+        - ResourceAccess count did not grow from the failed attempt.
+        """
+        from public_api.models import SystemUser
+
+        org, caller_su, caller_token, auth_service = self._setup_caller()
+        owner = self._make_org_member(org)
+
+        # First call — must succeed
+        r1 = self._post_mutation(
+            caller_su,
+            caller_token,
+            auth_service,
+            {
+                "input": {
+                    "integrationName": "dup_scoped",
+                    "scopedToUserId": owner.id,
+                    "availableResources": ["calendar"],
+                }
+            },
+        )
+        assert r1.status_code == 200
+        d1 = r1.json()
+        assert "errors" not in d1 or len(d1.get("errors", [])) == 0
+
+        su_count_after_first = SystemUser.original_manager.filter(
+            integration_name="dup_scoped"
+        ).count()
+        ra_count_after_first = ResourceAccess.objects.filter(
+            system_user__integration_name="dup_scoped"
+        ).count()
+        assert su_count_after_first == 1
+
+        # Second call with the same integration_name — must fail
+        r2 = self._post_mutation(
+            caller_su,
+            caller_token,
+            auth_service,
+            {
+                "input": {
+                    "integrationName": "dup_scoped",
+                    "scopedToUserId": owner.id,
+                    "availableResources": ["calendar"],
+                }
+            },
+        )
+        assert r2.status_code == 200
+        d2 = r2.json()
+        assert "errors" in d2
+        assert len(d2["errors"]) > 0
+        assert "already exists" in str(d2["errors"]).lower()
+
+        # No orphan SystemUser — still exactly one
+        assert (
+            SystemUser.original_manager.filter(integration_name="dup_scoped").count()
+            == su_count_after_first
+        )
+        assert (
+            ResourceAccess.objects.filter(system_user__integration_name="dup_scoped").count()
+            == ra_count_after_first
+        )
+
+    def test_empty_available_resources_rejected(self):
+        """Empty availableResources list is rejected; no token created."""
+        from public_api.models import SystemUser
+
+        org, caller_su, caller_token, auth_service = self._setup_caller()
+        owner = self._make_org_member(org)
+
+        response = self._post_mutation(
+            caller_su,
+            caller_token,
+            auth_service,
+            {
+                "input": {
+                    "integrationName": "empty_resources_provider",
+                    "scopedToUserId": owner.id,
+                    "availableResources": [],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+        assert not SystemUser.objects.filter(integration_name="empty_resources_provider").exists()
+
+    def test_scoped_provider_token_cannot_mint(self):
+        """A provider-scoped token (CALENDAR/AVAILABLE_TIME only) cannot call
+        createScopedSystemUser — it lacks the SYSTEM_USER resource.
+
+        This proves a provider token cannot self-escalate by minting new tokens.
+        The scoped SystemUser's ResourceAccess grants are only provider resources
+        (CALENDAR, AVAILABLE_TIME), NOT SYSTEM_USER.
+        """
+        from public_api.models import SystemUser
+
+        # Build the org + a master caller token that has SYSTEM_USER scope
+        org, _master_su, _master_token, auth_service = self._setup_caller(resources=["system_user"])
+        owner = self._make_org_member(org)
+
+        # Directly create a provider-scoped SystemUser with only CALENDAR + AVAILABLE_TIME grants
+        owner_membership = OrganizationMembership.objects.get(user=owner, organization=org)
+        scoped_su, scoped_token = auth_service.create_system_user(
+            integration_name="provider_scoped_caller",
+            organization=org,
+            scoped_to_membership=owner_membership,
+        )
+        baker.make(ResourceAccess, system_user=scoped_su, resource_name="calendar")
+        baker.make(ResourceAccess, system_user=scoped_su, resource_name="available_time")
+        # Note: SYSTEM_USER is intentionally NOT granted
+
+        # Attempt to mint another token authenticated as the provider-scoped token.
+        # The permission check fires before owner validation, so reusing owner is fine.
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": CREATE_SCOPED_SYSTEM_USER_MUTATION,
+                    "variables": {
+                        "input": {
+                            "integrationName": "escalated_token",
+                            "scopedToUserId": owner.id,
+                            "availableResources": ["calendar"],
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {scoped_su.id}:{scoped_token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+        # No new SystemUser should have been created from the escalation attempt
+        assert not SystemUser.objects.filter(integration_name="escalated_token").exists()
+
+    def test_inactive_member_owner_rejected(self):
+        """createScopedSystemUser with an inactive-membership owner is rejected.
+
+        An OrganizationMembership with is_active=False must not satisfy the owner
+        validation, and no SystemUser/token row must be created.
+        """
+        from public_api.models import SystemUser
+
+        org, caller_su, caller_token, auth_service = self._setup_caller()
+
+        # Create a user with an INACTIVE membership in the caller's org
+        user_model = get_user_model()
+        inactive_user = baker.make(user_model, email="inactive_member@example.com")
+        baker.make(
+            OrganizationMembership,
+            user=inactive_user,
+            organization=org,
+            is_active=False,
+        )
+
+        response = self._post_mutation(
+            caller_su,
+            caller_token,
+            auth_service,
+            {
+                "input": {
+                    "integrationName": "inactive_owner_provider",
+                    "scopedToUserId": inactive_user.id,
+                    "availableResources": ["calendar"],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "not an active member" in str(data["errors"]).lower()
+
+        # No SystemUser or token row must have been created
+        assert not SystemUser.objects.filter(integration_name="inactive_owner_provider").exists()

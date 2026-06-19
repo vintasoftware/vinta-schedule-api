@@ -46,6 +46,7 @@ class OrganizationResourceAccess(BasePermission):
         # supports one resource per field; INVITATION is the primary gating resource.
         "createInvitation": PublicAPIResources.INVITATION,
         "createSystemUserToken": PublicAPIResources.SYSTEM_USER,
+        "createScopedSystemUser": PublicAPIResources.SYSTEM_USER,
         "updateBranding": PublicAPIResources.BRANDING,
         "childOrganizations": PublicAPIResources.CHILD_ORG_ANALYTICS,
         # Single-use booking-code mint / revoke mutations (Phase 0+)
