@@ -146,3 +146,34 @@ def test_calendar_event_calendar_group_reverse_relation():
 
     assert event.calendar_group_fk_id == group.id
     assert list(group.events.all()) == [event]
+
+
+@pytest.mark.django_db
+def test_calendar_group_accepts_public_scheduling_default_false():
+    org = baker.make("organizations.Organization")
+    group = CalendarGroup.objects.create(organization=org, name="Test Group")
+
+    assert group.accepts_public_scheduling is False
+
+
+@pytest.mark.django_db
+def test_calendar_group_accepts_public_scheduling_true():
+    org = baker.make("organizations.Organization")
+    group = CalendarGroup.objects.create(
+        organization=org, name="Public Group", accepts_public_scheduling=True
+    )
+
+    assert group.accepts_public_scheduling is True
+
+
+@pytest.mark.django_db
+def test_calendar_group_accepts_public_scheduling_update():
+    org = baker.make("organizations.Organization")
+    group = CalendarGroup.objects.create(organization=org, name="Test Group")
+
+    assert group.accepts_public_scheduling is False
+    group.accepts_public_scheduling = True
+    group.save()
+    group.refresh_from_db()
+
+    assert group.accepts_public_scheduling is True
