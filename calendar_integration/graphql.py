@@ -147,6 +147,10 @@ class CalendarGraphQLType:
     created: datetime.datetime
     modified: datetime.datetime
 
+    @strawberry_django.field
+    def is_private(self) -> bool:
+        return not self.accepts_public_scheduling
+
 
 @strawberry_django.type(RecurrenceRule)
 class RecurrenceRuleGraphQLType:
@@ -577,6 +581,10 @@ class CalendarGroupGraphQLType:
 
     slots: list[CalendarGroupSlotGraphQLType] = strawberry_django.field()
 
+    @strawberry_django.field
+    def is_private(self) -> bool:
+        return not self.accepts_public_scheduling
+
 
 # ---------------------------------------------------------------------------
 # CalendarBundle types
@@ -585,8 +593,7 @@ class CalendarGroupGraphQLType:
 class CalendarBundleGraphQLType:
     """GraphQL type for a bundle calendar and its children.
 
-    Exposes id, name, description, and the list of child calendars.
-    No isPrivate / owners (non-goals — separate plans).
+    Exposes id, name, description, the list of child calendars, and isPrivate.
     """
 
     id: strawberry.auto  # noqa: A003
@@ -597,6 +604,10 @@ class CalendarBundleGraphQLType:
     def children(self) -> list[CalendarGraphQLType]:
         """Return the child calendars of this bundle calendar."""
         return list(self.bundle_children.all())  # type: ignore[union-attr]
+
+    @strawberry_django.field
+    def is_private(self) -> bool:
+        return not self.accepts_public_scheduling
 
 
 @strawberry_django.type(CalendarEventGroupSelection)
