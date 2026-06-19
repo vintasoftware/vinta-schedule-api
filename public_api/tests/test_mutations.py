@@ -8428,3 +8428,498 @@ class TestScopedTokenAvailabilityWrites:
         assert len(data["errors"]) > 0
         assert "don't have access" in str(data["errors"]).lower()
         assert "don't have access" in str(data["errors"]).lower()
+
+
+_SCHEDULE_EVENT_SCOPED = """
+mutation ScheduleEvent($input: ScheduleEventInput!) {
+    scheduleEvent(input: $input) {
+        id
+        title
+        description
+        attendances {
+            id
+        }
+        externalAttendances {
+            id
+        }
+    }
+}
+"""
+
+# recurrenceRule is a non-nullable field on CalendarEventGraphQLType, so only select it
+# when the event is actually recurring (the non-recurring path returns null for it).
+_SCHEDULE_EVENT_SCOPED_WITH_RRULE = """
+mutation ScheduleEvent($input: ScheduleEventInput!) {
+    scheduleEvent(input: $input) {
+        id
+        title
+        recurrenceRule {
+            id
+        }
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestScopedTokenScheduleEvent:
+    """Integration tests for the owner-scoped ``scheduleEvent`` mutation (Phase 3).
+
+    Coverage:
+    - Scoped token schedules on its owner's calendar (covering availability window) -> success.
+    - Recurring (rrule) event persists a recurrence rule.
+    - Internal + external attendees persisted.
+    - Out-of-org internal attendee -> clean error, no row.
+    - Cross-owner calendar -> not-found IDENTICAL to a missing calendar + no row.
+    - Org-wide token -> denied, no row (event creation stays blocked).
+    - Bundle calendar owned by the scoped owner -> clean error, no row.
+    - No availability window -> clean error.
+    - Title too long -> clean error.
+    - Missing CALENDAR_EVENT grant -> denied by the permission class.
+    """
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    # ------------------------------------------------------------------
+    # Helpers — mirror the blocked-time / availability scoped-token classes
+    # ------------------------------------------------------------------
+
+    def _setup_org(self):
+        return baker.make(Organization, name="Schedule Event Org")
+
+    def _make_owner_with_managing_calendar(self, org):
+        """Create a provider user, membership, and a manage_available_windows=True calendar.
+
+        manage_available_windows=True so availability is governed by declared windows; the
+        happy path seeds a covering window, the no-availability test omits it.
+        Returns (user, membership, calendar).
+        """
+        from calendar_integration.models import CalendarOwnership
+
+        unique = uuid.uuid4().hex[:8]
+        user_model = get_user_model()
+        owner = baker.make(user_model, email=f"sched_owner_{unique}@example.com")
+        membership = baker.make(
+            OrganizationMembership, user=owner, organization=org, is_active=True
+        )
+        calendar = baker.make(
+            Calendar,
+            organization=org,
+            name=f"Provider Sched Calendar {unique}",
+            external_id=f"sched-cal-{unique}",
+            manage_available_windows=True,
+        )
+        baker.make(CalendarOwnership, calendar=calendar, user=owner, organization=org)
+        return owner, membership, calendar
+
+    def _make_owner_with_bundle_calendar(self, org):
+        """Create a provider who owns a BUNDLE calendar. Returns (user, membership, bundle)."""
+        from calendar_integration.models import CalendarOwnership
+
+        unique = uuid.uuid4().hex[:8]
+        user_model = get_user_model()
+        owner = baker.make(user_model, email=f"sched_bundle_owner_{unique}@example.com")
+        membership = baker.make(
+            OrganizationMembership, user=owner, organization=org, is_active=True
+        )
+        bundle = baker.make(
+            Calendar,
+            organization=org,
+            name=f"Bundle Calendar {unique}",
+            external_id=f"sched-bundle-{unique}",
+            calendar_type=CalendarType.BUNDLE,
+        )
+        baker.make(CalendarOwnership, calendar=bundle, user=owner, organization=org)
+        return owner, membership, bundle
+
+    def _make_scoped_system_user(self, org, membership, resources):
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"scoped_sched_{uuid.uuid4().hex[:8]}",
+            organization=org,
+            scoped_to_membership=membership,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _make_org_wide_system_user(self, org, resources):
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"org_wide_sched_{uuid.uuid4().hex[:8]}",
+            organization=org,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _seed_window(self, org, system_user, calendar):
+        """Seed a covering AvailableTime window via the service (not the API)."""
+        from di_core.containers import container
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        return calendar_service.create_available_time(
+            calendar=calendar,
+            start_time=datetime.datetime(2026, 10, 1, 8, 0, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2026, 10, 1, 18, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+    def _post(self, query, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": query, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def _input(self, org, calendar, **overrides):
+        base = {
+            "organizationId": org.id,
+            "calendarId": calendar.id,
+            "startTime": datetime.datetime(2026, 10, 1, 10, 0, 0, tzinfo=datetime.UTC).isoformat(),
+            "endTime": datetime.datetime(2026, 10, 1, 11, 0, 0, tzinfo=datetime.UTC).isoformat(),
+            "timezone": "UTC",
+            "title": "Scheduled Visit",
+        }
+        base.update(overrides)
+        return base
+
+    # ------------------------------------------------------------------
+    # Happy path
+    # ------------------------------------------------------------------
+
+    def test_schedule_event_scoped_token_on_owned_calendar_succeeds(self):
+        """A scoped token schedules an event on its owner's calendar with a covering window."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["scheduleEvent"]
+        assert result is not None
+        assert result["title"] == "Scheduled Visit"
+        ev = CalendarEvent.objects.filter_by_organization(org.id).get(id=int(result["id"]))
+        assert ev.calendar_fk_id == calendar.id
+
+    def test_schedule_event_recurring_persists_recurrence_rule(self):
+        """A scoped token schedules a recurring event (rrule -> RecurrenceRule persisted)."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED_WITH_RRULE,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar, rruleString="RRULE:FREQ=WEEKLY;COUNT=4;BYDAY=TH")},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["scheduleEvent"]
+        assert result["recurrenceRule"] is not None
+        ev = CalendarEvent.objects.filter_by_organization(org.id).get(id=int(result["id"]))
+        assert ev.recurrence_rule_fk_id is not None
+
+    def test_schedule_event_persists_internal_and_external_attendees(self):
+        """Internal (active member) + external (email/name) attendees are persisted."""
+        from calendar_integration.models import EventAttendance, EventExternalAttendance
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        user_model = get_user_model()
+        attendee = baker.make(user_model, email=f"attendee_{uuid.uuid4().hex[:8]}@example.com")
+        baker.make(OrganizationMembership, user=attendee, organization=org, is_active=True)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._input(
+                    org,
+                    calendar,
+                    attendeeUserIds=[attendee.id],
+                    externalAttendees=[{"email": "guest@example.com", "name": "Guest"}],
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        ev_id = int(data["data"]["scheduleEvent"]["id"])
+        assert (
+            EventAttendance.objects.filter_by_organization(org.id)
+            .filter(event_fk_id=ev_id, user_id=attendee.id)
+            .exists()
+        )
+        assert (
+            EventExternalAttendance.objects.filter_by_organization(org.id)
+            .filter(event_fk_id=ev_id, external_attendee__email="guest@example.com")
+            .exists()
+        )
+
+    # ------------------------------------------------------------------
+    # Negative paths
+    # ------------------------------------------------------------------
+
+    def test_schedule_event_out_of_org_attendee_clean_error_no_row(self):
+        """An attendee who is not an active member of the org -> clean error, no event row."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        other_org = baker.make(Organization, name="Other Org")
+        user_model = get_user_model()
+        outsider = baker.make(user_model, email=f"outsider_{uuid.uuid4().hex[:8]}@example.com")
+        baker.make(OrganizationMembership, user=outsider, organization=other_org, is_active=True)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar, attendeeUserIds=[outsider.id])},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "active members" in str(data["errors"]).lower()
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id)
+            .exists()
+        )
+
+    def test_schedule_event_cross_owner_not_found_same_as_missing_calendar(self):
+        """Cross-owner calendar -> identical not-found as a genuinely missing calendar, no row."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner_a, membership_a, _calendar_a = self._make_owner_with_managing_calendar(org)
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_managing_calendar(org)
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        cross = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {"input": self._input(org, calendar_b)},
+        )
+        missing = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": 999997,
+                    "startTime": datetime.datetime(
+                        2026, 10, 1, 10, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "endTime": datetime.datetime(
+                        2026, 10, 1, 11, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "timezone": "UTC",
+                    "title": "Scheduled Visit",
+                }
+            },
+        )
+
+        cross_msg = cross.json()["errors"][0]["message"]
+        missing_msg = missing.json()["errors"][0]["message"]
+        assert cross_msg == missing_msg == "Calendar not found."
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar_b.id)
+            .exists()
+        )
+
+    def test_schedule_event_org_wide_token_denied_no_row(self):
+        """An org-wide token is denied (event creation stays blocked) with no row."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, _membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "public api" in str(data["errors"]).lower()
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id)
+            .exists()
+        )
+
+    def test_schedule_event_bundle_calendar_clean_error_no_row(self):
+        """A bundle calendar owned by the scoped owner -> clean error, no row."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, bundle = self._make_owner_with_bundle_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, bundle)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "bundle" in str(data["errors"]).lower()
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=bundle.id)
+            .exists()
+        )
+
+    def test_schedule_event_no_availability_window_clean_error(self):
+        """No covering availability window on a managed calendar -> clean error, no row."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        # No window seeded -> manage_available_windows=True means nothing is bookable.
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "available time window" in str(data["errors"]).lower()
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id)
+            .exists()
+        )
+
+    def test_schedule_event_title_too_long_clean_error(self):
+        """A title exceeding the model max_length -> clean error before any write."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar, title="x" * 256)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "at most" in str(data["errors"]).lower()
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id)
+            .exists()
+        )
+
+    def test_schedule_event_missing_calendar_event_grant_denied(self):
+        """A scoped token without the CALENDAR_EVENT grant is denied by the permission class."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CREATE_BLOCKED_TIME]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id)
+            .exists()
+        )

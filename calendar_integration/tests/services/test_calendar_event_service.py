@@ -325,3 +325,206 @@ def test_facade_create_event_delegates_to_event_service(
 
     assert result is sentinel
     fake_event_service.create_event.assert_called_once_with(123, sample_event_input_data)
+
+
+# ----------------------------------------------------------------------------------------
+# Owner-scoped public-API event-creation allowance (Phase 3)
+#
+# ``create_event`` hard-blocks all SystemUser callers EXCEPT a token that is owner-scoped
+# AND whose owner independently owns the target calendar (verified against CalendarOwnership,
+# not trusted from the caller). These tests pin that authorization boundary at the service
+# layer. The shared CalendarService facade (built via the DI container) supplies the wired
+# context; create_event is exercised through it.
+# ----------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def scoped_event_setup(db):
+    """Build an org with a provider who owns a non-managed calendar.
+
+    Returns a dict with ``organization``, ``owner`` (User), ``membership``
+    (OrganizationMembership), and ``calendar`` (owned by ``owner``). The calendar has
+    ``manage_available_windows=False`` so the whole range is bookable (no window setup
+    needed) and no provider, so no external write adapter is invoked.
+    """
+    from calendar_integration.models import CalendarOwnership
+    from organizations.models import OrganizationMembership
+
+    organization = Organization.objects.create(name="Scoped Event Org", should_sync_rooms=False)
+    owner = User.objects.create_user(email="scoped-owner@example.com", password="testpass123")
+    Profile.objects.create(user=owner)
+    membership = OrganizationMembership.objects.create(
+        user=owner, organization=organization, is_active=True
+    )
+    calendar = Calendar.objects.create(
+        name="Owned Calendar",
+        external_id="owned_cal_1",
+        provider=CalendarProvider.GOOGLE,
+        organization=organization,
+    )
+    CalendarOwnership.objects.create(calendar=calendar, user=owner, organization=organization)
+    return {
+        "organization": organization,
+        "owner": owner,
+        "membership": membership,
+        "calendar": calendar,
+    }
+
+
+def _scoped_event_input():
+    return CalendarEventInputData(
+        title="Scoped Event",
+        description="Scheduled by an owner-scoped token",
+        start_time=datetime.datetime(2026, 7, 1, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2026, 7, 1, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendances=[],
+        external_attendances=[],
+        resource_allocations=[],
+    )
+
+
+def _facade_for_system_user(system_user, organization):
+    """Return a DI-wired CalendarService facade initialized for the given SystemUser."""
+    from di_core.containers import container
+
+    service = container.calendar_service()
+    service.initialize_without_provider(user_or_token=system_user, organization=organization)
+    return service
+
+
+@pytest.mark.django_db
+def test_create_event_allows_owner_scoped_system_user_on_owned_calendar(scoped_event_setup):
+    """An owner-scoped token whose owner owns the calendar may create an event."""
+    from public_api.services import PublicAPIAuthService
+
+    org = scoped_event_setup["organization"]
+    calendar = scoped_event_setup["calendar"]
+    membership = scoped_event_setup["membership"]
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="scoped_event_svc_owned",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    event = facade.create_event(calendar.id, _scoped_event_input())
+
+    assert event.id is not None
+    assert event.calendar_fk_id == calendar.id
+    assert event.title == "Scoped Event"
+
+
+@pytest.mark.django_db
+def test_create_event_still_blocks_org_wide_system_user(scoped_event_setup):
+    """An org-wide (unscoped) token is still blocked from creating events."""
+    from django.core.exceptions import PermissionDenied
+
+    from public_api.services import PublicAPIAuthService
+
+    org = scoped_event_setup["organization"]
+    calendar = scoped_event_setup["calendar"]
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="org_wide_event_svc",
+        organization=org,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    with pytest.raises(PermissionDenied, match="Events cannot be created through the Public API"):
+        facade.create_event(calendar.id, _scoped_event_input())
+
+    assert not CalendarEvent.objects.filter(
+        calendar_fk_id=calendar.id, organization_id=org.id
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_create_event_blocks_scoped_token_on_non_owned_calendar(scoped_event_setup):
+    """A scoped token may not create on a calendar its owner does not own.
+
+    The independent CalendarOwnership verification fails (no ownership row links the
+    token's owner to this other calendar), so the block stays in force.
+    """
+    from django.core.exceptions import PermissionDenied
+
+    from organizations.models import OrganizationMembership
+    from public_api.services import PublicAPIAuthService
+
+    org = scoped_event_setup["organization"]
+    membership = scoped_event_setup["membership"]
+
+    # A second provider's calendar with no ownership row for the first provider.
+    other_calendar = Calendar.objects.create(
+        name="Other Calendar",
+        external_id="other_cal_1",
+        provider=CalendarProvider.GOOGLE,
+        organization=org,
+    )
+    # (sanity: the token is scoped to a real membership but does NOT own other_calendar)
+    assert OrganizationMembership.objects.filter(id=membership.id).exists()
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="scoped_event_svc_foreign",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    with pytest.raises(PermissionDenied, match="Events cannot be created through the Public API"):
+        facade.create_event(other_calendar.id, _scoped_event_input())
+
+    assert not CalendarEvent.objects.filter(
+        calendar_fk_id=other_calendar.id, organization_id=org.id
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_create_event_owner_scoped_audit_actor_is_system_user(scoped_event_setup):
+    """The post-commit audit actor falls back to the SystemUser (no AttributeError).
+
+    The owner-scoped path never initializes a permission token, so the on_commit side
+    effect must read the (absent) token defensively and use the SystemUser as the actor.
+    Running with ``django_capture_on_commit_callbacks`` actually fires the callback, so a
+    regression to direct ``permission_service.token`` access would raise here.
+    """
+    from public_api.services import PublicAPIAuthService
+
+    org = scoped_event_setup["organization"]
+    calendar = scoped_event_setup["calendar"]
+    membership = scoped_event_setup["membership"]
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="scoped_event_svc_actor",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+
+    recorded: list = []
+    side_effects = facade.calendar_side_effects_service
+    if side_effects is not None:
+        original = side_effects.on_create_event
+
+        def _spy(actor, event, organization):
+            recorded.append(actor)
+            return original(actor, event, organization)
+
+        side_effects.on_create_event = _spy  # type: ignore[method-assign]
+
+    try:
+        # Fire on_commit callbacks inline so the side effect actually runs (a transaction
+        # rollback in tests would otherwise swallow it and hide the actor-resolution bug).
+        with patch("django.db.transaction.on_commit", side_effect=lambda func: func()):
+            event = facade.create_event(calendar.id, _scoped_event_input())
+    finally:
+        if side_effects is not None:
+            side_effects.on_create_event = original  # type: ignore[method-assign]
+
+    assert event.id is not None
+    # The callback fired (patched on_commit ran it inline) and the actor is the SystemUser.
+    if side_effects is not None:
+        assert recorded, "on_create_event side effect did not fire"
+        assert recorded[0] == system_user

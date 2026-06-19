@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import URLValidator
 from django.db import IntegrityError, transaction
@@ -15,15 +16,25 @@ from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
 from calendar_integration.constants import CalendarType
-from calendar_integration.exceptions import CalendarIntegrationError
+from calendar_integration.exceptions import (
+    CalendarIntegrationError,
+    NoAvailableTimeWindowsError,
+)
 from calendar_integration.graphql import (
     AvailableTimeGraphQLType,
     BlockedTimeGraphQLType,
     CalendarBundleGraphQLType,
+    CalendarEventGraphQLType,
     CalendarGraphQLType,
 )
 from calendar_integration.models import Calendar
 from calendar_integration.mutations import CalendarGroupMutations
+from calendar_integration.services.dataclasses import (
+    CalendarEventInputData,
+    EventAttendanceInputData,
+    EventExternalAttendanceInputData,
+    ExternalAttendeeInputData,
+)
 from organizations.exceptions import NoServiceAccountConfiguredError, UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from organizations.services import OrganizationService
@@ -65,6 +76,9 @@ if TYPE_CHECKING:
 # Module-scope constants for validation
 HEX_COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
 _url_validator = URLValidator(schemes=["http", "https"])
+# Mirrors CalendarEvent.title's max_length so an over-long title is rejected with a clean
+# GraphQL error rather than surfacing as a DB-level error after work has begun.
+EVENT_TITLE_MAX_LENGTH = 255
 
 
 @dataclass
@@ -515,6 +529,39 @@ class DisableCalendarBundleResult:
 
     success: bool
     error_message: str | None = None
+
+
+@strawberry.input
+class ScheduleEventExternalAttendeeInput:
+    """An external (non-user) attendee on a scheduled event: an email and optional name."""
+
+    email: str
+    name: str = ""
+
+
+@strawberry.input
+class ScheduleEventInput:
+    """Input for scheduling a calendar event on an owned calendar.
+
+    A scoped public-API token may schedule events only on calendars its owner owns. The
+    target calendar is identified by ``calendar_id``; ``attendee_user_ids`` are internal
+    org users (validated as active members of the caller's organization) and
+    ``external_attendees`` are email/name pairs. ``rrule_string`` (RFC-5545) makes the
+    event recurring.
+    """
+
+    organization_id: int
+    calendar_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+    title: str
+    description: str = ""
+    attendee_user_ids: list[int] = strawberry.field(default_factory=list)
+    external_attendees: list[ScheduleEventExternalAttendeeInput] = strawberry.field(
+        default_factory=list
+    )
+    rrule_string: str | None = None
 
 
 @strawberry.type
@@ -1780,3 +1827,99 @@ class Mutation(CalendarGroupMutations):
             return DisableCalendarBundleResult(success=False, error_message=str(e))
 
         return DisableCalendarBundleResult(success=True)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def schedule_event(
+        self,
+        info: strawberry.Info,
+        input: ScheduleEventInput,  # noqa: A002
+    ) -> CalendarEventGraphQLType:
+        """Schedule a calendar event on a calendar owned by the token's owner.
+
+        Event creation is blocked for org-wide public-API tokens; only an owner-scoped
+        token may schedule, and only on its owner's calendars. The mutation:
+        1. Resolves the organization and initializes the calendar service via the token.
+        2. Asserts the calendar is within the token owner's scope (defense in depth — the
+           service independently re-verifies ownership). A cross-owner / missing calendar
+           raises the same "Calendar not found." error, revealing nothing about the target.
+        3. Validates the title length and that every attendee_user_id is an ACTIVE member of
+           the caller's organization (a stray / out-of-org id is rejected before any write,
+           so it can never reach the DB as an opaque IntegrityError or attach an arbitrary
+           user).
+        4. Builds the event input (internal + external attendees, optional rrule) and
+           delegates to CalendarService.create_event, which enforces the sanctioned
+           owner-scoped allowance and rejects bundle calendars / org-wide tokens.
+        5. Maps service-layer errors (PermissionDenied, no-availability, malformed input) to
+           clean GraphQL errors — never a 500.
+
+        The token's OrganizationResourceAccess must include the CALENDAR_EVENT resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
+
+        try:
+            # Owner-scope guard (defense in depth): a scoped token may only target its
+            # owner's calendars. Raises Calendar.DoesNotExist — same as a genuinely missing
+            # calendar — so a cross-owner attempt reveals nothing about the target.
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, input.calendar_id)
+            Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Calendar not found.") from exc
+
+        if len(input.title) > EVENT_TITLE_MAX_LENGTH:
+            raise GraphQLError(f"Title must be at most {EVENT_TITLE_MAX_LENGTH} characters.")
+
+        # Pre-validate internal attendees: every id must be an ACTIVE member of this org.
+        # De-duplicate first so a repeated id doesn't skew the membership count check.
+        attendee_user_ids = list(dict.fromkeys(input.attendee_user_ids))
+        if attendee_user_ids:
+            active_member_ids = set(
+                OrganizationMembership.objects.filter(
+                    organization_id=org.id,
+                    is_active=True,
+                    user_id__in=attendee_user_ids,
+                ).values_list("user_id", flat=True)
+            )
+            missing = [uid for uid in attendee_user_ids if uid not in active_member_ids]
+            if missing:
+                raise GraphQLError(
+                    "One or more attendees are not active members of this organization."
+                )
+
+        event_input = CalendarEventInputData(
+            title=input.title,
+            description=input.description or "",
+            start_time=input.start_time,
+            end_time=input.end_time,
+            timezone=input.timezone,
+            attendances=[
+                EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids
+            ],
+            external_attendances=[
+                EventExternalAttendanceInputData(
+                    external_attendee=ExternalAttendeeInputData(
+                        email=external.email,
+                        name=external.name,
+                    )
+                )
+                for external in input.external_attendees
+            ],
+            resource_allocations=[],
+            recurrence_rule=input.rrule_string,
+        )
+
+        try:
+            event = calendar_service.create_event(input.calendar_id, event_input)
+        except Calendar.DoesNotExist as exc:
+            # A race / direct service-level not-found must stay indistinguishable.
+            raise GraphQLError("Calendar not found.") from exc
+        except NoAvailableTimeWindowsError as exc:
+            raise GraphQLError("No available time window covers the requested event time.") from exc
+        except PermissionDenied as exc:
+            raise GraphQLError(
+                str(exc) or "You do not have permission to schedule this event."
+            ) from exc
+        except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
+            raise GraphQLError(str(exc)) from exc
+
+        return event  # type: ignore[return-value]

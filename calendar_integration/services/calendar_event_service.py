@@ -44,6 +44,7 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarManagementToken,
+    CalendarOwnership,
     EventAttendance,
     EventBulkModification,
     EventExternalAttendance,
@@ -188,6 +189,39 @@ class CalendarEventService:
             context.organization,
         )
 
+    @staticmethod
+    def _scoped_system_user_owns_calendar(system_user: SystemUser, calendar: Calendar) -> bool:
+        """Independently verify the scoped token's owner owns ``calendar``.
+
+        This is the narrow, sanctioned event-creation allowance for owner-scoped public-API
+        tokens. The check does NOT trust anything supplied by the caller: it re-derives the
+        ownership relation from the database, scoped to the calendar's own organization, so a
+        cross-organization or cross-owner token can never pass.
+
+        Ownership is confirmed when a :class:`CalendarOwnership` row exists for ``calendar``
+        whose ``user`` is the member behind the token's ``scoped_to_membership`` (an
+        ``OrganizationMembership``). Org-wide tokens (``scoped_to_membership_fk_id is None``)
+        always return ``False`` — event creation stays blocked for them.
+
+        Args:
+            system_user: The token (``SystemUser``) attempting the write.
+            calendar: The target calendar the event would be created on.
+
+        Returns:
+            ``True`` only when the token is scoped AND its owner independently owns the
+            target calendar in that calendar's organization; ``False`` otherwise.
+        """
+        if system_user.scoped_to_membership_fk_id is None:
+            return False
+        return (
+            CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+            .filter(
+                calendar_fk_id=calendar.id,
+                user__organization_memberships=system_user.scoped_to_membership_fk_id,
+            )
+            .exists()
+        )
+
     def _serialize_event(self, event: CalendarEvent) -> CalendarEventData:
         """Build webhook payload for calendar event."""
         return _serialize_event_util(event)
@@ -237,6 +271,10 @@ class CalendarEventService:
 
         calendar = self._get_calendar_by_id(calendar_id)
 
+        # When True, authorization is granted by independently-verified calendar ownership
+        # (the owner-scoped public-API allowance) rather than by the permission-token flow.
+        is_owner_scoped_system_user = False
+
         if isinstance(context.user_or_token, User):
             context.calendar_permission_service.initialize_with_user(
                 context.user_or_token,
@@ -244,15 +282,34 @@ class CalendarEventService:
                 calendar_id=calendar_id,
             )
         elif isinstance(context.user_or_token, SystemUser):
-            raise PermissionDenied("Events cannot be created through the Public API.")
+            # Public-API event creation is blocked by default. The single sanctioned
+            # exception: an owner-scoped token whose owner *independently* owns the target
+            # calendar (verified against CalendarOwnership, NOT trusted from the caller).
+            # Org-wide tokens (scoped_to_membership_fk_id is None) stay blocked — they must
+            # route through single-use codes / public scheduling.
+            if not self._scoped_system_user_owns_calendar(context.user_or_token, calendar):
+                raise PermissionDenied("Events cannot be created through the Public API.")
+            # Bundle calendars are rejected for scoped tokens: create_event would recurse
+            # into per-child creates that span other providers' calendars, producing a
+            # confusing partial failure. Reject up front with a clear, scoped error.
+            if calendar.calendar_type == CalendarType.BUNDLE:
+                raise PermissionDenied(
+                    "Events cannot be scheduled on a bundle calendar through the Public API."
+                )
+            is_owner_scoped_system_user = True
 
-        if not context.calendar_permission_service.can_perform_scheduling(
-            calendar_id=calendar_id,
-            calendar_settings=CalendarSettingsData(
-                manage_available_windows=calendar.manage_available_windows,
-                accepts_public_scheduling=calendar.accepts_public_scheduling,
-            ),
-            event=event_data,
+        # The permission-token scheduling check applies to the User / token flows. The
+        # owner-scoped path's authorization is the independently-verified ownership above,
+        # so it bypasses this check (the permission service has no token initialized for it).
+        if not is_owner_scoped_system_user and (
+            not context.calendar_permission_service.can_perform_scheduling(
+                calendar_id=calendar_id,
+                calendar_settings=CalendarSettingsData(
+                    manage_available_windows=calendar.manage_available_windows,
+                    accepts_public_scheduling=calendar.accepts_public_scheduling,
+                ),
+                event=event_data,
+            )
         ):
             raise PermissionDenied("You do not have permission to update this event.")
 
@@ -402,17 +459,23 @@ class CalendarEventService:
         # Grant permissions to event attendees
         self._host._grant_event_attendee_permissions(event)
 
+        # Resolve the audit actor *before* queueing the post-commit side-effect.
+        # The owner-scoped public-API path never initializes a permission token, so
+        # ``calendar_permission_service.token`` may be unset entirely — read it through
+        # ``getattr`` to avoid an AttributeError after commit, and fall back to the
+        # SystemUser caller so owner-scoped events are never actor-less.
+        permission_token = getattr(context.calendar_permission_service, "token", None)
+        if permission_token is not None and permission_token.user:
+            audit_actor: Any = permission_token.user
+        elif permission_token is not None:
+            audit_actor = permission_token
+        else:
+            audit_actor = context.user_or_token
+
         transaction.on_commit(
             lambda: (
                 context.calendar_side_effects_service.on_create_event(
-                    actor=(
-                        context.calendar_permission_service.token.user
-                        if (
-                            context.calendar_permission_service.token
-                            and context.calendar_permission_service.token.user
-                        )
-                        else context.calendar_permission_service.token
-                    ),
+                    actor=audit_actor,
                     event=self._serialize_event(event),
                     organization=event.organization,
                 )
