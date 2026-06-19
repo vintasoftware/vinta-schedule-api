@@ -164,7 +164,7 @@ class CalendarGraphQLType:
     @strawberry_django.field
     def is_private(self) -> bool:
         return not self.accepts_public_scheduling
-    
+
     @strawberry_django.field(prefetch_related=["ownerships__user__profile"])
     def owners(self) -> list["CalendarOwnershipGraphQLType"]:
         """Return all ownership records for this calendar."""
@@ -612,7 +612,7 @@ class CalendarGroupGraphQLType:
 class CalendarBundleGraphQLType:
     """GraphQL type for a bundle calendar and its children.
 
-    Exposes id, name, description, the list of child calendars, owners, 
+    Exposes id, name, description, the list of child calendars, owners,
     and isPrivate.
     """
 
