@@ -10767,6 +10767,21 @@ components:
       - invitation
       - branding
       - child_org_analytics
+      - calendar_booking_code
+      - create_resource_calendar
+      - disable_resource_calendar
+      - import_resource_calendars
+      - create_availability_window
+      - update_availability_window
+      - delete_availability_window
+      - batch_update_availability_windows
+      - create_blocked_time
+      - update_blocked_time
+      - delete_blocked_time
+      - calendar_bundle
+      - create_calendar_bundle
+      - update_calendar_bundle
+      - disable_calendar_bundle
       - webhook_configuration
       type: string
       description: |-
@@ -10792,6 +10807,21 @@ components:
         * `invitation` - Invitation
         * `branding` - Branding
         * `child_org_analytics` - Child Organization Analytics
+        * `calendar_booking_code` - Calendar Booking Code
+        * `create_resource_calendar` - Create Resource Calendar
+        * `disable_resource_calendar` - Disable Resource Calendar
+        * `import_resource_calendars` - Import Resource Calendars
+        * `create_availability_window` - Create Availability Window
+        * `update_availability_window` - Update Availability Window
+        * `delete_availability_window` - Delete Availability Window
+        * `batch_update_availability_windows` - Batch Update Availability Windows
+        * `create_blocked_time` - Create Blocked Time
+        * `update_blocked_time` - Update Blocked Time
+        * `delete_blocked_time` - Delete Blocked Time
+        * `calendar_bundle` - Calendar Bundle
+        * `create_calendar_bundle` - Create Calendar Bundle
+        * `update_calendar_bundle` - Update Calendar Bundle
+        * `disable_calendar_bundle` - Disable Calendar Bundle
         * `webhook_configuration` - Webhook Configuration
     AvailableTime:
       type: object
@@ -13268,12 +13298,16 @@ components:
       description: |-
         Read-only serializer for listing and retrieving public-API tokens.
 
-        Exposes ``id``, ``integration_name``, ``is_active``, and ``available_resources``
-        (list of resource_name strings from the related ``ResourceAccess`` rows).
+        Exposes ``id``, ``integration_name``, ``is_active``, ``available_resources``
+        (list of resource_name strings from the related ``ResourceAccess`` rows), and
+        ``scoped_to_user`` (the owner's User id derived from the membership FK, null for
+        org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API stability;
+        the value is resolved via ``scoped_to_membership_fk.user_id``.
         Never exposes ``long_lived_token_hash`` or ``token``.
 
-        Optimized for list queries: uses prefetched ``available_resources`` from
-        the viewset's ``get_queryset`` to avoid N+1 queries.
+        Optimized for list queries: uses prefetched ``available_resources`` and
+        ``select_related("scoped_to_membership_fk")`` from the viewset's ``get_queryset``
+        to avoid N+1 queries.
       properties:
         id:
           type: integer
@@ -13292,21 +13326,34 @@ components:
           description: Return a list of resource_name values from the prefetched ResourceAccess
             rows.
           readOnly: true
+        scoped_to_user:
+          type: integer
+          nullable: true
+          description: Return the owner's User id derived from the stored membership
+            FK, or None.
+          readOnly: true
       required:
       - available_resources
       - id
       - integration_name
       - is_active
+      - scoped_to_user
     SystemUserTokenCreate:
       type: object
       description: |-
         Input serializer for creating a new public-API token (SystemUser + ResourceAccess rows).
 
-        Accepts ``integration_name`` and ``available_resources`` (a non-empty list of valid
-        ``PublicAPIResources`` values).  ``create()`` provisions the ``SystemUser`` via the
-        injected auth service and bulk-creates the ``ResourceAccess`` grants, attaching the
-        write-once plaintext ``token`` to the returned instance.  Never stores or exposes
-        ``long_lived_token_hash``.
+        Accepts ``integration_name``, ``available_resources`` (a non-empty list of valid
+        ``PublicAPIResources`` values), and an optional ``scoped_to_user`` (internal User id).
+        ``create()`` provisions the ``SystemUser`` via the injected auth service and
+        bulk-creates the ``ResourceAccess`` grants, attaching the write-once plaintext
+        ``token`` to the returned instance.  Never stores or exposes ``long_lived_token_hash``.
+
+        When ``scoped_to_user`` is supplied and non-null:
+        - The referenced user must be an active member of the caller's organisation.
+        - ``available_resources`` must be a subset of ``PROVIDER_SCOPED_RESOURCES``.
+        When ``scoped_to_user`` is absent or null, behaviour is exactly as before:
+        any valid ``PublicAPIResources`` value is accepted and the token is org-wide.
       properties:
         integration_name:
           type: string
@@ -13315,6 +13362,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AvailableResourcesEnum'
+        scoped_to_user:
+          type: integer
+          nullable: true
       required:
       - available_resources
       - integration_name
@@ -13325,6 +13375,9 @@ components:
 
         Includes the write-once ``token`` field (sourced from the view) and
         ``available_resources`` (derived from the related ``ResourceAccess`` rows).
+        Exposes ``scoped_to_user`` as the owner's User id derived from the stored membership FK
+        (null for org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API
+        stability; the value is resolved via ``scoped_to_membership_fk.user_id``.
         Never exposes ``long_lived_token_hash``.
       properties:
         id:
@@ -13344,6 +13397,12 @@ components:
           description: Return a list of resource_name values from the related ResourceAccess
             rows.
           readOnly: true
+        scoped_to_user:
+          type: integer
+          nullable: true
+          description: Return the owner's User id derived from the stored membership
+            FK, or None.
+          readOnly: true
         token:
           type: string
           readOnly: true
@@ -13352,6 +13411,7 @@ components:
       - id
       - integration_name
       - is_active
+      - scoped_to_user
       - token
     SystemUserTokenUpdate:
       type: object
