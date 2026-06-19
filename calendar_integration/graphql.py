@@ -14,6 +14,7 @@ from calendar_integration.models import (
     CalendarEventGroupSelection,
     CalendarGroup,
     CalendarGroupSlot,
+    CalendarOwnership,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
     EventAttendance,
@@ -132,6 +133,19 @@ def _scoped_calendar_list(
     return [c for c in calendars if c.id in allowed_ids]
 
 
+@strawberry_django.type(CalendarOwnership)
+class CalendarOwnershipGraphQLType:
+    """GraphQL type for a CalendarOwnership through-model row.
+
+    ``id`` is the ownership row primary key, not the user id.
+    ``is_default`` indicates whether this is the default calendar for the owning user.
+    """
+
+    id: strawberry.auto  # noqa: A003
+    is_default: strawberry.auto
+    user: UserGraphQLType = strawberry_django.field()
+
+
 @strawberry_django.type(Calendar)
 class CalendarGraphQLType:
     id: strawberry.auto  # noqa: A003
@@ -146,6 +160,11 @@ class CalendarGraphQLType:
     sync_enabled: strawberry.auto
     created: datetime.datetime
     modified: datetime.datetime
+
+    @strawberry_django.field(prefetch_related=["ownerships__user__profile"])
+    def owners(self) -> list["CalendarOwnershipGraphQLType"]:
+        """Return all ownership records for this calendar."""
+        return list(self.ownerships.all())  # type: ignore[attr-defined]
 
 
 @strawberry_django.type(RecurrenceRule)
@@ -585,8 +604,8 @@ class CalendarGroupGraphQLType:
 class CalendarBundleGraphQLType:
     """GraphQL type for a bundle calendar and its children.
 
-    Exposes id, name, description, and the list of child calendars.
-    No isPrivate / owners (non-goals — separate plans).
+    Exposes id, name, description, the list of child calendars, and owners.
+    No isPrivate (non-goal — separate plan).
     """
 
     id: strawberry.auto  # noqa: A003
@@ -597,6 +616,11 @@ class CalendarBundleGraphQLType:
     def children(self) -> list[CalendarGraphQLType]:
         """Return the child calendars of this bundle calendar."""
         return list(self.bundle_children.all())  # type: ignore[union-attr]
+
+    @strawberry_django.field(prefetch_related=["ownerships__user__profile"])
+    def owners(self) -> list["CalendarOwnershipGraphQLType"]:
+        """Return all ownership records for this bundle calendar."""
+        return list(self.ownerships.all())  # type: ignore[attr-defined]
 
 
 @strawberry_django.type(CalendarEventGroupSelection)
