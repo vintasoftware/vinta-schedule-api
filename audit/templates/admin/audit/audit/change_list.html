@@ -1,0 +1,135 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}Audit records | {% trans "Site administration" %}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label='audit' %}">Audit</a>
+  &rsaquo; Audit records
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>Audit records</h1>
+
+<!-- Filter form -->
+<form id="audit-filters" method="get" action="">
+  <div style="display: flex; flex-wrap: wrap; gap: 1em; margin-bottom: 1em; padding: 1em; background: #f8f8f8; border: 1px solid #ddd;">
+
+    <div>
+      <label for="id_action"><strong>Action</strong></label><br>
+      <select name="action" id="id_action">
+        {% for value, label in action_choices %}
+          <option value="{{ value }}"{% if active_filters.action == value %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label for="id_actor_type"><strong>Actor type</strong></label><br>
+      <select name="actor_type" id="id_actor_type">
+        {% for value, label in actor_type_choices %}
+          <option value="{{ value }}"{% if active_filters.actor_type == value %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label for="id_has_diff"><strong>Has diff</strong></label><br>
+      <select name="has_diff" id="id_has_diff">
+        {% for value, label in has_diff_choices %}
+          <option value="{{ value }}"{% if active_filters.has_diff == value %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label for="id_organization_id"><strong>Organization ID</strong></label><br>
+      <input type="number" name="organization_id" id="id_organization_id"
+             value="{{ active_filters.organization_id }}" placeholder="Any">
+    </div>
+
+    <div>
+      <label for="id_created_after"><strong>Created after</strong></label><br>
+      <input type="datetime-local" name="created_after" id="id_created_after"
+             value="{{ active_filters.created_after }}">
+    </div>
+
+    <div>
+      <label for="id_created_before"><strong>Created before</strong></label><br>
+      <input type="datetime-local" name="created_before" id="id_created_before"
+             value="{{ active_filters.created_before }}">
+    </div>
+
+    <div style="align-self: flex-end;">
+      <button type="submit" class="button">Filter</button>
+      <a href="?" class="button" style="margin-left: 0.5em;">Clear</a>
+    </div>
+  </div>
+</form>
+
+<!-- Result count and pagination summary -->
+{% if audit_page %}
+  <p>
+    Showing {{ audit_page.items|length }} of {{ total }} record{{ total|pluralize }}.
+    Page {{ page }} of {{ num_pages }}.
+  </p>
+
+  <!-- Results table -->
+  <table class="results" style="width: 100%; border-collapse: collapse;">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Created at</th>
+        <th>Organization</th>
+        <th>Action</th>
+        <th>Actor type</th>
+        <th>Actor ID</th>
+        <th>Subject type</th>
+        <th>Subject ID</th>
+        <th>Has diff</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for record in audit_page.items %}
+      <tr class="{% cycle 'row1' 'row2' %}">
+        <td>{{ record.id }}</td>
+        <td>{{ record.created_at|date:"Y-m-d H:i:s" }}</td>
+        <td>{{ record.organization_id }}</td>
+        <td>{{ record.action }}</td>
+        <td>{{ record.actor.actor_type }}</td>
+        <td>{{ record.actor.actor_id|default:"-" }}</td>
+        <td>{{ record.subject.subject_type }}</td>
+        <td>{{ record.subject.subject_id }}</td>
+        <td>{% if record.diff %}Yes{% else %}No{% endif %}</td>
+      </tr>
+      {% empty %}
+      <tr>
+        <td colspan="9" style="text-align: center; padding: 2em;">No audit records found.</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- Pagination controls -->
+  <p class="paginator" style="margin-top: 1em;">
+    {% if has_prev %}
+      <a href="?{% for k, v in active_filters.items %}{% if v %}{{ k }}={{ v }}&{% endif %}{% endfor %}page={{ prev_page }}&per_page={{ per_page }}">&laquo; Previous</a>
+    {% else %}
+      <span style="color: #999;">&laquo; Previous</span>
+    {% endif %}
+
+    &nbsp; Page {{ page }} of {{ num_pages }} &nbsp;
+
+    {% if has_next %}
+      <a href="?{% for k, v in active_filters.items %}{% if v %}{{ k }}={{ v }}&{% endif %}{% endfor %}page={{ next_page }}&per_page={{ per_page }}">Next &raquo;</a>
+    {% else %}
+      <span style="color: #999;">Next &raquo;</span>
+    {% endif %}
+  </p>
+{% else %}
+  <p>Repository not available.</p>
+{% endif %}
+{% endblock %}
