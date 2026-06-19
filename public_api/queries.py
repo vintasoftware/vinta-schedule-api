@@ -670,7 +670,11 @@ class Query:
     ) -> list[CalendarGroupGraphQLType]:
         """List CalendarGroups for the caller's organization."""
         org = _get_org(info)
-        qs = CalendarGroup.objects.filter_by_organization(org.id).order_by("pk")
+        qs = (
+            CalendarGroup.objects.filter_by_organization(org.id)
+            .prefetch_related("slots__calendars__ownerships__user__profile")
+            .order_by("pk")
+        )
         return cast(list[CalendarGroupGraphQLType], list(_slice_qs(qs, offset, limit)))
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
@@ -690,7 +694,11 @@ class Query:
             Calendar.objects.filter_by_organization(org.id)
             .only_listed()
             .filter(calendar_type=CalendarType.BUNDLE)
-            .prefetch_related("bundle_children")
+            .prefetch_related(
+                "bundle_children",
+                "ownerships__user__profile",
+                "bundle_children__ownerships__user__profile",
+            )
             .order_by("pk")
         )
         return cast(list[CalendarBundleGraphQLType], list(_slice_qs(qs, offset, limit)))

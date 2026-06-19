@@ -18,6 +18,8 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    CalendarGroupSlot,
+    CalendarGroupSlotMembership,
     CalendarOwnership,
     ChildrenCalendarRelationship,
 )
@@ -4645,4 +4647,583 @@ class TestCalendarOwnersField:
             f"N=4 calendars used {queries_n4} queries. "
             "With prefetch_related the counts must be equal (or differ by at most 1). "
             "Check prefetch_related wiring in the owners resolver."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — N+1 hardening: calendarGroups and calendarBundles entry points
+# ---------------------------------------------------------------------------
+
+_CALENDAR_GROUPS_WITH_OWNERS_QUERY = """
+    query GetCalendarGroupsWithOwners {
+        calendarGroups {
+            id
+            name
+            slots {
+                id
+                name
+                calendars {
+                    id
+                    name
+                    owners {
+                        id
+                        isDefault
+                        user {
+                            id
+                            email
+                            profile {
+                                firstName
+                                lastName
+                                profilePicture
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+"""
+
+_CALENDAR_BUNDLES_WITH_OWNERS_QUERY = """
+    query GetCalendarBundlesWithOwners {
+        calendarBundles {
+            id
+            name
+            children {
+                id
+                name
+                owners {
+                    id
+                    isDefault
+                    user {
+                        id
+                        email
+                        profile {
+                            firstName
+                            lastName
+                            profilePicture
+                        }
+                    }
+                }
+            }
+        }
+    }
+"""
+
+
+def _make_group_with_owned_slot_calendars(
+    organization: Organization,
+    group_name: str,
+    calendar_count: int = 2,
+) -> tuple[CalendarGroup, CalendarGroupSlot, list[Calendar], list[CalendarOwnership]]:
+    """Create a CalendarGroup with one slot holding `calendar_count` calendars, each with one owner.
+
+    Uses .objects.create() for OrganizationForeignKey models (baker.make cannot resolve the
+    virtual ForeignObject field on CalendarGroupSlot.group and CalendarGroupSlotMembership.slot).
+
+    Returns (group, slot, calendars, ownerships).
+    """
+    group = baker.make(CalendarGroup, organization=organization, name=group_name)
+    slot = CalendarGroupSlot.objects.create(
+        organization=organization,
+        group=group,
+        name=f"{group_name} slot",
+    )
+    calendars = []
+    ownerships = []
+    for i in range(calendar_count):
+        cal = baker.make(
+            Calendar,
+            organization=organization,
+            name=f"{group_name} cal {i}",
+            external_id=str(uuid.uuid4()),
+        )
+        CalendarGroupSlotMembership.objects.create(
+            organization=organization,
+            slot=slot,
+            calendar=cal,
+        )
+        owner = UserFactory().create_user(
+            email=f"owner_{group_name.lower().replace(' ', '_')}_{i}@test.local",
+            first_name=f"First{i}",
+            last_name=f"Last{i}",
+        )
+        ownership = baker.make(
+            CalendarOwnership,
+            organization=organization,
+            calendar=cal,
+            user=owner,
+            is_default=True,
+        )
+        calendars.append(cal)
+        ownerships.append(ownership)
+    return group, slot, calendars, ownerships
+
+
+def _make_group_wide_client(organization: Organization) -> tuple[APIClient, SystemUser]:
+    """Create an org-wide API client with CALENDAR_GROUP resource grant.
+
+    Only CALENDAR_GROUP is needed: the calendarGroups resolver checks that resource;
+    there is no separate CALENDAR gate on the slots/calendars sub-fields.
+    """
+    auth_service = PublicAPIAuthService()
+    system_user, token = auth_service.create_system_user(
+        integration_name=f"group_wide_{organization.pk}", organization=organization
+    )
+    baker.make(
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR_GROUP
+    )
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+    return client, system_user
+
+
+def _make_bundle_wide_client(organization: Organization) -> tuple[APIClient, SystemUser]:
+    """Create an org-wide API client with CALENDAR_BUNDLE resource grant.
+
+    Only CALENDAR_BUNDLE is needed: the calendarBundles resolver checks that resource;
+    there is no separate CALENDAR gate on the children/owners sub-fields.
+    """
+    auth_service = PublicAPIAuthService()
+    system_user, token = auth_service.create_system_user(
+        integration_name=f"bundle_wide_{organization.pk}", organization=organization
+    )
+    baker.make(
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR_BUNDLE
+    )
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+    return client, system_user
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestCalendarGroupOwnersN1:
+    """Phase 2: calendarGroups -> slots -> calendars -> owners is N+1-free.
+
+    Tests:
+        (a) Shape: owners are returned correctly through the group -> slot -> calendar path.
+        (b) N+1: resolving owners for N slot calendars in groups issues a constant
+            number of queries.
+    """
+
+    @pytest.fixture
+    def organization(self):
+        return baker.make(Organization, name="GroupOwnersTestOrg")
+
+    @pytest.fixture
+    def org_wide_client(self, organization):
+        client, _ = _make_group_wide_client(organization)
+        return client
+
+    # ------------------------------------------------------------------ #
+    # (a) Shape test                                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_group_slot_calendars_owners_shape(
+        self, mock_rate_limiter, organization, org_wide_client
+    ):
+        """Owners are returned for slot calendars when queried through calendarGroups."""
+        mock_rate_limiter.return_value = iter([None])
+
+        _group, _slot, _calendars, _ownerships = _make_group_with_owned_slot_calendars(
+            organization, group_name="ShapeGroup", calendar_count=2
+        )
+
+        response = org_wide_client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_GROUPS_WITH_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        groups = data["calendarGroups"]
+        assert len(groups) >= 1
+
+        # Find the group we created
+        target_group = next((g for g in groups if g["name"] == "ShapeGroup"), None)
+        assert target_group is not None, "ShapeGroup not found in calendarGroups response"
+
+        assert len(target_group["slots"]) == 1
+        slot_data = target_group["slots"][0]
+        returned_calendars = slot_data["calendars"]
+        assert len(returned_calendars) == 2
+
+        # Each calendar must have exactly 1 owner
+        for cal_data in returned_calendars:
+            assert len(cal_data["owners"]) == 1
+            owner_data = cal_data["owners"][0]
+            assert owner_data["isDefault"] is True
+            assert owner_data["user"]["email"].endswith("@test.local")
+            assert owner_data["user"]["profile"]["firstName"].startswith("First")
+
+    # ------------------------------------------------------------------ #
+    # (b) N+1 guard                                                        #
+    # ------------------------------------------------------------------ #
+
+    def test_group_slot_calendars_owners_no_n_plus_1(
+        self, mock_rate_limiter, organization, org_wide_client
+    ):
+        """Resolving owners through calendarGroups issues a constant number of queries.
+
+        Two-point comparison: 1 slot calendar vs 3 slot calendars in a group.
+        With prefetch_related wiring the count must not grow per slot calendar.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        # Point 1: group with 1 slot calendar
+        _make_group_with_owned_slot_calendars(organization, group_name="N1Group1", calendar_count=1)
+
+        with CaptureQueriesContext(connection) as ctx_1:
+            response_1 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_GROUPS_WITH_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_1)
+        queries_n1 = len(ctx_1.captured_queries)
+
+        # Point 2: add another group with 3 slot calendars (total groups = 2)
+        _make_group_with_owned_slot_calendars(organization, group_name="N1Group3", calendar_count=3)
+
+        with CaptureQueriesContext(connection) as ctx_2:
+            response_2 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_GROUPS_WITH_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_2)
+        queries_n2 = len(ctx_2.captured_queries)
+
+        # Query count must not grow per slot calendar added.
+        # With correct prefetch there is no per-group/per-item overhead; allow a slack of 1
+        # only to tolerate incidental auth/middleware jitter between the two requests.
+        assert abs(queries_n2 - queries_n1) <= 1, (
+            f"N+1 detected through calendarGroups: 1 slot-cal used {queries_n1} queries, "
+            f"adding 3 more slot-cals used {queries_n2} queries. "
+            "With prefetch_related the count must not grow per calendar. "
+            "Check slots__calendars__ownerships__user__profile prefetch on calendar_groups resolver."
+        )
+
+    # ------------------------------------------------------------------ #
+    # (c) Org-scoping                                                      #
+    # ------------------------------------------------------------------ #
+
+    def test_group_slot_calendars_owners_org_scoping(self, mock_rate_limiter):
+        """An org-A token querying calendarGroups sees no org-B group, calendar, or owner data."""
+        mock_rate_limiter.return_value = iter([None])
+
+        org_a = baker.make(Organization, name="OrgA-GroupOwners")
+        org_b = baker.make(Organization, name="OrgB-GroupOwners")
+
+        # Org A: group with 1 owned slot calendar
+        _group_a, _slot_a, _calendars_a, ownerships_a = _make_group_with_owned_slot_calendars(
+            org_a, group_name="GroupA", calendar_count=1
+        )
+
+        # Org B: group with 1 slot calendar owned by a distinctly-named user —
+        # must never appear in org-A response.
+        group_b = baker.make(CalendarGroup, organization=org_b, name="GroupB")
+        slot_b = CalendarGroupSlot.objects.create(
+            organization=org_b, group=group_b, name="GroupB slot"
+        )
+        cal_b = baker.make(
+            Calendar,
+            organization=org_b,
+            name="GroupB cal 0",
+            external_id=str(uuid.uuid4()),
+        )
+        CalendarGroupSlotMembership.objects.create(organization=org_b, slot=slot_b, calendar=cal_b)
+        owner_b = UserFactory().create_user(
+            email="owner_b@group_scope.test",
+            first_name="OrgBGroupFirst",
+            last_name="OrgBGroupLast",
+        )
+        baker.make(
+            CalendarOwnership,
+            organization=org_b,
+            calendar=cal_b,
+            user=owner_b,
+            is_default=True,
+        )
+
+        client_a, _ = _make_group_wide_client(org_a)
+
+        response = client_a.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_GROUPS_WITH_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        groups = data["calendarGroups"]
+
+        returned_group_ids = {int(g["id"]) for g in groups}
+        all_calendar_ids = {
+            int(c["id"]) for g in groups for s in g["slots"] for c in s["calendars"]
+        }
+        all_owner_emails = {
+            o["user"]["email"]
+            for g in groups
+            for s in g["slots"]
+            for c in s["calendars"]
+            for o in c["owners"]
+        }
+        all_owner_first_names = {
+            o["user"]["profile"]["firstName"]
+            for g in groups
+            for s in g["slots"]
+            for c in s["calendars"]
+            for o in c["owners"]
+            if o["user"]["profile"] is not None
+        }
+
+        # Org A group must appear
+        assert _group_a.id in returned_group_ids, "Org A group must be visible"
+
+        # Org B group must NOT appear
+        assert group_b.id not in returned_group_ids, (
+            "Org B group must not be visible to an org-A token"
+        )
+
+        # Org B calendar must NOT appear
+        assert cal_b.id not in all_calendar_ids, (
+            "Org B calendar must not be visible to an org-A token"
+        )
+
+        # Org B owner data must not leak
+        assert "owner_b@group_scope.test" not in all_owner_emails, (
+            "Org B slot-calendar owner email must not leak to org-A token"
+        )
+        assert "OrgBGroupFirst" not in all_owner_first_names, (
+            "Org B slot-calendar owner profile must not leak to org-A token"
+        )
+
+        # Org A owner data must appear
+        owner_a_email = ownerships_a[0].user.email
+        assert owner_a_email in all_owner_emails, "Org A slot-calendar owner email must be returned"
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestCalendarBundleOwnersN1:
+    """Phase 2: calendarBundles -> children -> owners is N+1-free.
+
+    Tests:
+        (a) Shape: owners are returned correctly for both bundle children through the
+            calendarBundles query.
+        (b) N+1: resolving owners for N children is query-count-bounded.
+        (c) Org-scoping: an org-A token sees no org-B child or owner data.
+    """
+
+    @pytest.fixture
+    def organization(self):
+        return baker.make(Organization, name="BundleOwnersTestOrg")
+
+    @pytest.fixture
+    def org_wide_client(self, organization):
+        client, _ = _make_bundle_wide_client(organization)
+        return client
+
+    # ------------------------------------------------------------------ #
+    # (a) Shape test                                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_bundle_children_owners_shape(self, mock_rate_limiter, organization, org_wide_client):
+        """Owners are returned for bundle children when queried through calendarBundles."""
+        mock_rate_limiter.return_value = iter([None])
+
+        bundle, children = _make_bundle_calendar(organization, name="ShapeBundle", child_count=2)
+
+        # Add an owner to each child
+        child_ownerships = []
+        for i, child in enumerate(children):
+            owner = UserFactory().create_user(
+                email=f"child_owner_{i}@bundle_shape.test",
+                first_name=f"Child{i}First",
+                last_name=f"Child{i}Last",
+            )
+            ownership = baker.make(
+                CalendarOwnership,
+                organization=organization,
+                calendar=child,
+                user=owner,
+                is_default=True,
+            )
+            child_ownerships.append(ownership)
+
+        response = org_wide_client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_WITH_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+
+        target = next((b for b in bundles if int(b["id"]) == bundle.id), None)
+        assert target is not None, "Bundle not found in calendarBundles response"
+
+        returned_children = target["children"]
+        assert len(returned_children) == 2
+
+        # Each child must expose exactly 1 owner
+        for child_data in returned_children:
+            assert len(child_data["owners"]) == 1, (
+                f"Child {child_data['id']} expected 1 owner, got {len(child_data['owners'])}"
+            )
+            owner_data = child_data["owners"][0]
+            assert owner_data["isDefault"] is True
+            assert "@bundle_shape.test" in owner_data["user"]["email"]
+            assert owner_data["user"]["profile"]["firstName"].startswith("Child")
+            # UserFactory creates profiles via baker.make without an explicit profile_picture,
+            # so the field is empty/None; the GraphQL type resolves it as None.
+            assert owner_data["user"]["profile"]["profilePicture"] is None
+
+    # ------------------------------------------------------------------ #
+    # (b) N+1 guard                                                        #
+    # ------------------------------------------------------------------ #
+
+    def test_bundle_children_owners_no_n_plus_1(
+        self, mock_rate_limiter, organization, org_wide_client
+    ):
+        """Resolving owners through calendarBundles children issues a constant number of queries.
+
+        Two-point comparison: bundle with 1 child vs bundle with 4 children.
+        With bundle_children__ownerships__user__profile prefetch the count must not grow.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        def _make_bundle_with_owned_children(name: str, child_count: int):
+            bundle, children = _make_bundle_calendar(
+                organization, name=name, child_count=child_count
+            )
+            for i, child in enumerate(children):
+                owner = UserFactory().create_user(
+                    email=f"n1_{name.lower().replace(' ', '_')}_{i}@n1bundle.test",
+                    first_name=f"BF{i}",
+                    last_name=f"BL{i}",
+                )
+                baker.make(
+                    CalendarOwnership,
+                    organization=organization,
+                    calendar=child,
+                    user=owner,
+                    is_default=True,
+                )
+            return bundle
+
+        # Point 1: bundle with 1 child
+        _make_bundle_with_owned_children("N1Bundle1", child_count=1)
+
+        with CaptureQueriesContext(connection) as ctx_1:
+            response_1 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_BUNDLES_WITH_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_1)
+        queries_n1 = len(ctx_1.captured_queries)
+
+        # Point 2: add another bundle with 4 children (total bundles = 2)
+        _make_bundle_with_owned_children("N1Bundle4", child_count=4)
+
+        with CaptureQueriesContext(connection) as ctx_2:
+            response_2 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_BUNDLES_WITH_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_2)
+        queries_n2 = len(ctx_2.captured_queries)
+
+        # Query count must not grow per child added.
+        # With correct prefetch there is no per-bundle/per-item overhead; allow a slack of 1
+        # only to tolerate incidental auth/middleware jitter between the two requests.
+        assert abs(queries_n2 - queries_n1) <= 1, (
+            f"N+1 detected through calendarBundles children: 1 child used {queries_n1} queries, "
+            f"adding 4 more children used {queries_n2} queries. "
+            "With prefetch_related the count must not grow per child. "
+            "Check bundle_children__ownerships__user__profile prefetch on calendar_bundles resolver."
+        )
+
+    # ------------------------------------------------------------------ #
+    # (c) Org-scoping                                                      #
+    # ------------------------------------------------------------------ #
+
+    def test_bundle_children_owners_org_scoping(self, mock_rate_limiter):
+        """An org-A token querying calendarBundles sees no org-B child or owner data."""
+        mock_rate_limiter.return_value = iter([None])
+
+        org_a = baker.make(Organization, name="OrgA-BundleOwners")
+        org_b = baker.make(Organization, name="OrgB-BundleOwners")
+
+        # Org A: bundle with 1 owned child
+        bundle_a, children_a = _make_bundle_calendar(org_a, name="BundleA", child_count=1)
+        owner_a = UserFactory().create_user(
+            email="owner_a@bundle_scope.test",
+            first_name="OrgABundleFirst",
+            last_name="OrgABundleLast",
+        )
+        baker.make(
+            CalendarOwnership,
+            organization=org_a,
+            calendar=children_a[0],
+            user=owner_a,
+            is_default=True,
+        )
+
+        # Org B: bundle with 1 owned child — must never appear in org-A response
+        bundle_b, children_b = _make_bundle_calendar(org_b, name="BundleB", child_count=1)
+        owner_b = UserFactory().create_user(
+            email="owner_b@bundle_scope.test",
+            first_name="OrgBBundleFirst",
+            last_name="OrgBBundleLast",
+        )
+        baker.make(
+            CalendarOwnership,
+            organization=org_b,
+            calendar=children_b[0],
+            user=owner_b,
+            is_default=True,
+        )
+
+        client_a, _ = _make_bundle_wide_client(org_a)
+
+        response = client_a.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_WITH_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+
+        returned_bundle_ids = {int(b["id"]) for b in bundles}
+        all_child_owner_emails = {
+            o["user"]["email"] for b in bundles for c in b["children"] for o in c["owners"]
+        }
+        all_child_owner_first_names = {
+            o["user"]["profile"]["firstName"]
+            for b in bundles
+            for c in b["children"]
+            for o in c["owners"]
+        }
+
+        # Org A bundle appears
+        assert bundle_a.id in returned_bundle_ids, "Org A bundle must be visible"
+        # Org B bundle must NOT appear
+        assert bundle_b.id not in returned_bundle_ids, (
+            "Org B bundle must not be visible to org-A token"
+        )
+        # Org B owner data must not leak
+        assert "owner_b@bundle_scope.test" not in all_child_owner_emails, (
+            "Org B child owner email must not leak to org-A token"
+        )
+        assert "OrgBBundleFirst" not in all_child_owner_first_names, (
+            "Org B child owner profile must not leak to org-A token"
+        )
+        # Org A owner data appears
+        assert "owner_a@bundle_scope.test" in all_child_owner_emails, (
+            "Org A child owner email must be returned"
         )
