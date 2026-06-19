@@ -53,8 +53,15 @@
 - **Summary**: `audit/diff.py` `compute_diff(before, after)` → `{field:{old,new}}` for changed/added/removed keys, **returns `None` for no-change** (upholds locked invariant), None-for-absent convention documented. `audit_repository = providers.Singleton(DjangoORMAuditRepository)` wired in `di_core/containers.py`. 21 diff tests + 2 container tests; full suite green (2738 passed).
 - **Deviation**: `audit_service` provider deferred to Phase 5 (where `AuditService` is defined) — wiring it here would import a nonexistent symbol and break the container.
 
+### Phase 5 — AuditService.record + Celery task ✅
+- **Status**: complete, all 3 review layers passed (reviewer: 1 BLOCKER [missing transaction.on_commit] + several should-fix — all fixed)
+- **Model used**: claude-sonnet-4-6 (plan tier: Tier 3)
+- **Commits**: `261b4e3` AuditService, `6530150` Celery task, `4bba9c1` wire audit_service, `c13fbe0` on_commit dispatch + harden error handling
+- **Summary**: `AuditService` (DI Factory) with synchronous actor builders (`actor_from_membership`/`_system_user`/`_single_use_code`/`system_actor` — scopes eagerly evaluated from `available_resources`), `record(...)` builds a JSON-safe payload (`dataclasses.asdict`) and dispatches `persist_audit_record` via `transaction.on_commit` (enqueue errors swallowed+logged inside the callback). `audit/tasks.py` `persist_audit_record` resolves the repository from the DI container at runtime (avoids @inject import-before-wiring issue), reconstructs the DTO defensively, logs+swallows failures. `audit_service` wired in DI. 34 service/task tests incl. snapshot-at-emit proof; full suite green (2772 passed).
+- **Key fixes**: BLOCKER — wrapped dispatch in `transaction.on_commit` (record() runs under ATOMIC_REQUESTS; a bare `.delay()` could persist audits for rolled-back actions); removed redundant `@inject` (was emitting DIWiringWarning); broadened task except; reworked tests to use `django_capture_on_commit_callbacks`.
+
 ## Current phase
-- Phase 5 — AuditService.record + Celery task (Tier 3, implementer) — NEXT
+- Phase 6 — Admin list + filters (Tier 3, implementer) — NEXT
 
 ## Remaining phases
 - Phase 2 — Audit model + through table + migration (Tier 2, migration-author)
