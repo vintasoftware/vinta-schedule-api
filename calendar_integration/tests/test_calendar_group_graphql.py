@@ -699,6 +699,80 @@ def test_get_calendar_group_mutation_dependencies_missing_raises():
 
 
 # ---------------------------------------------------------------------------
+# Fix 3: PermissionDenied on private group → success=False (not 500)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_create_calendar_group_event_private_group_no_permission_service_returns_failure(
+    organization, internal_calendars
+):
+    """create_calendar_group_event (org-token mutation) on a PRIVATE group with no
+    permission service wired returns success=False with the denial message.
+
+    This exercises the PermissionDenied handler added in Fix 1 + Fix 3.  The
+    org-token path calls initialize_without_provider without a user, so
+    caller_is_authenticated_user=False, and the group-level gate fires because
+    calendar_permission_service is None (fail-closed after Fix 1).
+    """
+    now = timezone.now().replace(microsecond=0)
+    start = now + timedelta(hours=1)
+    end = start + timedelta(hours=1)
+
+    # PRIVATE group — the scheduling gate must deny.
+    private_group = CalendarGroup.objects.create(
+        organization=organization,
+        name="Private Group",
+        accepts_public_scheduling=False,
+    )
+    physicians = CalendarGroupSlot.objects.create(
+        organization=organization,
+        group=private_group,
+        name="Physicians",
+        order=0,
+    )
+    CalendarGroupSlotMembership.objects.create(
+        organization=organization,
+        slot=physicians,
+        calendar=internal_calendars["phys_a"],
+    )
+    AvailableTime.objects.create(
+        organization=organization,
+        calendar=internal_calendars["phys_a"],
+        start_time_tz_unaware=start,
+        end_time_tz_unaware=end,
+        timezone="UTC",
+    )
+
+    mutations = CalendarGroupMutations()
+    input_data = CalendarGroupEventInput(
+        organization_id=organization.id,
+        group_id=private_group.id,
+        title="Denied",
+        description="",
+        start_time=start,
+        end_time=end,
+        timezone="UTC",
+        slot_selections=[
+            CalendarGroupSlotSelectionInput(
+                slot_id=physicians.id,
+                calendar_ids=[internal_calendars["phys_a"].id],
+            ),
+        ],
+    )
+    deps = _mock_mutation_deps()
+    with patch(
+        "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
+        return_value=deps,
+    ):
+        result = mutations.create_calendar_group_event(input=input_data)
+
+    assert result.success is False
+    assert result.event is None
+    assert "does not accept public scheduling" in (result.error_message or "").lower()
+
+
+# ---------------------------------------------------------------------------
 # Schema-level smoke test
 # ---------------------------------------------------------------------------
 def test_schema_exposes_calendar_group_operations():

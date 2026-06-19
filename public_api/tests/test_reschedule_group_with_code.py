@@ -886,8 +886,6 @@ class TestRescheduleGroupWithCodeNonUTCTimezone:
         # --- Build org + calendars ------------------------------------------------
         org = baker.make(Organization, name="Recife Org")
 
-        # Primary calendar must have accepts_public_scheduling=True so that
-        # CalendarService.create_event doesn't reject it without a user token.
         primary_cal = Calendar.objects.create(
             organization=org,
             name="Recife Primary",
@@ -895,7 +893,7 @@ class TestRescheduleGroupWithCodeNonUTCTimezone:
             provider=CalendarProvider.INTERNAL,
             calendar_type=CalendarType.PERSONAL,
             manage_available_windows=True,
-            accepts_public_scheduling=True,
+            accepts_public_scheduling=False,
         )
         secondary_cal = Calendar.objects.create(
             organization=org,
@@ -907,8 +905,12 @@ class TestRescheduleGroupWithCodeNonUTCTimezone:
             accepts_public_scheduling=False,
         )
 
-        # --- Build group + availability -------------------------------------------
-        grp = baker.make(CalendarGroup, organization=org, name="Recife Group", accepts_public_scheduling=True)
+        # --- Build group (PRIVATE) + availability ---------------------------------
+        # The group is private: only a group-scoped code authorizes scheduling.
+        # The reschedule code is what we are testing — not the creation gate.
+        grp = baker.make(
+            CalendarGroup, organization=org, name="Recife Group", accepts_public_scheduling=False
+        )
         slot_a = CalendarGroupSlot.objects.create(
             organization=org, group=grp, name="Physicians", order=0, required_count=1
         )
@@ -933,9 +935,23 @@ class TestRescheduleGroupWithCodeNonUTCTimezone:
             )
 
         # --- Create the grouped event via the real service -------------------------
+        # Wire a permission service with a group-scoped CREATE token so that the
+        # group-level authorization gate passes for this private group.  The setup
+        # exists only to produce a CalendarEvent + BlockedTime pair for the reschedule
+        # test; the CREATE code is not the subject of this test.
+        perm_svc_setup = CalendarPermissionService()
+        _, setup_code = perm_svc_setup.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_group_id=grp.id,
+        )
+        perm_svc_setup.initialize_with_token(setup_code, organization_id=org.id)
+
         cs = CalendarService()
         cs.initialize_without_provider(organization=org)
-        group_svc = CalendarGroupService(calendar_service=cs)
+        group_svc = CalendarGroupService(
+            calendar_service=cs, calendar_permission_service=perm_svc_setup
+        )
         group_svc.initialize(organization=org)
 
         event = group_svc.create_grouped_event(

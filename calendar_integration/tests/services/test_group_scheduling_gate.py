@@ -14,6 +14,7 @@ Implementation notes:
   block a group booking the group itself permits.
 """
 
+import base64
 from datetime import timedelta
 
 from django.core.exceptions import PermissionDenied
@@ -265,8 +266,6 @@ def test_private_group_with_group_scoped_token_booking_succeeds(
     )
 
     # Initialize the permission service with the token string.
-    import base64
-
     encoded = base64.b64encode(f"{token.pk}:{raw_token}".encode()).decode()
     perm_svc = CalendarPermissionService()
     perm_svc.initialize_with_token(encoded, organization_id=organization.id)
@@ -292,14 +291,7 @@ def test_can_perform_group_scheduling_public_group_no_token(organization, intern
     """Unit test: can_perform_group_scheduling returns True for public group + no token."""
     group = _make_group(organization, internal_calendars, accepts_public_scheduling=True)
     perm_svc = CalendarPermissionService()  # no token
-    event = CalendarEventInputData(
-        title="x",
-        description="",
-        start_time=timezone.now(),
-        end_time=timezone.now() + timedelta(hours=1),
-        timezone="UTC",
-    )
-    assert perm_svc.can_perform_group_scheduling(group=group, event=event) is True
+    assert perm_svc.can_perform_group_scheduling(group=group) is True
 
 
 @pytest.mark.django_db
@@ -307,14 +299,7 @@ def test_can_perform_group_scheduling_private_group_no_token(organization, inter
     """Unit test: can_perform_group_scheduling returns False for private group + no token."""
     group = _make_group(organization, internal_calendars, accepts_public_scheduling=False)
     perm_svc = CalendarPermissionService()  # no token
-    event = CalendarEventInputData(
-        title="x",
-        description="",
-        start_time=timezone.now(),
-        end_time=timezone.now() + timedelta(hours=1),
-        timezone="UTC",
-    )
-    assert perm_svc.can_perform_group_scheduling(group=group, event=event) is False
+    assert perm_svc.can_perform_group_scheduling(group=group) is False
 
 
 @pytest.mark.django_db
@@ -335,20 +320,11 @@ def test_can_perform_group_scheduling_private_group_group_scoped_token(
         organization_id=organization.id,
     )
 
-    import base64
-
     encoded = base64.b64encode(f"{token.pk}:{raw_token}".encode()).decode()
     perm_svc = CalendarPermissionService()
     perm_svc.initialize_with_token(encoded, organization_id=organization.id)
 
-    event = CalendarEventInputData(
-        title="x",
-        description="",
-        start_time=timezone.now(),
-        end_time=timezone.now() + timedelta(hours=1),
-        timezone="UTC",
-    )
-    assert perm_svc.can_perform_group_scheduling(group=group, event=event) is True
+    assert perm_svc.can_perform_group_scheduling(group=group) is True
 
 
 @pytest.mark.django_db
@@ -369,21 +345,12 @@ def test_can_perform_group_scheduling_private_group_calendar_scoped_token_reject
         organization_id=organization.id,
     )
 
-    import base64
-
     encoded = base64.b64encode(f"{token.pk}:{raw_token}".encode()).decode()
     perm_svc = CalendarPermissionService()
     perm_svc.initialize_with_token(encoded, organization_id=organization.id)
 
-    event = CalendarEventInputData(
-        title="x",
-        description="",
-        start_time=timezone.now(),
-        end_time=timezone.now() + timedelta(hours=1),
-        timezone="UTC",
-    )
     # Calendar-scoped token cannot authorize group-level scheduling.
-    assert perm_svc.can_perform_group_scheduling(group=group, event=event) is False
+    assert perm_svc.can_perform_group_scheduling(group=group) is False
 
 
 # ---------------------------------------------------------------------------
@@ -580,3 +547,174 @@ def test_can_perform_scheduling_unchanged_by_phase_7(organization):
         )
         is False
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: Fail-closed gate — None permission service raises PermissionDenied
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_create_grouped_event_fail_closed_with_none_permission_service(
+    organization, calendar_service, internal_calendars
+):
+    """create_grouped_event on a PRIVATE group with calendar_permission_service=None
+    (non-authenticated caller) must raise PermissionDenied — the gate must fail closed.
+
+    Before Fix 1 the gate was ``if not caller_is_authenticated_user and
+    self.calendar_permission_service is not None:``, which let the booking through
+    when the permission service was None.  After Fix 1 it is
+    ``if self.calendar_permission_service is None or not ...: raise``.
+    """
+    group = _make_group(organization, internal_calendars, accepts_public_scheduling=False)
+
+    now = timezone.now().replace(microsecond=0)
+    start = now + timedelta(hours=1)
+    end = start + timedelta(hours=1)
+    for cal in internal_calendars.values():
+        _make_available(cal, start, end)
+
+    # Explicitly pass calendar_permission_service=None to simulate a misconfigured
+    # non-authenticated call path where DI failed to inject the permission service.
+    svc = _make_group_service(organization, calendar_service, permission_service=None)
+
+    with pytest.raises(PermissionDenied):
+        svc.create_grouped_event(_build_event_input(group, internal_calendars, start, end))
+
+
+# ---------------------------------------------------------------------------
+# Fix 5: Bundle backward-compat — group_authorized does NOT leak into bundle gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_bundle_can_perform_scheduling_still_keys_on_accepts_public_scheduling(organization):
+    """Bundle (Calendar type=BUNDLE) scheduling authorization still keys on the
+    bundle Calendar's accepts_public_scheduling flag.  The group_authorized field on
+    CalendarEventInputData bypasses the per-calendar PERMISSION gate (token check),
+    but the can_perform_scheduling logic itself is unchanged: a private bundle with no
+    token returns False; a public bundle returns True.
+
+    This is a backward-compat unit test: Phase 7 must NOT change
+    CalendarPermissionService.can_perform_scheduling for bundle calendars.
+    """
+    from calendar_integration.constants import CalendarType
+
+    bundle_cal = Calendar.objects.create(
+        organization=organization,
+        name="Bundle",
+        external_id="bundle_cal",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.BUNDLE,
+    )
+
+    perm_svc = CalendarPermissionService()  # no token
+
+    event_input = CalendarEventInputData(
+        title="Bundle booking",
+        description="",
+        start_time=timezone.now(),
+        end_time=timezone.now() + timedelta(hours=1),
+        timezone="UTC",
+    )
+
+    # Public bundle (accepts_public_scheduling=True) → True even without a token.
+    assert (
+        perm_svc.can_perform_scheduling(
+            calendar_id=bundle_cal.id,
+            calendar_settings=CalendarSettingsData(
+                manage_available_windows=False,
+                accepts_public_scheduling=True,
+            ),
+            event=event_input,
+        )
+        is True
+    )
+
+    # Private bundle (accepts_public_scheduling=False), no token → False.
+    assert (
+        perm_svc.can_perform_scheduling(
+            calendar_id=bundle_cal.id,
+            calendar_settings=CalendarSettingsData(
+                manage_available_windows=False,
+                accepts_public_scheduling=False,
+            ),
+            event=event_input,
+        )
+        is False
+    )
+
+
+@pytest.mark.django_db
+def test_bundle_calendar_in_group_slot_is_rejected_by_create_grouped_event(
+    organization, calendar_service, internal_calendars
+):
+    """A BUNDLE calendar selected in a group slot is rejected by create_grouped_event.
+
+    The group-event flow creates BlockedTimes for non-primary selected calendars;
+    bundle calendars are not a valid selection target and must raise
+    CalendarGroupValidationError (not silently create a BlockedTime).
+    This test locks in the existing _create_non_primary_blocked_times guard.
+    """
+    from calendar_integration.constants import CalendarType
+    from calendar_integration.exceptions import CalendarGroupValidationError
+
+    bundle_cal = Calendar.objects.create(
+        organization=organization,
+        name="Bundle",
+        external_id="bundle_cal2",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.BUNDLE,
+        manage_available_windows=True,
+        accepts_public_scheduling=True,
+    )
+
+    # Build a group with two slots: primary (phys_a) + bundle slot.
+    group = CalendarGroup.objects.create(
+        organization=organization,
+        name="Bundle Slot Group",
+        accepts_public_scheduling=True,
+    )
+    physician_slot = CalendarGroupSlot.objects.create(
+        organization=organization, group=group, name="Physicians", required_count=1, order=0
+    )
+    bundle_slot = CalendarGroupSlot.objects.create(
+        organization=organization, group=group, name="Bundles", required_count=1, order=1
+    )
+    CalendarGroupSlotMembership.objects.create(
+        organization=organization, slot=physician_slot, calendar=internal_calendars["phys_a"]
+    )
+    CalendarGroupSlotMembership.objects.create(
+        organization=organization, slot=bundle_slot, calendar=bundle_cal
+    )
+
+    now = timezone.now().replace(microsecond=0)
+    start = now + timedelta(hours=1)
+    end = start + timedelta(hours=1)
+    _make_available(internal_calendars["phys_a"], start, end)
+    _make_available(bundle_cal, start, end)
+
+    perm_svc = CalendarPermissionService()
+    svc = _make_group_service(organization, calendar_service, permission_service=perm_svc)
+
+    with pytest.raises(CalendarGroupValidationError, match="Bundle calendars cannot be selected"):
+        svc.create_grouped_event(
+            CalendarGroupEventInputData(
+                title="Should fail",
+                description="",
+                start_time=start,
+                end_time=end,
+                timezone="UTC",
+                group_id=group.id,
+                slot_selections=[
+                    CalendarGroupSlotSelectionInputData(
+                        slot_id=physician_slot.id,
+                        calendar_ids=[internal_calendars["phys_a"].id],
+                    ),
+                    CalendarGroupSlotSelectionInputData(
+                        slot_id=bundle_slot.id,
+                        calendar_ids=[bundle_cal.id],
+                    ),
+                ],
+            )
+        )
