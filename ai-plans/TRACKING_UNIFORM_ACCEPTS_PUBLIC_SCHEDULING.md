@@ -18,9 +18,12 @@
 ## Notes
 - No feature flag (project has none). No flag-removal phase.
 - No cross-repo phases. All 7 phases executable in-repo.
-- Branch rebased onto `main` (`a5e470d`) after Phase 1 at user request ("issues fixed in main").
-  Removed stray untracked `public_api/migrations/0008_merge_*` + `0009_alter_resourceaccess_*`
-  (auto-generated cruft referencing a node main deleted) to restore a clean linear graph.
+- Branch rebased onto `main` (`a5e470d`) after Phase 1, then again onto `main` (`c33708f`, PR #141
+  per-owner-scoped token writes) after Phase 2 — both at user request ("issues fixed in main").
+  After the first rebase removed stray untracked `public_api/migrations/0008_merge_*` +
+  `0009_alter_resourceaccess_*` (auto-generated cruft referencing a node main deleted). Second
+  rebase auto-merged `graphql.py` + `schema.yml` cleanly; verified by schema regen (no diff) and
+  full suite. Branch force-pushed after each rebase.
 - PR not yet opened: `gh` / `yq` missing on host → `open-pr.sh` can't run. prs-context written
   `status: pending` at `.vinta-ai-workflows/prs-context/uniform-accepts-public-scheduling/plan.md`.
 
@@ -35,11 +38,18 @@
 - **Review**: Layer 3 reviewer — no BLOCKER/SHOULD-FIX; 2 NITs (both no-change-required).
 - **Summary**: Adds the canonical privacy knob to `CalendarGroup` mirroring `Calendar.accepts_public_scheduling`. Default False (private), no backfill — secure-by-default. Column unread this phase (purely additive); read/write surfaces land in later phases.
 
+### Phase 2 — Expose `is_private` (read) on the three GraphQL types ✅
+- **Model used**: `claude-haiku-4-5` (plan tier: Tier 2). Agent: `implementer`.
+- **Commit**: `feat(calendar): expose is_private on calendar/group/bundle GraphQL types`
+- **Files**: `calendar_integration/graphql.py` (3 `is_private` resolvers + bundle docstring), `public_api/tests/test_is_private_field.py` (6 tests).
+- **Gate** (post-rebase on `c33708f`): `check --deploy` clean; `makemigrations --check` clean; `schema.yml` regen no-diff; full suite **2528 passed**.
+- **Review**: Layer 3 reviewer — no BLOCKER/SHOULD-FIX; 2 NITs (no-action). Rebase integrity verified (my resolvers + main's owner-scope resolvers coexist).
+- **Summary**: `is_private = not accepts_public_scheduling` exposed read-only on Calendar/Group/Bundle types. Derived (no stored field). GraphQL schema not snapshotted, so no schema artifact change; REST `schema.yml` unaffected.
+
 ## Current phase
-- Phase 2 — Expose `is_private` (read) on the three GraphQL types (next).
+- Phase 3 — Accept `is_private` on CalendarGroup create/update inputs (next).
 
 ## Remaining phases
-- Phase 2 — Expose `is_private` (read) on Calendar/Group/Bundle GraphQL types.
 - Phase 3 — Accept `is_private` on CalendarGroup create/update inputs.
 - Phase 4 — Accept `is_private` on bundle create/update inputs.
 - Phase 5 — Accept `is_private` on resource-calendar input.
