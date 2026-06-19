@@ -62,11 +62,18 @@
 - **Review**: Layer 3 — 1 SHOULD-FIX (tests asserted column only, not GraphQL `isPrivate` round-trip), fixed; symmetric omit-test NIT added. Bundle update resolver already had a conditional `update_fields` idiom (no clobber). Re-reviewed clean.
 - **Summary**: `is_private` on bundle create (default private) + update (None=unchanged) → bundle `Calendar.accepts_public_scheduling`. Threaded through `CalendarService` + `CalendarBundleService`. DRF bundle create serializer falls through to private default (out of scope).
 
+### Phase 5 — Accept `is_private` on resource-calendar input ✅
+- **Model used**: `claude-haiku-4-5` (plan tier: Tier 2). Agent: `implementer`.
+- **Commit**: `feat(public_api): accept is_private on resource calendar create input` (`7d0d905`).
+- **Files**: `public_api/mutations.py`, `calendar_integration/services/calendar_service.py`, `public_api/tests/test_mutations.py`.
+- **Gate**: `check --deploy` clean; `makemigrations --check` clean; full suite **2543 passed**.
+- **Review**: Layer 3 — no BLOCKER/SHOULD-FIX; 2 no-action NITs. Create-only (resource calendars have no update input). Caller threading verified backward-compatible (DRF serializer falls through to private default). Round-trip `isPrivate` asserted.
+- **Summary**: `is_private` (default True/private) on `CreateResourceCalendarInput` → `Calendar.accepts_public_scheduling`.
+
 ## Current phase
-- Phase 5 — Accept `is_private` on resource-calendar input (next).
+- Phase 6 — New plain-Calendar create/update mutation with `is_private` (next; Tier 3 / sonnet).
 
 ## Remaining phases
-- Phase 5 — Accept `is_private` on resource-calendar input.
 - Phase 6 — New plain-Calendar create/update mutation with `is_private`.
 - Phase 7 — Gate codeless public group booking on `accepts_public_scheduling` (behavioral; breaking-change coordination).
 
