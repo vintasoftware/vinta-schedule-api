@@ -710,6 +710,99 @@ class CalendarService(BaseCalendarService):
 
         return calendar
 
+    @transaction.atomic()
+    def create_calendar(
+        self,
+        name: str,
+        description: str | None = None,
+        accepts_public_scheduling: bool = False,
+    ) -> Calendar:
+        """Create a new plain (personal) internal calendar without linking to an external provider.
+
+        Plain calendars are owned directly by the organization (``provider=INTERNAL``,
+        ``calendar_type=PERSONAL``). Unlike resource or bundle calendars, they carry no
+        capacity or availability-window management semantics.
+
+        :param name: Name of the calendar.
+        :param description: Description of the calendar.
+        :param accepts_public_scheduling: If True, the calendar can be booked via codeless public
+            scheduling links. Defaults to False (private).
+        :return: Created Calendar instance.
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        calendar = Calendar.objects.create(
+            organization=self.organization,
+            name=name,
+            description=description,
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+            accepts_public_scheduling=accepts_public_scheduling,
+        )
+
+        # Create calendar ownership for the user who created it
+        if isinstance(self.user_or_token, User):
+            CalendarOwnership.objects.create(
+                organization=self.organization,
+                calendar=calendar,
+                user=self.user_or_token,
+                is_default=False,
+            )
+
+        # Grant permissions to calendar owners
+        self._grant_calendar_owner_permissions(calendar)
+
+        return calendar
+
+    @transaction.atomic()
+    def update_calendar(
+        self,
+        calendar_id: int,
+        name: str | None = None,
+        description: str | None = None,
+        accepts_public_scheduling: bool | None = None,
+    ) -> Calendar:
+        """Partially update a plain (personal) calendar.
+
+        Only the provided (non-None) fields are written; omitted fields remain unchanged.
+        The target calendar must be of type PERSONAL and must belong to the service's
+        organization.
+
+        :param calendar_id: Primary key of the Calendar to update.
+        :param name: New name, or None to leave unchanged.
+        :param description: New description, or None to leave unchanged.
+        :param accepts_public_scheduling: New scheduling flag, or None to leave unchanged.
+        :return: The updated Calendar instance.
+        :raises Calendar.DoesNotExist: If no calendar with this id exists within the org.
+        :raises ValueError: If the calendar is not of type PERSONAL.
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        calendar = Calendar.objects.filter_by_organization(self.organization.id).get(id=calendar_id)
+
+        if calendar.calendar_type != CalendarType.PERSONAL:
+            raise ValueError(
+                f"Calendar {calendar_id} is not a personal calendar "
+                f"(type={calendar.calendar_type})."
+            )
+
+        update_fields: list[str] = []
+        if name is not None:
+            calendar.name = name
+            update_fields.append("name")
+        if description is not None:
+            calendar.description = description
+            update_fields.append("description")
+        if accepts_public_scheduling is not None:
+            calendar.accepts_public_scheduling = accepts_public_scheduling
+            update_fields.append("accepts_public_scheduling")
+        if update_fields:
+            calendar.save(update_fields=update_fields)
+
+        return calendar
+
     def disable_resource_calendar(self, calendar_id: int) -> Calendar:
         """Disable a resource calendar by setting its visibility to INACTIVE.
 
