@@ -5227,3 +5227,290 @@ class TestCalendarBundleOwnersN1:
         assert "owner_a@bundle_scope.test" in all_child_owner_emails, (
             "Org A child owner email must be returned"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — owners on CalendarBundleGraphQLType (bundle parent)
+# ---------------------------------------------------------------------------
+
+_CALENDAR_BUNDLES_PARENT_OWNERS_QUERY = """
+    query GetCalendarBundlesParentOwners {
+        calendarBundles {
+            id
+            name
+            owners {
+                id
+                isDefault
+                user {
+                    id
+                    email
+                    profile {
+                        firstName
+                        lastName
+                        profilePicture
+                    }
+                }
+            }
+        }
+    }
+"""
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestCalendarBundleParentOwners:
+    """Phase 3: CalendarBundleGraphQLType.owners — shape, org-scoping, and N+1 guard.
+
+    Tests:
+        (a) Shape: a bundle calendar with one or two ownership rows returns both
+            with the correct ownership id (not user id), isDefault, and nested
+            user/profile.
+        (b) Org-scoping: an org-A token never sees org-B bundle or owner data.
+        (c) N+1: resolving owners for N bundles issues a constant number of
+            queries, proving the prefetch_related wiring works.
+    """
+
+    @pytest.fixture
+    def organization(self):
+        return baker.make(Organization, name="BundleParentOwnersTestOrg")
+
+    @pytest.fixture
+    def org_wide_client(self, organization):
+        client, _ = _make_bundle_wide_client(organization)
+        return client
+
+    # ------------------------------------------------------------------ #
+    # (a) Shape test                                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_bundle_parent_owners_field_returns_correct_shape(
+        self, mock_rate_limiter, organization, org_wide_client
+    ):
+        """A bundle with one or two ownership rows returns both with correct ids and
+        nested user/profile.
+
+        The `id` on each ownership record must be the CalendarOwnership pk, NOT the user id.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        bundle, _ = _make_bundle_calendar(organization, name="Owned Bundle", child_count=1)
+
+        user_a = UserFactory().create_user(
+            email="bundle_owner_a@shape.test", first_name="BundleAlice", last_name="BundleSmith"
+        )
+        user_b = UserFactory().create_user(
+            email="bundle_owner_b@shape.test", first_name="BundleBob", last_name="BundleJones"
+        )
+
+        ownership_a = baker.make(
+            CalendarOwnership,
+            calendar=bundle,
+            user=user_a,
+            organization=organization,
+            is_default=True,
+        )
+        ownership_b = baker.make(
+            CalendarOwnership,
+            calendar=bundle,
+            user=user_b,
+            organization=organization,
+            is_default=False,
+        )
+
+        response = org_wide_client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+
+        # Filter to the bundle we created
+        target = next((b for b in bundles if int(b["id"]) == bundle.id), None)
+        assert target is not None, "Bundle not found in response"
+
+        owners = target["owners"]
+        assert len(owners) == 2, f"Expected 2 ownership rows, got {len(owners)}: {owners}"
+
+        owners_by_user_email = {o["user"]["email"]: o for o in owners}
+
+        # Verify ownership A
+        owner_a = owners_by_user_email["bundle_owner_a@shape.test"]
+        assert int(owner_a["id"]) == ownership_a.id, (
+            "Ownership id must be CalendarOwnership pk, not user id"
+        )
+        assert owner_a["isDefault"] is True
+        assert owner_a["user"]["id"] == str(user_a.id)
+        assert owner_a["user"]["profile"]["firstName"] == "BundleAlice"
+        assert owner_a["user"]["profile"]["lastName"] == "BundleSmith"
+        assert owner_a["user"]["profile"]["profilePicture"] is None
+
+        # Verify ownership B
+        owner_b = owners_by_user_email["bundle_owner_b@shape.test"]
+        assert int(owner_b["id"]) == ownership_b.id, (
+            "Ownership id must be CalendarOwnership pk, not user id"
+        )
+        assert owner_b["isDefault"] is False
+        assert owner_b["user"]["id"] == str(user_b.id)
+        assert owner_b["user"]["profile"]["firstName"] == "BundleBob"
+        assert owner_b["user"]["profile"]["lastName"] == "BundleJones"
+        assert owner_b["user"]["profile"]["profilePicture"] is None
+
+    # ------------------------------------------------------------------ #
+    # (b) Org-scoping / cross-org leak                                    #
+    # ------------------------------------------------------------------ #
+
+    def test_bundle_parent_owners_field_org_scoping_no_cross_org_leak(self, mock_rate_limiter):
+        """An org-A token querying calendarBundles never receives org-B bundle or owner data.
+
+        This is the highest-priority correctness test: proves that traversing
+        CalendarOwnership rows from org-filtered bundles cannot leak org-B user
+        emails or profiles to an org-A token.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        org_a = baker.make(Organization, name="OrgA-BundleParentOwners")
+        org_b = baker.make(Organization, name="OrgB-BundleParentOwners")
+
+        user_a = UserFactory().create_user(
+            email="bundle_owner@org-a.test",
+            first_name="OrgABundleFirst",
+            last_name="OrgABundleLast",
+        )
+        user_b = UserFactory().create_user(
+            email="bundle_owner@org-b.test",
+            first_name="OrgBBundleFirst",
+            last_name="OrgBBundleLast",
+        )
+
+        bundle_a, _ = _make_bundle_calendar(org_a, name="Org A Bundle", child_count=1)
+        bundle_b, _ = _make_bundle_calendar(org_b, name="Org B Bundle", child_count=1)
+
+        baker.make(
+            CalendarOwnership,
+            calendar=bundle_a,
+            user=user_a,
+            organization=org_a,
+            is_default=True,
+        )
+        baker.make(
+            CalendarOwnership,
+            calendar=bundle_b,
+            user=user_b,
+            organization=org_b,
+            is_default=True,
+        )
+
+        # Build a client scoped to org_a only
+        client_a, _ = _make_bundle_wide_client(org_a)
+
+        response = client_a.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        bundles = data["calendarBundles"]
+
+        # Collect all bundle ids and all owner user emails returned
+        returned_bundle_ids = {int(b["id"]) for b in bundles}
+        returned_owner_emails = {o["user"]["email"] for b in bundles for o in b["owners"]}
+        returned_profile_first_names = {
+            o["user"]["profile"]["firstName"]
+            for b in bundles
+            for o in b["owners"]
+            if o["user"]["profile"] is not None
+        }
+
+        # Org A's bundle must appear
+        assert bundle_a.id in returned_bundle_ids, "Org A bundle should be returned"
+
+        # Org B's bundle must NOT appear
+        assert bundle_b.id not in returned_bundle_ids, (
+            "Org B bundle must not be visible to an org-A token"
+        )
+
+        # Org B owner data must not appear anywhere in the response
+        assert "bundle_owner@org-b.test" not in returned_owner_emails, (
+            "Org B bundle owner email must not leak to org-A token"
+        )
+        assert "OrgBBundleFirst" not in returned_profile_first_names, (
+            "Org B bundle owner profile must not leak to org-A token"
+        )
+
+        # Org A owner data must appear
+        assert "bundle_owner@org-a.test" in returned_owner_emails, (
+            "Org A bundle owner email should be returned"
+        )
+
+    # ------------------------------------------------------------------ #
+    # (c) N+1 guard                                                        #
+    # ------------------------------------------------------------------ #
+
+    def test_bundle_parent_owners_field_no_n_plus_1(
+        self, mock_rate_limiter, organization, org_wide_client
+    ):
+        """Resolving owners for N bundles issues a constant number of queries.
+
+        Two-point comparison: captures the query count for 1 bundle (2 ownership
+        rows) and for 4 bundles (each with 2 ownership rows), then asserts the
+        two counts are equal (or differ by at most 1 for incidental per-row
+        overhead). With prefetch_related working correctly, adding more bundles
+        must NOT add per-bundle owner/user/profile queries.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        def _make_bundle_with_owners(index):
+            bundle, _ = _make_bundle_calendar(
+                organization, name=f"N+1 Bundle {index}", child_count=1
+            )
+            for j in range(2):
+                u = UserFactory().create_user(
+                    email=f"n1_bundle_owner_{index}_{j}@n1test.local",
+                    first_name=f"BF{index}{j}",
+                    last_name=f"BL{index}{j}",
+                )
+                baker.make(
+                    CalendarOwnership,
+                    calendar=bundle,
+                    user=u,
+                    organization=organization,
+                    is_default=(j == 0),
+                )
+
+        # --- Point 1: N=1 bundle with 2 owners ---
+        _make_bundle_with_owners(0)
+
+        with CaptureQueriesContext(connection) as ctx_1:
+            response_1 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_1)
+        queries_n1 = len(ctx_1.captured_queries)
+
+        # --- Point 2: N=4 bundles with 2 owners each (3 more added, total 4) ---
+        for i in range(1, 4):
+            _make_bundle_with_owners(i)
+
+        with CaptureQueriesContext(connection) as ctx_4:
+            response_4 = org_wide_client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY}),
+                content_type="application/json",
+            )
+        assert_graphql_success(response_4)
+        queries_n4 = len(ctx_4.captured_queries)
+
+        # With prefetch_related the ownership/user/profile lookups are batched and
+        # the query count must not grow with the number of bundles. Allow a slack
+        # of 1 to tolerate minor incidental per-row overhead.
+        assert abs(queries_n4 - queries_n1) <= 1, (
+            f"N+1 detected: N=1 bundle used {queries_n1} queries, "
+            f"N=4 bundles used {queries_n4} queries. "
+            "With prefetch_related the counts must be equal (or differ by at most 1). "
+            "Check prefetch_related wiring in the owners resolver on CalendarBundleGraphQLType."
+        )

@@ -604,8 +604,8 @@ class CalendarGroupGraphQLType:
 class CalendarBundleGraphQLType:
     """GraphQL type for a bundle calendar and its children.
 
-    Exposes id, name, description, and the list of child calendars.
-    No isPrivate / owners (non-goals — separate plans).
+    Exposes id, name, description, the list of child calendars, and owners.
+    No isPrivate (non-goal — separate plan).
     """
 
     id: strawberry.auto  # noqa: A003
@@ -616,6 +616,11 @@ class CalendarBundleGraphQLType:
     def children(self) -> list[CalendarGraphQLType]:
         """Return the child calendars of this bundle calendar."""
         return list(self.bundle_children.all())  # type: ignore[union-attr]
+
+    @strawberry_django.field(prefetch_related=["ownerships__user__profile"])
+    def owners(self) -> list["CalendarOwnershipGraphQLType"]:
+        """Return all ownership records for this bundle calendar."""
+        return list(self.ownerships.all())  # type: ignore[attr-defined]
 
 
 @strawberry_django.type(CalendarEventGroupSelection)
