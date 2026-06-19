@@ -25,6 +25,7 @@
 | **Write path** | **Async via Celery.** `AuditService.record(...)` validates + snapshots synchronously, then enqueues a task that persists via the repository. Keeps audit latency/failure off the action's critical path. |
 | **Snapshot-at-emit** | Because persistence is async, all *mutable* actor context (`actor_role`, `system_user_scopes`, `system_user_scoped_to_membership`) is captured **synchronously inside `record()`** and passed in the task payload — never re-read in the worker, where the membership/system-user could have changed or been deleted. |
 | **Emit contract** | Explicit `AuditService.record(...)` call, service injected via DI (`Provide["audit_service"]`). Most precise; intent + actor are unambiguous at the call site. No signals (lose intent, fire on every ORM write), no decorators (too implicit for an audit trail). |
+| **DI injection style** (Amended 2026-06-19) | Dependencies are injected as **method/constructor arguments** via `@inject` + `Annotated[..., Provide["..."]]`, matching the project's established services/tasks (`organizations/services.py`, `webhooks/tasks.py`). NOT resolved at runtime from `di_core.containers.container`. Concretely: `AuditService.__init__` takes `repository` via `@inject`/`Provide["audit_repository"]` and the container wires it as `providers.Factory(AuditService)` (no explicit `repository=` arg, so `@inject` genuinely resolves it and no `DIWiringWarning` is emitted); the Celery `persist_audit_record` task uses `@app.task` over `@inject` with a `repository: Annotated["AuditRepository \| None", Provide["audit_repository"]] = None` keyword arg + a `None` guard (the `webhooks/tasks.py` pattern). The `audit` package is wired in `di_core/apps.py` `ready()`, so `@inject` works for both. |
 | **Tenancy** | Audit is **org-scoped** (`OrganizationModel`, `organization` FK). Matches every other hot table; system-actor records still carry org context. Truly global actions are out of scope for v1. |
 | **Subject storage** | **Soft reference**: `subject_type` (`"app_label.ModelName"` string) + `subject_id` (string) + optional `subject_label` (human-readable snapshot). Portable across any backend, survives row deletion, no contenttypes coupling. No DB-enforced integrity — accepted for an append-only log. |
 | **Actor storage** | `actor_type` enum (`SYSTEM`, `MEMBERSHIP`, `SYSTEM_USER`, `SINGLE_USE_CODE`) + nullable `actor_id` (BigInteger). Portable, extensible to new actor kinds without a schema change per kind. `actor_id` is null for `SYSTEM`. |
@@ -326,11 +327,11 @@ Acceptance: `compute_diff` returns the exact `{field:{old,new}}` shape across ad
 **Feature flag**: none — additive; no existing caller is modified in this plan.
 
 Changes:
-1. `audit/services.py`: `AuditService` (DI-injected `repository`), with:
-   - `record(*, organization_id, action, actor: ActorSnapshot, subject: SubjectRef, affected_membership_ids=(), diff=None)` — validates, builds `AuditRecordData`, serializes to a JSON-safe dict, enqueues `persist_audit_record.delay(payload)`. Returns nothing (fire-and-forget).
-   - Actor builders that capture snapshots **synchronously**: `actor_from_membership(membership)` (→ `actor_role=membership.role`), `actor_from_system_user(system_user)` (→ `system_user_scopes=[r.resource_name for r in system_user.available_resources.all()]`, `system_user_scoped_to_membership=system_user.scoped_to_membership_id`), `actor_from_single_use_code(token)` (→ `actor_id=token.id`), `system_actor()`.
-2. `audit/tasks.py`: `@shared_task persist_audit_record(payload: dict)` — rebuilds `AuditRecordData`, resolves the repository from the DI container, calls `repository.add(...)`. Registered with the project Celery app at [celery.py](../vinta_schedule_api/celery.py).
-3. Finalize the `audit_service` provider in `di_core/containers.py`.
+1. `audit/services.py`: `AuditService` with `repository` injected as a **constructor argument** via `@inject` + `Annotated[AuditRepository, Provide["audit_repository"]]` (the `organizations/services.py` style — see **DI injection style** in **Guiding Decisions**). It provides:
+   - `record(*, organization_id, action, actor: ActorSnapshot, subject: SubjectRef, affected_membership_ids=(), diff=None)` — validates, builds `AuditRecordData`, serializes to a JSON-safe dict, dispatches `persist_audit_record` via `transaction.on_commit(...)` (so a rolled-back request never emits an audit), with enqueue errors logged + swallowed inside the callback. Returns nothing (fire-and-forget).
+   - Actor builders that capture snapshots **synchronously**: `actor_from_membership(membership)` (→ `actor_role=membership.role`), `actor_from_system_user(system_user)` (→ `system_user_scopes=[r.resource_name for r in system_user.available_resources.all()]`, `system_user_scoped_to_membership=system_user.scoped_to_membership_fk_id`), `actor_from_single_use_code(token)` (→ `actor_id=token.id`), `system_actor()`.
+2. `audit/tasks.py`: `@app.task` over `@inject` `persist_audit_record(payload: dict, *, repository: Annotated["AuditRepository | None", Provide["audit_repository"]] = None)` — receives the repository via **method-argument injection** (the `webhooks/tasks.py` pattern), guards `if repository is None: return`, rebuilds `AuditRecordData`, calls `repository.add(...)`, and logs+swallows failures. Registered with the project Celery app at [celery.py](../vinta_schedule_api/celery.py). Does NOT resolve the repository from `di_core.containers.container` at runtime.
+3. Wire the `audit_service` provider in `di_core/containers.py` as `providers.Factory(AuditService)` (no explicit `repository=` — `@inject` resolves it, matching `webhook_service`).
 
 Spec use-case: the write contract other modules consume (instrumentation itself is out of scope).
 
@@ -353,7 +354,7 @@ Acceptance: `AuditService.record(...)` for each actor kind results (after the ea
 **Feature flag**: none — additive new admin views.
 
 Changes:
-1. `audit/admin.py`: register custom admin-site views (a repository-driven changelist, not a plain ORM `ModelAdmin`) under the admin site, rendering rows from `AuditService`/`AuditRepository.query(...)`. Resolve the repository from the DI container.
+1. `audit/admin.py`: register custom admin-site views (a repository-driven changelist, not a plain ORM `ModelAdmin`) under the admin site, rendering rows from `AuditService`/`AuditRepository.query(...)`. The repository is injected into the changelist view via `@inject` + `Annotated[..., Provide["audit_repository"]]` (method-argument injection — see **DI injection style** in **Guiding Decisions**), since the `audit` package is wired in `di_core/apps.py`. (Amended 2026-06-19: was runtime `container.audit_repository()`.)
 2. Filter controls map to `AuditQuery` fields: `action`, `actor_type`, `created_after`/`created_before`, `has_diff`. `organization` exposed as a filter (unscoped read).
 3. Pagination via `query(offset, limit, total)`. `has_add_permission` / `has_change_permission` / `has_delete_permission` → `False`.
 4. Template extends `admin/base_site.html` so it inherits the admin look.
@@ -506,3 +507,7 @@ Acceptance: the export action downloads a CSV of exactly the filtered/searched a
 **Phase 9 — Admin CSV export**
 - @audit/admin.py (edit — export action)
 - @audit/tests/test_admin_export.py (new)
+
+## Amendments
+
+- **2026-06-19** — DI injection style: rework the audit module to inject dependencies as method/constructor arguments via `@inject` + `Provide[...]` (the project's `organizations/services.py` + `webhooks/tasks.py` convention) instead of resolving the repository at runtime from `di_core.containers.container`. Specifically: `AuditService.__init__` injects `repository` (container wires `providers.Factory(AuditService)` with no explicit `repository=`, eliminating the `DIWiringWarning`); the `persist_audit_record` Celery task injects `repository` via `@app.task`/`@inject` keyword arg + `None` guard; the Phase 6 admin changelist injects the repository the same way. Affected phases: 4 (provider wiring), 5 (service + task), 6 (admin). Applied as a forward corrective commit on `plan/audit-trail` (modular-commits — no history rewrite / force-push). Reason: original Phase 5/6 used runtime container resolution, diverging from the project's established `@inject` method-argument pattern.
