@@ -3,10 +3,11 @@ from typing import ClassVar
 from django.db import models
 
 from common.models import BaseModel
+from organizations.models import OrganizationForeignKey, OrganizationModel
 from public_api.constants import PublicAPIResources
 
 
-class SystemUser(BaseModel):
+class SystemUser(OrganizationModel):
     """
     Represents a system user in the application.
     This model is used to manage system-level users that interact with the application.
@@ -18,6 +19,17 @@ class SystemUser(BaseModel):
         on_delete=models.CASCADE,
         null=True,
         blank=True,
+    )
+    scoped_to_membership = OrganizationForeignKey(
+        "organizations.OrganizationMembership",
+        related_name="scoped_system_users",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text=(
+            "When set, this token may only read/write data belonging to calendars owned by "
+            "this organization membership's user. NULL = organization-wide token (legacy default)."
+        ),
     )
     integration_name = models.CharField(max_length=150, unique=True, db_index=True)
     long_lived_token_hash = models.CharField(
