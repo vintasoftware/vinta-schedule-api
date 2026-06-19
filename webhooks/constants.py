@@ -14,6 +14,10 @@ class WebhookEventType(TextChoices):
         "calendar_event_attendee_updated",
         "Calendar Event Attendee Updated",
     )
+    ORGANIZATION_MEMBER_CREATED = (
+        "organization_member_created",
+        "Organization member created",
+    )
 
 
 class WebhookStatus(TextChoices):

@@ -11829,6 +11829,7 @@ components:
       - calendar_event_attendee_added
       - calendar_event_attendee_removed
       - calendar_event_attendee_updated
+      - organization_member_created
       type: string
       description: |-
         * `calendar_event_created` - Calendar Event Created
@@ -11837,6 +11838,7 @@ components:
         * `calendar_event_attendee_added` - Calendar Event Attendee Added
         * `calendar_event_attendee_removed` - Calendar Event Attendee Removed
         * `calendar_event_attendee_updated` - Calendar Event Attendee Updated
+        * `organization_member_created` - Organization member created
     ExternalAttendee:
       type: object
       properties:

@@ -19,3 +19,19 @@ class EventAttendeeWebhookPayload(TypedDict):
     status: str
     user_id: int | None
     event: CalendarEventWebhookPayload
+
+
+class OrganizationMemberCreatedWebhookPayload(TypedDict):
+    user_id: int
+    email: str
+    organization_id: int
+    organization_name: str
+    membership_role: str
+    membership_id: int
+
+
+class WebhookEnvelope(TypedDict):
+    id: str
+    type: str
+    timestamp: str
+    data: dict
