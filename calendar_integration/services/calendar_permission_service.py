@@ -380,7 +380,6 @@ class CalendarPermissionService:
     def can_perform_group_scheduling(
         self,
         group: CalendarGroup,
-        event: CalendarEventInputData,
     ) -> bool:
         """Check if the current context is authorized to book through ``group``.
 
@@ -394,8 +393,6 @@ class CalendarPermissionService:
 
         Args:
             group: The ``CalendarGroup`` being booked.
-            event: The event input data (currently unused beyond type-checking, included
-                   for future extension parity with ``can_perform_scheduling``).
 
         Returns:
             ``True`` if the booking is authorized; ``False`` otherwise.

@@ -17,6 +17,7 @@ from calendar_integration.exceptions import (
     EventManagementError,
     InvalidTokenError,
     NoAvailableTimeWindowsError,
+    PermissionServiceInitializationError,
     TokenAlreadyUsedError,
     TokenExpiredError,
     TokenRevokedError,
@@ -728,6 +729,14 @@ class CalendarGroupMutations:
             return CalendarGroupEventResult(success=False, error_message="Group not found")
         except PermissionDenied as e:
             return CalendarGroupEventResult(success=False, error_message=str(e))
+        except PermissionServiceInitializationError:
+            return CalendarGroupEventResult(
+                success=False,
+                error_message=(
+                    "This group does not accept public scheduling. "
+                    "A token or scheduling code is required."
+                ),
+            )
         except CalendarGroupError as e:
             return CalendarGroupEventResult(success=False, error_message=str(e))
         return CalendarGroupEventResult(success=True, event=event)  # type: ignore[arg-type]

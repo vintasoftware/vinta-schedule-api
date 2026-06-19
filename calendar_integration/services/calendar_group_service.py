@@ -458,16 +458,12 @@ class CalendarGroupService:
         )
         caller_is_authenticated_user = isinstance(calendar_service_user, User)
 
-        if not caller_is_authenticated_user and self.calendar_permission_service is not None:
-            if not self.calendar_permission_service.can_perform_group_scheduling(
-                group=group,
-                event=CalendarEventInputData(
-                    title=data.title,
-                    description=data.description,
-                    start_time=data.start_time,
-                    end_time=data.end_time,
-                    timezone=data.timezone,
-                ),
+        if not caller_is_authenticated_user:
+            if (
+                self.calendar_permission_service is None
+                or not self.calendar_permission_service.can_perform_group_scheduling(
+                    group=group,
+                )
             ):
                 raise PermissionDenied(
                     "This group does not accept public scheduling. "
