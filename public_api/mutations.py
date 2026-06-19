@@ -1223,16 +1223,22 @@ class Mutation(CalendarGroupMutations):
 
         The mutation:
         1. Resolves the organization and initializes the calendar service via the system-user token.
-        2. Fetches the calendar org-scoped to prevent cross-org access.
-        3. Delegates to CalendarService.create_available_time with the supplied parameters.
-        4. Returns the created AvailableTime on success, or success=False + errorMessage on failure.
+        2. Asserts the calendar is within the token owner's scope (no-op for org-wide tokens).
+        3. Fetches the calendar org-scoped to prevent cross-org access.
+        4. Delegates to CalendarService.create_available_time with the supplied parameters.
+        5. Returns the created AvailableTime on success, or success=False + errorMessage on failure.
            Note: the service raises ValueError if calendar.manage_available_windows is False.
 
         The token's OrganizationResourceAccess must include the CREATE_AVAILABILITY_WINDOW resource.
         """
         calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
 
         try:
+            # Owner-scope guard: a scoped token may only write to its owner's calendars.
+            # Raises Calendar.DoesNotExist (same as a genuinely missing calendar) so a
+            # cross-owner attempt reveals nothing about the target's existence.
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, input.calendar_id)
             calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
         except Calendar.DoesNotExist:
             return CreateAvailabilityWindowResult(
@@ -1265,18 +1271,24 @@ class Mutation(CalendarGroupMutations):
 
         The mutation:
         1. Resolves the organization and initializes the calendar service via the system-user token.
-        2. Fetches the calendar org-scoped to prevent cross-org access.
-        3. Builds a single-op batch dict including only the fields provided in the input.
-        4. Delegates to CalendarService.batch_modify_available_times with the single op.
-        5. Finds the updated AvailableTime by id in the returned list and returns it.
+        2. Asserts the calendar is within the token owner's scope (no-op for org-wide tokens).
+        3. Fetches the calendar org-scoped to prevent cross-org access.
+        4. Builds a single-op batch dict including only the fields provided in the input.
+        5. Delegates to CalendarService.batch_modify_available_times with the single op.
+        6. Finds the updated AvailableTime by id in the returned list and returns it.
            Note: a missing or cross-calendar available_time_id raises ValueError (success=False).
            Note: the service raises ValueError if calendar.manage_available_windows is False.
 
         The token's OrganizationResourceAccess must include the UPDATE_AVAILABILITY_WINDOW resource.
         """
         calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
 
         try:
+            # Owner-scope guard: a scoped token may only write to its owner's calendars.
+            # Raises Calendar.DoesNotExist (same as a genuinely missing calendar) so a
+            # cross-owner attempt reveals nothing about the target's existence.
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, input.calendar_id)
             calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
         except Calendar.DoesNotExist:
             return UpdateAvailabilityWindowResult(
@@ -1328,9 +1340,10 @@ class Mutation(CalendarGroupMutations):
 
         The mutation:
         1. Resolves the organization and initializes the calendar service via the system-user token.
-        2. Fetches the calendar org-scoped to prevent cross-org access.
-        3. Delegates to CalendarService.batch_modify_available_times with a single delete op.
-        4. Returns success=True on success, or success=False + errorMessage on failure.
+        2. Asserts the calendar is within the token owner's scope (no-op for org-wide tokens).
+        3. Fetches the calendar org-scoped to prevent cross-org access.
+        4. Delegates to CalendarService.batch_modify_available_times with a single delete op.
+        5. Returns success=True on success, or success=False + errorMessage on failure.
            Note: a missing or cross-calendar available_time_id raises ValueError (success=False).
            Note: the service raises ValueError if calendar.manage_available_windows is False.
            Note: the v2 doc proposed a deleteSeries argument, but batch_modify_available_times
@@ -1339,8 +1352,13 @@ class Mutation(CalendarGroupMutations):
         The token's OrganizationResourceAccess must include the DELETE_AVAILABILITY_WINDOW resource.
         """
         calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
 
         try:
+            # Owner-scope guard: a scoped token may only write to its owner's calendars.
+            # Raises Calendar.DoesNotExist (same as a genuinely missing calendar) so a
+            # cross-owner attempt reveals nothing about the target's existence.
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, input.calendar_id)
             calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
         except Calendar.DoesNotExist:
             return DeleteAvailabilityWindowResult(
@@ -1366,12 +1384,16 @@ class Mutation(CalendarGroupMutations):
 
         The mutation:
         1. Resolves the organization and initializes the calendar service via the system-user token.
-        2. Fetches the calendar org-scoped to prevent cross-org access.
-        3. Validates every operation's action is one of {create, update, delete}.
-        4. Translates each BatchAvailabilityOperationInput into the service dict shape
+        2. Asserts the calendar is within the token owner's scope (no-op for org-wide tokens).
+           The single input.calendar_id governs the whole atomic batch; one guard call up front
+           rejects a cross-owner batch wholesale with no partial write (individual operations
+           share the same calendar_id — they carry no per-op calendar_id of their own).
+        3. Fetches the calendar org-scoped to prevent cross-org access.
+        4. Validates every operation's action is one of {create, update, delete}.
+        5. Translates each BatchAvailabilityOperationInput into the service dict shape
            (mapping available_time_id -> id; including only fields that are not None).
-        5. Delegates to CalendarService.batch_modify_available_times with the full ops list.
-        6. Returns the calendar's full AvailableTime list after the batch is applied.
+        6. Delegates to CalendarService.batch_modify_available_times with the full ops list.
+        7. Returns the calendar's full AvailableTime list after the batch is applied.
            The entire batch is rolled back if any operation fails (ATOMIC_REQUESTS = True
            means the request transaction wraps the whole mutation).
 
@@ -1381,8 +1403,15 @@ class Mutation(CalendarGroupMutations):
         _valid_actions = {"create", "update", "delete"}
 
         calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
 
         try:
+            # Owner-scope guard: a scoped token may only write to its owner's calendars.
+            # One guard call covers the entire batch because all operations share this
+            # single calendar_id — individual BatchAvailabilityOperationInput entries carry
+            # no per-operation calendar_id. Raises Calendar.DoesNotExist (same as a genuinely
+            # missing calendar) so a cross-owner attempt reveals nothing about the target.
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, input.calendar_id)
             calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
         except Calendar.DoesNotExist:
             return BatchUpdateAvailabilityWindowsResult(
