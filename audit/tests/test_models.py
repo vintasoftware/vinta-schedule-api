@@ -166,6 +166,8 @@ class TestAuditAffectedMemberships:
         # This second link (different audit, same membership) must not raise.
         factory.create(organization=org, audit=audit_b, membership=membership)
 
+        # Intentional: membership_fk is the concrete FK column; original_manager is
+        # unscoped, so filtering on the concrete column is correct here.
         assert AuditAffectedMembership.original_manager.filter(membership_fk=membership).count() == 2
 
     def test_audit_affected_membership_factory_str_does_not_crash(self) -> None:
@@ -206,3 +208,61 @@ class TestAuditTenantCorrectness:
                 subject_type="organizations.Organization",
                 subject_id="1",
             )
+
+    def test_affected_membership_objects_manager_requires_organization(self) -> None:
+        """AuditAffectedMembership.objects.create without organization must raise ValueError."""
+        org = baker.make(Organization)
+        audit = AuditFactory().create(organization=org)
+        user = baker.make(User)
+        membership = OrganizationMembership.objects.create(user=user, organization=org)
+
+        with pytest.raises(ValueError, match="`organization` is required"):
+            AuditAffectedMembership.objects.create(
+                audit_fk=audit,
+                membership_fk=membership,
+                # organization intentionally omitted
+            )
+
+    def test_cross_org_audit_affected_membership_persists_without_rejection(self) -> None:
+        """Cross-org link (audit from org A, membership from org B) persists at the DB layer.
+
+        Empirical finding: OrganizationModel.save() and BaseOrganizationModelManager.create()
+        do not validate that audit_fk and membership_fk belong to the same organization as the
+        AuditAffectedMembership row.  The concrete FK (membership_fk) still points to the
+        org-B membership, and the row is stored successfully.
+
+        The ForeignObject virtual field (membership) joins on (membership_fk_id, organization_id),
+        so accessing `link.membership` would return no match when organization_ids diverge, making
+        the cross-org row effectively invisible through the tenant-safe accessor — but the raw FK
+        remains.
+
+        This is a known project-wide limitation of the ForeignObject pattern: tenant-boundary
+        enforcement between two FK columns on the same through table is NOT enforced at the
+        Python/DB level.  Application code is responsible for ensuring that audit and membership
+        belong to the same organization before creating an AuditAffectedMembership row.
+
+        This test documents the ACTUAL behavior so future developers know what to expect.
+        Do NOT change this test to assert rejection unless the model adds an explicit
+        cross-org validation (e.g. a clean() / pre_save signal).
+        """
+        org_a = baker.make(Organization)
+        org_b = baker.make(Organization)
+
+        user_b = baker.make(User)
+        membership_b = OrganizationMembership.objects.create(user=user_b, organization=org_b)
+        audit_a = AuditFactory().create(organization=org_a)
+
+        # Cross-org: AuditAffectedMembership belongs to org_a, but membership_fk points to org_b.
+        link = AuditAffectedMembership.objects.create(
+            organization=org_a,
+            audit_fk=audit_a,
+            membership_fk=membership_b,
+        )
+
+        # The row persists with the cross-org FK intact.
+        assert link.pk is not None
+        link.refresh_from_db()
+        assert link.organization_id == org_a.pk
+        assert link.membership_fk_id == membership_b.pk  # concrete column from org_b
+        # membership_fk.organization_id is org_b, not org_a — cross-org confirmed.
+        assert link.membership_fk.organization_id == org_b.pk

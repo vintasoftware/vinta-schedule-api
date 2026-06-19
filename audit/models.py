@@ -25,6 +25,9 @@ class Audit(OrganizationModel):
     Every field is populated at emit time and never mutated afterwards.
     """
 
+    # Duplicates BaseModel.created by design: created_at is append-only and
+    # semantically clearer for audit ordering. Prefer created_at over created
+    # when ordering or filtering Audit records.
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     action = models.CharField(max_length=100, choices=AuditAction.choices, db_index=True)
@@ -71,9 +74,9 @@ class Audit(OrganizationModel):
     class Meta:
         indexes: ClassVar = [
             models.Index(fields=["organization", "created_at"]),
-            models.Index(fields=["action", "created_at"]),
-            models.Index(fields=["actor_type", "actor_id"]),
-            models.Index(fields=["subject_type", "subject_id"]),
+            models.Index(fields=["organization", "action", "created_at"]),
+            models.Index(fields=["organization", "actor_type", "actor_id"]),
+            models.Index(fields=["organization", "subject_type", "subject_id"]),
         ]
 
     def __str__(self) -> str:
@@ -100,14 +103,16 @@ class AuditAffectedMembership(OrganizationModel):
     class Meta:
         constraints: ClassVar = [
             # Use the _fk concrete columns (OrganizationForeignKey generates <name>_fk).
+            # organization is included per project convention (lead composite keys with org).
+            # audit_fk already pins the org, so the uniqueness guarantee is equivalent.
             models.UniqueConstraint(
-                fields=["audit_fk", "membership_fk"],
+                fields=["organization", "audit_fk", "membership_fk"],
                 name="uniq_audit_membership",
             ),
         ]
         indexes: ClassVar = [
-            # Index on the concrete FK column for "audits affecting membership X" queries.
-            models.Index(fields=["membership_fk"]),
+            # Lead with organization per project convention for tenant-scoped tables.
+            models.Index(fields=["organization", "membership_fk"]),
         ]
 
     def __str__(self) -> str:
