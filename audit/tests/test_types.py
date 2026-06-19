@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -41,7 +42,7 @@ class TestActorSnapshot:
             actor.actor_type = "membership"
 
     def test_to_dict(self):
-        """ActorSnapshot serializes to dict via asdict."""
+        """ActorSnapshot serializes to dict and is JSON-serializable."""
         actor = ActorSnapshot(actor_type="membership", actor_id=123, actor_role="admin")
         d = dataclasses.asdict(actor)
         assert d == {
@@ -51,6 +52,9 @@ class TestActorSnapshot:
             "system_user_scopes": None,
             "system_user_scoped_to_membership": None,
         }
+        # Verify JSON serialization succeeds
+        json_str = json.dumps(d)
+        assert json.loads(json_str) == d
 
     def test_defaults(self):
         """ActorSnapshot fields have correct defaults."""
@@ -135,23 +139,37 @@ class TestAuditRecordData:
         assert data.diff is None
 
     def test_to_dict(self):
-        """AuditRecordData serializes to dict with nested actor/subject."""
-        actor = ActorSnapshot(actor_type="system", actor_id=None)
-        subject = SubjectRef(subject_type="app.Model", subject_id="1")
+        """AuditRecordData is fully JSON-serializable (Celery payload requirement)."""
+        actor = ActorSnapshot(
+            actor_type="membership",
+            actor_id=123,
+            actor_role="admin",
+            system_user_scopes=["calendar_event", "calendar"],
+        )
+        subject = SubjectRef(
+            subject_type="calendar_integration.CalendarEvent",
+            subject_id="456",
+            subject_label="Team Meeting",
+        )
         data = AuditRecordData(
             organization_id=1,
             action="create",
             actor=actor,
             subject=subject,
-            affected_membership_ids=[1],
+            affected_membership_ids=[1, 2, 3],
+            diff={"title": {"old": "Old Title", "new": "New Title"}},
         )
         d = dataclasses.asdict(data)
         assert d["organization_id"] == 1
         assert d["action"] == "create"
-        assert d["actor"]["actor_type"] == "system"
-        assert d["subject"]["subject_type"] == "app.Model"
-        assert d["affected_membership_ids"] == [1]
-        assert d["diff"] is None
+        assert d["actor"]["actor_type"] == "membership"
+        assert d["subject"]["subject_type"] == "calendar_integration.CalendarEvent"
+        assert d["affected_membership_ids"] == [1, 2, 3]
+        assert d["diff"] == {"title": {"old": "Old Title", "new": "New Title"}}
+        # Verify JSON round-trip (Celery serialization requirement)
+        json_str = json.dumps(d)
+        reconstructed = json.loads(json_str)
+        assert reconstructed == d
 
 
 class TestAuditRecord:
@@ -192,7 +210,12 @@ class TestAuditRecord:
             record.id = 124
 
     def test_to_dict_datetime_preserved(self):
-        """AuditRecord.asdict preserves datetime objects."""
+        """AuditRecord.asdict preserves datetime objects (return type, not Celery payload).
+
+        AuditRecord is a repository return type with id + created_at.
+        AuditRecordData (without datetime) is the Celery payload; JSON-serializability
+        is tested separately for that type.
+        """
         created_at = datetime(2026, 6, 19, 12, 0, 0, tzinfo=ZoneInfo("UTC"))
         actor = ActorSnapshot(actor_type="system", actor_id=None)
         subject = SubjectRef(subject_type="app.Model", subject_id="1")
@@ -205,7 +228,7 @@ class TestAuditRecord:
             subject=subject,
         )
         d = dataclasses.asdict(record)
-        # datetime is preserved in asdict (not converted to string by default)
+        # AuditRecord preserves datetime in asdict (repository return type is not JSON-serialized)
         assert d["created_at"] == created_at
         assert isinstance(d["created_at"], datetime)
 
