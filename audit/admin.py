@@ -12,10 +12,9 @@ breadcrumb handling.  The ``ModelAdmin`` is a *shell*:
   build an ``AuditQuery``, call ``repository.query(...)`` and render a custom
   template (``admin/audit/audit/change_list.html``) with the returned
   ``AuditPage``.  Django's ORM ChangeList machinery is bypassed entirely.
-- The repository is resolved at request time via
-  ``di_core.containers.container.audit_repository()`` — same pattern as
-  ``audit/tasks.py`` — so tests can swap the backend via
-  ``container.audit_repository.override(stub)`` without touching this module.
+- The repository is injected via ``@inject`` / ``Provide["audit_repository"]`` on
+  the ``changelist_view`` method, matching the project's established DI convention.
+  Tests can swap the backend via ``container.audit_repository.override(stub)``.
 
 Template path
 -------------
@@ -25,19 +24,20 @@ Django's ``app_directories.Loader``.  It also matches the template name that
 (``admin/<app_label>/<model_name>/change_list.html``).
 """
 
-from __future__ import annotations
-
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urlencode
 
 from django.contrib import admin
 from django.http import HttpRequest, HttpResponse
 from django.template.response import TemplateResponse
 
+from dependency_injector.wiring import Provide, inject
+
 from audit.constants import AuditAction, AuditActorType
 from audit.models import Audit
+from audit.repositories import AuditRepository
 from audit.types import AuditQuery
 
 
@@ -189,14 +189,24 @@ class AuditAdmin(admin.ModelAdmin):
     # Repository-backed changelist                                        #
     # ------------------------------------------------------------------ #
 
+    @inject
     def changelist_view(
-        self, request: HttpRequest, extra_context: dict[str, Any] | None = None
+        self,
+        request: HttpRequest,
+        extra_context: dict[str, Any] | None = None,
+        repository: Annotated[AuditRepository | None, Provide["audit_repository"]] = None,
     ) -> HttpResponse:
         """Render the audit changelist from AuditRepository.query(...).
 
         Parses filter + pagination GET params, builds an ``AuditQuery``,
         calls the repository, and renders ``change_list_template`` with the
         result — bypassing Django's ORM ChangeList entirely.
+
+        The ``repository`` argument is injected via ``@inject`` /
+        ``Provide["audit_repository"]``; it is not part of Django's
+        ``ModelAdmin.changelist_view`` public contract and must NOT be passed
+        by callers.  Tests may override the provider via
+        ``container.audit_repository.override(stub)``.
 
         Security: requires staff status (checked by the ModelAdmin view
         dispatch via ``admin_site.admin_view``).  Non-staff requests are
@@ -213,15 +223,11 @@ class AuditAdmin(admin.ModelAdmin):
         # --- filters ---
         q = _build_audit_query(dict(request.GET))
 
-        # --- repository query (resolved at runtime for DI-overridability) ---
-        from di_core import containers  # deferred to avoid import-before-wiring
-
-        di_container = containers.container
-        if di_container is None:
-            logger.error("AuditAdmin.changelist_view: DI container not initialized.")
+        # --- repository query ---
+        if repository is None:
+            logger.error("AuditAdmin.changelist_view: repository not injected (DI not wired?).")
             audit_page = None
         else:
-            repository = di_container.audit_repository()
             audit_page = repository.query(q, offset=offset, limit=per_page)
 
         # --- pagination controls ---

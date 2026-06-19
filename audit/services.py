@@ -20,21 +20,18 @@ Callers must NOT call record() from inside a background task that already is the
 async persistence boundary — that is the job of persist_audit_record.
 """
 
-from __future__ import annotations
-
 import dataclasses
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import Annotated
 
 from django.db import transaction
 
+from dependency_injector.wiring import Provide, inject
+
 from audit.constants import AuditActorType
+from audit.repositories import AuditRepository
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
-
-
-if TYPE_CHECKING:
-    from audit.repositories import AuditRepository
 
 
 logger = logging.getLogger(__name__)
@@ -48,9 +45,10 @@ class AuditService:
     may have changed or been deleted by the time it runs.
     """
 
+    @inject
     def __init__(
         self,
-        repository: AuditRepository,
+        repository: Annotated[AuditRepository, Provide["audit_repository"]],
     ) -> None:
         self.repository = repository
 

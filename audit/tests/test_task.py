@@ -285,23 +285,25 @@ class TestPersistAuditRecordErrorHandling:
     """Task failures are logged and swallowed without crashing the worker."""
 
     def test_malformed_payload_is_logged_and_swallowed(self, caplog) -> None:
-        """A payload missing required keys logs an error and does not re-raise."""
-        import di_core.containers
+        """A payload missing required keys logs an error and does not re-raise.
 
-        # Confirm the container is initialized so the test exercises the malformed-payload
-        # path, not the None-guard early-return path.
-        assert di_core.containers.container is not None
+        We pass a real DjangoORMAuditRepository so the malformed-payload path
+        (not the None-guard path) is exercised.
+        """
+        from audit.repositories import DjangoORMAuditRepository
+
+        repository = DjangoORMAuditRepository()
 
         with caplog.at_level(logging.ERROR, logger="audit.tasks"):
-            # Call the underlying task function directly (bypassing Celery's eager
-            # propagation) so we can test the error-handling path directly.
-            persist_audit_record({"bad": "payload"})
+            # Call the task function directly, injecting the repository explicitly,
+            # so we exercise the malformed-payload error path.
+            persist_audit_record({"bad": "payload"}, repository=repository)
 
         assert any("malformed payload" in r.message for r in caplog.records)
 
     def test_task_swallows_repository_failure(self, caplog) -> None:
         """A repository.add() failure is logged and swallowed."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
 
         org = baker.make(Organization)
         data = AuditRecordData(
@@ -315,12 +317,28 @@ class TestPersistAuditRecordErrorHandling:
         failing_repository = MagicMock()
         failing_repository.add.side_effect = RuntimeError("database unavailable")
 
-        mock_container = MagicMock()
-        mock_container.audit_repository.return_value = failing_repository
-
         with caplog.at_level(logging.ERROR, logger="audit.tasks"):
-            # Patch the DI container so the task gets the failing repository.
-            with patch("di_core.containers.container", mock_container):
-                persist_audit_record(payload)
+            # Pass the failing repository directly (bypassing DI injection).
+            persist_audit_record(payload, repository=failing_repository)
 
         assert any("repository.add() failed" in r.message for r in caplog.records)
+
+    def test_none_repository_guard_logs_and_returns(self, caplog) -> None:
+        """When repository=None (DI not wired), the task logs and returns without writing."""
+        org = baker.make(Organization)
+        data = AuditRecordData(
+            organization_id=org.pk,
+            action=AuditAction.CREATE,
+            actor=ActorSnapshot(actor_type=AuditActorType.SYSTEM, actor_id=None),
+            subject=make_subject(org),
+        )
+        payload = build_payload(data)
+
+        with caplog.at_level(logging.ERROR, logger="audit.tasks"):
+            persist_audit_record(payload, repository=None)
+
+        assert any("repository is not injected" in r.message for r in caplog.records)
+        # No Audit row was created.
+        from audit.models import Audit
+
+        assert not Audit.original_manager.filter(organization_id=org.pk).exists()

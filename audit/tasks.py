@@ -13,27 +13,35 @@ Task failures are logged and swallowed (not re-raised) so a bad payload does
 not crash the worker process. The record is lost in that case — acceptable for
 the fire-and-forget audit trail (see Guiding Decisions §Write path).
 
-DI resolution pattern: this task resolves the AuditRepository directly from
-`di_core.containers.container` at runtime rather than using `@inject`. This
-avoids the wiring-order problem that occurs when audit.tasks is imported inside
-di_core/containers.py → audit.services before container.wire() runs. The
-`container` module-level variable is set by di_core/apps.py's `ready()` before
-any task runs (eager or deferred), so the runtime resolution is always safe.
+DI injection pattern: this task uses @app.task (on top) + @inject (below), with
+the repository injected as a keyword argument via Annotated[..., Provide[...]] = None
+(the webhooks/tasks.py convention). The @inject decorator resolves audit_repository
+from the container at call time; no runtime container import is needed.
 """
 
-from __future__ import annotations
-
 import logging
+from typing import TYPE_CHECKING, Annotated
+
+from dependency_injector.wiring import Provide, inject
 
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
 from vinta_schedule_api.celery import app
+
+
+if TYPE_CHECKING:
+    from audit.repositories import AuditRepository
 
 
 logger = logging.getLogger(__name__)
 
 
 @app.task
-def persist_audit_record(payload: dict) -> None:
+@inject
+def persist_audit_record(
+    payload: dict,
+    *,
+    repository: Annotated["AuditRepository | None", Provide["audit_repository"]] = None,
+) -> None:
     """Persist a single audit record via the repository.
 
     Reconstructs an AuditRecordData from the JSON payload produced by
@@ -41,22 +49,17 @@ def persist_audit_record(payload: dict) -> None:
     swallowed so the worker stays alive even when given a malformed payload or
     when the database is temporarily unavailable.
 
-    The AuditRepository is resolved from the DI container at call time
-    (di_core.containers.container.audit_repository()) rather than via @inject
-    to avoid the import-before-wiring ordering issue — see module docstring.
+    The AuditRepository is injected via @inject / Provide["audit_repository"]
+    (the webhooks/tasks.py convention) — no runtime container import is needed.
 
     Args:
         payload: A JSON-safe dict produced by dataclasses.asdict(AuditRecordData).
+        repository: Injected by the DI container; callers must not pass this explicitly
+            unless overriding in tests.
     """
-    # Resolve repository from the DI container at runtime.
-    # di_core.containers.container is set in di_core/apps.py's ready(), which
-    # always runs before any task executes (eager or deferred).
-    from di_core import containers
-
-    di_container = containers.container
-    if di_container is None:
+    if repository is None:
         logger.error(
-            "persist_audit_record: DI container is not initialized. "
+            "persist_audit_record: repository is not injected (DI not wired?). "
             "Audit record will not be persisted. Payload: %r",
             payload,
         )
@@ -95,7 +98,6 @@ def persist_audit_record(payload: dict) -> None:
         return
 
     try:
-        repository = di_container.audit_repository()
         repository.add(data)
     except Exception:
         logger.exception(

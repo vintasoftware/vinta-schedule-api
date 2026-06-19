@@ -45,7 +45,7 @@ class AppContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
 
     audit_repository = providers.Singleton(DjangoORMAuditRepository)
-    audit_service = providers.Factory(AuditService, repository=audit_repository)
+    audit_service = providers.Factory(AuditService)
 
     payment_gateway = providers.Factory(
         MercadoPagoPaymentAdapter,
