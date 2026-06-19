@@ -32,6 +32,35 @@ User = get_user_model()
 CHANGELIST_URL = "/super/audit/audit/"
 
 
+# ---------------------------------------------------------------------------
+# Stubs
+# ---------------------------------------------------------------------------
+
+
+class StubRepositoryCapture:
+    """Stub AuditRepository that captures the last query for assertion."""
+
+    def __init__(self):
+        self.last_query: AuditQuery | None = None
+
+    def add(self, data: Any) -> AuditRecord:  # type: ignore[override]
+        raise NotImplementedError()
+
+    def get(self, audit_id: int) -> AuditRecord | None:
+        return None
+
+    def query(
+        self,
+        q: AuditQuery,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+        ordering: str = "-created_at",
+    ) -> AuditPage:
+        self.last_query = q
+        return AuditPage(items=[], total=0)
+
+
 @pytest.fixture
 def admin_client():
     """Django test client logged in as a superuser."""
@@ -352,29 +381,7 @@ class TestAuditAdminSearchRepositoryIntegration:
 
         Uses a stub repository to capture the AuditQuery and assert search is set.
         """
-        from audit.repositories import AuditRepository
         from di_core.containers import container
-
-        class StubRepositoryCapture(AuditRepository):
-            def __init__(self):
-                self.last_query: AuditQuery | None = None
-
-            def add(self, data: Any) -> AuditRecord:  # type: ignore[override]
-                raise NotImplementedError()
-
-            def get(self, audit_id: int) -> AuditRecord | None:
-                return None
-
-            def query(
-                self,
-                q: AuditQuery,
-                *,
-                offset: int = 0,
-                limit: int = 50,
-                ordering: str = "-created_at",
-            ) -> AuditPage:
-                self.last_query = q
-                return AuditPage(items=[], total=0)
 
         stub = StubRepositoryCapture()
 
@@ -393,29 +400,7 @@ class TestAuditAdminSearchRepositoryIntegration:
 
         Uses a stub repository to capture the AuditQuery and assert affected_membership_id is set.
         """
-        from audit.repositories import AuditRepository
         from di_core.containers import container
-
-        class StubRepositoryCapture(AuditRepository):
-            def __init__(self):
-                self.last_query: AuditQuery | None = None
-
-            def add(self, data: Any) -> AuditRecord:  # type: ignore[override]
-                raise NotImplementedError()
-
-            def get(self, audit_id: int) -> AuditRecord | None:
-                return None
-
-            def query(
-                self,
-                q: AuditQuery,
-                *,
-                offset: int = 0,
-                limit: int = 50,
-                ordering: str = "-created_at",
-            ) -> AuditPage:
-                self.last_query = q
-                return AuditPage(items=[], total=0)
 
         stub = StubRepositoryCapture()
 
@@ -432,29 +417,7 @@ class TestAuditAdminSearchRepositoryIntegration:
 
         Issues a request with both params and asserts they both reach the repository.
         """
-        from audit.repositories import AuditRepository
         from di_core.containers import container
-
-        class StubRepositoryCapture(AuditRepository):
-            def __init__(self):
-                self.last_query: AuditQuery | None = None
-
-            def add(self, data: Any) -> AuditRecord:  # type: ignore[override]
-                raise NotImplementedError()
-
-            def get(self, audit_id: int) -> AuditRecord | None:
-                return None
-
-            def query(
-                self,
-                q: AuditQuery,
-                *,
-                offset: int = 0,
-                limit: int = 50,
-                ordering: str = "-created_at",
-            ) -> AuditPage:
-                self.last_query = q
-                return AuditPage(items=[], total=0)
 
         stub = StubRepositoryCapture()
 
