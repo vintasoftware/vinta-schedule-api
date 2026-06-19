@@ -311,6 +311,10 @@ class Query:
         if calendar_type is not None:
             queryset = queryset.filter(calendar_type=calendar_type)
 
+        # Prefetch ownership rows + related user + profile to avoid N+1 when
+        # the caller selects `owners { user { profile { ... } } }`.
+        queryset = queryset.prefetch_related("ownerships__user__profile")
+
         # Apply ordering first, then pagination
         queryset = _slice_qs(queryset.order_by("pk"), offset, limit)
 
