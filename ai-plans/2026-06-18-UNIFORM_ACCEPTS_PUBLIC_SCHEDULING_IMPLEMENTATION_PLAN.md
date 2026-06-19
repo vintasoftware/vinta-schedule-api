@@ -281,7 +281,16 @@ Changes:
    `description`, plus `is_private: bool = True` on create / `is_private: bool | None = None` on
    update) and `createCalendar` / `updateCalendar` mutations returning `CalendarGraphQLType`.
 2. Register the new fields and map them in `OrganizationResourceAccess.FIELD_TO_RESOURCE_MAPPING`
-   (@public_api/permissions.py#L29-L74) to `PublicAPIResources.CALENDAR`.
+   (@public_api/permissions.py#L29-L74) to **granular write resources** `PublicAPIResources.CREATE_CALENDAR`
+   / `PublicAPIResources.UPDATE_CALENDAR` (added to `public_api/constants.py`). **Correction during
+   implementation:** the original plan said map to the generic `CALENDAR` resource, but that is the
+   *read* resource used by the `calendars` query and is in `PROVIDER_SCOPED_RESOURCES` — reusing it
+   would let a read-only token write, and would let a per-owner-scoped token write any owner's
+   calendar. The codebase convention is granular per-action write resources
+   (`CREATE_RESOURCE_CALENDAR`, `CREATE_CALENDAR_BUNDLE`, `UPDATE_CALENDAR_BUNDLE`, …) that are NOT
+   provider-scoped, so calendar create/update stays org-wide-token-only. No migration is required:
+   `ResourceAccess.resource_name` uses class-form `choices=PublicAPIResources`, so new enum members
+   don't change migration state.
 3. Resolve through a DI-injected calendar service; translate `is_private` →
    `accepts_public_scheduling`.
 

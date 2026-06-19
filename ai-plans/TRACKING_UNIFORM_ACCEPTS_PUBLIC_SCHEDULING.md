@@ -70,11 +70,18 @@
 - **Review**: Layer 3 — no BLOCKER/SHOULD-FIX; 2 no-action NITs. Create-only (resource calendars have no update input). Caller threading verified backward-compatible (DRF serializer falls through to private default). Round-trip `isPrivate` asserted.
 - **Summary**: `is_private` (default True/private) on `CreateResourceCalendarInput` → `Calendar.accepts_public_scheduling`.
 
+### Phase 6 — New plain-Calendar create/update mutation with `is_private` ✅
+- **Model used**: `claude-sonnet-4-6` (plan tier: Tier 3). Agent: `implementer` + `fixer` (sonnet).
+- **Commits**: `feat(calendar_service): add create_calendar and update_calendar service methods` (`894861c`); `feat(public_api): add createCalendar/updateCalendar mutations with is_private` (`a601e0a`); `fix(public_api): gate createCalendar/updateCalendar on granular write resources` (`0aca730`).
+- **Files**: `calendar_integration/services/calendar_service.py` (`create_calendar`/`update_calendar`, PERSONAL/INTERNAL, org-scoped, PERSONAL-only guard, conditional update), `public_api/mutations.py` (inputs/results/resolvers), `public_api/constants.py` (+`CREATE_CALENDAR`/`UPDATE_CALENDAR`), `public_api/permissions.py` (mapping), `public_api/tests/test_calendar_mutations.py` (new, ~18 tests).
+- **Gate**: `check --deploy` clean; `makemigrations --check` clean (class-form choices → no migration needed); full suite **2561 passed**.
+- **Review**: Layer 3 — 1 BLOCKER (cross-owner write via provider-scoped `CALENDAR`) + 1 SHOULD-FIX (read→write escalation), both fixed by switching to granular non-provider-scoped `CREATE_CALENDAR`/`UPDATE_CALENDAR` (mirrors bundle write resources; only org-wide tokens reach the mutations, no owner-guard needed). Re-verified clean. Plan doc corrected (had said map to `CALENDAR`).
+- **Summary**: Net-new `createCalendar`/`updateCalendar` public mutations for PERSONAL calendars carrying `is_private`. Gated by granular write resources. `update_calendar` is PERSONAL-only + org-scoped.
+
 ## Current phase
-- Phase 6 — New plain-Calendar create/update mutation with `is_private` (next; Tier 3 / sonnet).
+- Phase 7 — Gate codeless public group booking on `accepts_public_scheduling` (next; Tier 3 / sonnet; behavioral — breaking-change coordination).
 
 ## Remaining phases
-- Phase 6 — New plain-Calendar create/update mutation with `is_private`.
 - Phase 7 — Gate codeless public group booking on `accepts_public_scheduling` (behavioral; breaking-change coordination).
 
 ## Deferred phases
