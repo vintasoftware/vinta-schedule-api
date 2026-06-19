@@ -31,8 +31,15 @@
 - **Commits**: `483b889` enums, `6606c84` DTOs, `c518906` interface+exports, `d167066` test(audit) JSON-serializability fix
 - **Summary**: `audit/constants.py` (`AuditActorType`, `AuditAction` TextChoices), `audit/types.py` (frozen DTOs: `ActorSnapshot`, `SubjectRef`, `AuditRecordData`, `AuditRecord`, `AuditQuery`, `AuditPage` — pure, no Django imports, JSON-serializable payload proven by test), `audit/repositories.py` (`AuditRepository` ABC, append+read only, no update/delete), `audit/__init__.py` exports. Full suite green (2644 passed); no migration.
 
+### Phase 2 — Audit model + through table + migration ✅
+- **Status**: complete, all 3 review layers passed (reviewer: 0 blockers, several should-fix applied; admin-stub finding rejected — plan defers admin to Phase 6 as repository-backed read-only)
+- **Model used**: claude-sonnet-4-6 (plan tier: Tier 2 — bumped to Tier 3 model given the bespoke multi-tenant OrganizationForeignKey + migration risk)
+- **Commits**: `f367e1d` model+migration+factory+tests, `ad1a29e` org-leading indexes/constraint + tenant-boundary tests
+- **Summary**: `Audit(OrganizationModel)` + `AuditAffectedMembership(OrganizationModel)` through table (tenant-safe `OrganizationForeignKey` dual-field pattern, `through_fields=("audit_fk","membership_fk")`). Migration `0001_initial` with 4 org-leading `Audit` indexes, through-table `(organization, membership_fk)` index, and `uniq_audit_membership` on `(organization, audit_fk, membership_fk)`. `AuditFactory`/`AuditAffectedMembershipFactory` (model_bakery). Full suite green (2661 passed); reverse path clean.
+- **Plan deviation**: index list refined to lead every composite key with `organization` (project convention the plan's index list overlooked). Unscoped reads (Phase 3/admin) use the established `Audit.original_manager`. Cross-org through-table links persist without rejection (documented project-wide ForeignObject limitation; scoped reads via the ForeignObject won't surface them).
+
 ## Current phase
-- Phase 2 — Audit model + through table + migration (Tier 2, migration-author) — NEXT
+- Phase 3 — DjangoORMAuditRepository (Tier 3, implementer) — NEXT
 
 ## Remaining phases
 - Phase 2 — Audit model + through table + migration (Tier 2, migration-author)
