@@ -121,6 +121,8 @@ def _build_audit_query(params: dict[str, str | list[str]]) -> AuditQuery:
     created_before = _parse_datetime(_first(params.get("created_before")))
     has_diff = _parse_has_diff(_first(params.get("has_diff")))
     organization_id = _parse_int(_first(params.get("organization_id")))
+    search = _first(params.get("search"))
+    affected_membership_id = _parse_int(_first(params.get("affected_membership_id")))
 
     return AuditQuery(
         organization_id=organization_id,
@@ -129,6 +131,8 @@ def _build_audit_query(params: dict[str, str | list[str]]) -> AuditQuery:
         created_after=created_after,
         created_before=created_before,
         has_diff=has_diff,
+        search=search,
+        affected_membership_id=affected_membership_id,
     )
 
 
@@ -243,6 +247,8 @@ class AuditAdmin(admin.ModelAdmin):
             "created_before": request.GET.get("created_before", ""),
             "has_diff": request.GET.get("has_diff", ""),
             "organization_id": request.GET.get("organization_id", ""),
+            "search": request.GET.get("search", ""),
+            "affected_membership_id": request.GET.get("affected_membership_id", ""),
         }
 
         # --- base querystring for pagination links (URL-safe, excludes page) ---

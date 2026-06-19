@@ -63,6 +63,18 @@
              value="{{ active_filters.created_before }}">
     </div>
 
+    <div>
+      <label for="id_search"><strong>Search</strong></label><br>
+      <input type="text" name="search" id="id_search"
+             value="{{ active_filters.search }}" placeholder="Subject/Actor ID">
+    </div>
+
+    <div>
+      <label for="id_affected_membership_id"><strong>Affected membership ID</strong></label><br>
+      <input type="number" name="affected_membership_id" id="id_affected_membership_id"
+             value="{{ active_filters.affected_membership_id }}" placeholder="Any">
+    </div>
+
     <div style="align-self: flex-end;">
       <button type="submit" class="button">Filter</button>
       <a href="?" class="button" style="margin-left: 0.5em;">Clear</a>
