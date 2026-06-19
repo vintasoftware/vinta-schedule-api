@@ -468,7 +468,8 @@ class CreateCalendarBundleInput:
     primary_calendar_id: Optional. The ID of one of the children_ids calendars that will
         be designated as the primary (hosts the real external event). Must be present in
         children_ids when provided.
-    No isPrivate — out of scope (non-goal).
+    is_private: Boolean indicating whether this bundle is private (default: True).
+        When True, codeless public scheduling is disabled for this bundle.
     """
 
     organization_id: int
@@ -476,6 +477,7 @@ class CreateCalendarBundleInput:
     description: str | None = None
     children_ids: list[int]
     primary_calendar_id: int | None = None
+    is_private: bool = True
 
 
 @strawberry.type
@@ -495,7 +497,8 @@ class UpdateCalendarBundleInput:
     description: If provided (non-None), updates the bundle's description.
     children_ids: Full desired set of child calendar IDs (reconciles adds/removals).
     primary_calendar_id: Optional. Must be present in children_ids when provided.
-    No isPrivate — out of scope (non-goal).
+    is_private: Optional. If provided (non-None), updates the bundle's privacy setting.
+        Omit to leave accepts_public_scheduling unchanged.
     """
 
     organization_id: int
@@ -504,6 +507,7 @@ class UpdateCalendarBundleInput:
     description: str | None = None
     children_ids: list[int]
     primary_calendar_id: int | None = None
+    is_private: bool | None = None
 
 
 @strawberry.type
@@ -1711,6 +1715,7 @@ class Mutation(CalendarGroupMutations):
                 description=input.description if input.description is not None else "",
                 child_calendars=children,
                 primary_calendar=primary,
+                accepts_public_scheduling=not input.is_private,
             )
         except (CalendarIntegrationError, ValueError, DjangoValidationError, IntegrityError) as e:
             return CreateCalendarBundleResult(success=False, error_message=str(e))
@@ -1775,7 +1780,7 @@ class Mutation(CalendarGroupMutations):
                     .get(id=input.bundle_id)
                 )
 
-                # Update name/description in the resolver (the service does NOT update these).
+                # Update name/description/privacy in the resolver (the service does NOT update these).
                 # Runs inside the atomic block so a subsequent service failure rolls back the save.
                 update_fields: list[str] = []
                 if input.name is not None:
@@ -1784,6 +1789,9 @@ class Mutation(CalendarGroupMutations):
                 if input.description is not None:
                     bundle.description = input.description
                     update_fields.append("description")
+                if input.is_private is not None:
+                    bundle.accepts_public_scheduling = not input.is_private
+                    update_fields.append("accepts_public_scheduling")
                 if update_fields:
                     bundle.save(update_fields=update_fields)
 

@@ -5251,6 +5251,98 @@ class TestCreateCalendarBundleMutation:
             f"Returned ids: {returned_bundle_ids}"
         )
 
+    def test_create_calendar_bundle_defaults_is_private_true(self):
+        """Test that is_private defaults to True (private) when omitted."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        child1 = self._make_child_calendar(org, name="Child A")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "Default Private Bundle",
+                    "childrenIds": [child1.id],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createCalendarBundle"]
+        assert result["success"] is True
+        bundle_id = int(result["bundle"]["id"])
+
+        # Verify the backing Calendar.accepts_public_scheduling is False (private)
+        bundle_cal = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
+        assert bundle_cal.accepts_public_scheduling is False
+
+    def test_create_calendar_bundle_with_is_private_false(self):
+        """Test that is_private=False sets accepts_public_scheduling=True."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        child1 = self._make_child_calendar(org, name="Child A")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "Public Bundle",
+                    "childrenIds": [child1.id],
+                    "isPrivate": False,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createCalendarBundle"]
+        assert result["success"] is True
+        bundle_id = int(result["bundle"]["id"])
+
+        # Verify the backing Calendar.accepts_public_scheduling is True (public)
+        bundle_cal = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
+        assert bundle_cal.accepts_public_scheduling is True
+
+    def test_create_calendar_bundle_with_is_private_true(self):
+        """Test that is_private=True sets accepts_public_scheduling=False."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        child1 = self._make_child_calendar(org, name="Child A")
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "Explicit Private Bundle",
+                    "childrenIds": [child1.id],
+                    "isPrivate": True,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createCalendarBundle"]
+        assert result["success"] is True
+        bundle_id = int(result["bundle"]["id"])
+
+        # Verify the backing Calendar.accepts_public_scheduling is False (private)
+        bundle_cal = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
+        assert bundle_cal.accepts_public_scheduling is False
+
 
 UPDATE_CALENDAR_BUNDLE_MUTATION = """
 mutation UpdateCalendarBundle($input: UpdateCalendarBundleInput!) {
@@ -5889,6 +5981,157 @@ class TestUpdateCalendarBundleMutation:
             f"Description was persisted despite service failure: got '{bundle_after.description}', "
             f"expected '{original_description}'"
         )
+
+    def test_update_calendar_bundle_toggle_is_private_true_to_false(self):
+        """Test toggling is_private from True (private) to False (public)."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        child1 = self._make_child_calendar(org, name="Child A")
+
+        # Create a private bundle
+        bundle = baker.make(
+            Calendar,
+            organization=org,
+            name="Toggle Bundle",
+            calendar_type=CalendarType.BUNDLE,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+            accepts_public_scheduling=False,
+        )
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child1,
+            organization=org,
+            is_primary=True,
+        )
+
+        # Update to is_private=False (public)
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": bundle.id,
+                    "childrenIds": [child1.id],
+                    "isPrivate": False,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is True
+
+        bundle.refresh_from_db()
+        # is_private=False means accepts_public_scheduling=True
+        assert bundle.accepts_public_scheduling is True
+
+    def test_update_calendar_bundle_toggle_is_private_false_to_true(self):
+        """Test toggling is_private from False (public) to True (private)."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        child1 = self._make_child_calendar(org, name="Child A")
+
+        # Create a public bundle
+        bundle = baker.make(
+            Calendar,
+            organization=org,
+            name="Toggle Bundle",
+            calendar_type=CalendarType.BUNDLE,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+            accepts_public_scheduling=True,
+        )
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child1,
+            organization=org,
+            is_primary=True,
+        )
+
+        # Update to is_private=True (private)
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": bundle.id,
+                    "childrenIds": [child1.id],
+                    "isPrivate": True,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is True
+
+        bundle.refresh_from_db()
+        # is_private=True means accepts_public_scheduling=False
+        assert bundle.accepts_public_scheduling is False
+
+    def test_update_calendar_bundle_omitting_is_private_leaves_unchanged(self):
+        """Test that omitting is_private (None) leaves accepts_public_scheduling unchanged."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        child1 = self._make_child_calendar(org, name="Child A")
+
+        # Create a public bundle
+        bundle = baker.make(
+            Calendar,
+            organization=org,
+            name="Stable Bundle",
+            calendar_type=CalendarType.BUNDLE,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+            accepts_public_scheduling=True,
+        )
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child1,
+            organization=org,
+            is_primary=True,
+        )
+
+        # Update name and other fields but omit is_private
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": bundle.id,
+                    "name": "Stable Bundle Renamed",
+                    "description": "Updated description",
+                    "childrenIds": [child1.id],
+                    # is_private is None (omitted)
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is True
+
+        bundle.refresh_from_db()
+        # accepts_public_scheduling should remain True (unchanged)
+        assert bundle.accepts_public_scheduling is True
+        assert bundle.name == "Stable Bundle Renamed"
+        assert bundle.description == "Updated description"
 
 
 DISABLE_CALENDAR_BUNDLE_MUTATION = """
