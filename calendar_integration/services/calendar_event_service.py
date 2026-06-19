@@ -534,8 +534,18 @@ class CalendarEventService:
 
         event.title = event_data.title
         event.description = event_data.description
-        event.start_time = event_data.start_time
-        event.end_time = event_data.end_time
+        # ``start_time`` / ``end_time`` are DB-generated fields (``GeneratedField``
+        # with ``db_persist=True``) that derive from ``start_time_tz_unaware`` and
+        # the IANA ``timezone``.  Assigning to the generated fields is silently
+        # ignored by Django's UPDATE statement, so we must update the underlying
+        # writable fields instead.
+        event.start_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+            event_data.start_time, event_data.timezone
+        )
+        event.end_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+            event_data.end_time, event_data.timezone
+        )
+        event.timezone = event_data.timezone
         if context.calendar_adapter:
             event.meta["latest_original_payload"] = original_payload
 

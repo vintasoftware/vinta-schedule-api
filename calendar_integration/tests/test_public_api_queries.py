@@ -86,6 +86,8 @@ class TestCalendarQueries:
         request = Mock()
         request.user = user
         request.organization = organization
+        # Simulate an org-wide token (no owner scope); scoped_calendar_ids returns None (no-op).
+        request.public_api_system_user = None
         return request
 
     @pytest.fixture

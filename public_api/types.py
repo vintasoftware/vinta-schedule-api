@@ -166,6 +166,55 @@ class PublicBrandingResult:
     secondary_color: str
 
 
+@strawberry.input
+class CreateScopedSystemUserInput:
+    """Input for minting a provider-scoped Public API token.
+
+    scoped_to_user_id is a User id. Internally it is resolved to the user's active
+    OrganizationMembership in the caller's organization and the membership FK is stored.
+    available_resources must be a non-empty list of resources drawn from the
+    PROVIDER_SCOPED_RESOURCES allow-list.
+    """
+
+    integration_name: str
+    scoped_to_user_id: int
+    available_resources: list[str]
+
+
+@strawberry.type
+class CreateScopedSystemUserResult:
+    """Result of minting a provider-scoped Public API token.
+
+    token is the plaintext token — exposed exactly once and never persisted.
+    scoped_to_user_id is the User id of the provider whose data this token may access
+    (resolved internally to an OrganizationMembership for storage).
+    """
+
+    id: int
+    integration_name: str
+    is_active: bool
+    available_resources: list[str]
+    scoped_to_user_id: int
+    token: str
+
+
+@strawberry.type
+class ValidateReturnUrlResult:
+    """Result of validating an OAuth return ("next") URL against a tenant's allowlist.
+
+    Used by the unauthenticated validateReturnUrl query so the OAuth interstitial
+    callback (which has no session yet) can ask a yes/no question WITHOUT the
+    reseller-internal return_url_allowlist ever being serialized into a response.
+
+    Identical shape for every not-allowed case (unknown tenant, no branding,
+    empty allowlist, bad scheme, origin mismatch) so the query is not an
+    enumeration oracle: allowed=False, sanitized_url=None.
+    """
+
+    allowed: bool
+    sanitized_url: str | None = None
+
+
 @strawberry.type
 class ChildOrganizationMetrics:
     """Point-in-time aggregate counts for a child organization.
