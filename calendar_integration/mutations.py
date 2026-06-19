@@ -652,8 +652,6 @@ class CalendarGroupMutations:
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_group_service.initialize(organization=organization)
         try:
-            # Translate is_private to accepts_public_scheduling: when is_private is None,
-            # pass None to leave accepts_public_scheduling untouched; otherwise invert it.
             accepts_public_scheduling = None if input.is_private is None else not input.is_private
             group = deps.calendar_group_service.update_group(
                 group_id=input.group_id,

@@ -212,14 +212,13 @@ class CalendarGroupService:
         # Only update accepts_public_scheduling if it is provided (not None).
         if data.accepts_public_scheduling is not None:
             group.accepts_public_scheduling = data.accepts_public_scheduling
-        group.save(
-            update_fields=[
-                "name",
-                "description",
-                "accepts_public_scheduling",
-                "modified",
-            ]
-        )
+
+        # Build update_fields dynamically to avoid writing privacy when not provided.
+        update_fields = ["name", "description", "modified"]
+        if data.accepts_public_scheduling is not None:
+            update_fields.append("accepts_public_scheduling")
+
+        group.save(update_fields=update_fields)
 
         existing_slots = {s.name: s for s in group.slots.all()}
         incoming_names = {s.name for s in slots_data}
