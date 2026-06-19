@@ -60,8 +60,16 @@
 - **Summary**: `AuditService` (DI Factory) with synchronous actor builders (`actor_from_membership`/`_system_user`/`_single_use_code`/`system_actor` — scopes eagerly evaluated from `available_resources`), `record(...)` builds a JSON-safe payload (`dataclasses.asdict`) and dispatches `persist_audit_record` via `transaction.on_commit` (enqueue errors swallowed+logged inside the callback). `audit/tasks.py` `persist_audit_record` resolves the repository from the DI container at runtime (avoids @inject import-before-wiring issue), reconstructs the DTO defensively, logs+swallows failures. `audit_service` wired in DI. 34 service/task tests incl. snapshot-at-emit proof; full suite green (2772 passed).
 - **Key fixes**: BLOCKER — wrapped dispatch in `transaction.on_commit` (record() runs under ATOMIC_REQUESTS; a bare `.delay()` could persist audits for rolled-back actions); removed redundant `@inject` (was emitting DIWiringWarning); broadened task except; reworked tests to use `django_capture_on_commit_callbacks`.
 
+### Phase 6 — Repository-backed admin: list + filters ✅
+- **Status**: complete, all 3 review layers passed (reviewer: 0 blockers, 1 real bug + test-quality should-fix — all fixed)
+- **Model used**: claude-sonnet-4-6 (plan tier: Tier 3)
+- **Commits**: `1bdfb47` admin changelist + filters + tests, `5b172ef` fix empty-filter + harden tests
+- **Summary**: `AuditAdmin(ModelAdmin)` registered for `Audit` as a shell (auth/nav/perms) but with `changelist_view` fully overridden to read via `container.audit_repository().query(...)` and render a custom template (`admin/audit/audit/change_list.html` extending `admin/base_site.html`) — Django's ORM ChangeList bypassed. Read-only (add/change/delete perms all False; POST to change/delete rejected). Filters: action, actor_type, created_at range, has_diff, organization_id; pagination via page/per_page → offset/limit. Backend-agnosticism proven by a stub-repository override test (also asserts GET→AuditQuery translation). 30 admin tests; full suite green (2802 passed).
+- **Bug fixed**: empty submitted filter (`actor_type=`) was filtering to 0 results; `_first` now normalizes empty→None.
+- **Note**: `get_queryset` uses `original_manager` only for Django's internal change/delete plumbing (read-only); the LIST is exclusively repository-driven. Phase 8 replaces the per-object view with a repository-driven detail.
+
 ## Current phase
-- Phase 6 — Admin list + filters (Tier 3, implementer) — NEXT
+- Phase 7 — Admin search (Tier 2, implementer) — NEXT
 
 ## Remaining phases
 - Phase 2 — Audit model + through table + migration (Tier 2, migration-author)
