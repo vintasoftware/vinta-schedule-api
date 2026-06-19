@@ -857,3 +857,79 @@ class TestNestedFieldOwnerScopeSecurity:
         result = _owner_scoped_calendar_ids(info)
         assert result == {cal_a.id}
         assert cal_b.id not in result
+
+    # ==================================================================
+    # CalendarGroupSlot.calendars pool — direct second-hop resolver proof
+    #
+    # The only scoped-token entry point to a slot (groupSelections.slot) is
+    # suppressed, so no end-to-end scoped query reaches CalendarGroupSlot.calendars.
+    # That makes the pool-filter on the `calendars` resolver invisible to every
+    # query-driven test: reverting it to an unfiltered field would not fail any
+    # of them. These two tests drive the resolver DIRECTLY (real slot model as
+    # ``self`` + mocked ``info``) so the second-hop defence-in-depth filter is
+    # pinned: the scoped variant FAILS if the resolver returns the raw pool.
+    # ==================================================================
+
+    def _slot_with_cross_provider_pool(self, org, cal_a, cal_b):
+        """A real CalendarGroupSlot whose candidate pool spans both providers."""
+        group = CalendarGroup.objects.create(organization=org, name=f"grp-{uuid.uuid4().hex[:6]}")
+        slot = CalendarGroupSlot.objects.create(
+            organization=org, group=group, name="slot", required_count=1
+        )
+        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=cal_a)
+        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=cal_b)
+        return slot
+
+    def _info_for_request(self, request):
+        info = Mock()
+        info.context = Mock()
+        info.context.request = request
+        return info
+
+    def test_slot_calendars_pool_scoped_filters_cross_owner(self, _rl):
+        """Scoped token: the slot's candidate pool resolver returns ONLY the owner's
+        calendar; the cross-provider calendar is filtered out. FAILS if the resolver
+        is reverted to an unfiltered ``strawberry_django.field()``."""
+        _rl.return_value = iter([None])
+        from calendar_integration.graphql import CalendarGroupSlotGraphQLType
+
+        org = self._org()
+        _ua, mem_a, cal_a = self._provider_with_calendar(org, "a")
+        _ub, _mem_b, cal_b = self._provider_with_calendar(org, "b")
+        slot = self._slot_with_cross_provider_pool(org, cal_a, cal_b)
+        system_user, _token, _auth = self._scoped_token(
+            org, mem_a, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        request = Mock(spec=["public_api_system_user", "public_api_organization"])
+        request.public_api_system_user = system_user
+        request.public_api_organization = org
+        info = self._info_for_request(request)
+
+        result = CalendarGroupSlotGraphQLType.calendars(slot, info)
+        result_ids = {c.id for c in result}
+        assert result_ids == {cal_a.id}
+        assert cal_b.id not in result_ids
+
+    def test_slot_calendars_pool_org_wide_unchanged(self, _rl):
+        """Org-wide token (allowed_ids is None): the resolver returns the FULL
+        cross-provider pool unchanged — the no-op regression assertion."""
+        _rl.return_value = iter([None])
+        from calendar_integration.graphql import CalendarGroupSlotGraphQLType
+
+        org = self._org()
+        _ua, _mem_a, cal_a = self._provider_with_calendar(org, "a")
+        _ub, _mem_b, cal_b = self._provider_with_calendar(org, "b")
+        slot = self._slot_with_cross_provider_pool(org, cal_a, cal_b)
+        system_user, _token, _auth = self._org_wide_token(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        request = Mock(spec=["public_api_system_user", "public_api_organization"])
+        request.public_api_system_user = system_user
+        request.public_api_organization = org
+        info = self._info_for_request(request)
+
+        result = CalendarGroupSlotGraphQLType.calendars(slot, info)
+        result_ids = {c.id for c in result}
+        assert result_ids == {cal_a.id, cal_b.id}
