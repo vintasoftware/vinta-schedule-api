@@ -1006,6 +1006,24 @@ class CalendarService(BaseCalendarService):
             calendar, start_date, end_date, optimize_queryset
         )
 
+    def get_calendar_events_expanded_for_calendars(
+        self,
+        calendar_ids: Iterable[int],
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        optimize_queryset: Callable[[CalendarEventQuerySet], CalendarEventQuerySet] | None = None,
+    ) -> list[CalendarEvent]:
+        """
+        Get all calendar events in a date range across multiple calendars, with recurring
+        events expanded and deduped.
+
+        See ``CalendarEventService.get_calendar_events_expanded_for_calendars`` for full
+        semantics.
+        """
+        return self._get_event_service().get_calendar_events_expanded_for_calendars(
+            calendar_ids, start_date, end_date, optimize_queryset
+        )
+
     def _delete_bundle_event(self, bundle_event: CalendarEvent) -> None:
         """Delete a bundle event — delegates to ``CalendarBundleService``.
 
