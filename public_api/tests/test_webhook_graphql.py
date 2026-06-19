@@ -1,4 +1,4 @@
-"""Integration tests for WebhookConfiguration CRUD over the public GraphQL API (Phase 6)."""
+"""Integration tests for WebhookConfiguration CRUD and WebhookEvent history over the public GraphQL API (Phases 6 & 7)."""
 
 import pytest
 from model_bakery import baker
@@ -8,8 +8,8 @@ from organizations.models import Organization
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
-from webhooks.constants import WebhookEventType
-from webhooks.models import WebhookConfiguration
+from webhooks.constants import WebhookEventType, WebhookStatus
+from webhooks.models import WebhookConfiguration, WebhookEvent
 
 
 # ---------------------------------------------------------------------------
@@ -23,6 +23,20 @@ query WebhookConfigurations($offset: Int, $limit: Int) {
         eventType
         url
         headers
+    }
+}
+"""
+
+LIST_WEBHOOK_DELIVERY_EVENTS_QUERY = """
+query WebhookDeliveryEvents($offset: Int, $limit: Int) {
+    webhookDeliveryEvents(offset: $offset, limit: $limit) {
+        id
+        eventType
+        url
+        status
+        responseStatus
+        retryNumber
+        configurationId
     }
 }
 """
@@ -764,3 +778,156 @@ class TestDeleteWebhookConfigurationMutation:
         # Row must be unchanged
         webhook_configuration.refresh_from_db()
         assert webhook_configuration.deleted_at is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: webhookDeliveryEvents query (Phase 7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestWebhookDeliveryEventsQuery:
+    """Tests for the read-only webhookDeliveryEvents list query (delivery history)."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _make_event(self, organization, configuration, **kwargs):
+        """Create a WebhookEvent for the given organization and configuration."""
+        defaults = {
+            "organization": organization,
+            "configuration": configuration,
+            "event_type": WebhookEventType.CALENDAR_EVENT_CREATED,
+            "url": configuration.url,
+            "status": WebhookStatus.SUCCESS,
+            "payload": {"key": "value"},
+        }
+        defaults.update(kwargs)
+        return baker.make(WebhookEvent, **defaults)
+
+    def test_list_returns_own_org_events(self, organization, system_user_with_webhook_access):
+        """webhookDeliveryEvents returns all events for the caller's organization."""
+        system_user, token, _ = system_user_with_webhook_access
+        cfg = baker.make(
+            WebhookConfiguration,
+            organization=organization,
+            url="https://example.com/hook",
+        )
+        event1 = self._make_event(organization, cfg)
+        event2 = self._make_event(
+            organization, cfg, event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED
+        )
+
+        response = _post(self.client, system_user, token, LIST_WEBHOOK_DELIVERY_EVENTS_QUERY)
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or not data.get("errors"), data.get("errors")
+
+        events_returned = data["data"]["webhookDeliveryEvents"]
+        ids_returned = {int(e["id"]) for e in events_returned}
+        assert event1.id in ids_returned
+        assert event2.id in ids_returned
+
+        # Verify the configuration_id custom resolver reads configuration_fk_id correctly.
+        event1_data = next(e for e in events_returned if int(e["id"]) == event1.id)
+        assert int(event1_data["configurationId"]) == cfg.id
+
+    def test_list_excludes_other_org_events(
+        self,
+        organization,
+        other_organization,
+        system_user_with_webhook_access,
+    ):
+        """Tenant isolation: events from another org are never returned."""
+        system_user, token, _ = system_user_with_webhook_access
+
+        own_cfg = baker.make(
+            WebhookConfiguration,
+            organization=organization,
+            url="https://example.com/own",
+        )
+        other_cfg = baker.make(
+            WebhookConfiguration,
+            organization=other_organization,
+            url="https://example.com/other",
+        )
+        own_event = self._make_event(organization, own_cfg)
+        other_event = self._make_event(other_organization, other_cfg)
+
+        response = _post(self.client, system_user, token, LIST_WEBHOOK_DELIVERY_EVENTS_QUERY)
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or not data.get("errors")
+
+        ids_returned = {int(e["id"]) for e in data["data"]["webhookDeliveryEvents"]}
+        assert own_event.id in ids_returned
+        assert other_event.id not in ids_returned
+
+    def test_list_returns_newest_first(self, organization, system_user_with_webhook_access):
+        """webhookDeliveryEvents returns events ordered newest first (descending pk)."""
+        system_user, token, _ = system_user_with_webhook_access
+        cfg = baker.make(
+            WebhookConfiguration,
+            organization=organization,
+            url="https://example.com/hook",
+        )
+        event_first = self._make_event(organization, cfg)
+        event_second = self._make_event(organization, cfg)
+
+        response = _post(self.client, system_user, token, LIST_WEBHOOK_DELIVERY_EVENTS_QUERY)
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or not data.get("errors")
+
+        ids_returned = [int(e["id"]) for e in data["data"]["webhookDeliveryEvents"]]
+        # Newest (highest pk) should come first
+        assert ids_returned.index(event_second.id) < ids_returned.index(event_first.id)
+
+    def test_list_denied_without_webhook_configuration_scope(self, organization):
+        """Token without WEBHOOK_CONFIGURATION scope is denied for webhookDeliveryEvents."""
+        system_user, token, _ = _make_system_user(
+            organization, resources=[PublicAPIResources.CALENDAR]
+        )
+
+        response = _post(self.client, system_user, token, LIST_WEBHOOK_DELIVERY_EVENTS_QUERY)
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_list_denied_for_unauthenticated_request(self):
+        """Unauthenticated request is denied for webhookDeliveryEvents."""
+        from di_core.containers import container
+
+        auth_service = PublicAPIAuthService()
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={"query": LIST_WEBHOOK_DELIVERY_EVENTS_QUERY, "variables": {}},
+                format="json",
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+
+    def test_no_write_path_for_events(self, organization, system_user_with_webhook_access):
+        """Verify no mutation exists for creating or mutating webhook events."""
+        system_user, token, _ = system_user_with_webhook_access
+
+        # Attempt to call a non-existent createWebhookEvent mutation
+        create_mutation = """
+        mutation {
+            createWebhookEvent(input: {eventType: "calendar_event_created", url: "https://example.com"}) {
+                id
+            }
+        }
+        """
+        response = _post(self.client, system_user, token, create_mutation)
+        assert response.status_code == 200
+        data = response.json()
+        # Must error — mutation doesn't exist in schema, and the error must
+        # specifically name the missing field so this is a genuine no-write-path proof.
+        assert "errors" in data and len(data["errors"]) > 0
+        error_messages = " ".join(str(e.get("message", "")) for e in data["errors"])
+        assert "Cannot query field" in error_messages and "createWebhookEvent" in error_messages
