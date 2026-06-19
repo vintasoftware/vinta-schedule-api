@@ -25,8 +25,14 @@
 - **Commit**: `3d8f8bf chore(audit): scaffold audit app`
 - **Summary**: Created the `audit` Django app (`apps.py` with `AuditConfig(name="audit")`, empty `models.py`/`admin.py` docstrings, `migrations/` + `tests/` packages). Registered `"audit"` in `INTERNAL_INSTALLED_APPS` right after `organizations`. DI auto-wires via existing `di_core/apps.py`. No migration generated. Full suite green (2613 passed); `check --deploy` clean (only pre-existing warnings).
 
+### Phase 1 — Enums, DTOs, AuditRepository interface ✅
+- **Status**: complete, all 3 review layers passed (reviewer: 0 blockers, 3 should-fix — all fixed via fixer commit)
+- **Model used**: claude-haiku-4-5 (plan tier: Tier 2)
+- **Commits**: `483b889` enums, `6606c84` DTOs, `c518906` interface+exports, `d167066` test(audit) JSON-serializability fix
+- **Summary**: `audit/constants.py` (`AuditActorType`, `AuditAction` TextChoices), `audit/types.py` (frozen DTOs: `ActorSnapshot`, `SubjectRef`, `AuditRecordData`, `AuditRecord`, `AuditQuery`, `AuditPage` — pure, no Django imports, JSON-serializable payload proven by test), `audit/repositories.py` (`AuditRepository` ABC, append+read only, no update/delete), `audit/__init__.py` exports. Full suite green (2644 passed); no migration.
+
 ## Current phase
-- Phase 1 — Enums, DTOs, AuditRepository interface (Tier 2, implementer) — NEXT
+- Phase 2 — Audit model + through table + migration (Tier 2, migration-author) — NEXT
 
 ## Remaining phases
 - Phase 2 — Audit model + through table + migration (Tier 2, migration-author)
