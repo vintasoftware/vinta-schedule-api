@@ -95,10 +95,14 @@ class StubAuditRepository(AuditRepository):
 
     Accepts a fixed list of AuditRecord instances injected at construction time.
     query() returns a slice respecting offset/limit; no real filtering is applied.
+
+    ``last_query`` records the most recent AuditQuery passed to query(), so
+    tests can assert that _build_audit_query translated GET params correctly.
     """
 
     def __init__(self, records: list[AuditRecord]) -> None:
         self._records = records
+        self.last_query: AuditQuery | None = None
 
     def add(self, data: Any) -> AuditRecord:  # type: ignore[override]
         raise NotImplementedError("StubAuditRepository is read-only")
@@ -117,6 +121,7 @@ class StubAuditRepository(AuditRepository):
         limit: int = 50,
         ordering: str = "-created_at",
     ) -> AuditPage:
+        self.last_query = q
         page = self._records[offset : offset + limit]
         return AuditPage(items=page, total=len(self._records))
 
@@ -179,21 +184,26 @@ class TestAuditAdminFilters:
     """Verify that filter params narrow the results returned by the repository."""
 
     def test_action_filter_narrows_results(self, admin_client: Client, db: Any) -> None:
-        """Filtering by action returns only records with that action."""
+        """Filtering by action=create shows the CREATE record and not the UPDATE record.
+
+        Seed one CREATE and one UPDATE audit.  Filter by action=create.
+        Assert the response renders exactly 1 matching row (the "Showing 1 of 1"
+        summary) and that the UPDATE action does NOT appear in any table cell
+        (i.e. is absent from <td> cells, not just from dropdown options).
+        """
         org = baker.make(Organization)
         factory = AuditFactory()
         factory.create(org, action=AuditAction.CREATE)
         factory.create(org, action=AuditAction.UPDATE)
-        factory.create(org, action=AuditAction.DELETE)
 
         response = admin_client.get(CHANGELIST_URL + "?action=create")
         assert response.status_code == 200
         content = response.content.decode()
 
-        # CREATE should appear in the table; UPDATE and DELETE should NOT appear
-        # as data rows (they can appear in the filter dropdown, so check the data area).
-        # We count occurrences of the action values in <td> cells by looking for them.
-        assert "create" in content
+        # Exactly 1 record should be returned — the CREATE one.
+        assert "Showing 1 of 1 record" in content
+        # The UPDATE action must not appear in a table data cell.
+        assert "<td>update</td>" not in content
 
     def test_action_filter_excludes_non_matching(self, admin_client: Client, db: Any) -> None:
         """Records not matching the action filter are excluded from results."""
@@ -208,7 +218,12 @@ class TestAuditAdminFilters:
         assert b"No audit records found." in response.content
 
     def test_actor_type_filter_narrows_results(self, admin_client: Client, db: Any) -> None:
-        """Filtering by actor_type returns only records with that actor type."""
+        """Filtering by actor_type=system shows the SYSTEM record, not the MEMBERSHIP one.
+
+        Seed one SYSTEM audit and one MEMBERSHIP audit.  Filter by actor_type=system.
+        Assert the response renders exactly 1 row and that "membership" does NOT
+        appear in any table data cell (it can still appear in the dropdown option).
+        """
         org = baker.make(Organization)
         factory = AuditFactory()
         factory.create(org, actor_type=AuditActorType.SYSTEM)
@@ -217,7 +232,11 @@ class TestAuditAdminFilters:
         response = admin_client.get(CHANGELIST_URL + "?actor_type=system")
         assert response.status_code == 200
         content = response.content.decode()
-        assert "system" in content
+
+        # Exactly 1 record should be returned — the SYSTEM one.
+        assert "Showing 1 of 1 record" in content
+        # The MEMBERSHIP actor type must not appear in a table data cell.
+        assert "<td>membership</td>" not in content
 
     def test_actor_type_filter_excludes_non_matching(self, admin_client: Client, db: Any) -> None:
         """Records not matching the actor_type filter are excluded."""
@@ -348,14 +367,22 @@ class TestAuditAdminPagination:
     """Verify pagination of the audit changelist."""
 
     def test_page_2_shows_next_slice(self, admin_client: Client, db: Any) -> None:
-        """Page 2 with per_page=2 shows the second pair of records."""
+        """Page 2 with per_page=2 shows a disjoint set of subject IDs from page 1.
+
+        Seed 5 audits each with a distinct subject_id so we can identify which
+        records appear on each page.  Assert:
+        - Each page renders exactly 2 rows (per_page=2).
+        - The subject_ids rendered on page 1 and page 2 are fully disjoint.
+        """
+        import re
+
         org = baker.make(Organization)
         factory = AuditFactory()
-        for _ in range(5):
-            factory.create(org)
+        # Use distinct subject_ids so we can track which record is on which page.
+        subject_ids = [f"subj-{i}" for i in range(1, 6)]
+        for sid in subject_ids:
+            factory.create(org, subject_id=sid)
 
-        # With per_page=2: page 1 = first 2 (by DB insertion order, reversed by -created_at).
-        # We fetch page 2 and verify we get a different set.
         response_p1 = admin_client.get(CHANGELIST_URL + "?page=1&per_page=2")
         response_p2 = admin_client.get(CHANGELIST_URL + "?page=2&per_page=2")
 
@@ -365,8 +392,17 @@ class TestAuditAdminPagination:
         content_p1 = response_p1.content.decode()
         content_p2 = response_p2.content.decode()
 
-        # The two pages should differ (page 2 is not just page 1 repeated).
-        assert content_p1 != content_p2
+        # Extract subject IDs rendered in <td> cells on each page.
+        # The subject ID column renders as <td>subj-N</td>.
+        ids_p1 = set(re.findall(r"<td>(subj-\d+)</td>", content_p1))
+        ids_p2 = set(re.findall(r"<td>(subj-\d+)</td>", content_p2))
+
+        # Each page should have exactly 2 distinct subject IDs.
+        assert len(ids_p1) == 2, f"Expected 2 ids on page 1, got: {ids_p1}"
+        assert len(ids_p2) == 2, f"Expected 2 ids on page 2, got: {ids_p2}"
+
+        # The two pages must show disjoint sets of records.
+        assert ids_p1.isdisjoint(ids_p2), f"Pages overlap: p1={ids_p1}, p2={ids_p2}"
 
     def test_total_reflects_full_count(self, admin_client: Client, db: Any) -> None:
         """The 'total' count in the context reflects all matching records."""
@@ -461,6 +497,34 @@ class TestAuditAdminReadOnly:
         response = admin_client.get(f"/super/audit/audit/{record.pk}/delete/")
         assert response.status_code in (403, 302)
 
+    def test_post_to_change_url_is_rejected(self, admin_client: Client, db: Any) -> None:
+        """POST to the admin change URL must be rejected and the record must be unchanged."""
+        from audit.models import Audit
+
+        org = baker.make(Organization)
+        record = AuditFactory().create(org)
+        original_action = record.action
+
+        response = admin_client.post(f"/super/audit/audit/{record.pk}/change/", {})
+        assert response.status_code in (403, 302)
+
+        # The record must still exist and be unmodified.
+        unchanged = Audit.original_manager.get(pk=record.pk)
+        assert unchanged.action == original_action
+
+    def test_post_to_delete_url_is_rejected(self, admin_client: Client, db: Any) -> None:
+        """POST to the admin delete URL must be rejected and the record must still exist."""
+        from audit.models import Audit
+
+        org = baker.make(Organization)
+        record = AuditFactory().create(org)
+
+        response = admin_client.post(f"/super/audit/audit/{record.pk}/delete/", {"post": "yes"})
+        assert response.status_code in (403, 302)
+
+        # The record must still exist in the database.
+        assert Audit.original_manager.filter(pk=record.pk).exists()
+
 
 # ---------------------------------------------------------------------------
 # Backend-agnosticism: stub repository
@@ -531,6 +595,30 @@ class TestAuditAdminBackendAgnosticism:
         assert "10 record" in content
         # 10 records / 3 per page = 4 pages
         assert "Page 1 of 4" in content
+
+    def test_get_params_translated_to_audit_query(self, admin_client: Client) -> None:
+        """GET filter params are correctly translated into AuditQuery fields.
+
+        Issue a request with ?organization_id=99&action=create&actor_type=system
+        and assert that the AuditQuery received by the stub repository has the
+        correct field values.  This proves _build_audit_query populates AuditQuery
+        correctly end-to-end through the view.
+        """
+        stub = StubAuditRepository([])
+
+        from di_core.containers import container
+
+        assert container is not None, "DI container must be initialized in tests"
+        with container.audit_repository.override(stub):
+            response = admin_client.get(
+                CHANGELIST_URL + "?organization_id=99&action=create&actor_type=system"
+            )
+
+        assert response.status_code == 200
+        assert stub.last_query is not None, "Repository.query() was never called"
+        assert stub.last_query.organization_id == 99
+        assert stub.last_query.actions == ["create"]
+        assert stub.last_query.actor_type == "system"
 
     def test_orm_not_used_when_stub_overrides(self, admin_client: Client, db: Any) -> None:
         """With the stub active, real ORM audit records are NOT visible in the admin.

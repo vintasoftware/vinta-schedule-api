@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlencode
 
 from django.contrib import admin
 from django.http import HttpRequest, HttpResponse
@@ -92,17 +93,26 @@ def _parse_has_diff(value: str | None) -> bool | None:
 def _build_audit_query(params: dict[str, str | list[str]]) -> AuditQuery:
     """Build an ``AuditQuery`` from request GET params.
 
-    ``params`` may be a plain ``dict[str, str]`` (for testing) or the result
-    of ``dict(QueryDict)`` which gives ``dict[str, list[str]]``.  Each value is
-    normalised to a single string via ``_first``.
+    ``params`` must be the result of ``dict(QueryDict_instance)``, which yields
+    ``dict[str, list[str]]`` (each key maps to a list of submitted values).
+    Do NOT pass ``QueryDict.dict()`` — that yields scalar strings and bypasses
+    the list-branch normalisation below.  Each value is normalised to a single
+    non-blank string via ``_first``; empty/blank values normalise to ``None``
+    so that an unset filter field is treated as "no filter".
     """
 
     def _first(v: str | list[str] | None) -> str | None:
-        """Return the first element if v is a list, or v itself."""
+        """Return the first non-blank element if v is a list, or v itself.
+
+        The list branch applies ``or None`` so that an empty submitted value
+        (e.g. ``actor_type=''`` → ``['']``) normalises to ``None`` rather
+        than ``''``, which would cause the repository to filter on an empty
+        string instead of skipping the filter entirely.
+        """
         if v is None:
             return None
         if isinstance(v, list):
-            return v[0] if v else None
+            return (v[0] or None) if v else None
         return v or None
 
     action = _first(params.get("action"))
@@ -235,6 +245,12 @@ class AuditAdmin(admin.ModelAdmin):
             "organization_id": request.GET.get("organization_id", ""),
         }
 
+        # --- base querystring for pagination links (URL-safe, excludes page) ---
+        # urlencode so that filter values containing & or special chars are safe.
+        base_qs_params = {k: v for k, v in active_filters.items() if v}
+        base_qs_params["per_page"] = str(per_page)
+        base_querystring = urlencode(base_qs_params)
+
         context: dict[str, Any] = {
             **self.admin_site.each_context(request),
             "title": "Audit records",
@@ -251,6 +267,7 @@ class AuditAdmin(admin.ModelAdmin):
             "actor_type_choices": actor_type_choices,
             "has_diff_choices": has_diff_choices,
             "active_filters": active_filters,
+            "base_querystring": base_querystring,
             # Django admin base template requires opts for breadcrumbs.
             "opts": self.model._meta,
             **(extra_context or {}),

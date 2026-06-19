@@ -116,7 +116,7 @@
   <!-- Pagination controls -->
   <p class="paginator" style="margin-top: 1em;">
     {% if has_prev %}
-      <a href="?{% for k, v in active_filters.items %}{% if v %}{{ k }}={{ v }}&{% endif %}{% endfor %}page={{ prev_page }}&per_page={{ per_page }}">&laquo; Previous</a>
+      <a href="?{{ base_querystring }}&page={{ prev_page }}">&laquo; Previous</a>
     {% else %}
       <span style="color: #999;">&laquo; Previous</span>
     {% endif %}
@@ -124,7 +124,7 @@
     &nbsp; Page {{ page }} of {{ num_pages }} &nbsp;
 
     {% if has_next %}
-      <a href="?{% for k, v in active_filters.items %}{% if v %}{{ k }}={{ v }}&{% endif %}{% endfor %}page={{ next_page }}&per_page={{ per_page }}">Next &raquo;</a>
+      <a href="?{{ base_querystring }}&page={{ next_page }}">Next &raquo;</a>
     {% else %}
       <span style="color: #999;">Next &raquo;</span>
     {% endif %}
