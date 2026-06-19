@@ -377,6 +377,42 @@ class CalendarPermissionService:
 
         return False
 
+    def can_perform_group_scheduling(
+        self,
+        group: CalendarGroup,
+        event: CalendarEventInputData,
+    ) -> bool:
+        """Check if the current context is authorized to book through ``group``.
+
+        Authorization is granted when any of the following holds:
+
+        1. The group accepts public scheduling (``group.accepts_public_scheduling=True``).
+           This is the codeless public path — no token is required.
+        2. The token is group-scoped (``calendar_group_fk_id == group.id``) and has
+           the CREATE permission. This covers group-scoped management tokens and
+           single-use booking codes whose scope is the group.
+
+        Args:
+            group: The ``CalendarGroup`` being booked.
+            event: The event input data (currently unused beyond type-checking, included
+                   for future extension parity with ``can_perform_scheduling``).
+
+        Returns:
+            ``True`` if the booking is authorized; ``False`` otherwise.
+        """
+        if group.accepts_public_scheduling:
+            return True
+
+        if not hasattr(self, "token") or self.token is None:
+            return False
+
+        if self.token.calendar_group_fk_id == group.id and self.has_permission(  # type: ignore[attr-defined]
+            EventManagementPermissions.CREATE
+        ):
+            return True
+
+        return False
+
     def can_manage_calendar_group(self, user: User, group: CalendarGroup) -> bool:
         """Return True if `user` may create/update/delete `group` and create
         events against it.
