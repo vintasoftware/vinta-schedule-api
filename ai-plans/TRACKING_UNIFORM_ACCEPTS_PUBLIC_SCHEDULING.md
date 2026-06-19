@@ -46,11 +46,18 @@
 - **Review**: Layer 3 reviewer — no BLOCKER/SHOULD-FIX; 2 NITs (no-action). Rebase integrity verified (my resolvers + main's owner-scope resolvers coexist).
 - **Summary**: `is_private = not accepts_public_scheduling` exposed read-only on Calendar/Group/Bundle types. Derived (no stored field). GraphQL schema not snapshotted, so no schema artifact change; REST `schema.yml` unaffected.
 
+### Phase 3 — Accept `is_private` on CalendarGroup create/update inputs ✅
+- **Model used**: `claude-haiku-4-5` (plan tier: Tier 2). Agent: `implementer` + `fixer`.
+- **Commits**: `feat(calendar): accept is_private on calendar group create/update inputs` (`5a38b69`); `fix(calendar): conditional update_fields for group privacy + strengthen tests` (`dd525da`).
+- **Files**: `calendar_integration/mutations.py`, `calendar_integration/services/dataclasses.py` (`CalendarGroupInputData.accepts_public_scheduling`), `calendar_integration/services/calendar_group_service.py`, `calendar_integration/tests/test_calendar_group_graphql.py`.
+- **Gate**: `check --deploy` clean; `makemigrations --check` clean; full suite **2534 passed**.
+- **Review**: Layer 3 — 1 SHOULD-FIX (privacy field always in `update_fields` → clobber risk), fixed (conditional `update_fields`); 2 NITs fixed (load-bearing default test, redundant comment). Re-reviewed clean.
+- **Summary**: `is_private` accepted on create (default True/private) + update (None=unchanged), translated to `accepts_public_scheduling = not is_private`. Note: DRF serializer write path does NOT carry the field (out of scope; secure-by-default holds) — see Open Questions if REST parity is wanted.
+
 ## Current phase
-- Phase 3 — Accept `is_private` on CalendarGroup create/update inputs (next).
+- Phase 4 — Accept `is_private` on bundle create/update inputs (next).
 
 ## Remaining phases
-- Phase 3 — Accept `is_private` on CalendarGroup create/update inputs.
 - Phase 4 — Accept `is_private` on bundle create/update inputs.
 - Phase 5 — Accept `is_private` on resource-calendar input.
 - Phase 6 — New plain-Calendar create/update mutation with `is_private`.
