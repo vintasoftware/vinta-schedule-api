@@ -62,7 +62,10 @@ def internal_calendars(organization):
 
 @pytest.fixture
 def clinic_group(organization, internal_calendars):
-    group = CalendarGroup.objects.create(organization=organization, name="Clinic")
+    # accepts_public_scheduling=True so codeless group booking is allowed in these tests.
+    group = CalendarGroup.objects.create(
+        organization=organization, name="Clinic", accepts_public_scheduling=True
+    )
     physicians = CalendarGroupSlot.objects.create(
         organization=organization, group=group, name="Physicians", order=0
     )

@@ -2,6 +2,7 @@ import datetime
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Annotated
 
+from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -436,6 +437,43 @@ class CalendarGroupService:
             )
 
         group = self._get_group_by_id(data.group_id)
+
+        # --- Group-level authorization gate ---
+        # The gate applies ONLY to codeless / unauthenticated booking paths — i.e.
+        # when the caller is not an authenticated ``User``.  Authenticated users
+        # (group owners, org admins) bypass this check: they already passed Django's
+        # view-level authentication and the CalendarGroupPermission object check.
+        #
+        # When the calendar service is initialized with a ``User``, the booking is
+        # an authenticated internal path and the gate is skipped.  For all other
+        # paths (no user, a raw token string, a SystemUser public-API token, or
+        # None), ``can_perform_group_scheduling`` decides:
+        #   1. ``group.accepts_public_scheduling=True`` → allow (codeless public).
+        #   2. A group-scoped token/code with CREATE permission → allow.
+        #   3. Otherwise → PermissionDenied.
+        calendar_service_user = (
+            getattr(self.calendar_service, "user_or_token", None)
+            if self.calendar_service is not None
+            else None
+        )
+        caller_is_authenticated_user = isinstance(calendar_service_user, User)
+
+        if not caller_is_authenticated_user and self.calendar_permission_service is not None:
+            if not self.calendar_permission_service.can_perform_group_scheduling(
+                group=group,
+                event=CalendarEventInputData(
+                    title=data.title,
+                    description=data.description,
+                    start_time=data.start_time,
+                    end_time=data.end_time,
+                    timezone=data.timezone,
+                ),
+            ):
+                raise PermissionDenied(
+                    "This group does not accept public scheduling. "
+                    "A token or scheduling code is required."
+                )
+
         slots = list(group.slots.order_by("order", "id"))
         if not slots:
             raise CalendarGroupValidationError("CalendarGroup has no slots to satisfy.")
@@ -460,6 +498,11 @@ class CalendarGroupService:
             explicit=data.attendances, owners_by_calendar_id=owners_by_calendar_id
         )
 
+        # Signal to ``CalendarEventService.create_event`` that group-level
+        # authorization has already been granted here. This prevents each member
+        # calendar's own ``accepts_public_scheduling`` flag from independently
+        # blocking a booking the group itself permits, without changing the
+        # per-calendar gate for direct single-calendar bookings.
         event_input = CalendarEventInputData(
             title=data.title,
             description=data.description,
@@ -468,6 +511,7 @@ class CalendarGroupService:
             timezone=data.timezone,
             attendances=merged_attendances,
             external_attendances=list(data.external_attendances),
+            group_authorized=True,
         )
         event = self.calendar_service.create_event(
             calendar_id=primary_calendar_id, event_data=event_input

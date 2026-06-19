@@ -908,7 +908,7 @@ class TestRescheduleGroupWithCodeNonUTCTimezone:
         )
 
         # --- Build group + availability -------------------------------------------
-        grp = baker.make(CalendarGroup, organization=org, name="Recife Group")
+        grp = baker.make(CalendarGroup, organization=org, name="Recife Group", accepts_public_scheduling=True)
         slot_a = CalendarGroupSlot.objects.create(
             organization=org, group=grp, name="Physicians", order=0, required_count=1
         )

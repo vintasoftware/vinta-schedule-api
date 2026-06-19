@@ -726,6 +726,8 @@ class CalendarGroupMutations:
             event = deps.calendar_group_service.create_grouped_event(data)
         except CalendarGroup.DoesNotExist:
             return CalendarGroupEventResult(success=False, error_message="Group not found")
+        except PermissionDenied as e:
+            return CalendarGroupEventResult(success=False, error_message=str(e))
         except CalendarGroupError as e:
             return CalendarGroupEventResult(success=False, error_message=str(e))
         return CalendarGroupEventResult(success=True, event=event)  # type: ignore[arg-type]
@@ -1365,6 +1367,14 @@ class CalendarGroupMutations:
                     user_or_token=input.code, organization=org
                 )
                 deps.calendar_group_service.calendar_service = deps.calendar_service
+                # Share the token-initialized permission service so the group-level
+                # ``can_perform_group_scheduling`` gate can read the group-scoped token.
+                # Without this the group service would hold a separate, uninitialized
+                # CalendarPermissionService instance and deny private-group bookings
+                # even when a valid group-scoped code was provided.
+                deps.calendar_group_service.calendar_permission_service = (
+                    deps.calendar_service.calendar_permission_service
+                )
                 deps.calendar_group_service.initialize(organization=org)
                 event = deps.calendar_group_service.create_grouped_event(group_event_data)
                 deps.calendar_permission_service.consume_code(token, source_ip)
