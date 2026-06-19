@@ -4828,6 +4828,7 @@ mutation CreateCalendarBundle($input: CreateCalendarBundleInput!) {
             id
             name
             description
+            isPrivate
             children {
                 id
                 name
@@ -5281,6 +5282,9 @@ class TestCreateCalendarBundleMutation:
         bundle_cal = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
         assert bundle_cal.accepts_public_scheduling is False
 
+        # Verify the GraphQL isPrivate round-trip
+        assert result["bundle"]["isPrivate"] is True
+
     def test_create_calendar_bundle_with_is_private_false(self):
         """Test that is_private=False sets accepts_public_scheduling=True."""
         org, system_user, token, auth_service = self._setup_org_and_token()
@@ -5311,6 +5315,9 @@ class TestCreateCalendarBundleMutation:
         # Verify the backing Calendar.accepts_public_scheduling is True (public)
         bundle_cal = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
         assert bundle_cal.accepts_public_scheduling is True
+
+        # Verify the GraphQL isPrivate round-trip
+        assert result["bundle"]["isPrivate"] is False
 
     def test_create_calendar_bundle_with_is_private_true(self):
         """Test that is_private=True sets accepts_public_scheduling=False."""
@@ -5343,6 +5350,9 @@ class TestCreateCalendarBundleMutation:
         bundle_cal = Calendar.objects.filter_by_organization(org.id).get(id=bundle_id)
         assert bundle_cal.accepts_public_scheduling is False
 
+        # Verify the GraphQL isPrivate round-trip
+        assert result["bundle"]["isPrivate"] is True
+
 
 UPDATE_CALENDAR_BUNDLE_MUTATION = """
 mutation UpdateCalendarBundle($input: UpdateCalendarBundleInput!) {
@@ -5353,6 +5363,7 @@ mutation UpdateCalendarBundle($input: UpdateCalendarBundleInput!) {
             id
             name
             description
+            isPrivate
             children {
                 id
                 name
@@ -6027,6 +6038,9 @@ class TestUpdateCalendarBundleMutation:
         result = data["data"]["updateCalendarBundle"]
         assert result["success"] is True
 
+        # Verify the GraphQL isPrivate round-trip
+        assert result["bundle"]["isPrivate"] is False
+
         bundle.refresh_from_db()
         # is_private=False means accepts_public_scheduling=True
         assert bundle.accepts_public_scheduling is True
@@ -6076,12 +6090,15 @@ class TestUpdateCalendarBundleMutation:
         result = data["data"]["updateCalendarBundle"]
         assert result["success"] is True
 
+        # Verify the GraphQL isPrivate round-trip
+        assert result["bundle"]["isPrivate"] is True
+
         bundle.refresh_from_db()
         # is_private=True means accepts_public_scheduling=False
         assert bundle.accepts_public_scheduling is False
 
     def test_update_calendar_bundle_omitting_is_private_leaves_unchanged(self):
-        """Test that omitting is_private (None) leaves accepts_public_scheduling unchanged."""
+        """Test that omitting is_private (None) leaves accepts_public_scheduling unchanged when public."""
         org, system_user, token, auth_service = self._setup_org_and_token()
         child1 = self._make_child_calendar(org, name="Child A")
 
@@ -6127,9 +6144,66 @@ class TestUpdateCalendarBundleMutation:
         result = data["data"]["updateCalendarBundle"]
         assert result["success"] is True
 
+        # Verify the GraphQL isPrivate round-trip (should be False since accepts_public_scheduling is True)
+        assert result["bundle"]["isPrivate"] is False
+
         bundle.refresh_from_db()
         # accepts_public_scheduling should remain True (unchanged)
         assert bundle.accepts_public_scheduling is True
+
+    def test_update_calendar_bundle_omitting_is_private_leaves_unchanged_when_private(self):
+        """Test that omitting is_private (None) leaves accepts_public_scheduling unchanged when private."""
+        org, system_user, token, auth_service = self._setup_org_and_token()
+        child1 = self._make_child_calendar(org, name="Child A")
+
+        # Create a private bundle
+        bundle = baker.make(
+            Calendar,
+            organization=org,
+            name="Stable Bundle",
+            calendar_type=CalendarType.BUNDLE,
+            provider="internal",
+            external_id=str(uuid.uuid4()),
+            accepts_public_scheduling=False,
+        )
+        baker.make(
+            ChildrenCalendarRelationship,
+            bundle_calendar=bundle,
+            child_calendar=child1,
+            organization=org,
+            is_primary=True,
+        )
+
+        # Update name and other fields but omit is_private
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "bundleId": bundle.id,
+                    "name": "Stable Bundle Renamed",
+                    "description": "Updated description",
+                    "childrenIds": [child1.id],
+                    # is_private is None (omitted)
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["updateCalendarBundle"]
+        assert result["success"] is True
+
+        # Verify the GraphQL isPrivate round-trip (should be True since accepts_public_scheduling is False)
+        assert result["bundle"]["isPrivate"] is True
+
+        bundle.refresh_from_db()
+        # accepts_public_scheduling should remain False (unchanged)
+        assert bundle.accepts_public_scheduling is False
         assert bundle.name == "Stable Bundle Renamed"
         assert bundle.description == "Updated description"
 
