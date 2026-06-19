@@ -46,8 +46,15 @@
 - **Cross-phase contract locked**: `diff` is `None` or a non-empty dict — `add()` normalizes `{}`→`None` so `has_diff` (diff__isnull) is meaningful; Phase 4's `compute_diff` must return `None` for no-change.
 - **Note for Phase 6**: `_ALLOWED_ORDERING_FIELDS` only allows `created_at`/`-created_at`; admin must extend it for other orderings.
 
+### Phase 4 — DI wiring + compute_diff ✅
+- **Status**: complete, all 3 review layers passed (reviewer: 0 blockers, 3 should-fix — all applied)
+- **Model used**: claude-haiku-4-5 (plan tier: Tier 2)
+- **Commits**: `c5788cf` compute_diff, `e0e05c3` wire audit_repository into DI, `fa14d63` test edge cases
+- **Summary**: `audit/diff.py` `compute_diff(before, after)` → `{field:{old,new}}` for changed/added/removed keys, **returns `None` for no-change** (upholds locked invariant), None-for-absent convention documented. `audit_repository = providers.Singleton(DjangoORMAuditRepository)` wired in `di_core/containers.py`. 21 diff tests + 2 container tests; full suite green (2738 passed).
+- **Deviation**: `audit_service` provider deferred to Phase 5 (where `AuditService` is defined) — wiring it here would import a nonexistent symbol and break the container.
+
 ## Current phase
-- Phase 4 — DI wiring + compute_diff (Tier 2, implementer) — NEXT
+- Phase 5 — AuditService.record + Celery task (Tier 3, implementer) — NEXT
 
 ## Remaining phases
 - Phase 2 — Audit model + through table + migration (Tier 2, migration-author)
