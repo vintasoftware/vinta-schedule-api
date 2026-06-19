@@ -5514,3 +5514,616 @@ class TestCalendarBundleParentOwners:
             "With prefetch_related the counts must be equal (or differ by at most 1). "
             "Check prefetch_related wiring in the owners resolver on CalendarBundleGraphQLType."
         )
+
+
+# ---------------------------------------------------------------------------
+# calendarEvents userId filter integration tests (Phase 2)
+# ---------------------------------------------------------------------------
+
+_CALENDAR_EVENTS_BY_USER_QUERY = """
+    query GetCalendarEvents($userId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+        calendarEvents(
+            userId: $userId,
+            startDatetime: $startDatetime,
+            endDatetime: $endDatetime
+        ) {
+            id
+            title
+        }
+    }
+"""
+
+_CALENDAR_EVENTS_BY_USER_AND_CALENDAR_QUERY = """
+    query GetCalendarEvents(
+        $userId: Int!,
+        $calendarId: Int!,
+        $startDatetime: DateTime!,
+        $endDatetime: DateTime!
+    ) {
+        calendarEvents(
+            userId: $userId,
+            calendarId: $calendarId,
+            startDatetime: $startDatetime,
+            endDatetime: $endDatetime
+        ) {
+            id
+            title
+        }
+    }
+"""
+
+_CALENDAR_EVENTS_BY_CALENDAR_ONLY_QUERY = """
+    query GetCalendarEvents($calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!) {
+        calendarEvents(
+            calendarId: $calendarId,
+            startDatetime: $startDatetime,
+            endDatetime: $endDatetime
+        ) {
+            id
+            title
+        }
+    }
+"""
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestCalendarEventsUserIdFilter:
+    """Integration tests for the userId filter on calendarEvents.
+
+    Covers: own-user events returned, org boundary, calendarId intersection,
+    recurring expansion, scoped-token enforcement, backwards-compat.
+    """
+
+    @pytest.fixture
+    def organization(self):
+        return baker.make(Organization, name="UserFilterTestOrg")
+
+    @pytest.fixture
+    def owner(self):
+        return baker.make(User, email="owner@userfilter.test")
+
+    @pytest.fixture
+    def other_owner(self):
+        return baker.make(User, email="other@userfilter.test")
+
+    @pytest.fixture
+    def owner_calendar(self, organization, owner):
+        """Calendar owned by `owner` in the test org."""
+        cal = baker.make(
+            Calendar,
+            organization=organization,
+            name="Owner Calendar (userId tests)",
+            external_id="owner-cal-userid-test",
+        )
+        baker.make(CalendarOwnership, calendar=cal, user=owner, organization=organization)
+        return cal
+
+    @pytest.fixture
+    def other_calendar(self, organization, other_owner):
+        """Calendar owned by `other_owner` in the same org."""
+        cal = baker.make(
+            Calendar,
+            organization=organization,
+            name="Other Calendar (userId tests)",
+            external_id="other-cal-userid-test",
+        )
+        baker.make(CalendarOwnership, calendar=cal, user=other_owner, organization=organization)
+        return cal
+
+    @pytest.fixture
+    def owner_event(self, organization, owner_calendar):
+        """An event on the owner's calendar."""
+        return baker.make(
+            CalendarEvent,
+            calendar=owner_calendar,
+            organization=organization,
+            title="Owner Event (userId tests)",
+            external_id="owner-evt-userid-test",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+    @pytest.fixture
+    def other_event(self, organization, other_calendar):
+        """An event on the other owner's calendar."""
+        return baker.make(
+            CalendarEvent,
+            calendar=other_calendar,
+            organization=organization,
+            title="Other Event (userId tests)",
+            external_id="other-evt-userid-test",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+    # ------------------------------------------------------------------ #
+    # userId returns only that user's events                               #
+    # ------------------------------------------------------------------ #
+
+    def test_user_id_returns_only_owner_events(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        other_calendar,
+        owner_event,
+        other_event,
+    ):
+        """calendarEvents(userId) returns only events on calendars owned by that user."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "userId": owner.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+
+        assert owner_event.id in returned_ids, "Owner's event must be returned via userId"
+        assert other_event.id not in returned_ids, (
+            "Event on another user's calendar must NOT be returned via userId"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Organization boundary                                                #
+    # ------------------------------------------------------------------ #
+
+    def test_user_id_org_boundary_no_cross_org_leak(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+    ):
+        """A userId whose owned calendars belong to another org returns empty; no cross-org leak."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create a second org; the *same* `owner` user ID does NOT own any calendars there.
+        other_org = baker.make(Organization, name="Other Org (userId boundary)")
+        client, _ = _make_org_wide_client(other_org)
+
+        variables = {
+            "userId": owner.id,  # user owns calendars only in `organization`, not `other_org`
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert data["calendarEvents"] == [], (
+            "No events must be returned when the user owns no calendars in the requesting org"
+        )
+
+    # ------------------------------------------------------------------ #
+    # calendarId + userId intersection                                     #
+    # ------------------------------------------------------------------ #
+
+    def test_calendar_id_and_user_id_intersection_owned(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+    ):
+        """calendarId + userId where the calendar IS owned by the user returns events."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "userId": owner.id,
+            "calendarId": owner_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _CALENDAR_EVENTS_BY_USER_AND_CALENDAR_QUERY, "variables": variables}
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+        assert owner_event.id in returned_ids, (
+            "Event on calendar owned by userId must be returned when both args are supplied"
+        )
+
+    def test_calendar_id_and_user_id_intersection_not_owned(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        other_calendar,
+        other_event,
+    ):
+        """calendarId + userId where the calendar is NOT owned by the user returns empty."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "userId": owner.id,
+            "calendarId": other_calendar.id,  # owned by other_owner, not owner
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _CALENDAR_EVENTS_BY_USER_AND_CALENDAR_QUERY, "variables": variables}
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert data["calendarEvents"] == [], (
+            "Intersection of userId-owned-calendars and a non-owned calendarId must be empty"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Recurring expansion through the userId path                          #
+    # ------------------------------------------------------------------ #
+
+    def test_user_id_recurring_expansion(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+    ):
+        """Recurring master on a user-owned calendar expands to in-range instances via userId.
+
+        Uses a mock service to isolate the resolver branching logic from
+        the Postgres recurrence-expansion functions.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        from di_core.containers import container
+
+        # Build two CalendarEvent instances to represent expanded recurring occurrences.
+        occ1 = baker.make(
+            CalendarEvent,
+            calendar_fk=owner_calendar,
+            organization=organization,
+            title="Recurring Occurrence 1",
+            external_id="recur-occ-1-userid",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+        occ2 = baker.make(
+            CalendarEvent,
+            calendar_fk=owner_calendar,
+            organization=organization,
+            title="Recurring Occurrence 2",
+            external_id="recur-occ-2-userid",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.get_calendar_events_expanded_for_calendars.return_value = [occ1, occ2]
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "userId": owner.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                "/graphql/",
+                data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+                content_type="application/json",
+            )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+
+        assert occ1.id in returned_ids, "First recurring occurrence must be in the result"
+        assert occ2.id in returned_ids, "Second recurring occurrence must be in the result"
+        mock_calendar_service.get_calendar_events_expanded_for_calendars.assert_called_once()
+
+        # The resolver must forward the owner's calendar id and the unchanged date range
+        # to the expansion service. Inspect the actual call args.
+        call_args = mock_calendar_service.get_calendar_events_expanded_for_calendars.call_args
+        passed_owned_ids = call_args.args[0]
+        assert owner_calendar.id in passed_owned_ids, (
+            "owned_ids passed to the expansion service must contain the owner's calendar id"
+        )
+        passed_start = call_args.args[1]
+        passed_end = call_args.args[2]
+        assert passed_start == datetime.datetime(2025, 9, 2, 0, 0, tzinfo=datetime.UTC), (
+            "startDatetime must be forwarded to the expansion service unchanged"
+        )
+        assert passed_end == datetime.datetime(2025, 9, 2, 23, 59, 59, tzinfo=datetime.UTC), (
+            "endDatetime must be forwarded to the expansion service unchanged"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Scoped-token enforcement                                             #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_own_user_id_sees_own_events(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+    ):
+        """A per-owner scoped token requesting its own userId sees its events."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_scoped_client(organization, owner)
+        variables = {
+            "userId": owner.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+        assert owner_event.id in returned_ids, (
+            "Scoped token for the owner must see its own events via userId"
+        )
+
+    def test_scoped_token_different_user_id_returns_empty(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+        other_owner,
+        other_calendar,
+        other_event,
+    ):
+        """A per-owner scoped token requesting a DIFFERENT userId gets empty (no existence leak).
+
+        The token owner here DOES own a calendar with an event (non-empty allowed set),
+        so the empty result for a different userId is not over-determined: it proves the
+        intersection is keyed on the TOKEN owner, not on the requested userId. A bug that
+        intersected against the requested user (`other_owner`, who owns `other_calendar`)
+        would surface `other_event` here and fail this assertion.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        # Token scoped to `owner`, but requesting `other_owner`'s userId
+        client, _ = _make_scoped_client(organization, owner)
+        variables = {
+            "userId": other_owner.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+        assert data["calendarEvents"] == [], (
+            "Scoped token must not expose another user's events when a different userId is requested"
+        )
+        assert other_event.id not in returned_ids, (
+            "The other user's event must never appear for a token scoped to a different owner"
+        )
+
+    def test_org_wide_token_user_id_sees_full_owned_set(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+        other_calendar,
+        other_event,
+    ):
+        """An org-wide token requesting a userId sees all calendars owned by that user."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "userId": owner.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+
+        assert owner_event.id in returned_ids, "Org-wide token must see owner's events via userId"
+        assert other_event.id not in returned_ids, (
+            "Org-wide token must NOT see other owner's events when userId is owner's"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Backwards-compat: calendarId-only path unchanged                     #
+    # ------------------------------------------------------------------ #
+
+    def test_backwards_compat_calendar_id_only_unchanged(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner_calendar,
+        owner_event,
+    ):
+        """calendarId-only query (userId omitted) returns the same result as before."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "calendarId": owner_calendar.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": _CALENDAR_EVENTS_BY_CALENDAR_ONLY_QUERY, "variables": variables}
+            ),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+        assert owner_event.id in returned_ids, (
+            "calendarId-only query must still return events (backwards compat check)"
+        )
+
+    # ------------------------------------------------------------------ #
+    # user with no owned calendars → empty, not an error                   #
+    # ------------------------------------------------------------------ #
+
+    def test_user_id_no_owned_calendars_returns_empty(
+        self,
+        mock_rate_limiter,
+        organization,
+    ):
+        """userId referring to a user with no owned calendars in the org returns []."""
+        mock_rate_limiter.return_value = iter([None])
+
+        no_calendar_user = baker.make(User, email="nobody@userfilter.test")
+        client, _ = _make_org_wide_client(organization)
+        variables = {
+            "userId": no_calendar_user.id,
+            "startDatetime": _DATETIME_START,
+            "endDatetime": _DATETIME_END,
+        }
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": _CALENDAR_EVENTS_BY_USER_QUERY, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        assert data["calendarEvents"] == [], (
+            "userId with no owned calendars must return empty list, not raise an error"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Precedence: eventId wins over userId                                 #
+    # ------------------------------------------------------------------ #
+
+    def test_event_id_takes_precedence_over_user_id(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+        other_owner,
+        other_calendar,
+        other_event,
+    ):
+        """When both eventId and userId are supplied, eventId wins and userId is ignored."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        # eventId points at `other_event` (on a calendar NOT owned by `owner`),
+        # while userId is `owner`. If eventId wins, only `other_event` is returned.
+        query = """
+            query GetCalendarEvents($eventId: Int!, $userId: Int!) {
+                calendarEvents(eventId: $eventId, userId: $userId) {
+                    id
+                    title
+                }
+            }
+        """
+        variables = {"eventId": other_event.id, "userId": owner.id}
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        returned_ids = {int(e["id"]) for e in data["calendarEvents"]}
+        assert returned_ids == {other_event.id}, (
+            "eventId must take precedence: only the single event-by-id is returned, userId ignored"
+        )
+        assert owner_event.id not in returned_ids, (
+            "userId's owned events must NOT be returned when eventId is supplied"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Required-args guard: userId without start/end datetimes              #
+    # ------------------------------------------------------------------ #
+
+    def test_user_id_without_datetimes_raises_required_params_error(
+        self,
+        mock_rate_limiter,
+        organization,
+        owner,
+        owner_calendar,
+        owner_event,
+    ):
+        """userId without startDatetime/endDatetime errors in the userId branch.
+
+        The error must be the 'Missing required parameters …' message, and the
+        request must NOT fall through to the calendarId branch (which would raise
+        a different, calendar-not-found error).
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        query = """
+            query GetCalendarEvents($userId: Int) {
+                calendarEvents(userId: $userId) {
+                    id
+                    title
+                }
+            }
+        """
+        variables = {"userId": owner.id}
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        assert_response_status_code(response, 200)
+        response_data = response.json()
+        assert "errors" in response_data
+        error_messages = [error.get("message", "") for error in response_data["errors"]]
+        assert any(
+            "Missing required parameters" in message
+            and "calendarId or userId, startDatetime, and endDatetime" in message
+            for message in error_messages
+        ), (
+            "userId without datetimes must raise the missing-required-parameters error, "
+            f"got: {error_messages}"
+        )

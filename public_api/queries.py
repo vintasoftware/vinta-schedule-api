@@ -325,19 +325,30 @@ class Query:
         self,
         info: strawberry.Info,
         calendar_id: int | None = None,
+        user_id: int | None = None,
         start_datetime: datetime.datetime | None = None,
         end_datetime: datetime.datetime | None = None,
         event_id: int | None = None,
     ) -> list[CalendarEventGraphQLType]:
-        """Get calendar events filtered by user's organization."""
-        # Get the user's organization from the GraphQL context
-        org = _get_org(info)
+        """Get calendar events filtered by user's organization.
 
+        Supports three lookup modes (in order of precedence):
+        1. ``eventId`` — fetch a single event by id (other args ignored).
+        2. ``userId`` — fetch all events on calendars owned by that user within a
+           date range; optionally intersected with ``calendarId``.
+        3. ``calendarId`` — fetch events on a single calendar within a date range.
+
+        ``startDatetime`` and ``endDatetime`` are required for modes 2 and 3.
+        """
+        # Get the user's organization and request from the GraphQL context.
+        org = _get_org(info)
+        request: PublicApiHttpRequest = info.context.request
+
+        # --- Branch 1: eventId lookup (unchanged) ---
         if event_id is not None:
             qs = CalendarEvent.objects.filter_by_organization(org.id).filter(id=event_id)
             # Owner-scope: for scoped tokens, only return the event if its calendar is in the
             # owner's set. Return empty (not an error) to avoid existence leaks.
-            request: PublicApiHttpRequest = info.context.request
             system_user = request.public_api_system_user
             if system_user is not None:
                 allowed_ids = scoped_calendar_ids(system_user, org)
@@ -345,10 +356,50 @@ class Query:
                     qs = qs.filter(calendar_fk__in=allowed_ids)
             return qs  # type: ignore[return-value]
 
+        # --- Branch 2: userId lookup (new) ---
+        if user_id is not None:
+            if not start_datetime or not end_datetime:
+                raise GraphQLError(
+                    "Missing required parameters. If not filtered by id, querying events require "
+                    "calendarId or userId, startDatetime, and endDatetime. "
+                )
+
+            # Resolve calendars owned by the user, constrained to this org.
+            owned_ids: set[int] = set(
+                Calendar.objects.filter_by_organization(org.id)
+                .filter(ownerships__user_id=user_id)
+                .values_list("id", flat=True)
+            )
+
+            # Apply scoped-token constraint: intersect with the token's allowed set.
+            system_user = request.public_api_system_user
+            if system_user is not None:
+                token_allowed = scoped_calendar_ids(system_user, org)
+                if token_allowed is not None:
+                    owned_ids = owned_ids & token_allowed
+
+            # Optional calendarId intersection: calendar must also be owned by userId.
+            if calendar_id is not None:
+                owned_ids = owned_ids & {calendar_id}
+
+            if not owned_ids:
+                return cast(list[CalendarEventGraphQLType], [])
+
+            # Initialize service for the org (no single Calendar to resolve).
+            deps = get_query_dependencies()
+            deps.calendar_service.initialize_without_provider(
+                user_or_token=request.public_api_system_user, organization=org
+            )
+            events = deps.calendar_service.get_calendar_events_expanded_for_calendars(
+                owned_ids, start_datetime, end_datetime
+            )
+            return cast(list[CalendarEventGraphQLType], events)
+
+        # --- Branch 3: calendarId lookup (unchanged) ---
         if not calendar_id or not start_datetime or not end_datetime:
             raise GraphQLError(
                 "Missing required parameters. If not filtered by id, querying events require "
-                "calendarId, startDatetime, and endDatetime. "
+                "calendarId or userId, startDatetime, and endDatetime. "
             )
 
         calendar_service, calendar = _prepare_service_and_calendar(info, calendar_id)
@@ -358,7 +409,6 @@ class Query:
             end_datetime,
         )
 
-        request: PublicApiHttpRequest = info.context.request
         allowed_ids = (
             scoped_calendar_ids(request.public_api_system_user, org)
             if request.public_api_system_user is not None
