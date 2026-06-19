@@ -43,11 +43,17 @@ merged plans). Phase 1 adds `0008_merge_20260619_0111` + `0009_alter_resourceacc
 - **Commits**: `a0242e1` (feat: guard 4 availability mutations), `18d2a78` (test: harden cross-owner row-unchanged assertions)
 - **Summary**: Added `assert_calendar_in_owner_scope` (the Phase-1 guard) to `create_availability_window`/`update_availability_window`/`delete_availability_window`/`batch_update_availability_windows`, inside each existing `try/except Calendar.DoesNotExist` (cross-owner → byte-identical not-found, no row touched). Confirmed `batch_update_availability_windows` uses a single top-level `calendar_id` for the whole atomic batch → one guard up front rejects a cross-owner batch wholesale with no partial write. The update/delete `available_time_id` second-vector is constrained by the service (`filter(calendar_fk=calendar)`). Added the 4 availability write resources to `PROVIDER_SCOPED_RESOURCES`. 17 integration tests (success no-rrule/rrule, cross-owner-indistinguishable+no-row, org-wide-unaffected, missing-grant per verb; batch wholesale-rejection with seeded create/update/delete ops). Full suite 2455 passed.
 
+### Phase 3 — scheduleEvent mutation + owner-scoped event allowance ✅
+- **Status**: complete, reviewed (Layers 1–3 clean; no BLOCKER/SHOULD-FIX; 2 NITs deferred — `organization_id` input field is unused but consistent with sibling write mutations; `EVENT_TITLE_MAX_LENGTH=255` hardcoded but correct/stable)
+- **Model**: claude-opus-4-8 (plan tier 4)
+- **Branch**: `plan/per-owner-scoped-public-api-token-writes/phase-3` (base phase-2)
+- **Commit**: `b11855c` (feat: owner-scoped scheduleEvent mutation)
+- **Summary**: Relaxed the blanket `SystemUser` `PermissionDenied` in `calendar_event_service.create_event` (the scheduleEvent path; left `update_event`/`delete_event` blocks intact) to allow ONLY an owner-scoped token whose owner independently owns the calendar — verified via `_scoped_system_user_owns_calendar` (a `CalendarOwnership` query filtered by the calendar's org, membership→user join; org-wide tokens return False → stay blocked). Bundle calendars rejected up front (avoids cross-provider fan-out). Skipped `can_perform_scheduling` ONLY on the verified-ownership path (`is_owner_scoped_system_user`) — that method is a pure token-permission gate, NOT availability enforcement (availability still runs at create_event:319-325). Fixed the on_commit audit actor (getattr-guard the permission token, fall back to the SystemUser). Added `scheduleEvent` mutation (`ScheduleEventInput`) guarded by `assert_calendar_in_owner_scope` (defense-in-depth; cross-owner/non-owned → "Calendar not found." identical to missing, BEFORE the service PermissionDenied can leak existence), de-duplicated active-org-member attendee validation, external-attendee translation, title-length guard, clean GraphQL error mapping. Mapped `scheduleEvent → CALENDAR_EVENT`. Tests: 4 service unit + 10 integration (scoped success/recurring/attendees, out-of-org attendee no-row, cross-owner not-found no-row, org-wide denied no-row, bundle no-row, no-availability error, missing-grant denied). Full suite 2469 passed.
+
 ## Current Phase
-Phase 3 — scheduleEvent mutation + owner-scoped event allowance.
+Phase 4 — Nested-field owner-scope sweep + security review.
 
 ## Remaining Phases
-- Phase 3 — scheduleEvent mutation + owner-scoped event allowance (Tier 4)
 - Phase 4 — Nested-field owner-scope sweep + security review (Tier 4)
 
 ## Deferred Phases
