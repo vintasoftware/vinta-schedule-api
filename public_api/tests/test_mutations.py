@@ -6578,3 +6578,2348 @@ class TestCreateScopedSystemUserMutation:
 
         # No SystemUser or token row must have been created
         assert not SystemUser.objects.filter(integration_name="inactive_owner_provider").exists()
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Owner-guard blocked-time writes
+# ---------------------------------------------------------------------------
+#
+# GraphQL mutations reused from the existing blocked-time test sections.
+#
+_CREATE_BLOCKED_TIME_SCOPED = """
+mutation CreateBlockedTime($input: CreateBlockedTimeInput!) {
+    createBlockedTime(input: $input) {
+        success
+        errorMessage
+        blockedTime {
+            id
+            startTime
+            endTime
+        }
+    }
+}
+"""
+
+_UPDATE_BLOCKED_TIME_SCOPED = """
+mutation UpdateBlockedTime($input: UpdateBlockedTimeInput!) {
+    updateBlockedTime(input: $input) {
+        success
+        errorMessage
+        blockedTime {
+            id
+            startTime
+            endTime
+        }
+    }
+}
+"""
+
+_DELETE_BLOCKED_TIME_SCOPED = """
+mutation DeleteBlockedTime($input: DeleteBlockedTimeInput!) {
+    deleteBlockedTime(input: $input) {
+        success
+        errorMessage
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestScopedTokenBlockedTimeWrites:
+    """Integration tests for owner-scoped blocked-time mutations (Phase 1).
+
+    Coverage:
+    - Scoped token can create/update/delete on its owned calendar (happy path).
+    - Cross-owner write returns the same not-found message as a genuinely missing
+      calendar, revealing nothing about the target's existence.
+    - Org-wide token is structurally unchanged (no-regression assertion).
+    - A scoped token missing the required resource grant is denied by the permission
+      class before the guard even runs.
+    """
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _setup_org(self):
+        """Create a base organization for the test scenario."""
+        return baker.make(Organization, name="Test Org")
+
+    def _make_owner_with_calendar(self, org):
+        """Create a provider user, their membership, and a calendar they own.
+
+        Returns (user, membership, calendar).
+        """
+        import uuid
+
+        from calendar_integration.models import CalendarOwnership
+
+        user_model = get_user_model()
+        unique = uuid.uuid4().hex[:8]
+        owner = baker.make(user_model, email=f"owner_{unique}@example.com")
+        membership = baker.make(
+            OrganizationMembership, user=owner, organization=org, is_active=True
+        )
+        calendar = baker.make(
+            Calendar,
+            organization=org,
+            name="Provider Calendar",
+            external_id=f"provider-cal-{unique}",
+        )
+        baker.make(CalendarOwnership, calendar=calendar, user=owner, organization=org)
+        return owner, membership, calendar
+
+    def _make_scoped_system_user(self, org, membership, resources):
+        """Mint a scoped SystemUser with the given resource grants.
+
+        Returns (system_user, plaintext_token, auth_service).
+        """
+        import uuid
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"scoped_token_{uuid.uuid4().hex[:8]}",
+            organization=org,
+            scoped_to_membership=membership,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _make_org_wide_system_user(self, org, resources):
+        """Mint an org-wide (unscoped) SystemUser with the given resource grants.
+
+        Returns (system_user, plaintext_token, auth_service).
+        """
+        import uuid
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"org_wide_token_{uuid.uuid4().hex[:8]}",
+            organization=org,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _create_blocked_time_on_calendar(self, org, system_user, calendar):
+        """Create a BlockedTime row directly via the service (not the API).
+
+        Used to set up rows for update/delete happy-path tests.
+        """
+        from di_core.containers import container
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        return calendar_service.create_blocked_time(
+            calendar=calendar,
+            start_time=datetime.datetime(2026, 10, 1, 9, 0, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2026, 10, 1, 17, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            reason="Scoped test block",
+        )
+
+    def _post(self, query, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": query, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    # ------------------------------------------------------------------
+    # createBlockedTime — scoped happy path
+    # ------------------------------------------------------------------
+
+    def test_create_blocked_time_scoped_token_on_owned_calendar_succeeds(self):
+        """A scoped token creates a blocked time on its owner's calendar."""
+        from calendar_integration.models import BlockedTime
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CREATE_BLOCKED_TIME]
+        )
+
+        start = datetime.datetime(2026, 10, 5, 8, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 10, 5, 16, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _CREATE_BLOCKED_TIME_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                    "reason": "Scoped block",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["createBlockedTime"]
+        assert result["success"] is True
+        assert result["blockedTime"] is not None
+        bt_id = int(result["blockedTime"]["id"])
+
+        # Verify the DB row exists and belongs to the correct calendar
+        bt = BlockedTime.objects.filter_by_organization(org.id).get(id=bt_id)
+        assert bt.calendar_fk_id == calendar.id
+        assert bt.reason == "Scoped block"
+
+    # ------------------------------------------------------------------
+    # createBlockedTime — cross-owner not-found is identical to missing calendar
+    # ------------------------------------------------------------------
+
+    def test_create_blocked_time_cross_owner_same_not_found_as_missing_calendar(self):
+        """Cross-owner createBlockedTime returns identical not-found as a truly missing calendar.
+
+        A scoped token targeting another provider's calendar_id must get the same
+        success=False / errorMessage as a genuinely nonexistent calendar — revealing
+        nothing about the target's existence.
+        """
+        from calendar_integration.models import BlockedTime
+
+        org = self._setup_org()
+        # Two independent providers in the same org
+        _owner_a, membership_a, _calendar_a = self._make_owner_with_calendar(org)
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_calendar(org)
+
+        # Token scoped to provider A
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.CREATE_BLOCKED_TIME]
+        )
+
+        start = datetime.datetime(2026, 10, 5, 8, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 10, 5, 16, 0, 0, tzinfo=datetime.UTC)
+
+        # Attempt against provider B's calendar (cross-owner)
+        cross_owner_response = self._post(
+            _CREATE_BLOCKED_TIME_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_b.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        # Attempt against a genuinely nonexistent calendar_id
+        nonexistent_id = 999998
+        missing_response = self._post(
+            _CREATE_BLOCKED_TIME_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": nonexistent_id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        # Both must be success=False, no errors list, and IDENTICAL errorMessage
+        for resp in [cross_owner_response, missing_response]:
+            assert resp.status_code == 200
+            d = resp.json()
+            assert "errors" not in d or len(d.get("errors", [])) == 0
+            r = d["data"]["createBlockedTime"]
+            assert r["success"] is False
+            assert r["errorMessage"] is not None
+
+        cross_msg = cross_owner_response.json()["data"]["createBlockedTime"]["errorMessage"]
+        missing_msg = missing_response.json()["data"]["createBlockedTime"]["errorMessage"]
+        assert cross_msg == missing_msg, (
+            f"Cross-owner error '{cross_msg}' must equal missing-calendar error '{missing_msg}'"
+        )
+
+        # No BlockedTime rows must have been created in either case
+        assert not BlockedTime.objects.filter(calendar_fk_id=calendar_b.id).exists()
+
+    # ------------------------------------------------------------------
+    # updateBlockedTime — scoped happy path
+    # ------------------------------------------------------------------
+
+    def test_update_blocked_time_scoped_token_on_owned_calendar_succeeds(self):
+        """A scoped token updates a blocked time on its owner's calendar."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        # Create row via org-wide service call so the calendar service can initialize freely
+        org_wide_su, _org_wide_token, _org_wide_auth = self._make_org_wide_system_user(
+            org, [PublicAPIResources.UPDATE_BLOCKED_TIME]
+        )
+        blocked_time = self._create_blocked_time_on_calendar(org, org_wide_su, calendar)
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.UPDATE_BLOCKED_TIME]
+        )
+
+        new_start = datetime.datetime(2026, 10, 2, 10, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 2, 18, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _UPDATE_BLOCKED_TIME_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "blockedTimeId": blocked_time.id,
+                    "startTime": new_start.isoformat(),
+                    "endTime": new_end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateBlockedTime"]
+        assert result["success"] is True
+        assert result["blockedTime"] is not None
+
+    # ------------------------------------------------------------------
+    # updateBlockedTime — cross-owner not-found
+    # ------------------------------------------------------------------
+
+    def test_update_blocked_time_cross_owner_same_not_found_as_missing_calendar(self):
+        """Cross-owner updateBlockedTime returns identical not-found as a truly missing calendar."""
+        org = self._setup_org()
+        _owner_a, membership_a, _calendar_a = self._make_owner_with_calendar(org)
+        org_wide_su_b, _, _org_wide_auth_b = self._make_org_wide_system_user(
+            org, [PublicAPIResources.UPDATE_BLOCKED_TIME]
+        )
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_calendar(org)
+        # Create a blocked time on B's calendar using org-wide token
+        blocked_time_b = self._create_blocked_time_on_calendar(org, org_wide_su_b, calendar_b)
+
+        # Token scoped to provider A — must not update B's calendar
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.UPDATE_BLOCKED_TIME]
+        )
+
+        new_start = datetime.datetime(2026, 10, 3, 9, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 3, 17, 0, 0, tzinfo=datetime.UTC)
+
+        # Cross-owner attempt: calendar_id belongs to B, not A
+        cross_owner_response = self._post(
+            _UPDATE_BLOCKED_TIME_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_b.id,
+                    "blockedTimeId": blocked_time_b.id,
+                    "startTime": new_start.isoformat(),
+                    "endTime": new_end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        # Genuinely missing calendar_id attempt
+        missing_response = self._post(
+            _UPDATE_BLOCKED_TIME_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": 999997,
+                    "blockedTimeId": blocked_time_b.id,
+                    "startTime": new_start.isoformat(),
+                    "endTime": new_end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        for resp in [cross_owner_response, missing_response]:
+            assert resp.status_code == 200
+            d = resp.json()
+            assert "errors" not in d or len(d.get("errors", [])) == 0
+            r = d["data"]["updateBlockedTime"]
+            assert r["success"] is False
+
+        cross_msg = cross_owner_response.json()["data"]["updateBlockedTime"]["errorMessage"]
+        missing_msg = missing_response.json()["data"]["updateBlockedTime"]["errorMessage"]
+        assert cross_msg == missing_msg
+
+        # The blocked time row must be unchanged
+        blocked_time_b.refresh_from_db()
+        assert blocked_time_b.reason == "Scoped test block"
+
+    # ------------------------------------------------------------------
+    # deleteBlockedTime — scoped happy path
+    # ------------------------------------------------------------------
+
+    def test_delete_blocked_time_scoped_token_on_owned_calendar_succeeds(self):
+        """A scoped token deletes a blocked time on its owner's calendar."""
+        from calendar_integration.models import BlockedTime
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        org_wide_su, _, _org_wide_auth = self._make_org_wide_system_user(
+            org, [PublicAPIResources.DELETE_BLOCKED_TIME]
+        )
+        blocked_time = self._create_blocked_time_on_calendar(org, org_wide_su, calendar)
+        bt_id = blocked_time.id
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.DELETE_BLOCKED_TIME]
+        )
+
+        response = self._post(
+            _DELETE_BLOCKED_TIME_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "blockedTimeId": bt_id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["deleteBlockedTime"]
+        assert result["success"] is True
+
+        # DB row must be gone
+        assert not BlockedTime.objects.filter(id=bt_id).exists()
+
+    # ------------------------------------------------------------------
+    # deleteBlockedTime — cross-owner not-found
+    # ------------------------------------------------------------------
+
+    def test_delete_blocked_time_cross_owner_same_not_found_as_missing_calendar(self):
+        """Cross-owner deleteBlockedTime returns identical not-found as a truly missing calendar.
+
+        The blocked-time row must NOT be deleted when the token targets a cross-owner calendar.
+        """
+        from calendar_integration.models import BlockedTime
+
+        org = self._setup_org()
+        _owner_a, membership_a, _calendar_a = self._make_owner_with_calendar(org)
+        org_wide_su_b, _, _org_wide_auth_b = self._make_org_wide_system_user(
+            org, [PublicAPIResources.DELETE_BLOCKED_TIME]
+        )
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_calendar(org)
+        blocked_time_b = self._create_blocked_time_on_calendar(org, org_wide_su_b, calendar_b)
+        bt_b_id = blocked_time_b.id
+
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.DELETE_BLOCKED_TIME]
+        )
+
+        # Cross-owner attempt (calendar_b belongs to owner B)
+        cross_owner_response = self._post(
+            _DELETE_BLOCKED_TIME_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_b.id,
+                    "blockedTimeId": bt_b_id,
+                }
+            },
+        )
+
+        # Genuinely missing calendar attempt
+        missing_response = self._post(
+            _DELETE_BLOCKED_TIME_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": 999996,
+                    "blockedTimeId": bt_b_id,
+                }
+            },
+        )
+
+        for resp in [cross_owner_response, missing_response]:
+            assert resp.status_code == 200
+            d = resp.json()
+            assert "errors" not in d or len(d.get("errors", [])) == 0
+            r = d["data"]["deleteBlockedTime"]
+            assert r["success"] is False
+
+        cross_msg = cross_owner_response.json()["data"]["deleteBlockedTime"]["errorMessage"]
+        missing_msg = missing_response.json()["data"]["deleteBlockedTime"]["errorMessage"]
+        assert cross_msg == missing_msg
+
+        # Row must still exist — the cross-owner delete must NOT have succeeded
+        assert BlockedTime.objects.filter(id=bt_b_id).exists()
+
+    # ------------------------------------------------------------------
+    # blockedTimeId / calendarId mismatch — service-layer filter is load-bearing
+    # ------------------------------------------------------------------
+
+    def test_update_delete_blocked_time_in_scope_calendar_with_foreign_blocked_time_id_rejected(
+        self,
+    ):
+        """A scoped token passing its OWN calendar_id but a foreign blocked_time_id is rejected.
+
+        This pins the service-layer ``calendar_fk=calendar`` filter (the load-bearing
+        constraint for the new threat model). The new owner guard does NOT trip here
+        because ``calendarId`` is the token's in-scope calendar A; the only thing
+        rejecting the write is the service scoping the BlockedTime lookup to the
+        supplied calendar, so a foreign ``blocked_time_id`` on calendar B yields
+        ``success=False`` and leaves B's row untouched.
+        """
+        from calendar_integration.models import BlockedTime
+
+        org = self._setup_org()
+        # Provider A: scoped token, owns calendar A (in-scope for the token)
+        _owner_a, membership_a, calendar_a = self._make_owner_with_calendar(org)
+        # Provider B: a different owner with a real BlockedTime row on calendar B
+        org_wide_su_b, _, _org_wide_auth_b = self._make_org_wide_system_user(
+            org, [PublicAPIResources.UPDATE_BLOCKED_TIME, PublicAPIResources.DELETE_BLOCKED_TIME]
+        )
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_calendar(org)
+        blocked_time_b = self._create_blocked_time_on_calendar(org, org_wide_su_b, calendar_b)
+        bt_b_id = blocked_time_b.id
+
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org,
+            membership_a,
+            [PublicAPIResources.UPDATE_BLOCKED_TIME, PublicAPIResources.DELETE_BLOCKED_TIME],
+        )
+
+        new_start = datetime.datetime(2026, 10, 9, 9, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 9, 17, 0, 0, tzinfo=datetime.UTC)
+
+        # updateBlockedTime: in-scope calendar A id, foreign blocked_time id on B
+        update_response = self._post(
+            _UPDATE_BLOCKED_TIME_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_a.id,
+                    "blockedTimeId": bt_b_id,
+                    "startTime": new_start.isoformat(),
+                    "endTime": new_end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert update_response.status_code == 200
+        update_data = update_response.json()
+        assert "errors" not in update_data or len(update_data.get("errors", [])) == 0
+        assert update_data["data"]["updateBlockedTime"]["success"] is False
+        # B's row must be unchanged by the rejected update
+        blocked_time_b.refresh_from_db()
+        assert blocked_time_b.reason == "Scoped test block"
+
+        # deleteBlockedTime: in-scope calendar A id, foreign blocked_time id on B
+        delete_response = self._post(
+            _DELETE_BLOCKED_TIME_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_a.id,
+                    "blockedTimeId": bt_b_id,
+                }
+            },
+        )
+
+        assert delete_response.status_code == 200
+        delete_data = delete_response.json()
+        assert "errors" not in delete_data or len(delete_data.get("errors", [])) == 0
+        assert delete_data["data"]["deleteBlockedTime"]["success"] is False
+        # B's row must still exist — the foreign delete must NOT have succeeded
+        assert BlockedTime.objects.filter(id=bt_b_id).exists()
+
+    # ------------------------------------------------------------------
+    # Org-wide token — no-regression assertions for all three verbs
+    # ------------------------------------------------------------------
+
+    def test_create_blocked_time_org_wide_token_unaffected_by_guard(self):
+        """An org-wide token can create blocked times on any calendar (guard is no-op).
+
+        This is the no-regression assertion: the guard must be a structural no-op for
+        org-wide tokens, leaving their behavior byte-for-byte unchanged.
+        """
+        from calendar_integration.models import BlockedTime
+
+        org = self._setup_org()
+        # Calendar owned by a different provider — org-wide should not be blocked
+        _other_owner, _other_membership, calendar = self._make_owner_with_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CREATE_BLOCKED_TIME]
+        )
+
+        start = datetime.datetime(2026, 10, 6, 8, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 10, 6, 16, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _CREATE_BLOCKED_TIME_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["createBlockedTime"]
+        assert result["success"] is True
+        assert result["blockedTime"] is not None
+        bt_id = int(result["blockedTime"]["id"])
+        assert BlockedTime.objects.filter_by_organization(org.id).filter(id=bt_id).exists()
+
+    def test_update_blocked_time_org_wide_token_unaffected_by_guard(self):
+        """An org-wide token can update blocked times on any calendar (guard is no-op)."""
+        org = self._setup_org()
+        _other_owner, _other_membership, calendar = self._make_owner_with_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.UPDATE_BLOCKED_TIME]
+        )
+        blocked_time = self._create_blocked_time_on_calendar(org, system_user, calendar)
+
+        new_start = datetime.datetime(2026, 10, 7, 10, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 7, 18, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _UPDATE_BLOCKED_TIME_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "blockedTimeId": blocked_time.id,
+                    "startTime": new_start.isoformat(),
+                    "endTime": new_end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateBlockedTime"]
+        assert result["success"] is True
+
+    def test_delete_blocked_time_org_wide_token_unaffected_by_guard(self):
+        """An org-wide token can delete blocked times on any calendar (guard is no-op)."""
+        from calendar_integration.models import BlockedTime
+
+        org = self._setup_org()
+        _other_owner, _other_membership, calendar = self._make_owner_with_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.DELETE_BLOCKED_TIME]
+        )
+        blocked_time = self._create_blocked_time_on_calendar(org, system_user, calendar)
+        bt_id = blocked_time.id
+
+        response = self._post(
+            _DELETE_BLOCKED_TIME_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "blockedTimeId": bt_id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["deleteBlockedTime"]
+        assert result["success"] is True
+        assert not BlockedTime.objects.filter(id=bt_id).exists()
+
+    # ------------------------------------------------------------------
+    # Missing resource grant — scoped token denied
+    # ------------------------------------------------------------------
+
+    def test_create_blocked_time_scoped_token_missing_grant_denied(self):
+        """A scoped token without CREATE_BLOCKED_TIME grant is denied by the permission class."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        # Grant CALENDAR instead of CREATE_BLOCKED_TIME
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR]
+        )
+
+        start = datetime.datetime(2026, 10, 8, 8, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 10, 8, 16, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _CREATE_BLOCKED_TIME_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_update_blocked_time_scoped_token_missing_grant_denied(self):
+        """A scoped token without UPDATE_BLOCKED_TIME grant is denied by the permission class."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        # Create row first using org-wide token
+        org_wide_su, _, _auth = self._make_org_wide_system_user(
+            org, [PublicAPIResources.UPDATE_BLOCKED_TIME]
+        )
+        blocked_time = self._create_blocked_time_on_calendar(org, org_wide_su, calendar)
+        # Scoped token with wrong resource
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR]
+        )
+
+        response = self._post(
+            _UPDATE_BLOCKED_TIME_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "blockedTimeId": blocked_time.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_delete_blocked_time_scoped_token_missing_grant_denied(self):
+        """A scoped token without DELETE_BLOCKED_TIME grant is denied by the permission class."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        org_wide_su, _, _auth = self._make_org_wide_system_user(
+            org, [PublicAPIResources.DELETE_BLOCKED_TIME]
+        )
+        blocked_time = self._create_blocked_time_on_calendar(org, org_wide_su, calendar)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR]
+        )
+
+        response = self._post(
+            _DELETE_BLOCKED_TIME_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "blockedTimeId": blocked_time.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# GraphQL query constants for scoped-availability-writes tests
+# ---------------------------------------------------------------------------
+
+_CREATE_AVAILABILITY_WINDOW_SCOPED = """
+mutation CreateAvailabilityWindow($input: CreateAvailableTimeInput!) {
+    createAvailabilityWindow(input: $input) {
+        success
+        errorMessage
+        availableTime {
+            id
+            startTime
+            endTime
+        }
+    }
+}
+"""
+
+_UPDATE_AVAILABILITY_WINDOW_SCOPED = """
+mutation UpdateAvailabilityWindow($input: UpdateAvailableTimeInput!) {
+    updateAvailabilityWindow(input: $input) {
+        success
+        errorMessage
+        availableTime {
+            id
+            startTime
+            endTime
+        }
+    }
+}
+"""
+
+_DELETE_AVAILABILITY_WINDOW_SCOPED = """
+mutation DeleteAvailabilityWindow($input: DeleteAvailableTimeInput!) {
+    deleteAvailabilityWindow(input: $input) {
+        success
+        errorMessage
+    }
+}
+"""
+
+_BATCH_UPDATE_AVAILABILITY_WINDOWS_SCOPED = """
+mutation BatchUpdateAvailabilityWindows($input: BatchAvailabilityInput!) {
+    batchUpdateAvailabilityWindows(input: $input) {
+        success
+        errorMessage
+        availableTimes {
+            id
+            startTime
+            endTime
+        }
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestScopedTokenAvailabilityWrites:
+    """Integration tests for owner-scoped availability-window mutations (Phase 2).
+
+    Coverage:
+    - Scoped token can create (no rrule + rrule) / update / delete / batch on its owned calendar.
+    - Cross-owner write returns the same not-found message as a genuinely missing
+      calendar, revealing nothing about the target's existence.
+    - Org-wide token is structurally unchanged (no-regression assertion).
+    - A scoped token missing the required resource grant is denied by the permission
+      class before the guard even runs.
+    - Batch: a cross-owner calendar_id rejects the whole batch atomically (no partial write).
+    """
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    # ------------------------------------------------------------------
+    # Helpers — mirror TestScopedTokenBlockedTimeWrites exactly
+    # ------------------------------------------------------------------
+
+    def _setup_org(self):
+        """Create a base organization for the test scenario."""
+        return baker.make(Organization, name="Test Org")
+
+    def _make_owner_with_managing_calendar(self, org):
+        """Create a provider user, their membership, and a manage_available_windows=True calendar.
+
+        Returns (user, membership, calendar).
+        """
+        from calendar_integration.models import CalendarOwnership
+
+        unique = uuid.uuid4().hex[:8]
+        user_model = get_user_model()
+        owner = baker.make(user_model, email=f"avail_owner_{unique}@example.com")
+        membership = baker.make(
+            OrganizationMembership, user=owner, organization=org, is_active=True
+        )
+        calendar = baker.make(
+            Calendar,
+            organization=org,
+            name=f"Provider Avail Calendar {unique}",
+            external_id=f"avail-cal-{unique}",
+            manage_available_windows=True,
+        )
+        baker.make(CalendarOwnership, calendar=calendar, user=owner, organization=org)
+        return owner, membership, calendar
+
+    def _make_scoped_system_user(self, org, membership, resources):
+        """Mint a scoped SystemUser with the given resource grants.
+
+        Returns (system_user, plaintext_token, auth_service).
+        """
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"scoped_avail_{uuid.uuid4().hex[:8]}",
+            organization=org,
+            scoped_to_membership=membership,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _make_org_wide_system_user(self, org, resources):
+        """Mint an org-wide (unscoped) SystemUser with the given resource grants.
+
+        Returns (system_user, plaintext_token, auth_service).
+        """
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"org_wide_avail_{uuid.uuid4().hex[:8]}",
+            organization=org,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _create_available_time_on_calendar(self, org, system_user, calendar):
+        """Create an AvailableTime row directly via the service (not the API).
+
+        Used to set up rows for update/delete/batch happy-path tests.
+        """
+        from di_core.containers import container
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        return calendar_service.create_available_time(
+            calendar=calendar,
+            start_time=datetime.datetime(2026, 10, 1, 9, 0, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2026, 10, 1, 17, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+    def _post(self, query, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": query, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    # ------------------------------------------------------------------
+    # createAvailabilityWindow — scoped happy path (no rrule)
+    # ------------------------------------------------------------------
+
+    def test_create_availability_window_scoped_token_on_owned_calendar_succeeds_no_rrule(self):
+        """A scoped token creates a one-off available time on its owner's calendar."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CREATE_AVAILABILITY_WINDOW]
+        )
+
+        start = datetime.datetime(2026, 10, 5, 8, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 10, 5, 16, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _CREATE_AVAILABILITY_WINDOW_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["createAvailabilityWindow"]
+        assert result["success"] is True
+        assert result["availableTime"] is not None
+        at_id = int(result["availableTime"]["id"])
+
+        at = AvailableTime.objects.filter_by_organization(org.id).get(id=at_id)
+        assert at.calendar_fk_id == calendar.id
+        assert at.recurrence_rule is None
+
+    # ------------------------------------------------------------------
+    # createAvailabilityWindow — scoped happy path (with rrule)
+    # ------------------------------------------------------------------
+
+    def test_create_availability_window_scoped_token_on_owned_calendar_succeeds_with_rrule(self):
+        """A scoped token creates a recurring available time on its owner's calendar."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CREATE_AVAILABILITY_WINDOW]
+        )
+
+        start = datetime.datetime(2026, 10, 6, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 10, 6, 17, 0, 0, tzinfo=datetime.UTC)
+        rrule = "FREQ=WEEKLY;BYDAY=TU"
+
+        response = self._post(
+            _CREATE_AVAILABILITY_WINDOW_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                    "rruleString": rrule,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["createAvailabilityWindow"]
+        assert result["success"] is True
+        assert result["availableTime"] is not None
+        at_id = int(result["availableTime"]["id"])
+
+        at = AvailableTime.objects.filter_by_organization(org.id).get(id=at_id)
+        assert at.calendar_fk_id == calendar.id
+        assert at.recurrence_rule is not None
+
+    # ------------------------------------------------------------------
+    # createAvailabilityWindow — cross-owner not-found identical to missing calendar
+    # ------------------------------------------------------------------
+
+    def test_create_availability_window_cross_owner_same_not_found_as_missing_calendar(self):
+        """Cross-owner createAvailabilityWindow returns identical not-found as a truly missing calendar.
+
+        A scoped token targeting another provider's calendar_id must get the same
+        success=False / errorMessage as a genuinely nonexistent calendar — revealing
+        nothing about the target's existence. No AvailableTime row is created.
+        """
+        org = self._setup_org()
+        _owner_a, membership_a, _calendar_a = self._make_owner_with_managing_calendar(org)
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_managing_calendar(org)
+
+        # Token scoped to provider A
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.CREATE_AVAILABILITY_WINDOW]
+        )
+
+        start = datetime.datetime(2026, 10, 5, 8, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 10, 5, 16, 0, 0, tzinfo=datetime.UTC)
+
+        # Attempt against provider B's calendar (cross-owner)
+        cross_owner_response = self._post(
+            _CREATE_AVAILABILITY_WINDOW_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_b.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        # Attempt against a genuinely nonexistent calendar_id
+        nonexistent_id = 999994
+        missing_response = self._post(
+            _CREATE_AVAILABILITY_WINDOW_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": nonexistent_id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        for resp in [cross_owner_response, missing_response]:
+            assert resp.status_code == 200
+            d = resp.json()
+            assert "errors" not in d or len(d.get("errors", [])) == 0
+            r = d["data"]["createAvailabilityWindow"]
+            assert r["success"] is False
+            assert r["errorMessage"] is not None
+
+        cross_msg = cross_owner_response.json()["data"]["createAvailabilityWindow"]["errorMessage"]
+        missing_msg = missing_response.json()["data"]["createAvailabilityWindow"]["errorMessage"]
+        assert cross_msg == missing_msg, (
+            f"Cross-owner error '{cross_msg}' must equal missing-calendar error '{missing_msg}'"
+        )
+
+        # No AvailableTime rows must have been created for the cross-owner calendar
+        assert not AvailableTime.objects.filter(calendar_fk_id=calendar_b.id).exists()
+
+    # ------------------------------------------------------------------
+    # updateAvailabilityWindow — scoped happy path
+    # ------------------------------------------------------------------
+
+    def test_update_availability_window_scoped_token_on_owned_calendar_succeeds(self):
+        """A scoped token updates an available time on its owner's calendar."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        org_wide_su, _org_wide_token, _org_wide_auth = self._make_org_wide_system_user(
+            org, [PublicAPIResources.UPDATE_AVAILABILITY_WINDOW]
+        )
+        available_time = self._create_available_time_on_calendar(org, org_wide_su, calendar)
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.UPDATE_AVAILABILITY_WINDOW]
+        )
+
+        new_start = datetime.datetime(2026, 10, 2, 10, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 2, 18, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _UPDATE_AVAILABILITY_WINDOW_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "availableTimeId": available_time.id,
+                    "startTime": new_start.isoformat(),
+                    "endTime": new_end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateAvailabilityWindow"]
+        assert result["success"] is True
+        assert result["availableTime"] is not None
+
+    # ------------------------------------------------------------------
+    # updateAvailabilityWindow — cross-owner not-found
+    # ------------------------------------------------------------------
+
+    def test_update_availability_window_cross_owner_same_not_found_as_missing_calendar(self):
+        """Cross-owner updateAvailabilityWindow returns identical not-found as a truly missing calendar."""
+        org = self._setup_org()
+        _owner_a, membership_a, _calendar_a = self._make_owner_with_managing_calendar(org)
+        org_wide_su_b, _, _org_wide_auth_b = self._make_org_wide_system_user(
+            org, [PublicAPIResources.UPDATE_AVAILABILITY_WINDOW]
+        )
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_managing_calendar(org)
+        available_time_b = self._create_available_time_on_calendar(org, org_wide_su_b, calendar_b)
+
+        # Capture B's row field values BEFORE the cross-owner attempt so the
+        # unchanged-check compares like-for-like (naive stored field to naive).
+        available_time_b.refresh_from_db()
+        start_before = available_time_b.start_time_tz_unaware
+        end_before = available_time_b.end_time_tz_unaware
+
+        # Token scoped to provider A — must not update B's calendar
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.UPDATE_AVAILABILITY_WINDOW]
+        )
+
+        new_start = datetime.datetime(2026, 10, 3, 9, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 3, 17, 0, 0, tzinfo=datetime.UTC)
+
+        # Cross-owner attempt: calendar_id belongs to B, not A
+        cross_owner_response = self._post(
+            _UPDATE_AVAILABILITY_WINDOW_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_b.id,
+                    "availableTimeId": available_time_b.id,
+                    "startTime": new_start.isoformat(),
+                    "endTime": new_end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        # Genuinely missing calendar_id attempt
+        missing_response = self._post(
+            _UPDATE_AVAILABILITY_WINDOW_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": 999993,
+                    "availableTimeId": available_time_b.id,
+                    "startTime": new_start.isoformat(),
+                    "endTime": new_end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        for resp in [cross_owner_response, missing_response]:
+            assert resp.status_code == 200
+            d = resp.json()
+            assert "errors" not in d or len(d.get("errors", [])) == 0
+            r = d["data"]["updateAvailabilityWindow"]
+            assert r["success"] is False
+
+        cross_msg = cross_owner_response.json()["data"]["updateAvailabilityWindow"]["errorMessage"]
+        missing_msg = missing_response.json()["data"]["updateAvailabilityWindow"]["errorMessage"]
+        assert cross_msg == missing_msg
+
+        # The available time row must be unchanged (compare against pre-attempt values).
+        available_time_b.refresh_from_db()
+        assert available_time_b.start_time_tz_unaware == start_before
+        assert available_time_b.end_time_tz_unaware == end_before
+
+    # ------------------------------------------------------------------
+    # deleteAvailabilityWindow — scoped happy path
+    # ------------------------------------------------------------------
+
+    def test_delete_availability_window_scoped_token_on_owned_calendar_succeeds(self):
+        """A scoped token deletes an available time on its owner's calendar."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        org_wide_su, _, _org_wide_auth = self._make_org_wide_system_user(
+            org, [PublicAPIResources.DELETE_AVAILABILITY_WINDOW]
+        )
+        available_time = self._create_available_time_on_calendar(org, org_wide_su, calendar)
+        at_id = available_time.id
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.DELETE_AVAILABILITY_WINDOW]
+        )
+
+        response = self._post(
+            _DELETE_AVAILABILITY_WINDOW_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "availableTimeId": at_id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["deleteAvailabilityWindow"]
+        assert result["success"] is True
+
+        # DB row must be gone
+        assert not AvailableTime.objects.filter(id=at_id).exists()
+
+    # ------------------------------------------------------------------
+    # deleteAvailabilityWindow — cross-owner not-found
+    # ------------------------------------------------------------------
+
+    def test_delete_availability_window_cross_owner_same_not_found_as_missing_calendar(self):
+        """Cross-owner deleteAvailabilityWindow returns identical not-found as a truly missing calendar.
+
+        The AvailableTime row must NOT be deleted when the token targets a cross-owner calendar.
+        """
+        org = self._setup_org()
+        _owner_a, membership_a, _calendar_a = self._make_owner_with_managing_calendar(org)
+        org_wide_su_b, _, _org_wide_auth_b = self._make_org_wide_system_user(
+            org, [PublicAPIResources.DELETE_AVAILABILITY_WINDOW]
+        )
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_managing_calendar(org)
+        available_time_b = self._create_available_time_on_calendar(org, org_wide_su_b, calendar_b)
+        at_b_id = available_time_b.id
+
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.DELETE_AVAILABILITY_WINDOW]
+        )
+
+        # Cross-owner attempt (calendar_b belongs to owner B)
+        cross_owner_response = self._post(
+            _DELETE_AVAILABILITY_WINDOW_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_b.id,
+                    "availableTimeId": at_b_id,
+                }
+            },
+        )
+
+        # Genuinely missing calendar attempt
+        missing_response = self._post(
+            _DELETE_AVAILABILITY_WINDOW_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": 999992,
+                    "availableTimeId": at_b_id,
+                }
+            },
+        )
+
+        for resp in [cross_owner_response, missing_response]:
+            assert resp.status_code == 200
+            d = resp.json()
+            assert "errors" not in d or len(d.get("errors", [])) == 0
+            r = d["data"]["deleteAvailabilityWindow"]
+            assert r["success"] is False
+
+        cross_msg = cross_owner_response.json()["data"]["deleteAvailabilityWindow"]["errorMessage"]
+        missing_msg = missing_response.json()["data"]["deleteAvailabilityWindow"]["errorMessage"]
+        assert cross_msg == missing_msg
+
+        # Row must still exist — the cross-owner delete must NOT have succeeded
+        assert AvailableTime.objects.filter(id=at_b_id).exists()
+
+    # ------------------------------------------------------------------
+    # batchUpdateAvailabilityWindows — scoped happy path
+    # ------------------------------------------------------------------
+
+    def test_batch_update_availability_windows_scoped_token_on_owned_calendar_succeeds(self):
+        """A scoped token applies a batch of availability operations on its owner's calendar."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        org_wide_su, _, _org_wide_auth = self._make_org_wide_system_user(
+            org, [PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS]
+        )
+        existing_time = self._create_available_time_on_calendar(org, org_wide_su, calendar)
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS]
+        )
+
+        new_start = datetime.datetime(2026, 11, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 11, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _BATCH_UPDATE_AVAILABILITY_WINDOWS_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "operations": [
+                        {
+                            "action": "update",
+                            "availableTimeId": existing_time.id,
+                            "startTime": new_start.isoformat(),
+                            "endTime": new_end.isoformat(),
+                            "timezone": "UTC",
+                        }
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["batchUpdateAvailabilityWindows"]
+        assert result["success"] is True
+        assert result["availableTimes"] is not None
+
+    # ------------------------------------------------------------------
+    # batchUpdateAvailabilityWindows — cross-owner not-found + no partial write
+    # ------------------------------------------------------------------
+
+    def test_batch_update_availability_windows_cross_owner_rejected_wholesale(self):
+        """Cross-owner batchUpdateAvailabilityWindows returns identical not-found as missing calendar.
+
+        The entire batch must be rejected atomically — no AvailableTime rows must be
+        created, updated, or deleted when the calendar_id is cross-owner. Because
+        BatchAvailabilityInput carries a single calendar_id shared by all operations
+        (individual BatchAvailabilityOperationInput entries have no per-op calendar_id),
+        one guard call at the top rejects the whole batch before any operation runs.
+        """
+        org = self._setup_org()
+        _owner_a, membership_a, _calendar_a = self._make_owner_with_managing_calendar(org)
+        org_wide_su_b, _, _org_wide_auth_b = self._make_org_wide_system_user(
+            org, [PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS]
+        )
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_managing_calendar(org)
+
+        # Seed a pre-existing AvailableTime row on B's calendar so a partial
+        # update/delete (not just a stray create) would be detectable.
+        existing_time_b = self._create_available_time_on_calendar(org, org_wide_su_b, calendar_b)
+        existing_time_b.refresh_from_db()
+        existing_start_before = existing_time_b.start_time_tz_unaware
+        existing_end_before = existing_time_b.end_time_tz_unaware
+
+        # Count rows on B's calendar before the cross-owner attempt (org-scoped query)
+        rows_before = (
+            AvailableTime.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar_b.id)
+            .count()
+        )
+
+        # Token scoped to provider A
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS]
+        )
+
+        create_start = datetime.datetime(2026, 12, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        create_end = datetime.datetime(2026, 12, 1, 17, 0, 0, tzinfo=datetime.UTC)
+
+        update_start = datetime.datetime(2026, 12, 2, 9, 0, 0, tzinfo=datetime.UTC)
+        update_end = datetime.datetime(2026, 12, 2, 17, 0, 0, tzinfo=datetime.UTC)
+
+        # Cross-owner attempt: calendar_id = B's calendar, batch mixes create,
+        # update, and delete ops — an update/delete targets B's pre-existing row,
+        # so a partial write (not just a stray create) would be caught.
+        cross_owner_response = self._post(
+            _BATCH_UPDATE_AVAILABILITY_WINDOWS_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_b.id,
+                    "operations": [
+                        {
+                            "action": "create",
+                            "startTime": create_start.isoformat(),
+                            "endTime": create_end.isoformat(),
+                            "timezone": "UTC",
+                        },
+                        {
+                            "action": "update",
+                            "availableTimeId": existing_time_b.id,
+                            "startTime": update_start.isoformat(),
+                            "endTime": update_end.isoformat(),
+                        },
+                        {
+                            "action": "delete",
+                            "availableTimeId": existing_time_b.id,
+                        },
+                    ],
+                }
+            },
+        )
+
+        # Genuinely missing calendar attempt (same batch shape)
+        nonexistent_id = 999991
+        missing_response = self._post(
+            _BATCH_UPDATE_AVAILABILITY_WINDOWS_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": nonexistent_id,
+                    "operations": [
+                        {
+                            "action": "create",
+                            "startTime": create_start.isoformat(),
+                            "endTime": create_end.isoformat(),
+                            "timezone": "UTC",
+                        },
+                        {
+                            "action": "update",
+                            "availableTimeId": existing_time_b.id,
+                            "startTime": update_start.isoformat(),
+                            "endTime": update_end.isoformat(),
+                        },
+                        {
+                            "action": "delete",
+                            "availableTimeId": existing_time_b.id,
+                        },
+                    ],
+                }
+            },
+        )
+
+        for resp in [cross_owner_response, missing_response]:
+            assert resp.status_code == 200
+            d = resp.json()
+            assert "errors" not in d or len(d.get("errors", [])) == 0
+            r = d["data"]["batchUpdateAvailabilityWindows"]
+            assert r["success"] is False
+            assert r["errorMessage"] is not None
+
+        cross_msg = cross_owner_response.json()["data"]["batchUpdateAvailabilityWindows"][
+            "errorMessage"
+        ]
+        missing_msg = missing_response.json()["data"]["batchUpdateAvailabilityWindows"][
+            "errorMessage"
+        ]
+        assert cross_msg == missing_msg, (
+            f"Cross-owner error '{cross_msg}' must equal missing-calendar error '{missing_msg}'"
+        )
+
+        # No AvailableTime rows must have been created on B's calendar (no partial write)
+        rows_after = (
+            AvailableTime.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar_b.id)
+            .count()
+        )
+        assert rows_after == rows_before, (
+            f"Partial write detected: row count on B's calendar changed from "
+            f"{rows_before} to {rows_after}"
+        )
+
+        # The pre-existing B row must NOT have been updated or deleted: it still
+        # exists and retains its original field values.
+        assert (
+            AvailableTime.objects.filter_by_organization(org.id)
+            .filter(id=existing_time_b.id)
+            .exists()
+        ), "Partial write detected: pre-existing B row was deleted"
+        existing_time_b.refresh_from_db()
+        assert existing_time_b.start_time_tz_unaware == existing_start_before, (
+            "Partial write detected: pre-existing B row's start time was updated"
+        )
+        assert existing_time_b.end_time_tz_unaware == existing_end_before, (
+            "Partial write detected: pre-existing B row's end time was updated"
+        )
+
+    # ------------------------------------------------------------------
+    # Org-wide token — no-regression assertions for all four verbs
+    # ------------------------------------------------------------------
+
+    def test_create_availability_window_org_wide_token_unaffected_by_guard(self):
+        """An org-wide token can create available times on any calendar (guard is no-op)."""
+        org = self._setup_org()
+        _other_owner, _other_membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CREATE_AVAILABILITY_WINDOW]
+        )
+
+        start = datetime.datetime(2026, 10, 6, 8, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 10, 6, 16, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _CREATE_AVAILABILITY_WINDOW_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["createAvailabilityWindow"]
+        assert result["success"] is True
+        assert result["availableTime"] is not None
+        at_id = int(result["availableTime"]["id"])
+        assert AvailableTime.objects.filter_by_organization(org.id).filter(id=at_id).exists()
+
+    def test_update_availability_window_org_wide_token_unaffected_by_guard(self):
+        """An org-wide token can update available times on any calendar (guard is no-op)."""
+        org = self._setup_org()
+        _other_owner, _other_membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.UPDATE_AVAILABILITY_WINDOW]
+        )
+        available_time = self._create_available_time_on_calendar(org, system_user, calendar)
+
+        new_start = datetime.datetime(2026, 10, 7, 10, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 7, 18, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _UPDATE_AVAILABILITY_WINDOW_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "availableTimeId": available_time.id,
+                    "startTime": new_start.isoformat(),
+                    "endTime": new_end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateAvailabilityWindow"]
+        assert result["success"] is True
+
+    def test_delete_availability_window_org_wide_token_unaffected_by_guard(self):
+        """An org-wide token can delete available times on any calendar (guard is no-op)."""
+        org = self._setup_org()
+        _other_owner, _other_membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.DELETE_AVAILABILITY_WINDOW]
+        )
+        available_time = self._create_available_time_on_calendar(org, system_user, calendar)
+        at_id = available_time.id
+
+        response = self._post(
+            _DELETE_AVAILABILITY_WINDOW_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "availableTimeId": at_id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["deleteAvailabilityWindow"]
+        assert result["success"] is True
+        assert not AvailableTime.objects.filter(id=at_id).exists()
+
+    def test_batch_update_availability_windows_org_wide_token_unaffected_by_guard(self):
+        """An org-wide token can batch-update available times on any calendar (guard is no-op)."""
+        org = self._setup_org()
+        _other_owner, _other_membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS]
+        )
+        existing_time = self._create_available_time_on_calendar(org, system_user, calendar)
+
+        new_start = datetime.datetime(2026, 11, 2, 9, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 11, 2, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _BATCH_UPDATE_AVAILABILITY_WINDOWS_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "operations": [
+                        {
+                            "action": "update",
+                            "availableTimeId": existing_time.id,
+                            "startTime": new_start.isoformat(),
+                            "endTime": new_end.isoformat(),
+                            "timezone": "UTC",
+                        }
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["batchUpdateAvailabilityWindows"]
+        assert result["success"] is True
+
+    # ------------------------------------------------------------------
+    # Missing resource grant — scoped token denied (permission class fires first)
+    # ------------------------------------------------------------------
+
+    def test_create_availability_window_scoped_token_missing_grant_denied(self):
+        """A scoped token without CREATE_AVAILABILITY_WINDOW grant is denied."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR]
+        )
+
+        start = datetime.datetime(2026, 10, 8, 8, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 10, 8, 16, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _CREATE_AVAILABILITY_WINDOW_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "startTime": start.isoformat(),
+                    "endTime": end.isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_update_availability_window_scoped_token_missing_grant_denied(self):
+        """A scoped token without UPDATE_AVAILABILITY_WINDOW grant is denied."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        org_wide_su, _, _auth = self._make_org_wide_system_user(
+            org, [PublicAPIResources.UPDATE_AVAILABILITY_WINDOW]
+        )
+        available_time = self._create_available_time_on_calendar(org, org_wide_su, calendar)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR]
+        )
+
+        response = self._post(
+            _UPDATE_AVAILABILITY_WINDOW_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "availableTimeId": available_time.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_delete_availability_window_scoped_token_missing_grant_denied(self):
+        """A scoped token without DELETE_AVAILABILITY_WINDOW grant is denied."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        org_wide_su, _, _auth = self._make_org_wide_system_user(
+            org, [PublicAPIResources.DELETE_AVAILABILITY_WINDOW]
+        )
+        available_time = self._create_available_time_on_calendar(org, org_wide_su, calendar)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR]
+        )
+
+        response = self._post(
+            _DELETE_AVAILABILITY_WINDOW_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "availableTimeId": available_time.id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_batch_update_availability_windows_scoped_token_missing_grant_denied(self):
+        """A scoped token without BATCH_UPDATE_AVAILABILITY_WINDOWS grant is denied."""
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR]
+        )
+
+        response = self._post(
+            _BATCH_UPDATE_AVAILABILITY_WINDOWS_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "operations": [],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+        assert "don't have access" in str(data["errors"]).lower()
+
+
+_SCHEDULE_EVENT_SCOPED = """
+mutation ScheduleEvent($input: ScheduleEventInput!) {
+    scheduleEvent(input: $input) {
+        id
+        title
+        description
+        attendances {
+            id
+        }
+        externalAttendances {
+            id
+        }
+    }
+}
+"""
+
+# recurrenceRule is a non-nullable field on CalendarEventGraphQLType, so only select it
+# when the event is actually recurring (the non-recurring path returns null for it).
+_SCHEDULE_EVENT_SCOPED_WITH_RRULE = """
+mutation ScheduleEvent($input: ScheduleEventInput!) {
+    scheduleEvent(input: $input) {
+        id
+        title
+        recurrenceRule {
+            id
+        }
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestScopedTokenScheduleEvent:
+    """Integration tests for the owner-scoped ``scheduleEvent`` mutation (Phase 3).
+
+    Coverage:
+    - Scoped token schedules on its owner's calendar (covering availability window) -> success.
+    - Recurring (rrule) event persists a recurrence rule.
+    - Internal + external attendees persisted.
+    - Out-of-org internal attendee -> clean error, no row.
+    - Cross-owner calendar -> not-found IDENTICAL to a missing calendar + no row.
+    - Org-wide token -> denied, no row (event creation stays blocked).
+    - Bundle calendar owned by the scoped owner -> clean error, no row.
+    - No availability window -> clean error.
+    - Title too long -> clean error.
+    - Missing CALENDAR_EVENT grant -> denied by the permission class.
+    """
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    # ------------------------------------------------------------------
+    # Helpers — mirror the blocked-time / availability scoped-token classes
+    # ------------------------------------------------------------------
+
+    def _setup_org(self):
+        return baker.make(Organization, name="Schedule Event Org")
+
+    def _make_owner_with_managing_calendar(self, org):
+        """Create a provider user, membership, and a manage_available_windows=True calendar.
+
+        manage_available_windows=True so availability is governed by declared windows; the
+        happy path seeds a covering window, the no-availability test omits it.
+        Returns (user, membership, calendar).
+        """
+        from calendar_integration.models import CalendarOwnership
+
+        unique = uuid.uuid4().hex[:8]
+        user_model = get_user_model()
+        owner = baker.make(user_model, email=f"sched_owner_{unique}@example.com")
+        membership = baker.make(
+            OrganizationMembership, user=owner, organization=org, is_active=True
+        )
+        calendar = baker.make(
+            Calendar,
+            organization=org,
+            name=f"Provider Sched Calendar {unique}",
+            external_id=f"sched-cal-{unique}",
+            manage_available_windows=True,
+        )
+        baker.make(CalendarOwnership, calendar=calendar, user=owner, organization=org)
+        return owner, membership, calendar
+
+    def _make_owner_with_bundle_calendar(self, org):
+        """Create a provider who owns a BUNDLE calendar. Returns (user, membership, bundle)."""
+        from calendar_integration.models import CalendarOwnership
+
+        unique = uuid.uuid4().hex[:8]
+        user_model = get_user_model()
+        owner = baker.make(user_model, email=f"sched_bundle_owner_{unique}@example.com")
+        membership = baker.make(
+            OrganizationMembership, user=owner, organization=org, is_active=True
+        )
+        bundle = baker.make(
+            Calendar,
+            organization=org,
+            name=f"Bundle Calendar {unique}",
+            external_id=f"sched-bundle-{unique}",
+            calendar_type=CalendarType.BUNDLE,
+        )
+        baker.make(CalendarOwnership, calendar=bundle, user=owner, organization=org)
+        return owner, membership, bundle
+
+    def _make_scoped_system_user(self, org, membership, resources):
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"scoped_sched_{uuid.uuid4().hex[:8]}",
+            organization=org,
+            scoped_to_membership=membership,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _make_org_wide_system_user(self, org, resources):
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"org_wide_sched_{uuid.uuid4().hex[:8]}",
+            organization=org,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _seed_window(self, org, system_user, calendar):
+        """Seed a covering AvailableTime window via the service (not the API)."""
+        from di_core.containers import container
+
+        calendar_service: CalendarService = container.calendar_service()
+        calendar_service.initialize_without_provider(user_or_token=system_user, organization=org)
+        return calendar_service.create_available_time(
+            calendar=calendar,
+            start_time=datetime.datetime(2026, 10, 1, 8, 0, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2026, 10, 1, 18, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+    def _post(self, query, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": query, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def _input(self, org, calendar, **overrides):
+        base = {
+            "organizationId": org.id,
+            "calendarId": calendar.id,
+            "startTime": datetime.datetime(2026, 10, 1, 10, 0, 0, tzinfo=datetime.UTC).isoformat(),
+            "endTime": datetime.datetime(2026, 10, 1, 11, 0, 0, tzinfo=datetime.UTC).isoformat(),
+            "timezone": "UTC",
+            "title": "Scheduled Visit",
+        }
+        base.update(overrides)
+        return base
+
+    # ------------------------------------------------------------------
+    # Happy path
+    # ------------------------------------------------------------------
+
+    def test_schedule_event_scoped_token_on_owned_calendar_succeeds(self):
+        """A scoped token schedules an event on its owner's calendar with a covering window."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["scheduleEvent"]
+        assert result is not None
+        assert result["title"] == "Scheduled Visit"
+        ev = CalendarEvent.objects.filter_by_organization(org.id).get(id=int(result["id"]))
+        assert ev.calendar_fk_id == calendar.id
+
+    def test_schedule_event_recurring_persists_recurrence_rule(self):
+        """A scoped token schedules a recurring event (rrule -> RecurrenceRule persisted)."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED_WITH_RRULE,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar, rruleString="RRULE:FREQ=WEEKLY;COUNT=4;BYDAY=TH")},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["scheduleEvent"]
+        assert result["recurrenceRule"] is not None
+        ev = CalendarEvent.objects.filter_by_organization(org.id).get(id=int(result["id"]))
+        assert ev.recurrence_rule_fk_id is not None
+
+    def test_schedule_event_persists_internal_and_external_attendees(self):
+        """Internal (active member) + external (email/name) attendees are persisted."""
+        from calendar_integration.models import EventAttendance, EventExternalAttendance
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        user_model = get_user_model()
+        attendee = baker.make(user_model, email=f"attendee_{uuid.uuid4().hex[:8]}@example.com")
+        baker.make(OrganizationMembership, user=attendee, organization=org, is_active=True)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._input(
+                    org,
+                    calendar,
+                    attendeeUserIds=[attendee.id],
+                    externalAttendees=[{"email": "guest@example.com", "name": "Guest"}],
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        ev_id = int(data["data"]["scheduleEvent"]["id"])
+        assert (
+            EventAttendance.objects.filter_by_organization(org.id)
+            .filter(event_fk_id=ev_id, user_id=attendee.id)
+            .exists()
+        )
+        assert (
+            EventExternalAttendance.objects.filter_by_organization(org.id)
+            .filter(event_fk_id=ev_id, external_attendee__email="guest@example.com")
+            .exists()
+        )
+
+    # ------------------------------------------------------------------
+    # Negative paths
+    # ------------------------------------------------------------------
+
+    def test_schedule_event_out_of_org_attendee_clean_error_no_row(self):
+        """An attendee who is not an active member of the org -> clean error, no event row."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        other_org = baker.make(Organization, name="Other Org")
+        user_model = get_user_model()
+        outsider = baker.make(user_model, email=f"outsider_{uuid.uuid4().hex[:8]}@example.com")
+        baker.make(OrganizationMembership, user=outsider, organization=other_org, is_active=True)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar, attendeeUserIds=[outsider.id])},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "active members" in str(data["errors"]).lower()
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id)
+            .exists()
+        )
+
+    def test_schedule_event_cross_owner_not_found_same_as_missing_calendar(self):
+        """Cross-owner calendar -> identical not-found as a genuinely missing calendar, no row."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner_a, membership_a, _calendar_a = self._make_owner_with_managing_calendar(org)
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_managing_calendar(org)
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        cross = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {"input": self._input(org, calendar_b)},
+        )
+        missing = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": 999997,
+                    "startTime": datetime.datetime(
+                        2026, 10, 1, 10, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "endTime": datetime.datetime(
+                        2026, 10, 1, 11, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "timezone": "UTC",
+                    "title": "Scheduled Visit",
+                }
+            },
+        )
+
+        cross_msg = cross.json()["errors"][0]["message"]
+        missing_msg = missing.json()["errors"][0]["message"]
+        assert cross_msg == missing_msg == "Calendar not found."
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar_b.id)
+            .exists()
+        )
+
+    def test_schedule_event_org_wide_token_denied_no_row(self):
+        """An org-wide token is denied (event creation stays blocked) with no row."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, _membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "public api" in str(data["errors"]).lower()
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id)
+            .exists()
+        )
+
+    def test_schedule_event_bundle_calendar_clean_error_no_row(self):
+        """A bundle calendar owned by the scoped owner -> clean error, no row."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, bundle = self._make_owner_with_bundle_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, bundle)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "bundle" in str(data["errors"]).lower()
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=bundle.id)
+            .exists()
+        )
+
+    def test_schedule_event_no_availability_window_clean_error(self):
+        """No covering availability window on a managed calendar -> clean error, no row."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        # No window seeded -> manage_available_windows=True means nothing is bookable.
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "available time window" in str(data["errors"]).lower()
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id)
+            .exists()
+        )
+
+    def test_schedule_event_title_too_long_clean_error(self):
+        """A title exceeding the model max_length -> clean error before any write."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar, title="x" * 256)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "at most" in str(data["errors"]).lower()
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id)
+            .exists()
+        )
+
+    def test_schedule_event_missing_calendar_event_grant_denied(self):
+        """A scoped token without the CALENDAR_EVENT grant is denied by the permission class."""
+        from calendar_integration.models import CalendarEvent
+
+        org = self._setup_org()
+        _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CREATE_BLOCKED_TIME]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        response = self._post(
+            _SCHEDULE_EVENT_SCOPED,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._input(org, calendar)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id)
+            .exists()
+        )
