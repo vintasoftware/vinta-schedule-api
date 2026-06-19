@@ -46,8 +46,16 @@
 - Verify: ruff/mypy clean (0 new); makemigrations clean; full suite 2022 passed; check --deploy only dev warnings.
 - PR-context: `.vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-2.md` (pending).
 
+### Phase 3 — Org-creator (admin) emission ✅
+- Status: implemented, verified, reviewed (clean), pushed. PR pending.
+- Model: Tier 2 (sonnet). Branch `phase-3` → base `phase-2`. Commit `6d61052`.
+- create_organization captures admin membership + calls on_member_created (reuses Phase 2 DI + on_commit deferral). No DI/migration.
+- Verify: ruff/mypy clean (0 new); full suite 2025 passed; check --deploy dev warnings only.
+- Review: no BLOCKER/SHOULD-FIX; 1 NIT (redundant local import) left. Confirmed no double-emit (provision org-branch delegates to create_organization).
+- PR-context: `.vinta-ai-workflows/prs-context/organization-member-created-webhook/phase-3.md` (pending).
+
 ## Current phase
-- Phase 3 — Org-creator (admin) emission. Tier 2 (sonnet/haiku).
+- Phase 4 — Provision-path coverage + multi-org refire. Tier 3 (sonnet).
 
 ## Remaining phases
 - Phase 3 — Org-creator (admin) emission
