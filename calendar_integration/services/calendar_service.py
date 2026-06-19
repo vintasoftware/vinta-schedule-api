@@ -665,6 +665,7 @@ class CalendarService(BaseCalendarService):
         description: str | None = None,
         capacity: int | None = None,
         manage_available_windows: bool = False,
+        accepts_public_scheduling: bool = False,
     ) -> Calendar:
         """
         Create a new internal (manual) resource calendar without linking to an external provider.
@@ -677,6 +678,8 @@ class CalendarService(BaseCalendarService):
         :param description: Description of the resource calendar.
         :param capacity: Maximum number of attendees the resource can accommodate.
         :param manage_available_windows: Whether the calendar manages its own available windows.
+        :param accepts_public_scheduling: If True, the calendar can be booked via codeless public
+            scheduling links. Defaults to False (private).
         :return: Created Calendar instance.
         """
         if not is_initialized_or_authenticated_calendar_service(self):
@@ -690,6 +693,7 @@ class CalendarService(BaseCalendarService):
             calendar_type=CalendarType.RESOURCE,
             capacity=capacity,
             manage_available_windows=manage_available_windows,
+            accepts_public_scheduling=accepts_public_scheduling,
         )
 
         # Create calendar ownership for the user who created it

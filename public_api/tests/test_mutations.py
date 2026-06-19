@@ -1934,6 +1934,7 @@ mutation CreateResourceCalendar($input: CreateResourceCalendarInput!) {
             calendarType
             capacity
             manageAvailableWindows
+            isPrivate
         }
     }
 }
@@ -2110,6 +2111,73 @@ class TestCreateResourceCalendarMutation:
         assert cal.organization == org
         assert cal.organization != other_org
         assert cal.calendar_type == CalendarType.RESOURCE
+
+    def test_create_resource_calendar_defaults_is_private_true(self):
+        """Test that is_private defaults to True (private) when omitted."""
+        from calendar_integration.models import Calendar
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "Default Private Resource",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createResourceCalendar"]
+        assert result["success"] is True
+        calendar_id = int(result["calendar"]["id"])
+
+        # Verify the backing Calendar.accepts_public_scheduling is False (private)
+        cal = Calendar.objects.filter_by_organization(org.id).get(id=calendar_id)
+        assert cal.accepts_public_scheduling is False
+
+        # Verify the GraphQL round-trip: isPrivate should be True (inverse of accepts_public_scheduling)
+        assert result["calendar"]["isPrivate"] is True
+
+    def test_create_resource_calendar_with_is_private_false(self):
+        """Test that is_private=False sets accepts_public_scheduling=True."""
+        from calendar_integration.models import Calendar
+
+        org, system_user, token, auth_service = self._setup_org_and_token()
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "name": "Public Resource",
+                    "isPrivate": False,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["createResourceCalendar"]
+        assert result["success"] is True
+        calendar_id = int(result["calendar"]["id"])
+
+        # Verify the backing Calendar.accepts_public_scheduling is True (public)
+        cal = Calendar.objects.filter_by_organization(org.id).get(id=calendar_id)
+        assert cal.accepts_public_scheduling is True
+
+        # Verify the GraphQL round-trip: isPrivate should be False (inverse of accepts_public_scheduling)
+        assert result["calendar"]["isPrivate"] is False
 
     def test_create_resource_calendar_error_path_service_raises_value_error(self):
         """An exception from CalendarService.create_resource_calendar returns success=False + errorMessage.

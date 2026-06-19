@@ -242,6 +242,7 @@ class CreateResourceCalendarInput:
     description: str | None = None
     capacity: int | None = None
     manage_available_windows: bool = False
+    is_private: bool = True
 
 
 @strawberry.type
@@ -1187,6 +1188,7 @@ class Mutation(CalendarGroupMutations):
                 description=input.description if input.description is not None else "",
                 capacity=input.capacity,
                 manage_available_windows=input.manage_available_windows,
+                accepts_public_scheduling=not input.is_private,
             )
         except (ValueError, DjangoValidationError, IntegrityError) as e:
             return CreateResourceCalendarResult(success=False, error_message=str(e))
