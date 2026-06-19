@@ -68,8 +68,17 @@
 - **Bug fixed**: empty submitted filter (`actor_type=`) was filtering to 0 results; `_first` now normalizes empty→None.
 - **Note**: `get_queryset` uses `original_manager` only for Django's internal change/delete plumbing (read-only); the LIST is exclusively repository-driven. Phase 8 replaces the per-object view with a repository-driven detail.
 
+### Phase 7 — Admin search ✅
+- **Status**: complete, all 3 review layers passed (reviewer: 0 blockers, 1 DRY should-fix — fixed)
+- **Model used**: claude-haiku-4-5 (plan tier: Tier 2)
+- **Commits**: `c44bfad` search + affected-membership filter, `d?` dedup stub (test(audit): deduplicate stub repository)
+- **Summary**: Wired `search` (→ AuditQuery.search; repo ORs subject_* + numeric actor_id) and `affected_membership_id` (→ through-join filter) into the admin changelist — `_build_audit_query` + `active_filters` + `base_querystring` (pagination preserves them) + two template inputs. No new query logic (repository handles it). 18 search tests; full suite green (2820 passed).
+
 ## Current phase
-- Phase 7 — Admin search (Tier 2, implementer) — NEXT
+- Phase 8 — Admin read-only detail (Tier 2, implementer) — NEXT (after DI amend)
+
+## Pending amendment
+- User request (2026-06-19): rework DI to use method-argument injection (`@inject` + `Provide`) like other services — primarily the Phase 5 Celery task (`persist_audit_record`), which currently resolves the repository at runtime from the container. Also restore `@inject` on `AuditService`. Handled via /amend-plan.
 
 ## Remaining phases
 - Phase 2 — Audit model + through table + migration (Tier 2, migration-author)
