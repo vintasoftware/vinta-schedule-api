@@ -38,8 +38,16 @@
 - **Summary**: `Audit(OrganizationModel)` + `AuditAffectedMembership(OrganizationModel)` through table (tenant-safe `OrganizationForeignKey` dual-field pattern, `through_fields=("audit_fk","membership_fk")`). Migration `0001_initial` with 4 org-leading `Audit` indexes, through-table `(organization, membership_fk)` index, and `uniq_audit_membership` on `(organization, audit_fk, membership_fk)`. `AuditFactory`/`AuditAffectedMembershipFactory` (model_bakery). Full suite green (2661 passed); reverse path clean.
 - **Plan deviation**: index list refined to lead every composite key with `organization` (project convention the plan's index list overlooked). Unscoped reads (Phase 3/admin) use the established `Audit.original_manager`. Cross-org through-table links persist without rejection (documented project-wide ForeignObject limitation; scoped reads via the ForeignObject won't surface them).
 
+### Phase 3 — DjangoORMAuditRepository ✅
+- **Status**: complete, all 3 review layers passed (reviewer: 0 blockers, several should-fix — all applied)
+- **Model used**: claude-sonnet-4-6 (plan tier: Tier 3)
+- **Commits**: `4a0fc94` add+get, `f2274d5` query, `91bbed7` harden add()/lock diff invariant/strengthen tests
+- **Summary**: `DjangoORMAuditRepository(AuditRepository)` — `add` (atomic Audit + bulk_create through rows, dedup ids), `get` (unscoped `original_manager`, prefetch), `query` (full AuditQuery translation: actions__in, actor_type/id, subject_type/id, affected_membership via through-join + distinct, created_at gte/lt, has_diff, int-safe search, whitelisted ordering, total before pagination), single-source `_to_record`. 54 repo tests; full suite green (2715 passed).
+- **Cross-phase contract locked**: `diff` is `None` or a non-empty dict — `add()` normalizes `{}`→`None` so `has_diff` (diff__isnull) is meaningful; Phase 4's `compute_diff` must return `None` for no-change.
+- **Note for Phase 6**: `_ALLOWED_ORDERING_FIELDS` only allows `created_at`/`-created_at`; admin must extend it for other orderings.
+
 ## Current phase
-- Phase 3 — DjangoORMAuditRepository (Tier 3, implementer) — NEXT
+- Phase 4 — DI wiring + compute_diff (Tier 2, implementer) — NEXT
 
 ## Remaining phases
 - Phase 2 — Audit model + through table + migration (Tier 2, migration-author)
