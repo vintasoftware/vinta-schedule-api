@@ -921,9 +921,7 @@ class TestNestedFieldOwnerScopeSecurity:
         _ua, _mem_a, cal_a = self._provider_with_calendar(org, "a")
         _ub, _mem_b, cal_b = self._provider_with_calendar(org, "b")
         slot = self._slot_with_cross_provider_pool(org, cal_a, cal_b)
-        system_user, _token, _auth = self._org_wide_token(
-            org, [PublicAPIResources.CALENDAR_EVENT]
-        )
+        system_user, _token, _auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_EVENT])
 
         request = Mock(spec=["public_api_system_user", "public_api_organization"])
         request.public_api_system_user = system_user
