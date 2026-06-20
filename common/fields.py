@@ -1,3 +1,33 @@
+"""Custom Django field types for the Vinta Schedule API.
+
+Module rationale — OrganizationMembershipForeignKey
+----------------------------------------------------
+Django 6 forbids a real ``ForeignKey`` (with a DB-level FK constraint) to a
+model whose primary key is composite (``CompositePrimaryKey``).  Even before
+``OrganizationMembership`` gains a composite PK (Phase 7), using a
+``ForeignObject`` for the relationship is the only design that will survive
+that migration without a second round of model rewrites.
+
+Why denormalize ``user_id``?
+    A bare ``ForeignObject`` on ``(organization_id, …)`` requires the *host*
+    row to already carry the second join column.  The host row always has
+    ``organization_id`` (every ``OrganizationModel`` does), but it does NOT
+    natively carry ``user_id``.  Storing a denormalized ``<name>_user_id``
+    column on the host row makes the join instant — no extra look-up needed
+    to resolve the owning user — and keeps the ``ForeignObject`` column
+    mapping simple.
+
+Why no real DB foreign-key constraint here?
+    ``ForeignObject`` creates no DB-level constraint; the ORM join is purely
+    at the Python/SQL level.  PROTECT delete semantics are enforced by a
+    raw-SQL composite ``FOREIGN KEY (organization_id, <name>_user_id)
+    REFERENCES organization_membership(organization_id, user_id) ON DELETE
+    RESTRICT`` constraint added per referencing table in the cutover phases
+    (Phases 2, 4, 6).  This separation is intentional: the ORM field provides
+    ``select_related`` / descriptor / queryset conveniences; the DB constraint
+    provides integrity.
+"""
+
 import uuid
 
 from django.db import models
@@ -131,3 +161,110 @@ class TenantSafeOneToOneField(models.Field):
             unique=True,
         )
         fo_field.contribute_to_class(cls, strict_field_name)
+
+
+class OrganizationMembershipForeignKey(models.Field):
+    """Reference an ``OrganizationMembership`` via a composite (org, user) join.
+
+    Design summary
+    --------------
+    This field contributes **two** Django fields to the host model:
+
+    1. **Concrete column** ``<name>_user_id`` — a plain ``BigIntegerField``
+       (nullable when ``null=True``) that stores the denormalized ``user_id``
+       from the target ``OrganizationMembership``.
+
+       A plain integer field (rather than a real ``ForeignKey`` to ``User``) is
+       chosen deliberately:
+
+       - A ``ForeignKey(User, ...)`` contributed as ``"<name>_user_id"`` would
+         produce an attname of ``<name>_user_id_id`` (Django appends ``_id``
+         to FK field names), creating a confusing double-suffix.
+       - The real integrity constraint we need is at the *membership* level —
+         ``(organization_id, <name>_user_id)`` → ``OrganizationMembership`` —
+         not at the bare ``User`` level.  That composite FK is added as a
+         raw-SQL constraint per table in the cutover phases (Phases 2, 4, 6).
+       - The ``ForeignObject`` below already provides all ORM relationship
+         features (``select_related``, reverse-accessor, filter traversal).
+
+    2. **ForeignObject descriptor** ``<name>`` — a non-editable ``ForeignObject``
+       joining::
+
+           (host.organization_id, host.<name>_user_id)
+           →
+           (OrganizationMembership.organization_id, OrganizationMembership.user_id)
+
+       This gives ``select_related("<name>")``, reverse-accessor, and
+       ``filter(<name>__role=...)``-style queries, all automatically scoped by
+       organization.
+
+    Why no ``on_delete`` DB constraint at the membership level?
+        ``ForeignObject`` creates no DB constraint.  PROTECT semantics against
+        membership deletion are enforced by a per-table raw-SQL composite FK
+        added through the project's raw-SQL migration framework in the cutover
+        phases.  The ``on_delete`` kwarg is stored and forwarded to the
+        ``ForeignObject`` for ORM bookkeeping only.
+
+    Usage::
+
+        class MyModel(OrganizationModel):
+            membership = OrganizationMembershipForeignKey(
+                on_delete=models.PROTECT,
+                related_name="my_models",
+                null=True,
+            )
+
+        # After migration, ``MyModel`` has:
+        #   - ``membership_user_id``  (BigIntegerField, concrete DB column)
+        #   - ``membership``          (ForeignObject descriptor → OrganizationMembership)
+    """
+
+    def __init__(
+        self,
+        on_delete=models.CASCADE,
+        related_name: str | None = None,
+        null: bool = False,
+        blank: bool = False,
+        help_text: str = "",
+    ) -> None:
+        self.on_delete = on_delete
+        self.related_name = related_name
+        self.null = null
+        self.blank = blank
+        self.help_text = help_text
+
+    def contribute_to_class(self, cls, name: str) -> None:  # type: ignore[override]
+        """Inject the concrete ``<name>_user_id`` column and the ForeignObject descriptor."""
+        user_id_field_name = f"{name}_user_id"
+
+        # 1. Concrete column: plain BigIntegerField matching the User PK type
+        #    (DEFAULT_AUTO_FIELD = BigAutoField → 64-bit integer).  No DB FK
+        #    constraint — the composite FK to OrganizationMembership is added
+        #    per table as raw SQL in the cutover phases.
+        user_id_field = models.BigIntegerField(
+            null=self.null,
+            blank=self.blank,
+            help_text=self.help_text,
+        )
+        user_id_field.contribute_to_class(cls, user_id_field_name)
+
+        # 2. ForeignObject: join (organization_id, <name>_user_id) →
+        #    OrganizationMembership(organization_id, user_id).
+        #    from_fields references the *field names* on the host model:
+        #      - "<name>_user_id": the BigIntegerField added above
+        #      - "organization_id": the inherited FK attname on OrganizationModel
+        #    to_fields references the *attnames* on OrganizationMembership:
+        #      - "user_id": attname of the `user` ForeignKey
+        #      - "organization_id": attname of the `organization` ForeignKey
+        #    This mirrors TenantSafeForeignKey's convention of using attnames
+        #    (e.g. "organization_id") rather than field names in to_fields.
+        fo_field = ForeignObject(
+            "organizations.OrganizationMembership",
+            from_fields=[user_id_field_name, "organization_id"],
+            to_fields=["user_id", "organization_id"],
+            on_delete=self.on_delete,
+            related_name=self.related_name or f"{name}_set",
+            editable=False,
+            null=self.null,
+        )
+        fo_field.contribute_to_class(cls, name)
