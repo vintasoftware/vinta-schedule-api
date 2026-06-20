@@ -10,6 +10,8 @@ from vintasend_django.services.notification_template_renderers.django_templated_
     DjangoTemplatedEmailRenderer,
 )
 
+from audit.repositories import DjangoORMAuditRepository
+from audit.services import AuditService
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
@@ -41,6 +43,9 @@ from webhooks.services import (
 
 class AppContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
+
+    audit_repository = providers.Singleton(DjangoORMAuditRepository)
+    audit_service = providers.Factory(AuditService)
 
     payment_gateway = providers.Factory(
         MercadoPagoPaymentAdapter,
