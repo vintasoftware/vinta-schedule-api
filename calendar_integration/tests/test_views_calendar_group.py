@@ -33,10 +33,11 @@ from organizations.models import Organization, OrganizationMembership
 def _grant_calendar_owner_token(user, calendar):
     """Mirror `CalendarService._grant_calendar_owner_permissions` so the
     permission service can resolve a token for the user+calendar pair."""
+    OrganizationMembership.objects.get_or_create(user=user, organization=calendar.organization)
     token = CalendarManagementToken.objects.create(
         organization=calendar.organization,
         calendar_fk=calendar,
-        user=user,
+        membership_user_id=user.id,
         token_hash=f"test-{uuid.uuid4().hex}",
     )
     for perm in (

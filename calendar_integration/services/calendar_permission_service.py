@@ -34,11 +34,35 @@ from common.utils.authentication_utils import (
     hash_long_lived_token,
     verify_long_lived_token,
 )
+from organizations.models import OrganizationMembership
 from users.models import User
 
 
 if TYPE_CHECKING:
     from public_api.models import SystemUser
+
+
+def _resolve_token_membership_user_id(user: User, organization_id: int) -> int | None:
+    """Resolve the membership-scoped actor id for a CalendarManagementToken mint.
+
+    The raw-SQL composite PROTECT FK on ``CalendarManagementToken.membership``
+    requires a non-NULL ``membership_user_id`` to reference a real
+    ``OrganizationMembership(user_id, organization_id)``. Returns ``user.id`` only
+    when such a membership exists, else ``None``.
+
+    A token minted for a non-member is not a meaningful internal actor — the actor
+    can only act inside an organization through a membership — so the token is left
+    with a NULL membership (no internal actor), exactly as it would be for a
+    null-user / external-attendee token. This mirrors
+    ``calendar_service._resolve_owner_membership_user_id`` and keeps a non-member
+    mint from tripping the FK and aborting the request.
+    """
+    if OrganizationMembership.objects.filter(
+        user_id=user.id,
+        organization_id=organization_id,
+    ).exists():
+        return user.id
+    return None
 
 
 DEFAULT_CALENDAR_OWNER_PERMISSIONS = [
@@ -117,7 +141,7 @@ class CalendarPermissionService:
                     .filter(organization_id=organization_id)
                     .get(
                         event_fk_id=event_id,
-                        user=user,
+                        membership_user_id=user.id,
                         revoked_at__isnull=True,
                     )
                 )
@@ -130,7 +154,7 @@ class CalendarPermissionService:
                     .get(
                         calendar_fk_id=calendar_id,
                         event_fk_id__isnull=True,
-                        user=user,
+                        membership_user_id=user.id,
                         revoked_at__isnull=True,
                     )
                 )
@@ -189,7 +213,7 @@ class CalendarPermissionService:
             new_attendance = new_attendance_dict.get(user_id)
             if not new_attendance:
                 # Attendance removed
-                if user_id == self.token.user_id:
+                if user_id == self.token.membership_user_id:
                     return EventManagementPermissions.UPDATE_SELF_RSVP
                 return EventManagementPermissions.UPDATE_ATTENDEES
 
@@ -454,7 +478,7 @@ class CalendarPermissionService:
         token, _ = CalendarManagementToken.objects.get_or_create(
             organization_id=organization_id,
             calendar_fk_id=calendar_id,
-            user=user,
+            membership_user_id=_resolve_token_membership_user_id(user, organization_id),
         )
 
         token.permissions.all().delete()
@@ -485,7 +509,7 @@ class CalendarPermissionService:
         token, _ = CalendarManagementToken.objects.get_or_create(
             organization_id=organization_id,
             event_fk_id=event_id,
-            user=user,
+            membership_user_id=_resolve_token_membership_user_id(user, organization_id),
             defaults={
                 "token_hash": hashed_token,
             },

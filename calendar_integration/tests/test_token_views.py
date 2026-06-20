@@ -29,7 +29,7 @@ from calendar_integration.services.calendar_permission_service import (
     CalendarPermissionService,
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from users.models import User
 
 
@@ -95,9 +95,10 @@ class TestTokenCalendarEventViewSetIntegration:
         token_str = generate_long_lived_token()
         hashed_token = hash_long_lived_token(token_str)
 
+        OrganizationMembership.objects.get_or_create(user=user, organization=organization)
         token = CalendarManagementToken.objects.create(
             calendar_fk=calendar,
-            user=user,
+            membership_user_id=user.id,
             token_hash=hashed_token,
             organization=organization,
         )
@@ -118,9 +119,10 @@ class TestTokenCalendarEventViewSetIntegration:
         token_str = generate_long_lived_token()
         hashed_token = hash_long_lived_token(token_str)
 
+        OrganizationMembership.objects.get_or_create(user=user, organization=organization)
         token = CalendarManagementToken.objects.create(
             event_fk=event,
-            user=user,
+            membership_user_id=user.id,
             token_hash=hashed_token,
             organization=organization,
         )

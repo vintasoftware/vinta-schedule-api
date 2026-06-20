@@ -372,7 +372,7 @@ def grant_calendar_owner_permissions(
     for owner in calendar_owners:
         # Check if user already has a token for this calendar
         existing_token = CalendarManagementToken.objects.filter(
-            user=owner,
+            membership_user_id=owner.id,
             calendar_fk_id=calendar.id,
             organization_id=calendar.organization_id,
             event_fk_id__isnull=True,
@@ -412,7 +412,7 @@ def grant_event_attendee_permissions(
             continue
         # Check if user already has a token for this event
         existing_token = CalendarManagementToken.objects.filter(
-            user=attendee_user,
+            membership_user_id=attendee_user.id,
             event_fk_id=event.id,
             organization_id=event.organization_id,
             revoked_at__isnull=True,

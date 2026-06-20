@@ -75,6 +75,16 @@ from organizations.models import Organization, OrganizationMembership
 from users.models import Profile, User
 
 
+def _member_token_user_id(user, organization):
+    """Ensure ``user`` is a member of ``organization`` and return their id.
+
+    The membership PROTECT FK on ``CalendarManagementToken`` requires a non-null
+    ``membership_user_id`` to reference a real ``OrganizationMembership``.
+    """
+    OrganizationMembership.objects.get_or_create(user=user, organization=organization)
+    return user.id
+
+
 def create_event_management_token(event, user, organization, token_hash=None):
     """Helper function to create a properly configured event management token."""
     if token_hash is None:
@@ -82,7 +92,7 @@ def create_event_management_token(event, user, organization, token_hash=None):
 
     token = CalendarManagementToken.objects.create(
         event_fk=event,
-        user=user,
+        membership_user_id=_member_token_user_id(user, organization),
         token_hash=token_hash,
         organization=organization,
     )
@@ -102,7 +112,7 @@ def create_calendar_management_token(calendar, user, organization, token_hash=No
 
     token = CalendarManagementToken.objects.create(
         calendar=calendar,
-        user=user,
+        membership_user_id=_member_token_user_id(user, organization),
         token_hash=token_hash,
         organization=organization,
     )
@@ -258,7 +268,7 @@ def calendar_management_token(db, calendar, social_account):
     """Create a calendar management token for testing."""
     token = CalendarManagementToken.objects.create(
         calendar=calendar,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, calendar.organization),
         token_hash="test_token_hash",
         organization=calendar.organization,
     )
@@ -291,7 +301,7 @@ def event_management_token(db, calendar_event, social_account):
     """Create an event-specific management token for testing."""
     token = CalendarManagementToken.objects.create(
         event_fk=calendar_event,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, calendar_event.organization),
         token_hash="test_event_token_hash",
         organization=calendar_event.organization,
     )
@@ -1862,7 +1872,7 @@ def test_create_recurring_event_bulk_modification_creates_continuation_and_recor
     # Create event-specific management token for bulk modification operation
     CalendarManagementToken.objects.create(
         event_fk=parent_event,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, calendar.organization),
         token_hash="test_bulk_modification_token_hash",
         organization=calendar.organization,
     )
@@ -1973,7 +1983,7 @@ def test_create_recurring_event_bulk_modification_cancelled_records_only(
     # Create event-specific management token for bulk modification operation
     CalendarManagementToken.objects.create(
         event_fk=parent_event,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, calendar.organization),
         token_hash="test_bulk_cancel_token_hash",
         organization=calendar.organization,
     )
@@ -3264,7 +3274,7 @@ def test_update_event_with_unchanged_orphan_attendee_requires_no_attendee_permis
     # Token without UPDATE_ATTENDEES — only the permissions a no-op update could need.
     token = CalendarManagementToken.objects.create(
         event_fk=calendar_event,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, calendar_event.organization),
         token_hash="orphan_unchanged_token",
         organization=calendar_event.organization,
     )
@@ -3402,7 +3412,7 @@ def test_update_event_with_resource_allocations(
     # Create token for initial resource
     CalendarManagementToken.objects.create(
         calendar_fk=initial_resource,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, organization),
         token_hash="test_token_hash_initial",
         organization=organization,
     )
@@ -3422,7 +3432,7 @@ def test_update_event_with_resource_allocations(
     # Create token for new resource
     CalendarManagementToken.objects.create(
         calendar_fk=new_resource,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, organization),
         token_hash="test_token_hash_new",
         organization=organization,
     )
@@ -4636,7 +4646,7 @@ def test_create_event_with_available_windows(
     # Create calendar management token for this calendar
     token = CalendarManagementToken.objects.create(
         calendar_fk=calendar,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, organization),
         token_hash="test_token_hash",
         organization=organization,
     )
@@ -4800,7 +4810,7 @@ def test_create_event_with_partial_availability(
     # Create calendar management token for this calendar
     token = CalendarManagementToken.objects.create(
         calendar_fk=calendar,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, organization),
         token_hash="test_token_hash",
         organization=organization,
     )
@@ -4892,7 +4902,7 @@ def test_create_event_with_multiple_availability_windows(
     # Create calendar management token for this calendar
     token = CalendarManagementToken.objects.create(
         calendar_fk=calendar,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, organization),
         token_hash="test_token_hash",
         organization=organization,
     )
@@ -4989,7 +4999,7 @@ def test_create_event_with_attendees(
     # Create calendar management token for this calendar
     token = CalendarManagementToken.objects.create(
         calendar_fk=calendar,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, organization),
         token_hash="test_token_hash",
         organization=organization,
     )
@@ -8430,7 +8440,12 @@ def test_create_event_uses_write_adapter_for_non_owned_calendar(
 ):
     """Test that create_event uses the write adapter for non-owned calendars."""
 
-    # Create permission token for the unrelated user to allow calendar access
+    # Create permission token for the unrelated user to allow calendar access.
+    # The user must be a member of the org for the token to carry a membership actor
+    # (a token's internal actor is now its membership reference).
+    OrganizationMembership.objects.get_or_create(
+        user=unrelated_social_account.user, organization=owned_calendar.organization
+    )
     permission_service = CalendarPermissionService()
     permission_service.create_calendar_owner_token(
         organization_id=owned_calendar.organization.id,
@@ -8519,7 +8534,11 @@ def test_update_event_uses_write_adapter_for_non_owned_calendar(
         organization=owned_calendar.organization,
     )
 
-    # Create permission token for the unrelated user to update this event
+    # Create permission token for the unrelated user to update this event.
+    # The user must be a member of the org for the token to carry a membership actor.
+    OrganizationMembership.objects.get_or_create(
+        user=unrelated_social_account.user, organization=owned_calendar.organization
+    )
     permission_service = CalendarPermissionService()
     permission_service.create_attendee_token(
         organization_id=owned_calendar.organization.id,
@@ -8605,7 +8624,11 @@ def test_delete_event_uses_write_adapter_for_non_owned_calendar(
         organization=owned_calendar.organization,
     )
 
-    # Create permission token for the unrelated user to delete this event
+    # Create permission token for the unrelated user to delete this event.
+    # The user must be a member of the org for the token to carry a membership actor.
+    OrganizationMembership.objects.get_or_create(
+        user=unrelated_social_account.user, organization=owned_calendar.organization
+    )
     permission_service = CalendarPermissionService()
     permission_service.create_attendee_token(
         organization_id=owned_calendar.organization.id,
@@ -8661,7 +8684,7 @@ def test_write_adapter_only_used_for_personal_and_resource_calendars(
     # Create calendar management token for this calendar
     token = CalendarManagementToken.objects.create(
         calendar_fk=virtual_calendar,
-        user=unrelated_social_account.user,
+        membership_user_id=_member_token_user_id(unrelated_social_account.user, organization),
         token_hash="test_token_hash",
         organization=organization,
     )
@@ -8813,7 +8836,7 @@ class TestCalendarServicePermissionIntegration:
         # Check that a token was created for the owner
         token = CalendarManagementToken.objects.get(
             calendar_fk=calendar,
-            user=user,
+            membership_user_id=user.id,
             organization=organization,
         )
 
@@ -8860,7 +8883,7 @@ class TestCalendarServicePermissionIntegration:
         # Check that tokens were created for attendees
         internal_token = CalendarManagementToken.objects.get(
             event_fk=calendar_event,
-            user=attendee_user,
+            membership_user_id=attendee_user.id,
             organization=organization,
         )
         external_token = CalendarManagementToken.objects.get(
@@ -8900,7 +8923,7 @@ class TestCalendarServicePermissionIntegration:
 
         assert not CalendarManagementToken.objects.filter(
             event_fk=calendar_event,
-            user=orphan_user,
+            membership_user_id=orphan_user.id,
             organization=organization,
         ).exists()
 
@@ -9038,14 +9061,14 @@ class TestCalendarServicePermissionIntegration:
         service._grant_calendar_owner_permissions(calendar)
         initial_token_count = CalendarManagementToken.objects.filter(
             calendar_fk=calendar,
-            user=user,
+            membership_user_id=user.id,
             organization=organization,
         ).count()
 
         service._grant_calendar_owner_permissions(calendar)
         final_token_count = CalendarManagementToken.objects.filter(
             calendar_fk=calendar,
-            user=user,
+            membership_user_id=user.id,
             organization=organization,
         ).count()
 
@@ -9075,14 +9098,14 @@ class TestCalendarServicePermissionIntegration:
         service._grant_event_attendee_permissions(calendar_event)
         initial_token_count = CalendarManagementToken.objects.filter(
             event_fk=calendar_event,
-            user=attendee_user,
+            membership_user_id=attendee_user.id,
             organization=organization,
         ).count()
 
         service._grant_event_attendee_permissions(calendar_event)
         final_token_count = CalendarManagementToken.objects.filter(
             event_fk=calendar_event,
-            user=attendee_user,
+            membership_user_id=attendee_user.id,
             organization=organization,
         ).count()
 
@@ -9266,12 +9289,12 @@ class TestCalendarServicePermissionScenarios:
                 # Check that both calendar and event tokens exist
                 calendar_token = CalendarManagementToken.objects.get(
                     calendar_fk=calendar,
-                    user=user,
+                    membership_user_id=user.id,
                     organization=organization,
                 )
                 event_token = CalendarManagementToken.objects.get(
                     event_fk=created_event,
-                    user=user,
+                    membership_user_id=user.id,
                     organization=organization,
                 )
 

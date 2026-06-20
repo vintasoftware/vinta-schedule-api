@@ -98,6 +98,29 @@ from public_api.models import SystemUser
 from users.models import User
 
 
+def _resolve_token_audit_actor(
+    token: CalendarManagementToken | None,
+) -> User | CalendarManagementToken | None:
+    """Resolve the side-effects audit actor for a permission token.
+
+    Before Phase 6 the actor was ``token.user`` (a User) when set, else the token
+    itself. The ``user`` FK is gone; the token's internal actor is now its
+    membership-scoped ``membership_user_id``. We resolve that back to a ``User`` so
+    the side-effects ``actor`` stays a User-or-token, exactly as before:
+
+    - member token (``membership_user_id`` set) → the corresponding ``User``;
+    - external / null-membership token → the token itself (no internal user actor),
+      matching the old ``token.user is None`` branch.
+    """
+    if token is None:
+        return None
+    if token.membership_user_id is not None:
+        actor_user = User.objects.filter(id=token.membership_user_id).first()
+        if actor_user is not None:
+            return actor_user
+    return token
+
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
@@ -488,10 +511,8 @@ class CalendarEventService:
         # ``getattr`` to avoid an AttributeError after commit, and fall back to the
         # SystemUser caller so owner-scoped events are never actor-less.
         permission_token = getattr(context.calendar_permission_service, "token", None)
-        if permission_token is not None and permission_token.user:
-            audit_actor: Any = permission_token.user
-        elif permission_token is not None:
-            audit_actor = permission_token
+        if permission_token is not None:
+            audit_actor: Any = _resolve_token_audit_actor(permission_token)
         else:
             audit_actor = context.user_or_token
 
@@ -778,7 +799,7 @@ class CalendarEventService:
                     continue
                 # Check if user already has a token for this event
                 existing_token = CalendarManagementToken.objects.filter(
-                    user=user,
+                    membership_user_id=user.id,
                     event_fk_id=event.id,
                     organization_id=context.organization.id,
                     revoked_at__isnull=True,
@@ -848,14 +869,7 @@ class CalendarEventService:
             if not context.calendar_side_effects_service:
                 return
 
-            actor = (
-                context.calendar_permission_service.token.user
-                if (
-                    context.calendar_permission_service.token
-                    and context.calendar_permission_service.token.user
-                )
-                else context.calendar_permission_service.token
-            )
+            actor = _resolve_token_audit_actor(context.calendar_permission_service.token)
             context.calendar_side_effects_service.on_update_event(
                 actor=actor,
                 event=self._serialize_event(event),
@@ -1404,14 +1418,7 @@ class CalendarEventService:
         transaction.on_commit(
             lambda: (
                 context.calendar_side_effects_service.on_delete_event(
-                    actor=(
-                        context.calendar_permission_service.token.user
-                        if (
-                            context.calendar_permission_service.token
-                            and context.calendar_permission_service.token.user
-                        )
-                        else context.calendar_permission_service.token
-                    ),
+                    actor=_resolve_token_audit_actor(context.calendar_permission_service.token),
                     event=serialized_event,
                     organization=event.organization,
                 )

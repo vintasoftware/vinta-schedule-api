@@ -2,7 +2,6 @@ import datetime
 import zoneinfo
 from typing import TYPE_CHECKING, ClassVar, Self
 
-from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
@@ -1748,14 +1747,9 @@ class CalendarManagementToken(OrganizationModel):
         help_text="IP address of the client that consumed (used) this token.",
     )
 
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        null=True,
-        related_name="calendar_event_management_tokens",
-    )
-    # Phase 5: membership reference alongside the kept nullable user FK.
-    # Tokens backed by external_attendee (null user) keep membership=NULL — not orphans.
+    # Phase 6: the legacy ``user`` FK is dropped; a token's internal actor is now
+    # the membership-scoped ``membership`` reference below. Tokens backed by
+    # ``external_attendee`` (null membership) carry no internal actor — not orphans.
     membership = OrganizationMembershipForeignKey(
         on_delete=models.PROTECT,
         related_name="calendar_event_management_tokens",
@@ -1783,7 +1777,12 @@ class CalendarManagementToken(OrganizationModel):
 
     def __str__(self):
         used_at = "" if self.used_at is None else f"(used at: {self.used_at.isoformat()})"
-        return f"Update Token from {self.user or self.external_attendee} for {self.event}{used_at}"
+        actor = (
+            f"membership user {self.membership_user_id}"
+            if self.membership_user_id is not None
+            else self.external_attendee
+        )
+        return f"Update Token from {actor} for {self.event}{used_at}"
 
 
 class CalendarManagementTokenPermission(OrganizationModel):
