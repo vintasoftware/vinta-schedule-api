@@ -13,7 +13,7 @@ Covers:
 Note on affected_membership_ids semantics:
   Memberships are identified by their org-scoped user_id (OrganizationMembershipForeignKey
   convention). The concrete column is membership_user_id; what was formerly
-  "membership.user_id" is now "membership.user_id".
+  "membership_fk_id" is now "membership.user_id".
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ Usage (from a caller that has been injected with AuditService):
     actor = self.audit_service.actor_from_membership(membership)
     subject = SubjectRef(
         subject_type="organizations.OrganizationMembership",
-        subject_id=str(membership.pk),
+        subject_id=str(membership.user_id),
         subject_label=str(membership),
     )
     self.audit_service.record(

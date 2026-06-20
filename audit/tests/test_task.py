@@ -194,7 +194,7 @@ class TestPersistAuditRecordTask:
         actor = AuditService.actor_from_membership(membership)
         subject = SubjectRef(
             subject_type="organizations.OrganizationMembership",
-            subject_id=str(membership.pk),
+            subject_id=str(membership.user_id),
         )
         diff = {"role": {"old": "member", "new": "admin"}}
 

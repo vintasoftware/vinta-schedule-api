@@ -114,7 +114,7 @@ class DjangoORMAuditRepository(AuditRepository):
 
         Duplicate membership ids in data.affected_membership_ids are silently
         deduplicated before bulk_create to avoid violating the unique constraint
-        (organization, audit_fk, membership_fk).
+        (audit_fk, membership_user_id).
 
         Diff invariant: diff is always either None or a NON-EMPTY dict.  An
         empty dict ({}) means "no changes" and is normalized to None here so
