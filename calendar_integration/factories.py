@@ -1,7 +1,7 @@
 import datetime
 
 from .constants import RecurrenceFrequency
-from .models import CalendarEvent, CalendarOwnership, RecurrenceRule
+from .models import CalendarEvent, CalendarOwnership, EventAttendance, RecurrenceRule
 
 
 def create_calendar_ownership(
@@ -50,6 +50,54 @@ def create_calendar_ownership(
         calendar=calendar,
         membership_user_id=membership_user_id,
         is_default=is_default,
+        **kwargs,
+    )
+
+
+def create_event_attendance(
+    *,
+    event,
+    user,
+    with_membership: bool = True,
+    status: str = "pending",
+    **kwargs,
+) -> EventAttendance:
+    """Create an ``EventAttendance`` wired for the membership-scoped read path.
+
+    Phase 4b dropped the legacy ``user`` FK; attendee identity is now carried by
+    the denormalized ``membership_user_id`` column and the ``membership``
+    ForeignObject join to ``OrganizationMembership(organization_id, user_id)``.
+    This helper:
+
+    - ensures an active ``OrganizationMembership`` exists for ``(user,
+      event.organization)`` (unless ``with_membership=False``, which models an
+      *orphan* attendance for the orphan-behaviour tests);
+    - sets ``membership_user_id`` so membership-based reads see the attendance.
+
+    Pass ``with_membership=False`` to create an orphan attendance whose ``(user,
+    organization)`` pair has no membership: ``membership_user_id`` stays ``NULL``
+    so membership-based reads exclude it. The raw-SQL composite FK
+    ``evattendance_membership_protect_fk`` enforces that a non-NULL
+    ``membership_user_id`` references a real membership, so the
+    ``with_membership=True`` path must seed one.
+    """
+    from organizations.models import OrganizationMembership
+
+    organization = event.organization
+
+    membership_user_id = None
+    if with_membership:
+        OrganizationMembership.objects.get_or_create(
+            user=user,
+            organization=organization,
+        )
+        membership_user_id = user.id
+
+    return EventAttendance.objects.create(
+        organization=organization,
+        event=event,
+        membership_user_id=membership_user_id,
+        status=status,
         **kwargs,
     )
 

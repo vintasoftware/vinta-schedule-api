@@ -864,22 +864,33 @@ class CalendarSyncService:
         for attendee in event.attendees:
             user = User.objects.filter(email=attendee.email).first()
 
-            if user and not existing_event.attendances.filter(user_id=user.id).exists():
-                # Resolve the membership-backed identity for the synced attendee;
-                # a non-member (orphan) stays NULL so the composite PROTECT FK holds.
-                membership_user_id = (
-                    user.id
-                    if OrganizationMembership.objects.filter(
-                        organization_id=existing_event.organization_id,
-                        user_id=user.id,
-                    ).exists()
-                    else None
-                )
+            # Resolve the membership-backed identity for the synced attendee;
+            # a non-member (orphan) stays NULL so the composite PROTECT FK holds.
+            membership_user_id = (
+                user.id
+                if user
+                and OrganizationMembership.objects.filter(
+                    organization_id=existing_event.organization_id,
+                    user_id=user.id,
+                ).exists()
+                else None
+            )
+
+            # A member attendance is deduped by ``membership_user_id``; an orphan
+            # (non-member with a matching User) has no membership-backed identity and
+            # cannot be deduped, so it is created each time the sync sees it.
+            member_attendance_exists = (
+                membership_user_id is not None
+                and existing_event.attendances.filter(
+                    membership_user_id=membership_user_id
+                ).exists()
+            )
+
+            if user and not member_attendance_exists:
                 changes.attendances_to_create.append(
                     EventAttendance(
                         organization_id=existing_event.organization_id,
                         event=existing_event,
-                        user=user,
                         membership_user_id=membership_user_id,
                         status=attendee.status,
                     )
@@ -904,13 +915,17 @@ class CalendarSyncService:
                     )
                 )
             else:
-                # Update existing attendance status if needed
+                # Update existing attendance status if needed. Reached when the
+                # attendee is an existing member attendance (matched by
+                # membership_user_id) or an existing external attendance (matched by
+                # email).
                 attendance = (
-                    existing_event.attendances.filter(user=user).first()
-                    or existing_event.external_attendances.filter(
-                        external_attendee__email=attendee.email
-                    ).first()
-                )
+                    existing_event.attendances.filter(membership_user_id=membership_user_id).first()
+                    if membership_user_id is not None
+                    else None
+                ) or existing_event.external_attendances.filter(
+                    external_attendee__email=attendee.email
+                ).first()
                 if attendance:
                     attendance.status = attendee.status
 

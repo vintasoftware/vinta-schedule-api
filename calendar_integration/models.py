@@ -438,14 +438,17 @@ class EventExternalAttendance(OrganizationModel):
 
 class EventAttendance(OrganizationModel):
     """
-    Represents the attendance of a user at a event.
+    Represents the attendance of an organization member at an event.
 
-    Phase 3 (expand): ``membership`` is added alongside the existing ``user`` FK.
-    ``user_id`` is NOT NULL in the DB, so every row has a user; rows whose
-    ``(user_id, organization_id)`` has no matching ``OrganizationMembership`` are
-    reported as orphans in the backfill data migration and keep
-    ``membership_user_id = NULL``. (The null-user guard in the backfill is
-    defensive/forward-compat only — see ``_0029_backfill_helpers``.)
+    Phase 4b (cutover): the legacy ``user`` FK has been dropped. Attendee identity
+    is now carried solely by the membership-scoped ``membership`` ForeignObject and
+    its denormalized ``membership_user_id`` column. Orphan rows
+    (``membership_user_id IS NULL`` — the attendee is not, or is no longer, a member
+    of the event's organization) permanently lose attendee identity; they were
+    CSV-reported in the Phase 3 backfill before the column was dropped. PROTECT
+    delete semantics against the referenced membership are enforced by the raw-SQL
+    composite FK ``evattendance_membership_protect_fk`` (DEFERRABLE INITIALLY
+    DEFERRED), not by the ForeignObject (which is wired ``DO_NOTHING``).
     """
 
     event = OrganizationForeignKey(
@@ -453,9 +456,6 @@ class EventAttendance(OrganizationModel):
         on_delete=models.CASCADE,
         null=True,
         related_name="attendances",
-    )
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="event_attendances"
     )
     membership = OrganizationMembershipForeignKey(
         on_delete=models.PROTECT,
@@ -478,7 +478,7 @@ class EventAttendance(OrganizationModel):
         ]
 
     def __str__(self):
-        return f"{self.user} - {self.event.title} ({self.status})"
+        return f"member:{self.membership_user_id} - {self.event.title} ({self.status})"
 
 
 class ResourceAllocation(OrganizationModel):

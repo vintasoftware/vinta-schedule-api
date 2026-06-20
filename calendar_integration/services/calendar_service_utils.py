@@ -121,9 +121,9 @@ def serialize_event_internal_attendee(
     """Serialize an internal event attendance to ``EventInternalAttendeeData``.
 
     The attendee identity is resolved from the denormalized ``membership_user_id``
-    (not ``attendance.user``, which is dropped in a later phase, nor
-    ``attendance.membership.user``, which resolves to ``None`` for a stale
-    membership). An orphan attendance whose ``membership_user_id`` is ``None`` (the
+    (the legacy ``attendance.user`` FK has been dropped, and
+    ``attendance.membership.user`` resolves to ``None`` for a stale membership). An
+    orphan attendance whose ``membership_user_id`` is ``None`` (the
     attendee is not — or is no longer — a member of the organization) has no
     membership-backed identity and is skipped: the caller drops the ``None``.
 
@@ -271,8 +271,10 @@ def serialize_event_data_input(
     member_user_ids = resolve_member_user_ids(new_attendance_user_ids, organization.id)
     attendances_users_by_id = {u.id: u for u in User.objects.filter(id__in=member_user_ids)}
     existing_attendances_by_user_id = {
-        a.user_id: a
-        for a in EventAttendance.objects.filter(event=event, user_id__in=new_attendance_user_ids)
+        a.membership_user_id: a
+        for a in EventAttendance.objects.filter(
+            event=event, membership_user_id__in=new_attendance_user_ids
+        )
     }
     existing_external_attendances_by_attendee_id = {
         a.external_attendee.id: a

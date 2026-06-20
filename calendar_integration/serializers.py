@@ -1248,7 +1248,12 @@ class CalendarEventSerializer(VirtualModelSerializer):
             [{"resource_id": ra.calendar.id} for ra in instance.resource_allocations.all()],
         )
         attendances = validated_data.pop(
-            "attendances", [{"user_id": att.user_id} for att in instance.attendances.all()]
+            "attendances",
+            [
+                {"user_id": att.membership_user_id}
+                for att in instance.attendances.all()
+                if att.membership_user_id is not None
+            ],
         )
         external_attendances = validated_data.pop(
             "external_attendances",

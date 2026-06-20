@@ -669,8 +669,9 @@ class CalendarGroupService:
         # Build the update input preserving all non-time details so that only
         # RESCHEDULE permission is required (same approach as Phase 6a).
         preserved_attendances = [
-            EventAttendanceInputData(user_id=attendance.user_id)
+            EventAttendanceInputData(user_id=attendance.membership_user_id)
             for attendance in event.attendances.all()
+            if attendance.membership_user_id is not None
         ]
 
         preserved_external_attendances = [

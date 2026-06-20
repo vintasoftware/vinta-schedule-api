@@ -288,7 +288,6 @@ class TestSerializeEventInternalAttendee:
         event = self._make_event(organization)
         attendance = EventAttendance.objects.create(
             event=event,
-            user=user,
             membership_user_id=user.id,
             organization=organization,
             status="accepted",
@@ -305,11 +304,9 @@ class TestSerializeEventInternalAttendee:
     def test_orphan_attendance_serializes_to_none(self, db, organization):
         """An attendance whose membership_user_id is NULL has no membership-backed
         identity and serializes to None (intentionally excluded)."""
-        user = User.objects.create_user(email="orphan@example.com", password="pw")
         event = self._make_event(organization)
         attendance = EventAttendance.objects.create(
             event=event,
-            user=user,
             membership_user_id=None,
             organization=organization,
             status="accepted",

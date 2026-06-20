@@ -458,7 +458,6 @@ class CalendarEventService:
                 EventAttendance(
                     organization=context.organization,
                     event=event,
-                    user_id=attendance_data.user_id,
                     membership_user_id=(
                         attendance_data.user_id
                         if attendance_data.user_id in member_user_ids
@@ -565,10 +564,10 @@ class CalendarEventService:
                 for u in User.objects.filter(id__in=[a.user_id for a in event_data.attendances])
             }
             attendance_by_user_id = {
-                a.user_id: a
+                a.membership_user_id: a
                 for a in EventAttendance.objects.filter_by_organization(
                     context.organization.id
-                ).filter(event__id=event_id, user_id__in=users_by_id.keys())
+                ).filter(event__id=event_id, membership_user_id__in=users_by_id.keys())
             }
             resources_by_id = {
                 r.id: r
@@ -653,7 +652,7 @@ class CalendarEventService:
 
         event.save()
 
-        existing_attendances = {a.user_id: a for a in event.attendances.all()}
+        existing_attendances = {a.membership_user_id: a for a in event.attendances.all()}
         existing_external_attendances = {
             a.external_attendee_fk_id: a for a in event.external_attendances.all()
         }
@@ -743,7 +742,6 @@ class CalendarEventService:
                 event_attendance_instance = EventAttendance(
                     organization=context.organization,
                     event=event,
-                    user_id=attendance_data.user_id,
                     membership_user_id=(
                         attendance_data.user_id
                         if attendance_data.user_id in member_user_ids
@@ -814,9 +812,12 @@ class CalendarEventService:
                     )
 
         attendances_to_delete = set(existing_attendances.keys()) - set(maintained_attendees_ids)
+        # Keyed on ``membership_user_id``; orphan rows (membership_user_id IS NULL) are
+        # never targeted here — Postgres ``IN`` does not match NULL — so they survive an
+        # update, matching their identity-less, membership-scoped semantics.
         attendances_instances_to_delete = EventAttendance.objects.filter_by_organization(
             context.organization.id
-        ).filter(user_id__in=attendances_to_delete)
+        ).filter(membership_user_id__in=attendances_to_delete)
         serialized_attendances_to_delete = [
             serialized
             for attendance in attendances_instances_to_delete
@@ -992,8 +993,9 @@ class CalendarEventService:
                 timezone=parent_event.timezone,
                 recurrence_rule=new_recurrence_rule.to_rrule_string(),
                 attendances=[
-                    EventAttendanceInputData(user_id=a.user_id)
+                    EventAttendanceInputData(user_id=a.membership_user_id)
                     for a in parent_event.attendances.all()
+                    if a.membership_user_id is not None
                 ],
                 external_attendances=[
                     EventExternalAttendanceInputData(
@@ -1443,9 +1445,10 @@ class CalendarEventService:
             recurrence_rule=event_data.recurrence_rule,
             attendances=[
                 EventAttendanceInputData(
-                    user_id=a.user_id,
+                    user_id=a.membership_user_id,
                 )
                 for a in event.attendances.all()
+                if a.membership_user_id is not None
             ],
             external_attendances=[
                 EventExternalAttendanceInputData(
@@ -1507,8 +1510,9 @@ class CalendarEventService:
                         for ra in parent.resource_allocations.all()
                     ],
                     attendances=[
-                        EventAttendanceInputData(user_id=att.user_id)
+                        EventAttendanceInputData(user_id=att.membership_user_id)
                         for att in parent.attendances.all()
+                        if att.membership_user_id is not None
                     ],
                     external_attendances=[
                         EventExternalAttendanceInputData(
@@ -1563,8 +1567,9 @@ class CalendarEventService:
                     timezone=parent.timezone,
                     recurrence_rule=recurrence_rule.to_rrule_string() if recurrence_rule else None,
                     attendances=[
-                        EventAttendanceInputData(user_id=a.user_id)
+                        EventAttendanceInputData(user_id=a.membership_user_id)
                         for a in parent.attendances.all()
+                        if a.membership_user_id is not None
                     ],
                     external_attendances=[
                         EventExternalAttendanceInputData(

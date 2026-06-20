@@ -9090,7 +9090,7 @@ class TestScopedTokenScheduleEvent:
         ev_id = int(data["data"]["scheduleEvent"]["id"])
         assert (
             EventAttendance.objects.filter_by_organization(org.id)
-            .filter(event_fk_id=ev_id, user_id=attendee.id)
+            .filter(event_fk_id=ev_id, membership_user_id=attendee.id)
             .exists()
         )
         assert (

@@ -64,11 +64,10 @@ def event(organization, calendar) -> CalendarEvent:
     )
 
 
-def _make_attendance(event, organization, user, *, membership_user_id):
+def _make_attendance(event, organization, *, membership_user_id):
     return EventAttendance.objects.create(
         event=event,
         organization=organization,
-        user=user,
         membership_user_id=membership_user_id,
         status="pending",
     )
@@ -110,7 +109,7 @@ def test_resolve_member_user_ids_scoped_to_organization(member_user):
 @pytest.mark.django_db
 def test_attendee_memberships_m2m_returns_member_attendees(organization, event, member_user):
     """``CalendarEvent.attendee_memberships`` returns the attendee membership."""
-    _make_attendance(event, organization, member_user, membership_user_id=member_user.id)
+    _make_attendance(event, organization, membership_user_id=member_user.id)
 
     membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
     resolved = CalendarEvent.objects.filter_by_organization(organization.id).get(pk=event.pk)
@@ -120,8 +119,7 @@ def test_attendee_memberships_m2m_returns_member_attendees(organization, event, 
 @pytest.mark.django_db
 def test_orphan_attendance_excluded_from_attendee_memberships_m2m(organization, event):
     """An orphan attendance does not surface through ``attendee_memberships``."""
-    orphan_user = baker.make("users.User")  # NOT a member
-    _make_attendance(event, organization, orphan_user, membership_user_id=None)
+    _make_attendance(event, organization, membership_user_id=None)
 
     resolved = CalendarEvent.objects.filter_by_organization(organization.id).get(pk=event.pk)
     assert list(resolved.attendee_memberships.all()) == []
@@ -139,12 +137,12 @@ def test_attendance_serializer_membership_field_shape(organization, event):
     OrganizationMembership.objects.create(
         user=user, organization=organization, role=OrganizationRole.ADMIN
     )
-    _make_attendance(event, organization, user, membership_user_id=user.id)
+    _make_attendance(event, organization, membership_user_id=user.id)
 
     attendance = (
         EventAttendance.objects.filter_by_organization(organization.id)
         .select_related("membership")
-        .get(event_fk_id=event.id, user_id=user.id)
+        .get(event_fk_id=event.id, membership_user_id=user.id)
     )
 
     # The serializer no longer exposes a bare user; membership replaces it.
@@ -162,15 +160,15 @@ def test_attendance_serializer_membership_field_shape(organization, event):
 @pytest.mark.django_db
 def test_attendance_serializer_orphan_membership_is_null(organization, event):
     """An orphan attendance has a null ``membership`` (no nested identity to expose)."""
-    orphan_user = baker.make("users.User")
-    _make_attendance(event, organization, orphan_user, membership_user_id=None)
+    created = _make_attendance(event, organization, membership_user_id=None)
 
     attendance = (
         EventAttendance.objects.filter_by_organization(organization.id)
         .select_related("membership")
-        .get(event_fk_id=event.id, user_id=orphan_user.id)
+        .get(pk=created.pk)
     )
     assert attendance.membership is None
+    assert attendance.membership_user_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -195,12 +193,12 @@ def test_attendance_graphql_membership_resolver(organization, event):
     OrganizationMembership.objects.create(
         user=user, organization=organization, role=OrganizationRole.MEMBER
     )
-    _make_attendance(event, organization, user, membership_user_id=user.id)
+    _make_attendance(event, organization, membership_user_id=user.id)
 
     attendance = (
         EventAttendance.objects.filter_by_organization(organization.id)
         .select_related("membership")
-        .get(event_fk_id=event.id, user_id=user.id)
+        .get(event_fk_id=event.id, membership_user_id=user.id)
     )
 
     # The resolver body is a plain instance method under the strawberry field
@@ -212,8 +210,7 @@ def test_attendance_graphql_membership_resolver(organization, event):
     assert resolved.organization_id == organization.id
     assert resolved.role == OrganizationRole.MEMBER
 
-    orphan_user = baker.make("users.User")
-    orphan_attendance = _make_attendance(event, organization, orphan_user, membership_user_id=None)
+    orphan_attendance = _make_attendance(event, organization, membership_user_id=None)
     orphan_attendance = (
         EventAttendance.objects.filter_by_organization(organization.id)
         .select_related("membership")

@@ -1638,8 +1638,11 @@ def test_create_recurring_exception_on_master_preserves_attendances_and_resource
     recurrence_rule = "RRULE:FREQ=WEEKLY;COUNT=3;BYDAY=MO"
     mock_google_adapter.provider = CalendarProvider.GOOGLE
 
-    # Create additional user and resource for testing
+    # Create additional member user and resource for testing. The user must be a
+    # member of the org so the membership-scoped attendance survives the recurring
+    # exception copy (orphan attendances carry no identity and are dropped).
     additional_user = User.objects.create_user(email="attendee@example.com", password="testpass123")
+    OrganizationMembership.objects.create(user=additional_user, organization=calendar.organization)
     resource_calendar = Calendar.objects.create(
         name="Test Resource",
         external_id="resource_123",
@@ -3094,6 +3097,13 @@ def test_create_event_with_attendances(
     mock_google_adapter.create_event.return_value = created_event_data
     mock_google_adapter.provider = CalendarProvider.GOOGLE
 
+    # The attendee users must be members of the event's organization for the
+    # membership-scoped write path to persist their identity (membership_user_id).
+    for attendance in sample_event_input_data_with_attendances.attendances:
+        OrganizationMembership.objects.get_or_create(
+            user_id=attendance.user_id, organization=calendar.organization
+        )
+
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=calendar.organization)
     result = service.create_event(calendar.id, sample_event_input_data_with_attendances)
@@ -3105,7 +3115,7 @@ def test_create_event_with_attendances(
 
     # Verify user attendances were created
     assert result.attendances.count() == 2
-    user_ids = [attendance.user_id for attendance in result.attendances.all()]
+    user_ids = [attendance.membership_user_id for attendance in result.attendances.all()]
     expected_user_ids = [
         att.user_id for att in sample_event_input_data_with_attendances.attendances
     ]
@@ -3134,11 +3144,12 @@ def test_update_event_with_attendances(
     # Create initial attendances
     user1 = User.objects.create_user(email="initial1@example.com")
     Profile.objects.create(user=user1, first_name="Initial", last_name="User")
+    OrganizationMembership.objects.create(user=user1, organization=calendar_event.organization)
 
     EventAttendance.objects.create(
         organization=calendar_event.organization,
         event=calendar_event,
-        user=user1,
+        membership_user_id=user1.id,
     )
     external_attendee = ExternalAttendee.objects.create(
         organization=calendar_event.organization,
@@ -3151,11 +3162,14 @@ def test_update_event_with_attendances(
         external_attendee=external_attendee,
     )
 
-    # Create new users for updated attendances
+    # Create new users for updated attendances (members so the membership-scoped
+    # write path persists their identity)
     new_user1 = User.objects.create_user(email="new1@example.com")
     new_user2 = User.objects.create_user(email="new2@example.com")
     Profile.objects.create(user=new_user1, first_name="New", last_name="User 1")
     Profile.objects.create(user=new_user2, first_name="New", last_name="User 2")
+    OrganizationMembership.objects.create(user=new_user1, organization=calendar_event.organization)
+    OrganizationMembership.objects.create(user=new_user2, organization=calendar_event.organization)
 
     updated_event_data = CalendarEventAdapterOutputData(
         calendar_external_id="cal_123",
@@ -3203,11 +3217,13 @@ def test_update_event_with_attendances(
 
     # Verify attendances were updated correctly
     assert result.attendances.count() == 2
-    user_ids = [attendance.user_id for attendance in result.attendances.all()]
+    user_ids = [attendance.membership_user_id for attendance in result.attendances.all()]
     assert set(user_ids) == {new_user1.id, new_user2.id}
 
     # Verify old attendance was removed
-    assert not EventAttendance.objects.filter(user=user1, event=calendar_event).exists()
+    assert not EventAttendance.objects.filter(
+        membership_user_id=user1.id, event=calendar_event
+    ).exists()
 
     # Verify external attendances were updated correctly
     assert result.external_attendances.count() == 1
@@ -3239,10 +3255,9 @@ def test_update_event_with_unchanged_orphan_attendee_requires_no_attendee_permis
     flagged as an attendee change the update would be denied.
     """
     orphan_user = User.objects.create_user(email="orphan@example.com")  # NOT a member
-    EventAttendance.objects.create(
+    orphan_attendance = EventAttendance.objects.create(
         organization=calendar_event.organization,
         event=calendar_event,
-        user=orphan_user,
         membership_user_id=None,
     )
 
@@ -3296,10 +3311,11 @@ def test_update_event_with_unchanged_orphan_attendee_requires_no_attendee_permis
     result = service.update_event(calendar_event.calendar.id, calendar_event.id, event_input_data)
 
     assert result.id == calendar_event.id
-    # The orphan attendance is still present and still orphaned.
+    # The orphan attendance is still present and still orphaned (the dropped ``user``
+    # FK means it is retrievable only by pk, not by the original user id).
     orphan_attendance = EventAttendance.objects.filter_by_organization(
         calendar_event.organization_id
-    ).get(event=calendar_event, user_id=orphan_user.id)
+    ).get(pk=orphan_attendance.pk)
     assert orphan_attendance.membership_user_id is None
 
 
@@ -3355,8 +3371,11 @@ def test_create_event_persists_membership_user_id_for_mixed_attendees(
     result = service.create_event(calendar.id, event_input_data)
 
     attendances_by_org = EventAttendance.objects.filter_by_organization(calendar.organization_id)
-    member_attendance = attendances_by_org.get(event=result, user_id=member_user.id)
-    non_member_attendance = attendances_by_org.get(event=result, user_id=non_member_user.id)
+    member_attendance = attendances_by_org.get(event=result, membership_user_id=member_user.id)
+    # The non-member attendee is now an identity-less orphan (membership_user_id IS
+    # NULL) — the dropped ``user`` column means it can only be retrieved as the lone
+    # null-membership row, not by the original user id.
+    non_member_attendance = attendances_by_org.get(event=result, membership_user_id__isnull=True)
 
     assert member_attendance.membership_user_id == member_user.id
     assert non_member_attendance.membership_user_id is None
@@ -4192,7 +4211,6 @@ def test_process_event_attendees_new_user(
     attendance = changes.attendances_to_create[0]
     assert attendance.event_fk == calendar_event
     assert attendance.status == "accepted"
-    assert attendance.user_id == attendee_user.id
     assert attendance.membership_user_id == attendee_user.id
 
 
@@ -4200,8 +4218,13 @@ def test_process_event_attendees_new_user(
 def test_process_event_attendees_non_member_stays_orphan(
     social_account, social_token, mock_google_adapter, calendar_event
 ):
-    """A synced attendee who is not a member gets a NULL membership_user_id (orphan)."""
-    non_member = User.objects.create_user(email="nonmember@example.com", password="pw")
+    """A synced attendee who is not a member gets a NULL membership_user_id (orphan).
+
+    The orphan still becomes an internal attendance (the synced attendee resolves to
+    a real User), but with no membership-backed identity — the dropped ``user`` FK
+    means the row is identity-less going forward.
+    """
+    User.objects.create_user(email="nonmember@example.com", password="pw")
 
     event_data = CalendarEventAdapterOutputData(
         calendar_external_id="cal_123",
@@ -4224,7 +4247,6 @@ def test_process_event_attendees_non_member_stays_orphan(
 
     assert len(changes.attendances_to_create) == 1
     attendance = changes.attendances_to_create[0]
-    assert attendance.user_id == non_member.id
     assert attendance.membership_user_id is None
 
 
@@ -5851,15 +5873,16 @@ def test_apply_sync_changes_attendances_to_create(
         organization=calendar.organization,
     )
 
-    # Create user for attendance
+    # Create member user for attendance
     user = User.objects.create_user(email="attendee@example.com", password="testpass123")
+    OrganizationMembership.objects.create(user=user, organization=calendar.organization)
 
     changes = EventsSyncChanges()
 
     # Create attendance to be created
     new_attendance = EventAttendance(
         event_fk=event,
-        user=user,
+        membership_user_id=user.id,
         organization=calendar.organization,
     )
     changes.attendances_to_create.append(new_attendance)
@@ -5870,7 +5893,7 @@ def test_apply_sync_changes_attendances_to_create(
 
     # Verify attendance was created
     created_attendance = EventAttendance.objects.get(
-        event_fk=event, user=user, organization=calendar.organization
+        event_fk=event, membership_user_id=user.id, organization=calendar.organization
     )
     assert created_attendance.organization == calendar.organization
 
@@ -8785,7 +8808,6 @@ class TestCalendarServicePermissionIntegration:
         # Create attendances (membership-backed internal attendee)
         EventAttendance.objects.create(
             event=calendar_event,
-            user=attendee_user,
             membership_user_id=attendee_user.id,
             organization=organization,
             status="pending",
@@ -8838,7 +8860,6 @@ class TestCalendarServicePermissionIntegration:
 
         EventAttendance.objects.create(
             event=calendar_event,
-            user=orphan_user,
             membership_user_id=None,
             organization=organization,
             status="pending",
@@ -9013,7 +9034,6 @@ class TestCalendarServicePermissionIntegration:
 
         EventAttendance.objects.create(
             event=calendar_event,
-            user=attendee_user,
             membership_user_id=attendee_user.id,
             organization=organization,
             status="pending",
@@ -9086,7 +9106,6 @@ class TestCalendarServicePermissionScenarios:
 
         EventAttendance.objects.create(
             event=calendar_event,
-            user=attendee_user,
             membership_user_id=attendee_user.id,
             organization=organization,
             status="pending",
