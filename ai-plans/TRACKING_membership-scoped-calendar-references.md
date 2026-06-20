@@ -146,13 +146,21 @@ column (4b) loses attendee identity for orphan attendances. **Before 4b drops th
   external-attendee path (deduped by email; internal attendance == membership). 2662 passed. Deleted test_attendance_expand.py
   (mirrors 2b deleting test_ownership_expand.py).
 
+### Phase 5 — CalendarManagementToken: expand + backfill ✅
+- **Status**: merged-ready (PR open). **Model**: claude-sonnet (T2/T3) · migration-author + reviewer (clean, no findings).
+- **Branch**: `…/phase-5` (stacked on 4b) · **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/153
+- **Summary**: Mirror of Phase 3 for CalendarManagementToken — `membership` + `membership_user_id` + index
+  `calmgmttoken_org_member_idx`; migrations 0033 (schema) + 0034 (backfill). Token-specific: `user` is NULLABLE
+  (external_attendee alt); null-user tokens excluded from backfill + orphan report via `AND user_id IS NOT NULL`.
+  10 tests. 2672 passed. Reviewer: no findings.
+
 ## Current phase
-- Phase 5 — CalendarManagementToken expand + backfill (next). NOTE: `CalendarManagementToken.user` is genuinely
-  NULLABLE (the `external_attendee` alternative). Backfill member rows; null-user (external) tokens stay NULL and are
-  NOT orphans; user-set-but-non-member → NULL + reported. Mirror Phase 3.
+- Phase 6 — CalendarManagementToken cutover (app layer + drop user + PROTECT FK) (next; token has no M2M → may be single phase)
 
 ## Remaining phases
-- Phase 5 — CalendarManagementToken expand + backfill (T2 · migration-author)
+- Phase 6 — CalendarManagementToken cutover (T4 · implementer/migration-author)
+- Phase 7a — FK conversions (OrganizationInvitation.membership + public_api.SystemUser.scoped_to_membership) + .id rewrites (T4)
+- Phase 7b — OrganizationMembership composite PK (T4 · migration-author)
 - Phase 6 — CalendarManagementToken cutover (T4 · implementer/migration-author) [likely split 6a/6b]
 - Phase 7a — FK conversions (OrganizationInvitation.membership + public_api.SystemUser.scoped_to_membership) + .id rewrites (T4)
 - Phase 7b — OrganizationMembership composite PK (T4 · migration-author)
