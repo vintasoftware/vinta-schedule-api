@@ -24,7 +24,7 @@ from calendar_integration.exceptions import (
     NoAvailableTimeWindowsError,
     ServiceNotAuthenticatedError,
 )
-from calendar_integration.factories import CalendarEventFactory
+from calendar_integration.factories import CalendarEventFactory, create_calendar_ownership
 from calendar_integration.models import (
     AvailableTime,
     AvailableTimeBulkModification,
@@ -4418,10 +4418,9 @@ def test_create_event_no_available_windows(
     )
 
     # Create calendar ownership for the user
-    CalendarOwnership.objects.create(
+    create_calendar_ownership(
         calendar=calendar,
         user=social_account.user,
-        organization=organization,
     )
 
     # Create permission token for the user
@@ -4796,10 +4795,9 @@ def test_create_event_adapter_failure(
     )
 
     # Create calendar ownership for the user
-    CalendarOwnership.objects.create(
+    create_calendar_ownership(
         calendar=calendar,
         user=social_account.user,
-        organization=organization,
     )
 
     # Create permission token for the user
@@ -7903,8 +7901,7 @@ def owned_calendar(db, organization, calendar_owner_user):
         calendar_type=CalendarType.PERSONAL,
     )
     # Create ownership relationship
-    CalendarOwnership.objects.create(
-        organization=organization,
+    create_calendar_ownership(
         calendar=calendar,
         user=calendar_owner_user,
         is_default=True,
@@ -8021,8 +8018,7 @@ def test_get_write_adapter_prefers_default_owner(
     )
 
     # Create ownership for the other user (not default)
-    CalendarOwnership.objects.create(
-        organization=owned_calendar.organization,
+    create_calendar_ownership(
         calendar=owned_calendar,
         user=other_owner,
         is_default=False,
@@ -8068,8 +8064,7 @@ def test_get_write_adapter_returns_self_adapter_when_no_valid_owner(
 
     # Create user without social account
     user_no_social = User.objects.create_user(email="nosocial@example.com", password="testpass123")
-    CalendarOwnership.objects.create(
-        organization=organization,
+    create_calendar_ownership(
         calendar=calendar_no_owner,
         user=user_no_social,
         is_default=True,
@@ -8490,10 +8485,9 @@ class TestCalendarServicePermissionIntegration:
         # Create a user and make them a calendar owner
         user = User.objects.create(email="owner@example.com")
         Profile.objects.create(user=user)
-        CalendarOwnership.objects.create(
+        create_calendar_ownership(
             calendar=calendar,
             user=user,
-            organization=organization,
         )
 
         # Create a permission service
@@ -8687,10 +8681,9 @@ class TestCalendarServicePermissionIntegration:
         """Test that duplicate tokens are not created for the same user/calendar combination."""
         user = User.objects.create(email="owner@example.com")
         Profile.objects.create(user=user)
-        CalendarOwnership.objects.create(
+        create_calendar_ownership(
             calendar=calendar,
             user=user,
-            organization=organization,
         )
 
         permission_service = CalendarPermissionService()
@@ -8759,10 +8752,9 @@ class TestCalendarServicePermissionScenarios:
         """Test that calendar owners receive all expected permissions."""
         user = User.objects.create_user(email="owner@example.com")
         Profile.objects.create(user=user)
-        CalendarOwnership.objects.create(
+        create_calendar_ownership(
             calendar=calendar,
             user=user,
-            organization=organization,
         )
 
         permission_service = CalendarPermissionService()
@@ -8875,10 +8867,9 @@ class TestCalendarServicePermissionScenarios:
         )
         user = User.objects.create_user(email="owner@example.com")
         Profile.objects.create(user=user)
-        CalendarOwnership.objects.create(
+        create_calendar_ownership(
             calendar=calendar,
             user=user,
-            organization=organization,
         )
 
         # Create permission service and calendar service

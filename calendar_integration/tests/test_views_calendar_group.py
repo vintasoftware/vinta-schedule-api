@@ -91,7 +91,10 @@ def owned_group(user, organization, internal_calendars):
     """A group where `user` owns at least one of the pool calendars so the
     CalendarGroupPermission passes object-level checks."""
     CalendarOwnership.objects.create(
-        organization=organization, calendar=internal_calendars["phys_a"], user=user
+        organization=organization,
+        calendar=internal_calendars["phys_a"],
+        user=user,
+        membership_user_id=user.id,
     )
     group = CalendarGroup.objects.create(organization=organization, name="Clinic")
     physicians = CalendarGroupSlot.objects.create(
@@ -151,7 +154,10 @@ class TestCalendarGroupCrud:
         # CalendarGroupService; make sure the user owns one calendar so
         # the subsequent object-level access on retrieve works too.
         CalendarOwnership.objects.create(
-            organization=organization, calendar=internal_calendars["phys_a"], user=user
+            organization=organization,
+            calendar=internal_calendars["phys_a"],
+            user=user,
+            membership_user_id=user.id,
         )
         url = reverse("api:CalendarGroups-list")
         payload = {
@@ -186,7 +192,10 @@ class TestCalendarGroupCrud:
         self, auth_client, organization, internal_calendars, user
     ):
         CalendarOwnership.objects.create(
-            organization=organization, calendar=internal_calendars["phys_a"], user=user
+            organization=organization,
+            calendar=internal_calendars["phys_a"],
+            user=user,
+            membership_user_id=user.id,
         )
         url = reverse("api:CalendarGroups-list")
         payload = {
@@ -420,7 +429,10 @@ class TestPermissionBoundary:
         )
         # User owns a calendar in THEIR org, but other_group belongs to another org.
         CalendarOwnership.objects.create(
-            organization=organization, calendar=internal_calendars["phys_a"], user=user
+            organization=organization,
+            calendar=internal_calendars["phys_a"],
+            user=user,
+            membership_user_id=user.id,
         )
         other_group = CalendarGroup.objects.create(organization=other_org, name="Other")
         other_slot = CalendarGroupSlot.objects.create(

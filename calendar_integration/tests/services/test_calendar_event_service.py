@@ -362,7 +362,12 @@ def scoped_event_setup(db):
         provider=CalendarProvider.GOOGLE,
         organization=organization,
     )
-    CalendarOwnership.objects.create(calendar=calendar, user=owner, organization=organization)
+    CalendarOwnership.objects.create(
+        calendar=calendar,
+        user=owner,
+        membership_user_id=owner.id,
+        organization=organization,
+    )
     return {
         "organization": organization,
         "owner": owner,

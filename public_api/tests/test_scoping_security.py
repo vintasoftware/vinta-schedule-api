@@ -126,7 +126,13 @@ class TestNestedFieldOwnerScopeSecurity:
             name=f"{label} Calendar",
             external_id=f"{label}-cal-{unique}",
         )
-        baker.make(CalendarOwnership, calendar=calendar, user=user, organization=org)
+        baker.make(
+            CalendarOwnership,
+            calendar=calendar,
+            user=user,
+            membership_user_id=user.id,
+            organization=org,
+        )
         return user, membership, calendar
 
     def _scoped_token(self, org, membership, resources):

@@ -29,7 +29,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupSlotSelectionInputData,
     EventAttendanceInputData,
 )
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from users.models import User
 
 
@@ -1207,15 +1207,19 @@ def test_create_grouped_event_invites_owners_of_non_primary_personal_calendars(
 ):
     physician_a_user = User.objects.create_user(email="phys.a@example.com")
     physician_b_user = User.objects.create_user(email="phys.b@example.com")
+    OrganizationMembership.objects.get_or_create(user=physician_a_user, organization=organization)
+    OrganizationMembership.objects.get_or_create(user=physician_b_user, organization=organization)
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=internal_calendars["phys_a"],
         user=physician_a_user,
+        membership_user_id=physician_a_user.id,
     )
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=internal_calendars["phys_b"],
         user=physician_b_user,
+        membership_user_id=physician_b_user.id,
     )
 
     start = timezone.now().replace(microsecond=0) + timedelta(hours=1)
@@ -1258,10 +1262,12 @@ def test_create_grouped_event_dedupes_explicit_and_implicit_attendees(
     grouped_service, clinic_group, internal_calendars, organization
 ):
     physician_a_user = User.objects.create_user(email="phys.a+dedupe@example.com")
+    OrganizationMembership.objects.get_or_create(user=physician_a_user, organization=organization)
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=internal_calendars["phys_a"],
         user=physician_a_user,
+        membership_user_id=physician_a_user.id,
     )
     start = timezone.now().replace(microsecond=0) + timedelta(hours=1)
     end = start + timedelta(hours=1)
@@ -1320,7 +1326,13 @@ def test_create_grouped_event_skips_blocked_time_when_provider_will_sync(
         manage_available_windows=True,
     )
     owner = User.objects.create_user(email="second-owner@example.com")
-    CalendarOwnership.objects.create(organization=organization, calendar=second, user=owner)
+    OrganizationMembership.objects.get_or_create(user=owner, organization=organization)
+    CalendarOwnership.objects.create(
+        organization=organization,
+        calendar=second,
+        user=owner,
+        membership_user_id=owner.id,
+    )
 
     cs = CalendarService()
     cs.initialize_without_provider(organization=organization)
@@ -1397,7 +1409,13 @@ def test_create_grouped_event_skips_blocked_time_for_microsoft_pair(organization
         manage_available_windows=True,
     )
     owner = User.objects.create_user(email="ms-owner@example.com")
-    CalendarOwnership.objects.create(organization=organization, calendar=second, user=owner)
+    OrganizationMembership.objects.get_or_create(user=owner, organization=organization)
+    CalendarOwnership.objects.create(
+        organization=organization,
+        calendar=second,
+        user=owner,
+        membership_user_id=owner.id,
+    )
 
     cs = CalendarService()
     cs.initialize_without_provider(organization=organization)
@@ -1474,7 +1492,13 @@ def test_create_grouped_event_blocks_cross_provider_pair(organization):
         manage_available_windows=True,
     )
     owner = User.objects.create_user(email="crossprov-owner@example.com")
-    CalendarOwnership.objects.create(organization=organization, calendar=second, user=owner)
+    OrganizationMembership.objects.get_or_create(user=owner, organization=organization)
+    CalendarOwnership.objects.create(
+        organization=organization,
+        calendar=second,
+        user=owner,
+        membership_user_id=owner.id,
+    )
 
     cs = CalendarService()
     cs.initialize_without_provider(organization=organization)
@@ -1621,7 +1645,13 @@ def test_create_grouped_event_blocks_when_primary_is_internal(organization):
         manage_available_windows=True,
     )
     owner = User.objects.create_user(email="internal-primary@example.com")
-    CalendarOwnership.objects.create(organization=organization, calendar=second, user=owner)
+    OrganizationMembership.objects.get_or_create(user=owner, organization=organization)
+    CalendarOwnership.objects.create(
+        organization=organization,
+        calendar=second,
+        user=owner,
+        membership_user_id=owner.id,
+    )
 
     cs = CalendarService()
     cs.initialize_without_provider(organization=organization)

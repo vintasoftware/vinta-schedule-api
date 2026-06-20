@@ -29,7 +29,7 @@ from calendar_integration.services.dataclasses import (
     UnavailableTimeWindow,
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
-from organizations.models import Organization, OrganizationMembership
+from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
@@ -1106,10 +1106,12 @@ class TestGraphQLQueries:
         # Create a user and make them owner of the calendar
         user_model = get_user_model()
         owner = baker.make(user_model, email="owner@example.com")
+        OrganizationMembership.objects.get_or_create(user=owner, organization=calendar.organization)
         baker.make(
             "calendar_integration.CalendarOwnership",
             calendar=calendar,
             user=owner,
+            membership_user_id=owner.id,
             is_default=True,
             organization=calendar.organization,
         )
@@ -1124,10 +1126,14 @@ class TestGraphQLQueries:
             provider="internal",
         )
         other_owner = baker.make(user_model, email="other_owner@example.com")
+        OrganizationMembership.objects.get_or_create(
+            user=other_owner, organization=calendar.organization
+        )
         baker.make(
             "calendar_integration.CalendarOwnership",
             calendar=other_calendar,
             user=other_owner,
+            membership_user_id=other_owner.id,
             organization=calendar.organization,
         )
 
@@ -3236,7 +3242,14 @@ class TestOwnerScopedTokenReadEnforcement:
             name="Owner Calendar",
             external_id="owner-cal-scope",
         )
-        baker.make(CalendarOwnership, calendar=cal, user=owner, organization=organization)
+        OrganizationMembership.objects.get_or_create(user=owner, organization=organization)
+        baker.make(
+            CalendarOwnership,
+            calendar=cal,
+            user=owner,
+            membership_user_id=owner.id,
+            organization=organization,
+        )
         return cal
 
     @pytest.fixture
@@ -3248,7 +3261,14 @@ class TestOwnerScopedTokenReadEnforcement:
             name="Other Calendar",
             external_id="other-cal-scope",
         )
-        baker.make(CalendarOwnership, calendar=cal, user=other_owner, organization=organization)
+        OrganizationMembership.objects.get_or_create(user=other_owner, organization=organization)
+        baker.make(
+            CalendarOwnership,
+            calendar=cal,
+            user=other_owner,
+            membership_user_id=other_owner.id,
+            organization=organization,
+        )
         return cal
 
     # ------------------------------------------------------------------ #
@@ -4364,14 +4384,10 @@ _CALENDARS_WITH_OWNERS_QUERY = """
             owners {
                 id
                 isDefault
-                user {
-                    id
-                    email
-                    profile {
-                        firstName
-                        lastName
-                        profilePicture
-                    }
+                membership {
+                    userId
+                    organizationId
+                    role
                 }
             }
         }
@@ -4429,10 +4445,16 @@ class TestCalendarOwnersField:
             email="owner_b@shape.test", first_name="Bob", last_name="Jones"
         )
 
+        OrganizationMembership.objects.get_or_create(
+            user=user_a, organization=organization, defaults={"role": OrganizationRole.ADMIN}
+        )
+        OrganizationMembership.objects.get_or_create(user=user_b, organization=organization)
+
         ownership_a = baker.make(
             CalendarOwnership,
             calendar=calendar,
             user=user_a,
+            membership_user_id=user_a.id,
             organization=organization,
             is_default=True,
         )
@@ -4440,6 +4462,7 @@ class TestCalendarOwnersField:
             CalendarOwnership,
             calendar=calendar,
             user=user_b,
+            membership_user_id=user_b.id,
             organization=organization,
             is_default=False,
         )
@@ -4460,31 +4483,27 @@ class TestCalendarOwnersField:
         owners = target["owners"]
         assert len(owners) == 2, f"Expected 2 ownership rows, got {len(owners)}: {owners}"
 
-        owners_by_user_email = {o["user"]["email"]: o for o in owners}
+        owners_by_user_id = {o["membership"]["userId"]: o for o in owners}
 
-        # Verify ownership A
-        owner_a = owners_by_user_email["owner_a@shape.test"]
+        # Verify ownership A — membership identity shape { userId, organizationId, role }
+        owner_a = owners_by_user_id[user_a.id]
         assert int(owner_a["id"]) == ownership_a.id, (
             "Ownership id must be CalendarOwnership pk, not user id"
         )
         assert owner_a["isDefault"] is True
-        assert owner_a["user"]["id"] == str(user_a.id)
-        assert owner_a["user"]["profile"]["firstName"] == "Alice"
-        assert owner_a["user"]["profile"]["lastName"] == "Smith"
-        # UserFactory creates profiles via baker.make without an explicit profile_picture,
-        # so the field is empty/None; the GraphQL type resolves it as None.
-        assert owner_a["user"]["profile"]["profilePicture"] is None
+        assert owner_a["membership"]["userId"] == user_a.id
+        assert owner_a["membership"]["organizationId"] == organization.id
+        assert owner_a["membership"]["role"] == OrganizationRole.ADMIN
 
         # Verify ownership B
-        owner_b = owners_by_user_email["owner_b@shape.test"]
+        owner_b = owners_by_user_id[user_b.id]
         assert int(owner_b["id"]) == ownership_b.id, (
             "Ownership id must be CalendarOwnership pk, not user id"
         )
         assert owner_b["isDefault"] is False
-        assert owner_b["user"]["id"] == str(user_b.id)
-        assert owner_b["user"]["profile"]["firstName"] == "Bob"
-        assert owner_b["user"]["profile"]["lastName"] == "Jones"
-        assert owner_b["user"]["profile"]["profilePicture"] is None
+        assert owner_b["membership"]["userId"] == user_b.id
+        assert owner_b["membership"]["organizationId"] == organization.id
+        assert owner_b["membership"]["role"] == OrganizationRole.MEMBER
 
     # ------------------------------------------------------------------ #
     # (b) Org-scoping / cross-org leak                                    #
@@ -4522,10 +4541,14 @@ class TestCalendarOwnersField:
             external_id="cal-org-b",
         )
 
+        OrganizationMembership.objects.get_or_create(user=user_a, organization=org_a)
+        OrganizationMembership.objects.get_or_create(user=user_b, organization=org_b)
+
         baker.make(
             CalendarOwnership,
             calendar=cal_a,
             user=user_a,
+            membership_user_id=user_a.id,
             organization=org_a,
             is_default=True,
         )
@@ -4533,6 +4556,7 @@ class TestCalendarOwnersField:
             CalendarOwnership,
             calendar=cal_b,
             user=user_b,
+            membership_user_id=user_b.id,
             organization=org_b,
             is_default=True,
         )
@@ -4549,14 +4573,16 @@ class TestCalendarOwnersField:
         data = assert_graphql_success(response)
         calendars = data["calendars"]
 
-        # Collect all calendar ids and all owner user emails returned
+        # Collect all calendar ids and all owner membership user ids / org ids returned
         returned_calendar_ids = {int(c["id"]) for c in calendars}
-        returned_owner_emails = {o["user"]["email"] for c in calendars for o in c["owners"]}
-        returned_profile_first_names = {
-            o["user"]["profile"]["firstName"]
+        returned_owner_user_ids = {
+            o["membership"]["userId"] for c in calendars for o in c["owners"] if o["membership"]
+        }
+        returned_owner_org_ids = {
+            o["membership"]["organizationId"]
             for c in calendars
             for o in c["owners"]
-            if o["user"]["profile"] is not None
+            if o["membership"]
         }
 
         # Org A's calendar must appear
@@ -4568,15 +4594,15 @@ class TestCalendarOwnersField:
         )
 
         # Org B owner data must not appear anywhere in the response
-        assert "owner@org-b.test" not in returned_owner_emails, (
-            "Org B owner email must not leak to org-A token"
+        assert user_b.id not in returned_owner_user_ids, (
+            "Org B owner membership must not leak to org-A token"
         )
-        assert "OrgBFirst" not in returned_profile_first_names, (
-            "Org B owner profile must not leak to org-A token"
+        assert org_b.id not in returned_owner_org_ids, (
+            "Org B membership organization must not leak to org-A token"
         )
 
         # Org A owner data must appear
-        assert "owner@org-a.test" in returned_owner_emails, "Org A owner email should be returned"
+        assert user_a.id in returned_owner_user_ids, "Org A owner membership should be returned"
 
     # ------------------------------------------------------------------ #
     # (c) N+1 guard                                                        #
@@ -4606,10 +4632,12 @@ class TestCalendarOwnersField:
                     first_name=f"F{index}{j}",
                     last_name=f"L{index}{j}",
                 )
+                OrganizationMembership.objects.get_or_create(user=u, organization=organization)
                 baker.make(
                     CalendarOwnership,
                     calendar=cal,
                     user=u,
+                    membership_user_id=u.id,
                     organization=organization,
                     is_default=(j == 0),
                 )
@@ -4668,14 +4696,10 @@ _CALENDAR_GROUPS_WITH_OWNERS_QUERY = """
                     owners {
                         id
                         isDefault
-                        user {
-                            id
-                            email
-                            profile {
-                                firstName
-                                lastName
-                                profilePicture
-                            }
+                        membership {
+                            userId
+                            organizationId
+                            role
                         }
                     }
                 }
@@ -4695,14 +4719,10 @@ _CALENDAR_BUNDLES_WITH_OWNERS_QUERY = """
                 owners {
                     id
                     isDefault
-                    user {
-                        id
-                        email
-                        profile {
-                            firstName
-                            lastName
-                            profilePicture
-                        }
+                    membership {
+                        userId
+                        organizationId
+                        role
                     }
                 }
             }
@@ -4748,11 +4768,13 @@ def _make_group_with_owned_slot_calendars(
             first_name=f"First{i}",
             last_name=f"Last{i}",
         )
+        OrganizationMembership.objects.get_or_create(user=owner, organization=organization)
         ownership = baker.make(
             CalendarOwnership,
             organization=organization,
             calendar=cal,
             user=owner,
+            membership_user_id=owner.id,
             is_default=True,
         )
         calendars.append(cal)
@@ -4854,8 +4876,8 @@ class TestCalendarGroupOwnersN1:
             assert len(cal_data["owners"]) == 1
             owner_data = cal_data["owners"][0]
             assert owner_data["isDefault"] is True
-            assert owner_data["user"]["email"].endswith("@test.local")
-            assert owner_data["user"]["profile"]["firstName"].startswith("First")
+            assert owner_data["membership"]["userId"] is not None
+            assert owner_data["membership"]["organizationId"] == organization.id
 
     # ------------------------------------------------------------------ #
     # (b) N+1 guard                                                        #
@@ -4939,11 +4961,13 @@ class TestCalendarGroupOwnersN1:
             first_name="OrgBGroupFirst",
             last_name="OrgBGroupLast",
         )
+        OrganizationMembership.objects.get_or_create(user=owner_b, organization=org_b)
         baker.make(
             CalendarOwnership,
             organization=org_b,
             calendar=cal_b,
             user=owner_b,
+            membership_user_id=owner_b.id,
             is_default=True,
         )
 
@@ -4962,20 +4986,21 @@ class TestCalendarGroupOwnersN1:
         all_calendar_ids = {
             int(c["id"]) for g in groups for s in g["slots"] for c in s["calendars"]
         }
-        all_owner_emails = {
-            o["user"]["email"]
+        all_owner_user_ids = {
+            o["membership"]["userId"]
             for g in groups
             for s in g["slots"]
             for c in s["calendars"]
             for o in c["owners"]
+            if o["membership"]
         }
-        all_owner_first_names = {
-            o["user"]["profile"]["firstName"]
+        all_owner_org_ids = {
+            o["membership"]["organizationId"]
             for g in groups
             for s in g["slots"]
             for c in s["calendars"]
             for o in c["owners"]
-            if o["user"]["profile"] is not None
+            if o["membership"]
         }
 
         # Org A group must appear
@@ -4992,16 +5017,18 @@ class TestCalendarGroupOwnersN1:
         )
 
         # Org B owner data must not leak
-        assert "owner_b@group_scope.test" not in all_owner_emails, (
-            "Org B slot-calendar owner email must not leak to org-A token"
+        assert owner_b.id not in all_owner_user_ids, (
+            "Org B slot-calendar owner membership must not leak to org-A token"
         )
-        assert "OrgBGroupFirst" not in all_owner_first_names, (
-            "Org B slot-calendar owner profile must not leak to org-A token"
+        assert org_b.id not in all_owner_org_ids, (
+            "Org B slot-calendar owner membership org must not leak to org-A token"
         )
 
         # Org A owner data must appear
-        owner_a_email = ownerships_a[0].user.email
-        assert owner_a_email in all_owner_emails, "Org A slot-calendar owner email must be returned"
+        owner_a_user_id = ownerships_a[0].membership_user_id
+        assert owner_a_user_id in all_owner_user_ids, (
+            "Org A slot-calendar owner membership must be returned"
+        )
 
 
 @pytest.mark.django_db
@@ -5043,11 +5070,13 @@ class TestCalendarBundleOwnersN1:
                 first_name=f"Child{i}First",
                 last_name=f"Child{i}Last",
             )
+            OrganizationMembership.objects.get_or_create(user=owner, organization=organization)
             ownership = baker.make(
                 CalendarOwnership,
                 organization=organization,
                 calendar=child,
                 user=owner,
+                membership_user_id=owner.id,
                 is_default=True,
             )
             child_ownerships.append(ownership)
@@ -5074,11 +5103,8 @@ class TestCalendarBundleOwnersN1:
             )
             owner_data = child_data["owners"][0]
             assert owner_data["isDefault"] is True
-            assert "@bundle_shape.test" in owner_data["user"]["email"]
-            assert owner_data["user"]["profile"]["firstName"].startswith("Child")
-            # UserFactory creates profiles via baker.make without an explicit profile_picture,
-            # so the field is empty/None; the GraphQL type resolves it as None.
-            assert owner_data["user"]["profile"]["profilePicture"] is None
+            assert owner_data["membership"]["userId"] is not None
+            assert owner_data["membership"]["organizationId"] == organization.id
 
     # ------------------------------------------------------------------ #
     # (b) N+1 guard                                                        #
@@ -5104,11 +5130,13 @@ class TestCalendarBundleOwnersN1:
                     first_name=f"BF{i}",
                     last_name=f"BL{i}",
                 )
+                OrganizationMembership.objects.get_or_create(user=owner, organization=organization)
                 baker.make(
                     CalendarOwnership,
                     organization=organization,
                     calendar=child,
                     user=owner,
+                    membership_user_id=owner.id,
                     is_default=True,
                 )
             return bundle
@@ -5165,11 +5193,13 @@ class TestCalendarBundleOwnersN1:
             first_name="OrgABundleFirst",
             last_name="OrgABundleLast",
         )
+        OrganizationMembership.objects.get_or_create(user=owner_a, organization=org_a)
         baker.make(
             CalendarOwnership,
             organization=org_a,
             calendar=children_a[0],
             user=owner_a,
+            membership_user_id=owner_a.id,
             is_default=True,
         )
 
@@ -5180,11 +5210,13 @@ class TestCalendarBundleOwnersN1:
             first_name="OrgBBundleFirst",
             last_name="OrgBBundleLast",
         )
+        OrganizationMembership.objects.get_or_create(user=owner_b, organization=org_b)
         baker.make(
             CalendarOwnership,
             organization=org_b,
             calendar=children_b[0],
             user=owner_b,
+            membership_user_id=owner_b.id,
             is_default=True,
         )
 
@@ -5200,14 +5232,12 @@ class TestCalendarBundleOwnersN1:
         bundles = data["calendarBundles"]
 
         returned_bundle_ids = {int(b["id"]) for b in bundles}
-        all_child_owner_emails = {
-            o["user"]["email"] for b in bundles for c in b["children"] for o in c["owners"]
-        }
-        all_child_owner_first_names = {
-            o["user"]["profile"]["firstName"]
+        all_child_owner_user_ids = {
+            o["membership"]["userId"]
             for b in bundles
             for c in b["children"]
             for o in c["owners"]
+            if o["membership"]
         }
 
         # Org A bundle appears
@@ -5217,15 +5247,12 @@ class TestCalendarBundleOwnersN1:
             "Org B bundle must not be visible to org-A token"
         )
         # Org B owner data must not leak
-        assert "owner_b@bundle_scope.test" not in all_child_owner_emails, (
-            "Org B child owner email must not leak to org-A token"
-        )
-        assert "OrgBBundleFirst" not in all_child_owner_first_names, (
-            "Org B child owner profile must not leak to org-A token"
+        assert owner_b.id not in all_child_owner_user_ids, (
+            "Org B child owner membership must not leak to org-A token"
         )
         # Org A owner data appears
-        assert "owner_a@bundle_scope.test" in all_child_owner_emails, (
-            "Org A child owner email must be returned"
+        assert owner_a.id in all_child_owner_user_ids, (
+            "Org A child owner membership must be returned"
         )
 
 
@@ -5241,14 +5268,10 @@ _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY = """
             owners {
                 id
                 isDefault
-                user {
-                    id
-                    email
-                    profile {
-                        firstName
-                        lastName
-                        profilePicture
-                    }
+                membership {
+                    userId
+                    organizationId
+                    role
                 }
             }
         }
@@ -5302,10 +5325,14 @@ class TestCalendarBundleParentOwners:
             email="bundle_owner_b@shape.test", first_name="BundleBob", last_name="BundleJones"
         )
 
+        OrganizationMembership.objects.get_or_create(user=user_a, organization=organization)
+        OrganizationMembership.objects.get_or_create(user=user_b, organization=organization)
+
         ownership_a = baker.make(
             CalendarOwnership,
             calendar=bundle,
             user=user_a,
+            membership_user_id=user_a.id,
             organization=organization,
             is_default=True,
         )
@@ -5313,6 +5340,7 @@ class TestCalendarBundleParentOwners:
             CalendarOwnership,
             calendar=bundle,
             user=user_b,
+            membership_user_id=user_b.id,
             organization=organization,
             is_default=False,
         )
@@ -5333,29 +5361,25 @@ class TestCalendarBundleParentOwners:
         owners = target["owners"]
         assert len(owners) == 2, f"Expected 2 ownership rows, got {len(owners)}: {owners}"
 
-        owners_by_user_email = {o["user"]["email"]: o for o in owners}
+        owners_by_user_id = {o["membership"]["userId"]: o for o in owners}
 
-        # Verify ownership A
-        owner_a = owners_by_user_email["bundle_owner_a@shape.test"]
+        # Verify ownership A — membership identity shape
+        owner_a = owners_by_user_id[user_a.id]
         assert int(owner_a["id"]) == ownership_a.id, (
             "Ownership id must be CalendarOwnership pk, not user id"
         )
         assert owner_a["isDefault"] is True
-        assert owner_a["user"]["id"] == str(user_a.id)
-        assert owner_a["user"]["profile"]["firstName"] == "BundleAlice"
-        assert owner_a["user"]["profile"]["lastName"] == "BundleSmith"
-        assert owner_a["user"]["profile"]["profilePicture"] is None
+        assert owner_a["membership"]["userId"] == user_a.id
+        assert owner_a["membership"]["organizationId"] == organization.id
 
         # Verify ownership B
-        owner_b = owners_by_user_email["bundle_owner_b@shape.test"]
+        owner_b = owners_by_user_id[user_b.id]
         assert int(owner_b["id"]) == ownership_b.id, (
             "Ownership id must be CalendarOwnership pk, not user id"
         )
         assert owner_b["isDefault"] is False
-        assert owner_b["user"]["id"] == str(user_b.id)
-        assert owner_b["user"]["profile"]["firstName"] == "BundleBob"
-        assert owner_b["user"]["profile"]["lastName"] == "BundleJones"
-        assert owner_b["user"]["profile"]["profilePicture"] is None
+        assert owner_b["membership"]["userId"] == user_b.id
+        assert owner_b["membership"]["organizationId"] == organization.id
 
     # ------------------------------------------------------------------ #
     # (b) Org-scoping / cross-org leak                                    #
@@ -5387,10 +5411,13 @@ class TestCalendarBundleParentOwners:
         bundle_a, _ = _make_bundle_calendar(org_a, name="Org A Bundle", child_count=1)
         bundle_b, _ = _make_bundle_calendar(org_b, name="Org B Bundle", child_count=1)
 
+        OrganizationMembership.objects.get_or_create(user=user_a, organization=org_a)
+        OrganizationMembership.objects.get_or_create(user=user_b, organization=org_b)
         baker.make(
             CalendarOwnership,
             calendar=bundle_a,
             user=user_a,
+            membership_user_id=user_a.id,
             organization=org_a,
             is_default=True,
         )
@@ -5398,6 +5425,7 @@ class TestCalendarBundleParentOwners:
             CalendarOwnership,
             calendar=bundle_b,
             user=user_b,
+            membership_user_id=user_b.id,
             organization=org_b,
             is_default=True,
         )
@@ -5414,14 +5442,16 @@ class TestCalendarBundleParentOwners:
         data = assert_graphql_success(response)
         bundles = data["calendarBundles"]
 
-        # Collect all bundle ids and all owner user emails returned
+        # Collect all bundle ids and all owner membership user/org ids returned
         returned_bundle_ids = {int(b["id"]) for b in bundles}
-        returned_owner_emails = {o["user"]["email"] for b in bundles for o in b["owners"]}
-        returned_profile_first_names = {
-            o["user"]["profile"]["firstName"]
+        returned_owner_user_ids = {
+            o["membership"]["userId"] for b in bundles for o in b["owners"] if o["membership"]
+        }
+        returned_owner_org_ids = {
+            o["membership"]["organizationId"]
             for b in bundles
             for o in b["owners"]
-            if o["user"]["profile"] is not None
+            if o["membership"]
         }
 
         # Org A's bundle must appear
@@ -5433,16 +5463,16 @@ class TestCalendarBundleParentOwners:
         )
 
         # Org B owner data must not appear anywhere in the response
-        assert "bundle_owner@org-b.test" not in returned_owner_emails, (
-            "Org B bundle owner email must not leak to org-A token"
+        assert user_b.id not in returned_owner_user_ids, (
+            "Org B bundle owner membership must not leak to org-A token"
         )
-        assert "OrgBBundleFirst" not in returned_profile_first_names, (
-            "Org B bundle owner profile must not leak to org-A token"
+        assert org_b.id not in returned_owner_org_ids, (
+            "Org B bundle owner membership org must not leak to org-A token"
         )
 
         # Org A owner data must appear
-        assert "bundle_owner@org-a.test" in returned_owner_emails, (
-            "Org A bundle owner email should be returned"
+        assert user_a.id in returned_owner_user_ids, (
+            "Org A bundle owner membership should be returned"
         )
 
     # ------------------------------------------------------------------ #
@@ -5472,10 +5502,12 @@ class TestCalendarBundleParentOwners:
                     first_name=f"BF{index}{j}",
                     last_name=f"BL{index}{j}",
                 )
+                OrganizationMembership.objects.get_or_create(user=u, organization=organization)
                 baker.make(
                     CalendarOwnership,
                     calendar=bundle,
                     user=u,
+                    membership_user_id=u.id,
                     organization=organization,
                     is_default=(j == 0),
                 )
@@ -5596,7 +5628,14 @@ class TestCalendarEventsUserIdFilter:
             name="Owner Calendar (userId tests)",
             external_id="owner-cal-userid-test",
         )
-        baker.make(CalendarOwnership, calendar=cal, user=owner, organization=organization)
+        OrganizationMembership.objects.get_or_create(user=owner, organization=organization)
+        baker.make(
+            CalendarOwnership,
+            calendar=cal,
+            user=owner,
+            membership_user_id=owner.id,
+            organization=organization,
+        )
         return cal
 
     @pytest.fixture
@@ -5608,7 +5647,14 @@ class TestCalendarEventsUserIdFilter:
             name="Other Calendar (userId tests)",
             external_id="other-cal-userid-test",
         )
-        baker.make(CalendarOwnership, calendar=cal, user=other_owner, organization=organization)
+        OrganizationMembership.objects.get_or_create(user=other_owner, organization=organization)
+        baker.make(
+            CalendarOwnership,
+            calendar=cal,
+            user=other_owner,
+            membership_user_id=other_owner.id,
+            organization=organization,
+        )
         return cal
 
     @pytest.fixture

@@ -118,9 +118,16 @@ class CalendarIntegrationTestFactory:
 
     @staticmethod
     def create_calendar_ownership(user, calendar, is_default=False):
+        # Ensure an active membership exists so the membership-scoped read path
+        # resolves this owner, and set the denormalized membership_user_id.
+        OrganizationMembership.objects.get_or_create(
+            user=user,
+            organization=calendar.organization,
+        )
         return baker.make(
             CalendarOwnership,
             user=user,
+            membership_user_id=user.id,
             calendar=calendar,
             organization=calendar.organization,
             is_default=is_default,

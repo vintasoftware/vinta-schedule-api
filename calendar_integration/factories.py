@@ -1,7 +1,55 @@
 import datetime
 
 from .constants import RecurrenceFrequency
-from .models import CalendarEvent, RecurrenceRule
+from .models import CalendarEvent, CalendarOwnership, RecurrenceRule
+
+
+def create_calendar_ownership(
+    *,
+    calendar,
+    user,
+    is_default: bool = False,
+    with_membership: bool = True,
+    **kwargs,
+) -> CalendarOwnership:
+    """Create a ``CalendarOwnership`` wired for the membership-scoped read path.
+
+    Ownership reads/writes resolve owners through the denormalized
+    ``membership_user_id`` column and the ``membership`` ForeignObject join to
+    ``OrganizationMembership(organization_id, user_id)``. A bare ``user=...``
+    ownership (the legacy shape) is therefore invisible to membership-based
+    reads. This helper:
+
+    - ensures an active ``OrganizationMembership`` exists for ``(user,
+      calendar.organization)`` (unless ``with_membership=False``, which models
+      an *orphan* ownership for the orphan-behaviour tests);
+    - sets both the retained ``user`` FK (still ``NOT NULL`` until Phase 2b) and
+      the ``membership_user_id`` denormalized column.
+
+    Pass ``with_membership=False`` to create an orphan ownership whose
+    ``(user, organization)`` pair has no membership: ``membership_user_id`` is
+    left ``NULL`` so membership-based reads exclude it (the intended end state).
+    """
+    from organizations.models import OrganizationMembership
+
+    organization = calendar.organization
+
+    membership_user_id = None
+    if with_membership:
+        OrganizationMembership.objects.get_or_create(
+            user=user,
+            organization=organization,
+        )
+        membership_user_id = user.id
+
+    return CalendarOwnership.objects.create(
+        organization=organization,
+        calendar=calendar,
+        user=user,
+        membership_user_id=membership_user_id,
+        is_default=is_default,
+        **kwargs,
+    )
 
 
 class CalendarEventFactory:

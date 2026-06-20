@@ -7054,7 +7054,13 @@ class TestScopedTokenBlockedTimeWrites:
             name="Provider Calendar",
             external_id=f"provider-cal-{unique}",
         )
-        baker.make(CalendarOwnership, calendar=calendar, user=owner, organization=org)
+        baker.make(
+            CalendarOwnership,
+            calendar=calendar,
+            user=owner,
+            membership_user_id=owner.id,
+            organization=org,
+        )
         return owner, membership, calendar
 
     def _make_scoped_system_user(self, org, membership, resources):
@@ -7880,7 +7886,13 @@ class TestScopedTokenAvailabilityWrites:
             external_id=f"avail-cal-{unique}",
             manage_available_windows=True,
         )
-        baker.make(CalendarOwnership, calendar=calendar, user=owner, organization=org)
+        baker.make(
+            CalendarOwnership,
+            calendar=calendar,
+            user=owner,
+            membership_user_id=owner.id,
+            organization=org,
+        )
         return owner, membership, calendar
 
     def _make_scoped_system_user(self, org, membership, resources):
@@ -8895,7 +8907,13 @@ class TestScopedTokenScheduleEvent:
             external_id=f"sched-cal-{unique}",
             manage_available_windows=True,
         )
-        baker.make(CalendarOwnership, calendar=calendar, user=owner, organization=org)
+        baker.make(
+            CalendarOwnership,
+            calendar=calendar,
+            user=owner,
+            membership_user_id=owner.id,
+            organization=org,
+        )
         return owner, membership, calendar
 
     def _make_owner_with_bundle_calendar(self, org):
@@ -8915,7 +8933,13 @@ class TestScopedTokenScheduleEvent:
             external_id=f"sched-bundle-{unique}",
             calendar_type=CalendarType.BUNDLE,
         )
-        baker.make(CalendarOwnership, calendar=bundle, user=owner, organization=org)
+        baker.make(
+            CalendarOwnership,
+            calendar=bundle,
+            user=owner,
+            membership_user_id=owner.id,
+            organization=org,
+        )
         return owner, membership, bundle
 
     def _make_scoped_system_user(self, org, membership, resources):

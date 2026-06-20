@@ -1732,11 +1732,13 @@ class TestRequestAllCalendarsSync:
         owner = baker.make(User, email="owner@example.com")
 
         calendar = self._make_calendar(org, external_id="cal-1")
+        OrganizationMembership.objects.get_or_create(user=owner, organization=org)
         baker.make(
             CalendarOwnership,
             organization=org,
             calendar=calendar,
             user=owner,
+            membership_user_id=owner.id,
             is_default=True,
         )
         SocialAccount.objects.create(user=owner, provider=CalendarProvider.GOOGLE)
@@ -1787,11 +1789,13 @@ class TestRequestAllCalendarsSync:
         admin = baker.make(User, email="admin-nolink@example.com")
         owner = baker.make(User, email="owner-nolink@example.com")
         calendar = self._make_calendar(org, external_id="cal-nolink")
+        OrganizationMembership.objects.get_or_create(user=owner, organization=org)
         baker.make(
             CalendarOwnership,
             organization=org,
             calendar=calendar,
             user=owner,
+            membership_user_id=owner.id,
             is_default=True,
         )
         # No SocialAccount created for the owner.
@@ -1832,11 +1836,13 @@ class TestRequestAllCalendarsSync:
         calendar = self._make_calendar(
             org, external_id="cal-inactive", visibility=CalendarVisibility.INACTIVE
         )
+        OrganizationMembership.objects.get_or_create(user=owner, organization=org)
         baker.make(
             CalendarOwnership,
             organization=org,
             calendar=calendar,
             user=owner,
+            membership_user_id=owner.id,
             is_default=True,
         )
         SocialAccount.objects.create(user=owner, provider=CalendarProvider.GOOGLE)

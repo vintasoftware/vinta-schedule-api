@@ -914,11 +914,14 @@ def test_collect_bundle_attendees_includes_calendar_owners(
     Profile.objects.create(user=user)
 
     from calendar_integration.models import CalendarOwnership
+    from organizations.models import OrganizationMembership
 
+    OrganizationMembership.objects.create(user=user, organization=organization)
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=child_calendar_internal,
         user=user,
+        membership_user_id=user.id,
         is_default=False,
     )
 
@@ -950,11 +953,14 @@ def test_collect_bundle_attendees_deduplicates(
 
     from calendar_integration.models import CalendarOwnership
     from calendar_integration.services.dataclasses import EventAttendanceInputData
+    from organizations.models import OrganizationMembership
 
+    OrganizationMembership.objects.create(user=user, organization=organization)
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=child_calendar_internal,
         user=user,
+        membership_user_id=user.id,
         is_default=False,
     )
 
