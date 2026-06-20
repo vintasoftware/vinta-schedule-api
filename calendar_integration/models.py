@@ -439,6 +439,12 @@ class EventExternalAttendance(OrganizationModel):
 class EventAttendance(OrganizationModel):
     """
     Represents the attendance of a user at a event.
+
+    Phase 3 (expand): ``membership`` is added alongside the existing ``user`` FK.
+    Rows where ``user`` is NULL (synced/external attendees without a local account)
+    legitimately have ``membership_user_id = NULL`` and are NOT orphans.  Only rows
+    where ``user_id IS NOT NULL`` but no matching ``OrganizationMembership`` exists
+    are reported as orphans in the backfill data migration.
     """
 
     event = OrganizationForeignKey(
@@ -450,11 +456,25 @@ class EventAttendance(OrganizationModel):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="event_attendances"
     )
+    membership = OrganizationMembershipForeignKey(
+        on_delete=models.PROTECT,
+        related_name="event_attendances",
+        null=True,
+        blank=True,
+    )
     status = models.CharField(
         max_length=50,
         choices=RSVPStatus,
         default=RSVPStatus.PENDING,
     )
+
+    class Meta:
+        indexes: ClassVar = [
+            models.Index(
+                fields=["organization", "membership_user_id"],
+                name="evattend_org_member_idx",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.user} - {self.event.title} ({self.status})"
