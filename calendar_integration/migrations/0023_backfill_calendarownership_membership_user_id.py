@@ -48,7 +48,7 @@ without running the migration runner.
 import csv
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from django.db import connection, migrations
 
@@ -72,7 +72,7 @@ def backfill_membership_user_id(apps, schema_editor):
         return
 
     # Emit CSV report.
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     csv_filename = f"calendarownership_orphans_{ts}.csv"
     csv_path = os.path.join(LOG_DIR, csv_filename)
 
@@ -119,6 +119,8 @@ def reverse_backfill_membership_user_id(apps, schema_editor):
 
 class Migration(migrations.Migration):
     """Backfill CalendarOwnership.membership_user_id (Phase 1 data migration)."""
+
+    atomic = False
 
     dependencies = [
         ("calendar_integration", "0022_calendarownership_membership_and_more"),

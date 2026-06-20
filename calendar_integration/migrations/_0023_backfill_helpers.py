@@ -19,6 +19,10 @@ def backfill_membership_user_id_sql() -> None:
     Iterates CalendarOwnership PKs in BATCH_SIZE chunks.  Rows that already have
     membership_user_id set (non-NULL) are skipped by the WHERE guard, making the
     function idempotent.
+
+    Intentional cross-organization raw SQL: this is a one-off data-migration backfill
+    that must touch all rows across all organizations; do not replace with the
+    org-scoped ORM manager.
     """
     with connection.cursor() as cursor:
         cursor.execute(
@@ -58,6 +62,10 @@ def collect_orphans() -> list[tuple]:
     Returns a list of (ownership_id, user_id, organization_id, calendar_id) tuples.
     Only rows that still have membership_user_id IS NULL are considered; this
     matches rows that the backfill could not populate because no membership exists.
+
+    Intentional cross-organization raw SQL: this is a one-off data-migration backfill
+    that must inspect all rows across all organizations; do not replace with the
+    org-scoped ORM manager.
     """
     with connection.cursor() as cursor:
         cursor.execute(

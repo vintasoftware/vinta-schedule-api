@@ -14,6 +14,8 @@ Covers:
 
 from __future__ import annotations
 
+import importlib
+
 import pytest
 from model_bakery import baker
 
@@ -249,3 +251,80 @@ def test_multiple_orgs_and_users(db):
     assert own_b2.membership_user_id == user_b.pk
     assert own_c1.membership_user_id is None
     assert own_c2.membership_user_id is None
+
+
+@pytest.mark.django_db(transaction=True)
+def test_backfill_migration_writes_csv_report(
+    orphan_ownership,
+    matched_ownership,
+    user_without_membership,
+    org,
+    calendar,
+    tmp_path,
+    monkeypatch,
+):
+    """backfill_membership_user_id() writes a CSV containing orphan rows only."""
+    migration_module = importlib.import_module(
+        "calendar_integration.migrations.0023_backfill_calendarownership_membership_user_id"
+    )
+    monkeypatch.setattr(migration_module, "LOG_DIR", str(tmp_path))
+
+    migration_module.backfill_membership_user_id(None, None)
+
+    csv_files = list(tmp_path.glob("calendarownership_orphans_*.csv"))
+    assert len(csv_files) == 1, "Expected exactly one CSV report file"
+    csv_path = csv_files[0]
+
+    import csv as csv_mod
+
+    with open(csv_path, newline="") as f:
+        reader = csv_mod.reader(f)
+        rows = list(reader)
+
+    assert rows[0] == ["ownership_id", "user_id", "organization_id", "calendar_id"]
+    data_rows = rows[1:]
+    data_ids = {int(r[0]) for r in data_rows}
+    assert orphan_ownership.pk in data_ids, "Orphan row must appear in CSV"
+    assert matched_ownership.pk not in data_ids, "Matched row must NOT appear in CSV"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_backfill_migration_oserror_fallback(orphan_ownership, caplog, monkeypatch):
+    """When CSV write fails with OSError, each orphan row is logged individually."""
+    import logging
+
+    migration_module = importlib.import_module(
+        "calendar_integration.migrations.0023_backfill_calendarownership_membership_user_id"
+    )
+
+    def raising_makedirs(path, **kwargs):
+        raise OSError("simulated read-only filesystem")
+
+    monkeypatch.setattr(migration_module.os, "makedirs", raising_makedirs)
+
+    with caplog.at_level(logging.WARNING, logger=migration_module.logger.name):
+        migration_module.backfill_membership_user_id(None, None)
+
+    warning_texts = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(str(orphan_ownership.pk) in t for t in warning_texts), (
+        "Expected per-orphan warning log line containing the orphan ownership pk"
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_reverse_backfill_clears_membership_user_id(matched_ownership, user_with_membership):
+    """reverse_backfill_membership_user_id sets membership_user_id = NULL on all rows."""
+    migration_module = importlib.import_module(
+        "calendar_integration.migrations.0023_backfill_calendarownership_membership_user_id"
+    )
+
+    # First populate the field.
+    backfill_membership_user_id_sql()
+    matched_ownership.refresh_from_db()
+    assert matched_ownership.membership_user_id == user_with_membership.pk
+
+    # Now reverse.
+    migration_module.reverse_backfill_membership_user_id(None, None)
+
+    matched_ownership.refresh_from_db()
+    assert matched_ownership.membership_user_id is None
