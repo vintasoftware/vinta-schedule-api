@@ -87,7 +87,7 @@ class TestPersistAuditRecordTask:
             action=AuditAction.UPDATE,
             actor=ActorSnapshot(
                 actor_type=AuditActorType.MEMBERSHIP,
-                actor_id=membership.pk,
+                actor_id=membership.user_id,
                 actor_role=OrganizationRole.ADMIN,
             ),
             subject=make_subject(org),
@@ -99,7 +99,7 @@ class TestPersistAuditRecordTask:
         audit = Audit.original_manager.filter(organization_id=org.pk).first()
         assert audit is not None
         assert audit.actor_type == AuditActorType.MEMBERSHIP
-        assert audit.actor_id == membership.pk
+        assert audit.actor_id == membership.user_id
         assert audit.actor_role == OrganizationRole.ADMIN
 
     def test_persists_affected_membership_ids(self) -> None:
@@ -115,7 +115,8 @@ class TestPersistAuditRecordTask:
             action=AuditAction.UPDATE,
             actor=ActorSnapshot(actor_type=AuditActorType.SYSTEM, actor_id=None),
             subject=make_subject(org),
-            affected_membership_ids=[m1.pk, m2.pk],
+            # affected_membership_ids are now org-scoped user_ids
+            affected_membership_ids=[m1.user_id, m2.user_id],
         )
         payload = build_payload(data)
 
@@ -123,12 +124,12 @@ class TestPersistAuditRecordTask:
 
         audit = Audit.original_manager.filter(organization_id=org.pk).first()
         assert audit is not None
-        link_ids = set(
+        link_user_ids = set(
             AuditAffectedMembership.original_manager.filter(audit_fk_id=audit.pk).values_list(
-                "membership_fk_id", flat=True
+                "membership_user_id", flat=True
             )
         )
-        assert link_ids == {m1.pk, m2.pk}
+        assert link_user_ids == {m1.user_id, m2.user_id}
 
     def test_persists_diff(self) -> None:
         org = baker.make(Organization)
@@ -161,7 +162,8 @@ class TestPersistAuditRecordTask:
                 actor_type=AuditActorType.SYSTEM_USER,
                 actor_id=42,
                 system_user_scopes=scopes,
-                system_user_scoped_to_membership=membership.pk,
+                # scoped_to_membership now stores the org-scoped user_id
+                system_user_scoped_to_membership=membership.user_id,
             ),
             subject=make_subject(org),
         )
@@ -173,7 +175,7 @@ class TestPersistAuditRecordTask:
         assert audit is not None
         assert audit.actor_type == AuditActorType.SYSTEM_USER
         assert audit.system_user_scopes == scopes
-        assert audit.system_user_scoped_to_membership == membership.pk
+        assert audit.system_user_scoped_to_membership == membership.user_id
 
     def test_full_round_trip_via_service_record(self, django_capture_on_commit_callbacks) -> None:
         """AuditService.record() + eager task results in a correct persisted Audit."""
@@ -204,18 +206,19 @@ class TestPersistAuditRecordTask:
                 action=AuditAction.UPDATE,
                 actor=actor,
                 subject=subject,
-                affected_membership_ids=[membership.pk],
+                # affected_membership_ids are now org-scoped user_ids
+                affected_membership_ids=[membership.user_id],
                 diff=diff,
             )
 
         audit = Audit.original_manager.filter(organization_id=org.pk).first()
         assert audit is not None
         assert audit.actor_type == AuditActorType.MEMBERSHIP
-        assert audit.actor_id == membership.pk
+        assert audit.actor_id == membership.user_id
         assert audit.actor_role == OrganizationRole.MEMBER
         assert audit.diff == diff
         assert AuditAffectedMembership.original_manager.filter(
-            audit_fk_id=audit.pk, membership_fk_id=membership.pk
+            audit_fk_id=audit.pk, membership_user_id=membership.user_id
         ).exists()
 
 

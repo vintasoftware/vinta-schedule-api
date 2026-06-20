@@ -159,7 +159,7 @@ class DjangoORMAuditRepository(AuditRepository):
                         AuditAffectedMembership(
                             organization_id=data.organization_id,
                             audit_fk=audit,
-                            membership_fk_id=membership_id,
+                            membership_user_id=membership_id,
                         )
                         for membership_id in unique_membership_ids
                     ]
@@ -257,7 +257,7 @@ class DjangoORMAuditRepository(AuditRepository):
             # avoid duplicate Audit rows when a membership appears multiple times
             # (though the unique constraint prevents it in practice; safe guard).
             qs = qs.filter(
-                affected_membership_links__membership_fk_id=q.affected_membership_id
+                affected_membership_links__membership_user_id=q.affected_membership_id
             ).distinct()
 
         if q.created_after is not None:
@@ -328,7 +328,7 @@ class DjangoORMAuditRepository(AuditRepository):
         )
         # Access the prefetched reverse manager; .all() returns the cached result.
         affected_membership_ids = sorted(
-            link.membership_fk_id for link in audit.affected_membership_links.all()
+            link.membership_user_id for link in audit.affected_membership_links.all()
         )
         return AuditRecord(
             id=audit.pk,

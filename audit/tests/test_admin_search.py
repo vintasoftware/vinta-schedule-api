@@ -214,8 +214,10 @@ class TestAuditAdminSearchByActorId:
         """
         org = baker.make(Organization)
         factory = AuditFactory()
-        factory.create(org, actor_type=AuditActorType.MEMBERSHIP, actor_id=0)
-        factory.create(org, actor_type=AuditActorType.MEMBERSHIP, actor_id=1)
+        # Use a subject_id that cannot match the "0" icontains search so the
+        # only match comes via actor_id=0 (the exact equality branch).
+        factory.create(org, actor_type=AuditActorType.MEMBERSHIP, actor_id=0, subject_id="nine")
+        factory.create(org, actor_type=AuditActorType.MEMBERSHIP, actor_id=1, subject_id="nine")
 
         response = admin_client.get(CHANGELIST_URL + "?search=0")
         assert response.status_code == 200
@@ -252,16 +254,18 @@ class TestAuditAdminFilterAffectedMembership:
         AuditAffectedMembership.objects.create(
             organization_id=org.pk,
             audit_fk_id=audit_m.pk,
-            membership_fk_id=membership_m.pk,
+            membership_user_id=membership_m.user_id,
         )
         AuditAffectedMembership.objects.create(
             organization_id=org.pk,
             audit_fk_id=audit_n.pk,
-            membership_fk_id=membership_n.pk,
+            membership_user_id=membership_n.user_id,
         )
 
-        # Filter by membership_m.pk.
-        response = admin_client.get(CHANGELIST_URL + f"?affected_membership_id={membership_m.pk}")
+        # Filter by membership_m.user_id (org-scoped identity).
+        response = admin_client.get(
+            CHANGELIST_URL + f"?affected_membership_id={membership_m.user_id}"
+        )
         assert response.status_code == 200
         content = response.content.decode()
 
@@ -287,16 +291,18 @@ class TestAuditAdminFilterAffectedMembership:
         AuditAffectedMembership.objects.create(
             organization_id=org.pk,
             audit_fk_id=audit.pk,
-            membership_fk_id=membership_m.pk,
+            membership_user_id=membership_m.user_id,
         )
         AuditAffectedMembership.objects.create(
             organization_id=org.pk,
             audit_fk_id=audit.pk,
-            membership_fk_id=membership_n.pk,
+            membership_user_id=membership_n.user_id,
         )
 
-        # Filter by membership_m; the audit should still be returned.
-        response = admin_client.get(CHANGELIST_URL + f"?affected_membership_id={membership_m.pk}")
+        # Filter by membership_m.user_id; the audit should still be returned.
+        response = admin_client.get(
+            CHANGELIST_URL + f"?affected_membership_id={membership_m.user_id}"
+        )
         assert response.status_code == 200
         content = response.content.decode()
 
@@ -317,7 +323,9 @@ class TestAuditAdminFilterAffectedMembership:
         factory.create(org)
 
         # Neither audit is linked to membership_m, so the filter returns zero.
-        response = admin_client.get(CHANGELIST_URL + f"?affected_membership_id={membership_m.pk}")
+        response = admin_client.get(
+            CHANGELIST_URL + f"?affected_membership_id={membership_m.user_id}"
+        )
         assert response.status_code == 200
         assert b"No audit records found." in response.content
 

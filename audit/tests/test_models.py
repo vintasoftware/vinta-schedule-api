@@ -3,7 +3,7 @@
 Covers:
 - Audit creation with auto-populated created_at.
 - Attaching AuditAffectedMembership rows and querying via affected_memberships.
-- Unique constraint rejects duplicate (audit, membership) pairs.
+- Unique constraint rejects duplicate (audit, membership_user_id) pairs.
 - Multi-tenant correctness: all rows within the same organization.
 """
 
@@ -102,7 +102,7 @@ class TestAuditAffectedMemberships:
             membership=membership,
         )
 
-        assert audit.affected_memberships.filter(pk=membership.pk).exists()
+        assert audit.affected_memberships.filter(user_id=membership.user_id).exists()
 
     def test_multiple_affected_memberships(self) -> None:
         """Multiple memberships can be linked to the same Audit."""
@@ -134,7 +134,7 @@ class TestAuditAffectedMemberships:
         assert link in links
 
     def test_unique_constraint_rejects_duplicate_audit_membership_pair(self) -> None:
-        """Creating a duplicate (audit_fk, membership_fk) row must raise IntegrityError."""
+        """Creating a duplicate (audit_fk, membership_user_id) row must raise IntegrityError."""
         org = baker.make(Organization)
         audit = AuditFactory().create(organization=org)
         membership = self._make_membership(org)
@@ -151,11 +151,11 @@ class TestAuditAffectedMemberships:
                 AuditAffectedMembership.objects.create(
                     organization=org,
                     audit_fk=audit,
-                    membership_fk=membership,
+                    membership_user_id=membership.user_id,
                 )
 
     def test_same_membership_can_link_to_different_audits(self) -> None:
-        """The unique constraint is per (audit, membership) pair, not per membership alone."""
+        """The unique constraint is per (audit_fk, membership_user_id) pair, not per membership alone."""
         org = baker.make(Organization)
         audit_a = AuditFactory().create(organization=org)
         audit_b = AuditFactory().create(organization=org, action=AuditAction.UPDATE)
@@ -166,10 +166,12 @@ class TestAuditAffectedMemberships:
         # This second link (different audit, same membership) must not raise.
         factory.create(organization=org, audit=audit_b, membership=membership)
 
-        # Intentional: membership_fk is the concrete FK column; original_manager is
-        # unscoped, so filtering on the concrete column is correct here.
+        # Filter on the concrete column membership_user_id.
         assert (
-            AuditAffectedMembership.original_manager.filter(membership_fk=membership).count() == 2
+            AuditAffectedMembership.original_manager.filter(
+                membership_user_id=membership.user_id
+            ).count()
+            == 2
         )
 
     def test_audit_affected_membership_factory_str_does_not_crash(self) -> None:
@@ -221,7 +223,7 @@ class TestAuditTenantCorrectness:
         with pytest.raises(ValueError, match="`organization` is required"):
             AuditAffectedMembership.objects.create(
                 audit_fk=audit,
-                membership_fk=membership,
+                membership_user_id=membership.user_id,
                 # organization intentionally omitted
             )
 
@@ -229,17 +231,17 @@ class TestAuditTenantCorrectness:
         """Cross-org link (audit from org A, membership from org B) persists at the DB layer.
 
         Empirical finding: OrganizationModel.save() and BaseOrganizationModelManager.create()
-        do not validate that audit_fk and membership_fk belong to the same organization as the
-        AuditAffectedMembership row.  The concrete FK (membership_fk) still points to the
-        org-B membership, and the row is stored successfully.
+        do not validate that audit_fk and membership_user_id belong to the same organization
+        as the AuditAffectedMembership row.  The concrete column (membership_user_id) still
+        holds the org-B user_id, and the row is stored successfully.
 
-        The ForeignObject virtual field (membership) joins on (membership_fk_id, organization_id),
-        so accessing `link.membership` would return no match when organization_ids diverge, making
-        the cross-org row effectively invisible through the tenant-safe accessor — but the raw FK
-        remains.
+        The ForeignObject virtual field (membership) joins on
+        (membership_user_id, organization_id), so accessing `link.membership` would return
+        no match when organization_ids diverge, making the cross-org row effectively
+        invisible through the tenant-safe accessor — but the raw user_id remains.
 
         This is a known project-wide limitation of the ForeignObject pattern: tenant-boundary
-        enforcement between two FK columns on the same through table is NOT enforced at the
+        enforcement between two join columns on the same through table is NOT enforced at the
         Python/DB level.  Application code is responsible for ensuring that audit and membership
         belong to the same organization before creating an AuditAffectedMembership row.
 
@@ -254,17 +256,16 @@ class TestAuditTenantCorrectness:
         membership_b = OrganizationMembership.objects.create(user=user_b, organization=org_b)
         audit_a = AuditFactory().create(organization=org_a)
 
-        # Cross-org: AuditAffectedMembership belongs to org_a, but membership_fk points to org_b.
+        # Cross-org: AuditAffectedMembership belongs to org_a, but membership_user_id is
+        # the user_id from org_b's membership.
         link = AuditAffectedMembership.objects.create(
             organization=org_a,
             audit_fk=audit_a,
-            membership_fk=membership_b,
+            membership_user_id=membership_b.user_id,
         )
 
-        # The row persists with the cross-org FK intact.
+        # The row persists with the cross-org user_id intact.
         assert link.pk is not None
         link.refresh_from_db()
         assert link.organization_id == org_a.pk
-        assert link.membership_fk_id == membership_b.pk  # concrete column from org_b
-        # membership_fk.organization_id is org_b, not org_a — cross-org confirmed.
-        assert link.membership_fk.organization_id == org_b.pk
+        assert link.membership_user_id == membership_b.user_id  # concrete column from org_b user

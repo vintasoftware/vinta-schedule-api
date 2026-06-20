@@ -16,6 +16,9 @@ class ActorSnapshot:
     actor_id: int | None
     actor_role: str | None = None
     system_user_scopes: list[str] | None = None
+    # The org-scoped user_id of the membership this system-user token is scoped to
+    # (OrganizationMembershipForeignKey convention: identity = (organization_id, user_id)).
+    # Null when the system-user token is org-wide.
     system_user_scoped_to_membership: int | None = None
 
 
@@ -42,6 +45,9 @@ class AuditRecordData:
     action: str
     actor: ActorSnapshot
     subject: SubjectRef
+    # List of org-scoped user_ids identifying the OrganizationMemberships affected
+    # by this action (OrganizationMembershipForeignKey convention: identity is
+    # (organization_id, user_id), so these are user_ids, not membership PKs).
     affected_membership_ids: list[int] = field(default_factory=list)
     diff: dict | None = None
 
@@ -60,6 +66,9 @@ class AuditRecord:
     action: str
     actor: ActorSnapshot
     subject: SubjectRef
+    # List of org-scoped user_ids identifying the affected OrganizationMemberships.
+    # These are user_ids (not membership PKs) per the OrganizationMembershipForeignKey
+    # convention: membership identity = (organization_id, user_id).
     affected_membership_ids: list[int] = field(default_factory=list)
     diff: dict | None = None
 
@@ -78,6 +87,9 @@ class AuditQuery:
     actor_id: int | None = None
     subject_type: str | None = None
     subject_id: str | None = None
+    # Org-scoped user_id identifying the affected membership to filter by.
+    # Per the OrganizationMembershipForeignKey convention, a membership is
+    # identified by (organization_id, user_id); this field carries the user_id.
     affected_membership_id: int | None = None
     created_after: datetime | None = None
     created_before: datetime | None = None

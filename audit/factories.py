@@ -40,7 +40,12 @@ class AuditFactory:
 
 
 class AuditAffectedMembershipFactory:
-    """Factory for creating AuditAffectedMembership through-table rows in tests."""
+    """Factory for creating AuditAffectedMembership through-table rows in tests.
+
+    Memberships are identified by org-scoped user_id per the
+    OrganizationMembershipForeignKey convention: the concrete column is
+    membership_user_id, not membership_fk.
+    """
 
     def create(self, organization, audit, membership, **overrides) -> AuditAffectedMembership:
         """Create and persist an AuditAffectedMembership row.
@@ -49,6 +54,8 @@ class AuditAffectedMembershipFactory:
             organization: The Organization instance (must match audit and membership).
             audit: The Audit instance this row links from.
             membership: The OrganizationMembership instance this row links to.
+                        The membership's user_id is stored in membership_user_id
+                        (OrganizationMembershipForeignKey convention).
             **overrides: Any additional field values to override.
 
         Returns:
@@ -57,6 +64,6 @@ class AuditAffectedMembershipFactory:
         return AuditAffectedMembership.objects.create(
             organization=organization,
             audit_fk=audit,
-            membership_fk=membership,
+            membership_user_id=membership.user_id,
             **overrides,
         )

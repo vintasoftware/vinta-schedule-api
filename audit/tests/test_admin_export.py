@@ -516,11 +516,11 @@ class TestAuditAdminExportSerialization:
             subject_type="app.Model",
             subject_id="1",
         )
-        # Add affected memberships
+        # Add affected memberships — membership_user_id is the org-scoped user_id
         AuditAffectedMembership.objects.create(
             organization_id=org.id,
             audit_fk=audit,
-            membership_fk=membership,
+            membership_user_id=membership.user_id,
         )
 
         response = admin_client.get(reverse("admin:audit_audit_export"))
@@ -529,7 +529,8 @@ class TestAuditAdminExportSerialization:
         rows = list(reader)
         assert len(rows) == 1
         ids_parsed = json.loads(rows[0]["affected_membership_ids"])
-        assert ids_parsed == [membership.id]
+        # affected_membership_ids are org-scoped user_ids (not membership PKs)
+        assert ids_parsed == [membership.user_id]
 
     def test_affected_membership_ids_empty_maps_to_empty_string(self, admin_client, org):
         """empty affected_membership_ids maps to empty string."""

@@ -226,20 +226,22 @@ class TestQueryActorIdFilter:
         target_rec = add_record(
             repo,
             org,
-            actor=ActorSnapshot(actor_type=AuditActorType.MEMBERSHIP, actor_id=membership.pk),
+            actor=ActorSnapshot(actor_type=AuditActorType.MEMBERSHIP, actor_id=membership.user_id),
         )
         add_record(
             repo,
             org,
             actor=ActorSnapshot(
-                actor_type=AuditActorType.MEMBERSHIP, actor_id=membership.pk + 9999
+                actor_type=AuditActorType.MEMBERSHIP, actor_id=membership.user_id + 9999
             ),
         )
 
-        page = repo.query(AuditQuery(organization_id=org.pk, actor_id=membership.pk), limit=100)
+        page = repo.query(
+            AuditQuery(organization_id=org.pk, actor_id=membership.user_id), limit=100
+        )
         ids = {r.id for r in page.items}
         assert target_rec.id in ids
-        assert all(r.actor.actor_id == membership.pk for r in page.items)
+        assert all(r.actor.actor_id == membership.user_id for r in page.items)
 
 
 # ---------------------------------------------------------------------------
@@ -299,15 +301,15 @@ class TestQueryAffectedMembershipIdFilter:
         m2 = make_membership(org)
         repo = DjangoORMAuditRepository()
 
-        linked = add_record(repo, org, affected_membership_ids=[m1.pk])
-        add_record(repo, org, affected_membership_ids=[m2.pk])
+        linked = add_record(repo, org, affected_membership_ids=[m1.user_id])
+        add_record(repo, org, affected_membership_ids=[m2.user_id])
 
         page = repo.query(
-            AuditQuery(organization_id=org.pk, affected_membership_id=m1.pk), limit=100
+            AuditQuery(organization_id=org.pk, affected_membership_id=m1.user_id), limit=100
         )
         ids = {r.id for r in page.items}
         assert linked.id in ids
-        assert all(m1.pk in r.affected_membership_ids for r in page.items)
+        assert all(m1.user_id in r.affected_membership_ids for r in page.items)
 
     def test_affected_membership_id_filter_no_duplicates(self) -> None:
         """Filtering by affected_membership_id returns distinct Audit rows (no JOIN duplication)."""
@@ -316,10 +318,10 @@ class TestQueryAffectedMembershipIdFilter:
         repo = DjangoORMAuditRepository()
 
         # One audit linked to one membership — should appear exactly once.
-        add_record(repo, org, affected_membership_ids=[membership.pk])
+        add_record(repo, org, affected_membership_ids=[membership.user_id])
 
         page = repo.query(
-            AuditQuery(organization_id=org.pk, affected_membership_id=membership.pk),
+            AuditQuery(organization_id=org.pk, affected_membership_id=membership.user_id),
             limit=100,
         )
         # Confirm total is 1, not inflated by JOIN multiplication.
@@ -338,12 +340,12 @@ class TestQueryAffectedMembershipIdFilter:
         m_other = make_membership(org)
         repo = DjangoORMAuditRepository()
 
-        linked_1 = add_record(repo, org, affected_membership_ids=[m_target.pk])
-        linked_2 = add_record(repo, org, affected_membership_ids=[m_target.pk])
-        add_record(repo, org, affected_membership_ids=[m_other.pk])
+        linked_1 = add_record(repo, org, affected_membership_ids=[m_target.user_id])
+        linked_2 = add_record(repo, org, affected_membership_ids=[m_target.user_id])
+        add_record(repo, org, affected_membership_ids=[m_other.user_id])
 
         page = repo.query(
-            AuditQuery(organization_id=org.pk, affected_membership_id=m_target.pk),
+            AuditQuery(organization_id=org.pk, affected_membership_id=m_target.user_id),
             limit=100,
         )
         assert page.total == 2
@@ -491,11 +493,13 @@ class TestQuerySearch:
         target = add_record(
             repo,
             org,
-            actor=ActorSnapshot(actor_type=AuditActorType.MEMBERSHIP, actor_id=membership.pk),
+            actor=ActorSnapshot(actor_type=AuditActorType.MEMBERSHIP, actor_id=membership.user_id),
             subject=make_subject(subject_type="uniquetype.X", subject_id="xyz-no-match"),
         )
 
-        page = repo.query(AuditQuery(organization_id=org.pk, search=str(membership.pk)), limit=100)
+        page = repo.query(
+            AuditQuery(organization_id=org.pk, search=str(membership.user_id)), limit=100
+        )
         ids = {r.id for r in page.items}
         assert target.id in ids
 

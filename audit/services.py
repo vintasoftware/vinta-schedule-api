@@ -72,7 +72,7 @@ class AuditService:
         """
         return ActorSnapshot(
             actor_type=AuditActorType.MEMBERSHIP,
-            actor_id=membership.id,  # type: ignore[attr-defined]
+            actor_id=membership.user_id,  # type: ignore[attr-defined]
             actor_role=membership.role,  # type: ignore[attr-defined]
         )
 
@@ -99,7 +99,7 @@ class AuditService:
             actor_type=AuditActorType.SYSTEM_USER,
             actor_id=system_user.id,  # type: ignore[attr-defined]
             system_user_scopes=scopes,
-            system_user_scoped_to_membership=system_user.scoped_to_membership_fk_id,  # type: ignore[attr-defined]
+            system_user_scoped_to_membership=system_user.scoped_to_membership_user_id,  # type: ignore[attr-defined]
         )
 
     @staticmethod

@@ -71,7 +71,7 @@ class TestActorFromMembership:
 
         snapshot = AuditService.actor_from_membership(membership)
 
-        assert snapshot.actor_id == membership.id
+        assert snapshot.actor_id == membership.user_id
 
     def test_captures_role_at_call_time(self) -> None:
         """actor_role is snapshotted at build time, not at task execution time."""
@@ -166,7 +166,7 @@ class TestActorFromSystemUser:
 
         assert snapshot.system_user_scopes == []
 
-    def test_captures_scoped_to_membership_id(self) -> None:
+    def test_captures_scoped_to_membership_user_id(self) -> None:
         from public_api.models import SystemUser
 
         org = baker.make(Organization)
@@ -176,12 +176,13 @@ class TestActorFromSystemUser:
             organization=org,
             integration_name="test_integration_scoped",
             long_lived_token_hash="abc123",
-            scoped_to_membership_fk_id=membership.id,
+            scoped_to_membership_user_id=membership.user_id,
         )
 
         snapshot = AuditService.actor_from_system_user(system_user)
 
-        assert snapshot.system_user_scoped_to_membership == membership.id
+        # snapshot now stores the org-scoped user_id (OrganizationMembershipForeignKey convention)
+        assert snapshot.system_user_scoped_to_membership == membership.user_id
 
     def test_scoped_to_membership_is_none_for_org_wide_token(self) -> None:
         from public_api.models import SystemUser
@@ -294,7 +295,7 @@ class TestRecordEnqueues:
                     action=AuditAction.UPDATE,
                     actor=actor,
                     subject=subject,
-                    affected_membership_ids=[membership.pk],
+                    affected_membership_ids=[membership.user_id],
                     diff={"name": {"old": "Alice", "new": "Bob"}},
                 )
 
@@ -327,7 +328,7 @@ class TestRecordEnqueues:
 
         payload = mock_task.delay.call_args[0][0]
         assert payload["actor"]["actor_type"] == AuditActorType.MEMBERSHIP
-        assert payload["actor"]["actor_id"] == membership.pk
+        assert payload["actor"]["actor_id"] == membership.user_id
         assert payload["actor"]["actor_role"] == OrganizationRole.ADMIN
 
     def test_payload_has_correct_subject_fields(self, django_capture_on_commit_callbacks) -> None:
@@ -371,12 +372,12 @@ class TestRecordEnqueues:
                     action=AuditAction.UPDATE,
                     actor=actor,
                     subject=subject,
-                    affected_membership_ids=(membership.pk,),  # tuple input
+                    affected_membership_ids=(membership.user_id,),  # tuple input
                 )
 
         payload = mock_task.delay.call_args[0][0]
         assert isinstance(payload["affected_membership_ids"], list)
-        assert payload["affected_membership_ids"] == [membership.pk]
+        assert payload["affected_membership_ids"] == [membership.user_id]
 
     def test_payload_diff_is_present(self, django_capture_on_commit_callbacks) -> None:
         service = make_service()

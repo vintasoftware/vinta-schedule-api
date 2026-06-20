@@ -198,9 +198,10 @@ class TestAuditAdminDetailFields:
         assert response.status_code == 200
         content = response.content.decode()
 
-        # Both membership ids should appear
-        assert f"{m1.pk}" in content
-        assert f"{m2.pk}" in content
+        # Both membership user_ids should appear (OrganizationMembershipForeignKey
+        # convention: identity is org-scoped user_id, not membership PK).
+        assert f"{m1.user_id}" in content
+        assert f"{m2.user_id}" in content
         assert "Affected Memberships" in content
 
 

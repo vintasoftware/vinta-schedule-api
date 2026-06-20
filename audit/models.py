@@ -16,6 +16,7 @@ from typing import ClassVar
 from django.db import models
 
 from audit.constants import AuditAction, AuditActorType
+from common.fields import OrganizationMembershipForeignKey
 from organizations.models import OrganizationForeignKey, OrganizationModel, OrganizationRole
 
 
@@ -45,7 +46,9 @@ class Audit(OrganizationModel):
     )
     # list[str] of PublicAPIResources values; null unless actor_type=SYSTEM_USER.
     system_user_scopes = models.JSONField(null=True, blank=True)
-    # Membership id snapshot (BigInt, not FK — soft ref consistent with snapshot model).
+    # Org-scoped user_id snapshot of the scoped-to membership (BigInt, not FK —
+    # soft ref consistent with snapshot model). Identifies the membership via
+    # OrganizationMembershipForeignKey convention (org_id + user_id).
     # Null when the system-user token is org-wide.
     system_user_scoped_to_membership = models.BigIntegerField(null=True, blank=True)
 
@@ -62,11 +65,11 @@ class Audit(OrganizationModel):
     affected_memberships = models.ManyToManyField(
         "organizations.OrganizationMembership",
         through="audit.AuditAffectedMembership",
-        # through_fields must name the concrete FK columns (_fk suffix) because
-        # TenantSafeForeignKey contributes a ForeignObject (virtual) and a real
-        # ForeignKey under <name>_fk; Django's M2M plumbing resolves ambiguity
-        # by looking at ForeignKey fields on the through model.
-        through_fields=("audit_fk", "membership_fk"),
+        # through_fields references the ForeignObject descriptor name "membership"
+        # (the name given to OrganizationMembershipForeignKey) per the convention
+        # established by CalendarOwnership — the M2M target end is the ForeignObject
+        # descriptor, NOT a _fk column.
+        through_fields=("audit_fk", "membership"),
         related_name="+",
         blank=True,
     )
@@ -84,38 +87,50 @@ class Audit(OrganizationModel):
 
 
 class AuditAffectedMembership(OrganizationModel):
-    """Through table linking an Audit to the OrganizationMembership(s) it affected."""
+    """Through table linking an Audit to the OrganizationMembership(s) it affected.
+
+    Audit is APPEND-ONLY and must SURVIVE membership deletion.  We deliberately
+    do NOT add the per-table raw-SQL composite FK that CalendarOwnership uses
+    (PROTECT).  The ForeignObject carries no DB constraint; membership deletion
+    never blocks on or cascades to audit rows.
+    """
 
     audit = OrganizationForeignKey(
         Audit,
         on_delete=models.CASCADE,
         related_name="affected_membership_links",
     )
-    # related_name uses a unique prefix to avoid clashes; "+" is not valid
-    # because TenantSafeForeignKey generates "<related_name>_fk_rel" for the
-    # concrete ForeignKey's reverse accessor.
-    membership = OrganizationForeignKey(
-        "organizations.OrganizationMembership",
-        on_delete=models.CASCADE,
+    # OrganizationMembershipForeignKey contributes:
+    #   - membership_user_id (BigIntegerField) — concrete column, the org-scoped user_id
+    #   - membership (ForeignObject) — joins (organization_id, membership_user_id) →
+    #     OrganizationMembership(organization_id, user_id)
+    # on_delete=DO_NOTHING: no DB constraint is added (audit is append-only and
+    # must survive membership deletion). PROTECT integrity from the raw-SQL composite
+    # FK used by CalendarOwnership is intentionally OMITTED here.
+    membership = OrganizationMembershipForeignKey(
+        on_delete=models.DO_NOTHING,
         related_name="audit_affected_links",
+        null=False,
+        blank=False,
     )
 
     class Meta:
         constraints: ClassVar = [
-            # Use the _fk concrete columns (OrganizationForeignKey generates <name>_fk).
-            # organization is included per project convention (lead composite keys with org).
-            # audit_fk already pins the org, so the uniqueness guarantee is equivalent.
+            # (audit_fk, membership_user_id) is the unique pair — audit_fk pins org,
+            # mirroring the CalendarOwnership precedent (calendar_fk, membership_user_id).
+            # null=False on membership_user_id means no partial condition is needed.
             models.UniqueConstraint(
-                fields=["organization", "audit_fk", "membership_fk"],
+                fields=["audit_fk", "membership_user_id"],
                 name="uniq_audit_membership",
             ),
         ]
         indexes: ClassVar = [
             # Lead with organization per project convention for tenant-scoped tables.
-            models.Index(fields=["organization", "membership_fk"]),
+            models.Index(
+                fields=["organization", "membership_user_id"],
+                name="auditaffected_org_member_idx",
+            ),
         ]
 
     def __str__(self) -> str:
-        return (
-            f"AuditAffectedMembership(audit={self.audit_fk_id}, membership={self.membership_fk_id})"
-        )
+        return f"AuditAffectedMembership(audit={self.audit_fk_id}, membership_user_id={self.membership_user_id})"

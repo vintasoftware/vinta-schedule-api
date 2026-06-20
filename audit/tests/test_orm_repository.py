@@ -3,12 +3,17 @@
 Covers:
 - add() persists all actor snapshot variants (SYSTEM, MEMBERSHIP, SYSTEM_USER,
   SINGLE_USE_CODE) with their respective nullable fields.
-- add() persists affected_membership_ids and diff.
+- add() persists affected_membership_ids (now org-scoped user_ids) and diff.
 - add() returns an AuditRecord that matches the persisted state.
 - add() deduplicates duplicate affected_membership_ids without violating the
   unique constraint.
 - get() round-trips a full record including affected_membership_ids and diff.
 - get() returns None for a missing id.
+
+Note on affected_membership_ids semantics:
+  Memberships are identified by their org-scoped user_id (OrganizationMembershipForeignKey
+  convention). The concrete column is membership_user_id; what was formerly
+  "membership.user_id" is now "membership.user_id".
 """
 
 from __future__ import annotations
@@ -102,7 +107,7 @@ class TestDjangoORMAuditRepositoryAdd:
             action=AuditAction.UPDATE,
             actor=ActorSnapshot(
                 actor_type=AuditActorType.MEMBERSHIP,
-                actor_id=membership.pk,
+                actor_id=membership.user_id,
                 actor_role=OrganizationRole.ADMIN,
             ),
             subject=make_subject(),
@@ -110,17 +115,17 @@ class TestDjangoORMAuditRepositoryAdd:
         record = repo.add(data)
 
         assert record.actor.actor_type == AuditActorType.MEMBERSHIP
-        assert record.actor.actor_id == membership.pk
+        assert record.actor.actor_id == membership.user_id
         assert record.actor.actor_role == OrganizationRole.ADMIN
         assert record.actor.system_user_scopes is None
         assert record.actor.system_user_scoped_to_membership is None
 
         db_audit = Audit.original_manager.get(pk=record.id)
-        assert db_audit.actor_id == membership.pk
+        assert db_audit.actor_id == membership.user_id
         assert db_audit.actor_role == OrganizationRole.ADMIN
 
     def test_add_system_user_actor_with_scopes_and_scoped_to(self) -> None:
-        """SYSTEM_USER actor: scopes list + scoped_to_membership_id populated."""
+        """SYSTEM_USER actor: scopes list + scoped_to_membership_user_id populated."""
         org = baker.make(Organization)
         membership = make_membership(org)
         repo = DjangoORMAuditRepository()
@@ -133,7 +138,8 @@ class TestDjangoORMAuditRepositoryAdd:
                 actor_type=AuditActorType.SYSTEM_USER,
                 actor_id=99,
                 system_user_scopes=scopes,
-                system_user_scoped_to_membership=membership.pk,
+                # scoped_to_membership now stores the org-scoped user_id
+                system_user_scoped_to_membership=membership.user_id,
             ),
             subject=make_subject(),
         )
@@ -142,12 +148,12 @@ class TestDjangoORMAuditRepositoryAdd:
         assert record.actor.actor_type == AuditActorType.SYSTEM_USER
         assert record.actor.actor_id == 99
         assert record.actor.system_user_scopes == scopes
-        assert record.actor.system_user_scoped_to_membership == membership.pk
+        assert record.actor.system_user_scoped_to_membership == membership.user_id
         assert record.actor.actor_role is None
 
         db_audit = Audit.original_manager.get(pk=record.id)
         assert db_audit.system_user_scopes == scopes
-        assert db_audit.system_user_scoped_to_membership == membership.pk
+        assert db_audit.system_user_scoped_to_membership == membership.user_id
 
     def test_add_system_user_actor_org_wide_scopes(self) -> None:
         """SYSTEM_USER actor with org-wide token: scoped_to_membership is null."""
@@ -200,7 +206,7 @@ class TestDjangoORMAuditRepositoryAdd:
 
 @pytest.mark.django_db
 class TestDjangoORMAuditRepositoryAddAffectedMemberships:
-    """Tests that add() persists affected_membership_ids correctly."""
+    """Tests that add() persists affected_membership_ids (org-scoped user_ids) correctly."""
 
     def test_add_with_no_affected_memberships(self) -> None:
         """add() with an empty affected_membership_ids list creates no through rows."""
@@ -220,7 +226,7 @@ class TestDjangoORMAuditRepositoryAddAffectedMemberships:
         assert AuditAffectedMembership.original_manager.filter(audit_fk_id=record.id).count() == 0
 
     def test_add_with_single_affected_membership(self) -> None:
-        """add() with one membership id creates one through row."""
+        """add() with one membership user_id creates one through row."""
         org = baker.make(Organization)
         membership = make_membership(org)
         repo = DjangoORMAuditRepository()
@@ -230,14 +236,15 @@ class TestDjangoORMAuditRepositoryAddAffectedMemberships:
             action=AuditAction.UPDATE,
             actor=make_system_actor(),
             subject=make_subject(),
-            affected_membership_ids=[membership.pk],
+            # Pass the org-scoped user_id (not membership.user_id)
+            affected_membership_ids=[membership.user_id],
         )
         record = repo.add(data)
 
-        assert record.affected_membership_ids == [membership.pk]
+        assert record.affected_membership_ids == [membership.user_id]
 
     def test_add_with_multiple_affected_memberships(self) -> None:
-        """add() with multiple membership ids creates the correct number of through rows."""
+        """add() with multiple membership user_ids creates the correct number of through rows."""
         org = baker.make(Organization)
         m1 = make_membership(org)
         m2 = make_membership(org)
@@ -249,17 +256,19 @@ class TestDjangoORMAuditRepositoryAddAffectedMemberships:
             action=AuditAction.DELETE,
             actor=make_system_actor(),
             subject=make_subject(),
-            affected_membership_ids=[m1.pk, m2.pk, m3.pk],
+            affected_membership_ids=[m1.user_id, m2.user_id, m3.user_id],
         )
         record = repo.add(data)
 
-        assert sorted(record.affected_membership_ids) == sorted([m1.pk, m2.pk, m3.pk])
+        assert sorted(record.affected_membership_ids) == sorted(
+            [m1.user_id, m2.user_id, m3.user_id]
+        )
         assert AuditAffectedMembership.original_manager.filter(audit_fk_id=record.id).count() == 3
 
     def test_add_deduplicates_duplicate_affected_membership_ids(self) -> None:
-        """Duplicate membership ids in affected_membership_ids are silently deduplicated.
+        """Duplicate membership user_ids in affected_membership_ids are silently deduplicated.
 
-        The unique constraint on (organization, audit_fk, membership_fk) would raise an
+        The unique constraint on (audit_fk, membership_user_id) would raise an
         IntegrityError if duplicates were passed to bulk_create. The repository must
         deduplicate before inserting.
         """
@@ -267,18 +276,22 @@ class TestDjangoORMAuditRepositoryAddAffectedMemberships:
         membership = make_membership(org)
         repo = DjangoORMAuditRepository()
 
-        # Pass the same membership id three times.
+        # Pass the same membership user_id three times.
         data = AuditRecordData(
             organization_id=org.pk,
             action=AuditAction.CREATE,
             actor=make_system_actor(),
             subject=make_subject(),
-            affected_membership_ids=[membership.pk, membership.pk, membership.pk],
+            affected_membership_ids=[
+                membership.user_id,
+                membership.user_id,
+                membership.user_id,
+            ],
         )
         # Must not raise; should silently deduplicate to one row.
         record = repo.add(data)
 
-        assert record.affected_membership_ids == [membership.pk]
+        assert record.affected_membership_ids == [membership.user_id]
         assert AuditAffectedMembership.original_manager.filter(audit_fk_id=record.id).count() == 1
 
 
@@ -409,11 +422,12 @@ class TestDjangoORMAuditRepositoryAddReturnValue:
             action=AuditAction.UPDATE,
             actor=ActorSnapshot(
                 actor_type=AuditActorType.MEMBERSHIP,
-                actor_id=membership.pk,
+                actor_id=membership.user_id,
                 actor_role=OrganizationRole.MEMBER,
             ),
             subject=subject,
-            affected_membership_ids=[membership.pk],
+            # Use the org-scoped user_id
+            affected_membership_ids=[membership.user_id],
             diff=diff,
         )
         record = repo.add(data)
@@ -423,12 +437,12 @@ class TestDjangoORMAuditRepositoryAddReturnValue:
         assert record.organization_id == org.pk
         assert record.action == AuditAction.UPDATE
         assert record.actor.actor_type == AuditActorType.MEMBERSHIP
-        assert record.actor.actor_id == membership.pk
+        assert record.actor.actor_id == membership.user_id
         assert record.actor.actor_role == OrganizationRole.MEMBER
         assert record.subject.subject_type == "calendar_integration.CalendarEvent"
         assert record.subject.subject_id == "100"
         assert record.subject.subject_label == "Board Meeting"
-        assert record.affected_membership_ids == [membership.pk]
+        assert record.affected_membership_ids == [membership.user_id]
         assert record.diff == diff
         assert record.created_at == db_audit.created_at
 
@@ -455,7 +469,7 @@ class TestDjangoORMAuditRepositoryGet:
         repo = DjangoORMAuditRepository()
         subject = SubjectRef(
             subject_type="organizations.OrganizationMembership",
-            subject_id=str(membership.pk),
+            subject_id=str(membership.user_id),
             subject_label="Test Member",
         )
         diff = {"role": {"old": "member", "new": "admin"}}
@@ -467,10 +481,11 @@ class TestDjangoORMAuditRepositoryGet:
                 actor_type=AuditActorType.SYSTEM_USER,
                 actor_id=55,
                 system_user_scopes=["scheduling.read"],
-                system_user_scoped_to_membership=membership.pk,
+                # scoped_to_membership now stores the org-scoped user_id
+                system_user_scoped_to_membership=membership.user_id,
             ),
             subject=subject,
-            affected_membership_ids=[membership.pk],
+            affected_membership_ids=[membership.user_id],
             diff=diff,
         )
 
