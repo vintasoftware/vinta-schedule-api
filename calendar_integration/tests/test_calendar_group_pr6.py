@@ -259,8 +259,11 @@ def test_find_bookable_slots_single_query_per_type(
 @pytest.mark.django_db
 def test_can_manage_calendar_group_true_for_owner(organization, clinic_group, managed_calendars):
     owner = User.objects.create_user(email="owner@example.com")
+    OrganizationMembership.objects.get_or_create(user=owner, organization=organization)
     CalendarOwnership.objects.create(
-        organization=organization, calendar=managed_calendars["phys_a"], user=owner
+        organization=organization,
+        calendar=managed_calendars["phys_a"],
+        membership_user_id=owner.id,
     )
     svc = CalendarPermissionService()
     assert svc.can_manage_calendar_group(user=owner, group=clinic_group) is True
@@ -280,7 +283,12 @@ def test_can_manage_calendar_group_scoped_to_org(organization, other_org, clinic
     other_calendar = Calendar.objects.create(
         organization=other_org, name="X", external_id="x", provider=CalendarProvider.INTERNAL
     )
-    CalendarOwnership.objects.create(organization=other_org, calendar=other_calendar, user=user)
+    OrganizationMembership.objects.get_or_create(user=user, organization=other_org)
+    CalendarOwnership.objects.create(
+        organization=other_org,
+        calendar=other_calendar,
+        membership_user_id=user.id,
+    )
     svc = CalendarPermissionService()
     assert svc.can_manage_calendar_group(user=user, group=clinic_group) is False
 
@@ -295,7 +303,9 @@ def test_calendar_group_permission_delegates_to_permission_service(
     owner = User.objects.create_user(email="delegate@example.com")
     OrganizationMembership.objects.create(user=owner, organization=organization)
     CalendarOwnership.objects.create(
-        organization=organization, calendar=managed_calendars["phys_a"], user=owner
+        organization=organization,
+        calendar=managed_calendars["phys_a"],
+        membership_user_id=owner.id,
     )
 
     perm = CalendarGroupPermission(calendar_permission_service=CalendarPermissionService())
@@ -314,7 +324,9 @@ def test_calendar_group_permission_falls_back_when_service_missing(
     owner = User.objects.create_user(email="fallback@example.com")
     OrganizationMembership.objects.create(user=owner, organization=organization)
     CalendarOwnership.objects.create(
-        organization=organization, calendar=managed_calendars["phys_a"], user=owner
+        organization=organization,
+        calendar=managed_calendars["phys_a"],
+        membership_user_id=owner.id,
     )
     perm = CalendarGroupPermission(calendar_permission_service=None)
     request = Mock()

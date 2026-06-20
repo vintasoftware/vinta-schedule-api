@@ -17,18 +17,18 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
-from users.virtual_models import UserVirtualModel
+from organizations.virtual_models import OrganizationMembershipVirtualModel
 
 
 class CalendarOwnershipVirtualModel(v.VirtualModel):
-    user = UserVirtualModel()
+    membership = OrganizationMembershipVirtualModel()
 
     class Meta:
         model = CalendarOwnership
 
 
 class CalendarVirtualModel(v.VirtualModel):
-    users = UserVirtualModel(many=True)
+    memberships = OrganizationMembershipVirtualModel(many=True)
     calendar_ownerships = CalendarOwnershipVirtualModel(many=True)
 
     class Meta:
@@ -48,7 +48,7 @@ class EventExternalAttendanceVirtualModel(v.VirtualModel):
 
 
 class EventAttendanceVirtualModel(v.VirtualModel):
-    user = UserVirtualModel()
+    membership = OrganizationMembershipVirtualModel()
 
     class Meta:
         model = EventAttendance

@@ -1,8 +1,7 @@
 import datetime
 import zoneinfo
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
-from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
@@ -34,13 +33,14 @@ from calendar_integration.managers import (
     CalendarManager,
     CalendarSyncManager,
 )
+from common.fields import OrganizationMembershipForeignKey
 from organizations.models import (
     Organization,
     OrganizationForeignKey,
+    OrganizationMembership,
     OrganizationModel,
     OrganizationOneToOneField,
 )
-from users.models import User
 
 
 if TYPE_CHECKING:
@@ -140,12 +140,14 @@ class Calendar(OrganizationModel):
         ),
     )
 
-    users: "models.ManyToManyField[User, CalendarOwnership]" = models.ManyToManyField(
-        User,
-        related_name="calendars",
-        through="CalendarOwnership",
-        through_fields=("calendar_fk", "user"),
-        blank=True,
+    memberships: "models.ManyToManyField[OrganizationMembership, CalendarOwnership]" = (
+        models.ManyToManyField(
+            "organizations.OrganizationMembership",
+            related_name="calendars",
+            through="CalendarOwnership",
+            through_fields=("calendar_fk", "membership"),
+            blank=True,
+        )
     )
     bundle_children: "models.ManyToManyField[Calendar, ChildrenCalendarRelationship]" = (
         models.ManyToManyField(
@@ -222,6 +224,18 @@ class CalendarOwnership(OrganizationModel):
     """
     Represents the ownership of a calendar by an organization.
     This is used to link calendars to their respective organizations.
+
+    Phase 2b (cutover): the legacy ``user`` FK is dropped. Ownership is now
+    membership-only — resolved through the denormalized ``membership_user_id``
+    column and the ``membership`` ForeignObject join to
+    ``OrganizationMembership(organization_id, user_id)``.
+
+    PROTECT delete semantics are enforced at the DB level by a raw-SQL composite
+    FK ``(membership_user_id, organization_id) -> OrganizationMembership
+    (user_id, organization_id) ON DELETE RESTRICT`` (the ForeignObject carries no
+    DB constraint). Rows with ``membership_user_id IS NULL`` are orphans, excluded
+    from membership reads and not covered by the FK or the partial unique
+    constraint.
     """
 
     calendar = OrganizationForeignKey(  # type:ignore
@@ -230,10 +244,11 @@ class CalendarOwnership(OrganizationModel):
         null=True,
         related_name="ownerships",
     )
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+    membership = OrganizationMembershipForeignKey(
+        on_delete=models.PROTECT,
         related_name="calendar_ownerships",
+        null=True,
+        blank=True,
     )
     is_default = models.BooleanField(
         default=False,
@@ -243,8 +258,23 @@ class CalendarOwnership(OrganizationModel):
         ),
     )
 
+    class Meta:
+        indexes: ClassVar = [
+            models.Index(
+                fields=["organization", "membership_user_id"],
+                name="calownership_org_member_idx",
+            ),
+        ]
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=["calendar_fk", "membership_user_id"],
+                condition=models.Q(membership_user_id__isnull=False),
+                name="calownership_uniq_cal_member",
+            ),
+        ]
+
     def __str__(self):
-        return f"{self.calendar} owned by {self.user}"
+        return f"{self.calendar} owned by membership {self.membership_user_id}"
 
 
 class CalendarGroup(OrganizationModel):
@@ -407,7 +437,17 @@ class EventExternalAttendance(OrganizationModel):
 
 class EventAttendance(OrganizationModel):
     """
-    Represents the attendance of a user at a event.
+    Represents the attendance of an organization member at an event.
+
+    Phase 4b (cutover): the legacy ``user`` FK has been dropped. Attendee identity
+    is now carried solely by the membership-scoped ``membership`` ForeignObject and
+    its denormalized ``membership_user_id`` column. Orphan rows
+    (``membership_user_id IS NULL`` — the attendee is not, or is no longer, a member
+    of the event's organization) permanently lose attendee identity; they were
+    CSV-reported in the Phase 3 backfill before the column was dropped. PROTECT
+    delete semantics against the referenced membership are enforced by the raw-SQL
+    composite FK ``evattendance_membership_protect_fk`` (DEFERRABLE INITIALLY
+    DEFERRED), not by the ForeignObject (which is wired ``DO_NOTHING``).
     """
 
     event = OrganizationForeignKey(
@@ -416,8 +456,11 @@ class EventAttendance(OrganizationModel):
         null=True,
         related_name="attendances",
     )
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="event_attendances"
+    membership = OrganizationMembershipForeignKey(
+        on_delete=models.PROTECT,
+        related_name="event_attendances",
+        null=True,
+        blank=True,
     )
     status = models.CharField(
         max_length=50,
@@ -425,8 +468,16 @@ class EventAttendance(OrganizationModel):
         default=RSVPStatus.PENDING,
     )
 
+    class Meta:
+        indexes: ClassVar = [
+            models.Index(
+                fields=["organization", "membership_user_id"],
+                name="evattend_org_member_idx",
+            ),
+        ]
+
     def __str__(self):
-        return f"{self.user} - {self.event.title} ({self.status})"
+        return f"member:{self.membership_user_id} - {self.event.title} ({self.status})"
 
 
 class ResourceAllocation(OrganizationModel):
@@ -1077,11 +1128,11 @@ class CalendarEvent(RecurringMixin):
         help_text="If this event was booked through a CalendarGroup, references it",
     )
 
-    attendees = models.ManyToManyField(
-        settings.AUTH_USER_MODEL,
-        related_name="calendar_events",
+    attendee_memberships = models.ManyToManyField(
+        "organizations.OrganizationMembership",
+        related_name="attended_events",
         through=EventAttendance,
-        through_fields=("event", "user"),
+        through_fields=("event", "membership"),
         blank=True,
     )
     external_attendees = models.ManyToManyField(ExternalAttendee, related_name="calendar_events")
@@ -1696,11 +1747,14 @@ class CalendarManagementToken(OrganizationModel):
         help_text="IP address of the client that consumed (used) this token.",
     )
 
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        null=True,
+    # Phase 6: the legacy ``user`` FK is dropped; a token's internal actor is now
+    # the membership-scoped ``membership`` reference below. Tokens backed by
+    # ``external_attendee`` (null membership) carry no internal actor — not orphans.
+    membership = OrganizationMembershipForeignKey(
+        on_delete=models.PROTECT,
         related_name="calendar_event_management_tokens",
+        null=True,
+        blank=True,
     )
     external_attendee = OrganizationForeignKey(
         ExternalAttendee,
@@ -1713,9 +1767,22 @@ class CalendarManagementToken(OrganizationModel):
 
     permissions: "RelatedManager[CalendarManagementTokenPermission]"
 
+    class Meta:
+        indexes: ClassVar = [
+            models.Index(
+                fields=["organization", "membership_user_id"],
+                name="calmgmttoken_org_member_idx",
+            ),
+        ]
+
     def __str__(self):
         used_at = "" if self.used_at is None else f"(used at: {self.used_at.isoformat()})"
-        return f"Update Token from {self.user or self.external_attendee} for {self.event}{used_at}"
+        actor = (
+            f"membership user {self.membership_user_id}"
+            if self.membership_user_id is not None
+            else self.external_attendee
+        )
+        return f"Update Token from {actor} for {self.event}{used_at}"
 
 
 class CalendarManagementTokenPermission(OrganizationModel):

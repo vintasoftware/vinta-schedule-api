@@ -72,6 +72,7 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
     InitializedOrAuthenticatedCalendarService,
 )
 from calendar_integration.services.type_guards import is_authenticated_calendar_service
+from organizations.models import OrganizationMembership
 from users.models import User
 
 
@@ -382,12 +383,66 @@ class CalendarSyncService:
             if calendar.calendar_type == CalendarType.RESOURCE:
                 continue
 
-            CalendarOwnership.objects.update_or_create(
-                organization=context.organization,
-                calendar=calendar,
-                user=context.account.user if context.account else None,
-                defaults={"is_default": calendar_data.is_default},
-            )
+            owner_user = context.account.user if context.account else None
+            # Ownership is membership-scoped after Phase 2b: the lookup key is the
+            # denormalized `membership_user_id`, matched by the partial unique
+            # constraint (calendar_fk, membership_user_id). A non-NULL
+            # `membership_user_id` is enforced by the raw-SQL composite FK to
+            # OrganizationMembership(user_id, organization_id) — so it must point
+            # at a real membership. The sync owner (context.account.user) is the
+            # account that imported the calendar and is normally a member of the
+            # organization; if no matching membership exists we fall back to
+            # membership_user_id=NULL (an orphan ownership, excluded from
+            # membership reads) rather than risk an FK RESTRICT violation.
+            owner_membership_user_id = None
+            if (
+                owner_user is not None
+                and OrganizationMembership.objects.filter(
+                    user_id=owner_user.id,
+                    organization_id=context.organization.id,
+                ).exists()
+            ):
+                owner_membership_user_id = owner_user.id
+
+            if owner_membership_user_id is not None:
+                # Member owner: the partial unique (calendar_fk, membership_user_id)
+                # guarantees at most one row for this key, so update_or_create is
+                # safe to upsert on it.
+                CalendarOwnership.objects.update_or_create(
+                    organization=context.organization,
+                    calendar=calendar,
+                    membership_user_id=owner_membership_user_id,
+                    defaults={
+                        "is_default": calendar_data.is_default,
+                    },
+                )
+            else:
+                # Owner-less (NULL membership): the partial unique constraint
+                # EXCLUDES NULLs, so a calendar may already hold ≥2 orphan
+                # ownership rows. Keying update_or_create on membership_user_id=None
+                # would call .get() on a multi-row match and raise
+                # MultipleObjectsReturned. Match the pre-cutover intent of a single
+                # owner-less ownership per calendar: reuse any existing orphan row,
+                # otherwise create one.
+                ownership = (
+                    CalendarOwnership.objects.filter(
+                        organization=context.organization,
+                        calendar=calendar,
+                        membership_user_id__isnull=True,
+                    )
+                    .order_by("pk")
+                    .first()
+                )
+                if ownership is None:
+                    CalendarOwnership.objects.create(
+                        organization=context.organization,
+                        calendar=calendar,
+                        membership_user_id=None,
+                        is_default=calendar_data.is_default,
+                    )
+                elif ownership.is_default != calendar_data.is_default:
+                    ownership.is_default = calendar_data.is_default
+                    ownership.save(update_fields=["is_default"])
 
             # Grant permissions to calendar owners
             self._host._grant_calendar_owner_permissions(calendar)
@@ -809,16 +864,41 @@ class CalendarSyncService:
         for attendee in event.attendees:
             user = User.objects.filter(email=attendee.email).first()
 
-            if user and not existing_event.attendees.filter(id=user.id).exists():
+            # Resolve the membership-backed identity for the synced attendee;
+            # a non-member (orphan) stays NULL so the composite PROTECT FK holds.
+            membership_user_id = (
+                user.id
+                if user
+                and OrganizationMembership.objects.filter(
+                    organization_id=existing_event.organization_id,
+                    user_id=user.id,
+                ).exists()
+                else None
+            )
+
+            # A member attendance is deduped by ``membership_user_id``.
+            member_attendance_exists = (
+                membership_user_id is not None
+                and existing_event.attendances.filter(
+                    membership_user_id=membership_user_id
+                ).exists()
+            )
+
+            # A synced attendee whose email matches a ``User`` who is NOT an org member
+            # is treated as an EXTERNAL attendee (deduped by email) — internal
+            # attendances are membership-only post-cutover, so a non-member has no
+            # membership-backed identity to dedupe on.
+            if membership_user_id is not None and not member_attendance_exists:
                 changes.attendances_to_create.append(
                     EventAttendance(
+                        organization_id=existing_event.organization_id,
                         event=existing_event,
-                        user=None,
+                        membership_user_id=membership_user_id,
                         status=attendee.status,
                     )
                 )
             elif (
-                not user
+                membership_user_id is None
                 and not existing_event.external_attendances.filter(
                     external_attendee__email=attendee.email
                 ).exists()
@@ -837,13 +917,17 @@ class CalendarSyncService:
                     )
                 )
             else:
-                # Update existing attendance status if needed
+                # Update existing attendance status if needed. Reached when the
+                # attendee is an existing member attendance (matched by
+                # membership_user_id) or an existing external attendance (matched by
+                # email).
                 attendance = (
-                    existing_event.attendances.filter(user=user).first()
-                    or existing_event.external_attendances.filter(
-                        external_attendee__email=attendee.email
-                    ).first()
-                )
+                    existing_event.attendances.filter(membership_user_id=membership_user_id).first()
+                    if membership_user_id is not None
+                    else None
+                ) or existing_event.external_attendances.filter(
+                    external_attendee__email=attendee.email
+                ).first()
                 if attendance:
                     attendance.status = attendee.status
 

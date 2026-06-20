@@ -22,7 +22,7 @@ class CalendarEventPermission(BasePermission):
         calendar = obj.calendar
         owner = (
             CalendarOwnership.objects.filter_by_organization(obj.organization_id)
-            .filter(user=request.user, calendar=calendar)
+            .filter(membership_user_id=request.user.id, calendar=calendar)
             .first()
         )
         if not owner:
@@ -75,7 +75,7 @@ class CalendarGroupPermission(BasePermission):
             # Fallback if DI isn't wired (should not happen in normal flows).
             return (
                 CalendarOwnership.objects.filter_by_organization(obj.organization_id)
-                .filter(user=request.user, calendar_fk__group_slots__group_fk=obj)
+                .filter(membership_user_id=request.user.id, calendar_fk__group_slots__group_fk=obj)
                 .exists()
             )
         return self.calendar_permission_service.can_manage_calendar_group(

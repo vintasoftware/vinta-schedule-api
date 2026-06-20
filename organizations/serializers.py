@@ -291,8 +291,13 @@ class OrganizationMembershipSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrganizationMembership
+        # OrganizationMembership has a composite PK (user, organization) and no scalar
+        # ``id``. Expose the membership identity as ``user_id`` + ``organization_id``
+        # (Open Question #1 resolution: a membership is identified by the (user, org)
+        # pair) instead of the dropped ``id``.
         fields = (
-            "id",
+            "user_id",
+            "organization_id",
             "role",
             "is_active",
             "user_email",

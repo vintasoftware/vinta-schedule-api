@@ -61,6 +61,9 @@ from calendar_integration.services.calendar_service_utils import (
     get_calendar_by_id as _get_calendar_by_id_util,
 )
 from calendar_integration.services.calendar_service_utils import (
+    resolve_member_user_ids as _resolve_member_user_ids,
+)
+from calendar_integration.services.calendar_service_utils import (
     serialize_event as _serialize_event_util,
 )
 from calendar_integration.services.calendar_service_utils import (
@@ -93,6 +96,29 @@ from calendar_integration.services.type_guards import (
 )
 from public_api.models import SystemUser
 from users.models import User
+
+
+def _resolve_token_audit_actor(
+    token: CalendarManagementToken | None,
+) -> User | CalendarManagementToken | None:
+    """Resolve the side-effects audit actor for a permission token.
+
+    Before Phase 6 the actor was ``token.user`` (a User) when set, else the token
+    itself. The ``user`` FK is gone; the token's internal actor is now its
+    membership-scoped ``membership_user_id``. We resolve that back to a ``User`` so
+    the side-effects ``actor`` stays a User-or-token, exactly as before:
+
+    - member token (``membership_user_id`` set) → the corresponding ``User``;
+    - external / null-membership token → the token itself (no internal user actor),
+      matching the old ``token.user is None`` branch.
+    """
+    if token is None:
+        return None
+    if token.membership_user_id is not None:
+        actor_user = User.objects.filter(id=token.membership_user_id).first()
+        if actor_user is not None:
+            return actor_user
+    return token
 
 
 if TYPE_CHECKING:
@@ -199,8 +225,8 @@ class CalendarEventService:
         cross-organization or cross-owner token can never pass.
 
         Ownership is confirmed when a :class:`CalendarOwnership` row exists for ``calendar``
-        whose ``user`` is the member behind the token's ``scoped_to_membership`` (an
-        ``OrganizationMembership``). Org-wide tokens (``scoped_to_membership_fk_id is None``)
+        whose member is the one behind the token's ``scoped_to_membership`` (an
+        ``OrganizationMembership``). Org-wide tokens (``scoped_to_membership_user_id is None``)
         always return ``False`` — event creation stays blocked for them.
 
         Args:
@@ -211,13 +237,16 @@ class CalendarEventService:
             ``True`` only when the token is scoped AND its owner independently owns the
             target calendar in that calendar's organization; ``False`` otherwise.
         """
-        if system_user.scoped_to_membership_fk_id is None:
+        if system_user.scoped_to_membership_user_id is None:
             return False
+        # The queryset is already org-scoped via filter_by_organization, so filtering
+        # ownerships by membership_user_id is equivalent to the full (organization_id,
+        # user_id) membership identity — the org is fixed to the calendar's org.
         return (
             CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
             .filter(
                 calendar_fk_id=calendar.id,
-                user__organization_memberships=system_user.scoped_to_membership_fk_id,
+                membership_user_id=system_user.scoped_to_membership_user_id,
             )
             .exists()
         )
@@ -228,7 +257,7 @@ class CalendarEventService:
 
     def _serialize_event_internal_attendee(
         self, attendance: EventAttendance
-    ) -> EventInternalAttendeeData:
+    ) -> EventInternalAttendeeData | None:
         return _serialize_event_internal_attendee_util(attendance)
 
     def _serialize_event_external_attendee(
@@ -285,7 +314,7 @@ class CalendarEventService:
             # Public-API event creation is blocked by default. The single sanctioned
             # exception: an owner-scoped token whose owner *independently* owns the target
             # calendar (verified against CalendarOwnership, NOT trusted from the caller).
-            # Org-wide tokens (scoped_to_membership_fk_id is None) stay blocked — they must
+            # Org-wide tokens (scoped_to_membership_user_id is None) stay blocked — they must
             # route through single-use codes / public scheduling.
             if not self._scoped_system_user_owns_calendar(context.user_or_token, calendar):
                 raise PermissionDenied("Events cannot be created through the Public API.")
@@ -444,12 +473,22 @@ class CalendarEventService:
             ]
         )
 
+        # Resolve which attendee user_ids back an OrganizationMembership; non-members
+        # get a NULL membership_user_id (an orphan attendance) so the composite PROTECT
+        # FK is never violated.
+        member_user_ids = _resolve_member_user_ids(
+            (a.user_id for a in event_data.attendances), context.organization.id
+        )
         EventAttendance.objects.bulk_create(
             [
                 EventAttendance(
                     organization=context.organization,
                     event=event,
-                    user_id=attendance_data.user_id,
+                    membership_user_id=(
+                        attendance_data.user_id
+                        if attendance_data.user_id in member_user_ids
+                        else None
+                    ),
                 )
                 for attendance_data in event_data.attendances
             ]
@@ -475,10 +514,8 @@ class CalendarEventService:
         # ``getattr`` to avoid an AttributeError after commit, and fall back to the
         # SystemUser caller so owner-scoped events are never actor-less.
         permission_token = getattr(context.calendar_permission_service, "token", None)
-        if permission_token is not None and permission_token.user:
-            audit_actor: Any = permission_token.user
-        elif permission_token is not None:
-            audit_actor = permission_token
+        if permission_token is not None:
+            audit_actor: Any = _resolve_token_audit_actor(permission_token)
         else:
             audit_actor = context.user_or_token
 
@@ -551,10 +588,10 @@ class CalendarEventService:
                 for u in User.objects.filter(id__in=[a.user_id for a in event_data.attendances])
             }
             attendance_by_user_id = {
-                a.user_id: a
+                a.membership_user_id: a
                 for a in EventAttendance.objects.filter_by_organization(
                     context.organization.id
-                ).filter(event__id=event_id, user_id__in=users_by_id.keys())
+                ).filter(event__id=event_id, membership_user_id__in=users_by_id.keys())
             }
             resources_by_id = {
                 r.id: r
@@ -639,7 +676,7 @@ class CalendarEventService:
 
         event.save()
 
-        existing_attendances = {a.user_id: a for a in event.attendances.all()}
+        existing_attendances = {a.membership_user_id: a for a in event.attendances.all()}
         existing_external_attendances = {
             a.external_attendee_fk_id: a for a in event.external_attendances.all()
         }
@@ -715,6 +752,12 @@ class CalendarEventService:
             id__in=external_attendees_to_delete
         ).delete()
 
+        # Resolve which attendee user_ids back an OrganizationMembership; non-members
+        # get a NULL membership_user_id (an orphan attendance) so the composite PROTECT
+        # FK is never violated.
+        member_user_ids = _resolve_member_user_ids(
+            (a.user_id for a in event_data.attendances), context.organization.id
+        )
         maintained_attendees_ids = []
         event_attendances_to_create = []
         serialized_attendances_to_create = []
@@ -723,23 +766,43 @@ class CalendarEventService:
                 event_attendance_instance = EventAttendance(
                     organization=context.organization,
                     event=event,
-                    user_id=attendance_data.user_id,
+                    membership_user_id=(
+                        attendance_data.user_id
+                        if attendance_data.user_id in member_user_ids
+                        else None
+                    ),
                 )
                 event_attendances_to_create.append(event_attendance_instance)
-                serialized_attendances_to_create.append(
-                    self._serialize_event_internal_attendee(event_attendance_instance)
-                )
+                serialized = self._serialize_event_internal_attendee(event_attendance_instance)
+                if serialized is not None:
+                    serialized_attendances_to_create.append(serialized)
             maintained_attendees_ids.append(attendance_data.user_id)
 
         EventAttendance.objects.bulk_create(event_attendances_to_create)
 
-        # Grant permissions to newly added internal attendees
+        # Grant permissions to newly added internal attendees (resolved via the
+        # denormalized membership_user_id; orphan attendances without a
+        # membership-backed identity are intentionally skipped).
         if event_attendances_to_create and context.calendar_permission_service:
+            grant_user_by_id = {
+                u.id: u
+                for u in User.objects.filter(
+                    id__in={
+                        a.membership_user_id
+                        for a in event_attendances_to_create
+                        if a.membership_user_id is not None
+                    }
+                )
+            }
             for attendance in event_attendances_to_create:
-                user = User.objects.get(id=attendance.user_id)
+                if attendance.membership_user_id is None:
+                    continue
+                user = grant_user_by_id.get(attendance.membership_user_id)
+                if user is None:
+                    continue
                 # Check if user already has a token for this event
                 existing_token = CalendarManagementToken.objects.filter(
-                    user=user,
+                    membership_user_id=user.id,
                     event_fk_id=event.id,
                     organization_id=context.organization.id,
                     revoked_at__isnull=True,
@@ -773,12 +836,16 @@ class CalendarEventService:
                     )
 
         attendances_to_delete = set(existing_attendances.keys()) - set(maintained_attendees_ids)
+        # Keyed on ``membership_user_id``; orphan rows (membership_user_id IS NULL) are
+        # never targeted here — Postgres ``IN`` does not match NULL — so they survive an
+        # update, matching their identity-less, membership-scoped semantics.
         attendances_instances_to_delete = EventAttendance.objects.filter_by_organization(
             context.organization.id
-        ).filter(user_id__in=attendances_to_delete)
+        ).filter(membership_user_id__in=attendances_to_delete)
         serialized_attendances_to_delete = [
-            self._serialize_event_internal_attendee(attendance)
+            serialized
             for attendance in attendances_instances_to_delete
+            if (serialized := self._serialize_event_internal_attendee(attendance)) is not None
         ]
         attendances_instances_to_delete.delete()
 
@@ -805,14 +872,7 @@ class CalendarEventService:
             if not context.calendar_side_effects_service:
                 return
 
-            actor = (
-                context.calendar_permission_service.token.user
-                if (
-                    context.calendar_permission_service.token
-                    and context.calendar_permission_service.token.user
-                )
-                else context.calendar_permission_service.token
-            )
+            actor = _resolve_token_audit_actor(context.calendar_permission_service.token)
             context.calendar_side_effects_service.on_update_event(
                 actor=actor,
                 event=self._serialize_event(event),
@@ -950,8 +1010,9 @@ class CalendarEventService:
                 timezone=parent_event.timezone,
                 recurrence_rule=new_recurrence_rule.to_rrule_string(),
                 attendances=[
-                    EventAttendanceInputData(user_id=a.user_id)
+                    EventAttendanceInputData(user_id=a.membership_user_id)
                     for a in parent_event.attendances.all()
+                    if a.membership_user_id is not None
                 ],
                 external_attendances=[
                     EventExternalAttendanceInputData(
@@ -1360,14 +1421,7 @@ class CalendarEventService:
         transaction.on_commit(
             lambda: (
                 context.calendar_side_effects_service.on_delete_event(
-                    actor=(
-                        context.calendar_permission_service.token.user
-                        if (
-                            context.calendar_permission_service.token
-                            and context.calendar_permission_service.token.user
-                        )
-                        else context.calendar_permission_service.token
-                    ),
+                    actor=_resolve_token_audit_actor(context.calendar_permission_service.token),
                     event=serialized_event,
                     organization=event.organization,
                 )
@@ -1401,9 +1455,10 @@ class CalendarEventService:
             recurrence_rule=event_data.recurrence_rule,
             attendances=[
                 EventAttendanceInputData(
-                    user_id=a.user_id,
+                    user_id=a.membership_user_id,
                 )
                 for a in event.attendances.all()
+                if a.membership_user_id is not None
             ],
             external_attendances=[
                 EventExternalAttendanceInputData(
@@ -1465,8 +1520,9 @@ class CalendarEventService:
                         for ra in parent.resource_allocations.all()
                     ],
                     attendances=[
-                        EventAttendanceInputData(user_id=att.user_id)
+                        EventAttendanceInputData(user_id=att.membership_user_id)
                         for att in parent.attendances.all()
+                        if att.membership_user_id is not None
                     ],
                     external_attendances=[
                         EventExternalAttendanceInputData(
@@ -1521,8 +1577,9 @@ class CalendarEventService:
                     timezone=parent.timezone,
                     recurrence_rule=recurrence_rule.to_rrule_string() if recurrence_rule else None,
                     attendances=[
-                        EventAttendanceInputData(user_id=a.user_id)
+                        EventAttendanceInputData(user_id=a.membership_user_id)
                         for a in parent.attendances.all()
+                        if a.membership_user_id is not None
                     ],
                     external_attendances=[
                         EventExternalAttendanceInputData(

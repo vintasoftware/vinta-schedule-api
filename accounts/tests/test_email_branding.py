@@ -79,7 +79,7 @@ class TestEmailBranding:
             invited_by=inviter,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         from organizations.notification_contexts import organization_invitation_context
@@ -115,7 +115,7 @@ class TestEmailBranding:
             invited_by=inviter,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         from organizations.notification_contexts import organization_invitation_context
@@ -155,7 +155,7 @@ class TestEmailBranding:
             invited_by=inviter,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         from organizations.notification_contexts import organization_invitation_context
@@ -299,7 +299,7 @@ class TestInvitationTemplateRendering:
             invited_by=inviter,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         from organizations.notification_contexts import organization_invitation_context
@@ -353,7 +353,7 @@ class TestPublicApiInviteInvitedByNone:
             last_name="Customer",
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         from organizations.notification_contexts import organization_invitation_context
@@ -388,7 +388,7 @@ class TestPublicApiInviteInvitedByNone:
             last_name="Customer",
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         from organizations.notification_contexts import organization_invitation_context

@@ -35,7 +35,7 @@ from calendar_integration.services.dataclasses import (
     EventInternalAttendeeData,
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from users.models import Profile, User
 
 
@@ -107,9 +107,10 @@ def calendar_token(db, calendar, user, organization):
     token_str = generate_long_lived_token()
     hashed_token = hash_long_lived_token(token_str)
 
+    OrganizationMembership.objects.get_or_create(user=user, organization=organization)
     token = CalendarManagementToken.objects.create(
         calendar_fk=calendar,
-        user=user,
+        membership_user_id=user.id,
         token_hash=hashed_token,
         organization=organization,
     )
@@ -131,9 +132,10 @@ def event_token(db, event, user, organization):
     token_str = generate_long_lived_token()
     hashed_token = hash_long_lived_token(token_str)
 
+    OrganizationMembership.objects.get_or_create(user=user, organization=organization)
     token = CalendarManagementToken.objects.create(
         event_fk=event,
-        user=user,
+        membership_user_id=user.id,
         token_hash=hashed_token,
         organization=organization,
     )
@@ -772,10 +774,11 @@ class TestCalendarPermissionServiceTokenCreation:
 
     def test_create_calendar_owner_token(self, permission_service, user, calendar, organization):
         """Test creating calendar owner token with default permissions."""
+        OrganizationMembership.objects.get_or_create(user=user, organization=organization)
         token = permission_service.create_calendar_owner_token(organization.id, user, calendar.id)
 
         assert token.calendar_fk == calendar
-        assert token.user == user
+        assert token.membership_user_id == user.id
         assert token.organization == organization
 
         # Check default permissions
@@ -808,10 +811,11 @@ class TestCalendarPermissionServiceTokenCreation:
 
     def test_create_attendee_token(self, permission_service, user, event, organization):
         """Test creating attendee token with default permissions."""
+        OrganizationMembership.objects.get_or_create(user=user, organization=organization)
         token = permission_service.create_attendee_token(organization.id, user, event.id)
 
         assert token.event_fk == event
-        assert token.user == user
+        assert token.membership_user_id == user.id
         assert token.organization == organization
         assert token.token_hash is not None
 

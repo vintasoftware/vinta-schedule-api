@@ -7059,7 +7059,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedOrganizationMembershipList'
           description: ''
-  /organization-members/{id}/:
+  /organization-members/{user_id}/:
     get:
       operationId: organization_members_retrieve
       description: |-
@@ -7085,7 +7085,7 @@ paths:
           an organization the caller is not an active member of, the server returns
           **403**.
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7101,7 +7101,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
-  /organization-members/{id}{format}:
+  /organization-members/{user_id}{format}:
     get:
       operationId: organization_members_formatted_retrieve
       description: |-
@@ -7134,7 +7134,7 @@ paths:
           - .json
         required: true
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7150,7 +7150,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
-  /organization-members/{id}/deactivate/:
+  /organization-members/{user_id}/deactivate/:
     post:
       operationId: organization_members_deactivate_create
       description: |-
@@ -7174,7 +7174,7 @@ paths:
           an organization the caller is not an active member of, the server returns
           **403**.
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7207,7 +7207,7 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
-  /organization-members/{id}/deactivate{format}:
+  /organization-members/{user_id}/deactivate{format}:
     post:
       operationId: organization_members_deactivate_formatted_create
       description: |-
@@ -7238,7 +7238,7 @@ paths:
           - .json
         required: true
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7271,7 +7271,7 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
-  /organization-members/{id}/reactivate/:
+  /organization-members/{user_id}/reactivate/:
     post:
       operationId: organization_members_reactivate_create
       description: |-
@@ -7293,7 +7293,7 @@ paths:
           an organization the caller is not an active member of, the server returns
           **403**.
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7324,7 +7324,7 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
-  /organization-members/{id}/reactivate{format}:
+  /organization-members/{user_id}/reactivate{format}:
     post:
       operationId: organization_members_reactivate_formatted_create
       description: |-
@@ -7353,7 +7353,7 @@ paths:
           - .json
         required: true
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7384,7 +7384,7 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
-  /organization-members/{id}/update-role/:
+  /organization-members/{user_id}/update-role/:
     post:
       operationId: organization_members_update_role_create
       description: |-
@@ -7407,7 +7407,7 @@ paths:
           an organization the caller is not an active member of, the server returns
           **403**.
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7441,7 +7441,7 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
-  /organization-members/{id}/update-role{format}:
+  /organization-members/{user_id}/update-role{format}:
     post:
       operationId: organization_members_update_role_formatted_create
       description: |-
@@ -7471,7 +7471,7 @@ paths:
           - .json
         required: true
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -11709,9 +11709,9 @@ components:
           type: integer
           nullable: true
           description: ID of the external attendee.
-        user:
+        membership:
           allOf:
-          - $ref: '#/components/schemas/User'
+          - $ref: '#/components/schemas/OwnershipMembership'
           readOnly: true
         user_id:
           type: integer
@@ -11730,9 +11730,9 @@ components:
           readOnly: true
       required:
       - created
+      - membership
       - modified
       - status
-      - user
       - user_id
     EventBulkModification:
       type: object
@@ -12136,7 +12136,10 @@ components:
         Exposes membership role, active status, and flattened user information
         (email, first_name, last_name) for the admin datatable.
       properties:
-        id:
+        user_id:
+          type: integer
+          readOnly: true
+        organization_id:
           type: integer
           readOnly: true
         role:
@@ -12167,12 +12170,35 @@ components:
           type: string
           readOnly: true
       required:
-      - id
       - is_active
+      - organization_id
       - role
       - user_email
       - user_first_name
+      - user_id
       - user_last_name
+    OwnershipMembership:
+      type: object
+      description: |-
+        Membership identity for a calendar owner.
+
+        A membership has no scalar id (it is identified by the ``(user_id,
+        organization_id)`` pair), so the representation exposes that pair plus the
+        membership ``role``.
+      properties:
+        user_id:
+          type: integer
+          readOnly: true
+        organization_id:
+          type: integer
+          readOnly: true
+        role:
+          type: string
+          readOnly: true
+      required:
+      - organization_id
+      - role
+      - user_id
     PaginatedAvailableTimeList:
       type: object
       required:
@@ -13304,14 +13330,14 @@ components:
 
         Exposes ``id``, ``integration_name``, ``is_active``, ``available_resources``
         (list of resource_name strings from the related ``ResourceAccess`` rows), and
-        ``scoped_to_user`` (the owner's User id derived from the membership FK, null for
-        org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API stability;
-        the value is resolved via ``scoped_to_membership_fk.user_id``.
+        ``scoped_to_user`` (the owner's User id from the denormalized membership column, null
+        for org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API stability;
+        the value is the denormalized ``scoped_to_membership_user_id``.
         Never exposes ``long_lived_token_hash`` or ``token``.
 
-        Optimized for list queries: uses prefetched ``available_resources`` and
-        ``select_related("scoped_to_membership_fk")`` from the viewset's ``get_queryset``
-        to avoid N+1 queries.
+        Optimized for list queries: uses prefetched ``available_resources`` from the viewset's
+        ``get_queryset`` to avoid N+1 queries.  ``scoped_to_membership_user_id`` is a concrete
+        column on the row, so it needs no join.
       properties:
         id:
           type: integer
@@ -13334,13 +13360,10 @@ components:
           type: integer
           nullable: true
           description: |-
-            Return the owner's User id from the queryset annotation when present.
+            Return the owner's User id from the denormalized membership column, or None.
 
-            For list/retrieve the viewset annotates ``scoped_to_user_id_value`` via an
-            F-expression JOIN, so no extra query is issued per token.  For any other
-            call path (e.g. the revoke action that constructs the serializer from a
-            freshly-fetched instance without the annotation) we fall back to a single
-            membership lookup.
+            ``scoped_to_membership_user_id`` is a concrete column already storing the
+            membership's user_id, so the value is returned directly with no extra query.
           readOnly: true
       required:
       - available_resources
@@ -13385,9 +13408,9 @@ components:
 
         Includes the write-once ``token`` field (sourced from the view) and
         ``available_resources`` (derived from the related ``ResourceAccess`` rows).
-        Exposes ``scoped_to_user`` as the owner's User id derived from the stored membership FK
-        (null for org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API
-        stability; the value is resolved via ``scoped_to_membership_fk.user_id``.
+        Exposes ``scoped_to_user`` as the owner's User id derived from the stored membership
+        reference (null for org-wide tokens).  The REST field name ``scoped_to_user`` is kept
+        for API stability; the value is the denormalized ``scoped_to_membership_user_id``.
         Never exposes ``long_lived_token_hash``.
       properties:
         id:
@@ -13410,8 +13433,11 @@ components:
         scoped_to_user:
           type: integer
           nullable: true
-          description: Return the owner's User id derived from the stored membership
-            FK, or None.
+          description: |-
+            Return the owner's User id from the denormalized membership column, or None.
+
+            ``scoped_to_membership_user_id`` already stores the membership's user_id, so the
+            value is returned directly with no extra query.
           readOnly: true
         token:
           type: string
@@ -13481,60 +13507,6 @@ components:
           $ref: '#/components/schemas/RoleEnum'
       required:
       - role
-    User:
-      type: object
-      properties:
-        id:
-          type: integer
-          readOnly: true
-        email:
-          type: string
-          format: email
-          readOnly: true
-        phone_number:
-          type: string
-          readOnly: true
-        profile:
-          $ref: '#/components/schemas/Profile'
-        is_active:
-          type: boolean
-          readOnly: true
-          description: Designates whether this user should be treated as active. Unselect
-            this instead of deleting accounts.
-        is_staff:
-          type: boolean
-          readOnly: true
-          description: Designates whether the user can log into this admin site.
-        is_superuser:
-          type: boolean
-          readOnly: true
-          title: Superuser status
-          description: Designates that this user has all permissions without explicitly
-            assigning them.
-        created:
-          type: string
-          format: date-time
-          readOnly: true
-        modified:
-          type: string
-          format: date-time
-          readOnly: true
-        last_login:
-          type: string
-          format: date-time
-          readOnly: true
-          nullable: true
-      required:
-      - created
-      - email
-      - id
-      - is_active
-      - is_staff
-      - is_superuser
-      - last_login
-      - modified
-      - phone_number
-      - profile
     VisibilityEnum:
       enum:
       - active

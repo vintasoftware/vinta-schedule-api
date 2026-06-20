@@ -77,7 +77,7 @@ def _pending_invitation(
         invited_by=inviter,
         expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
         accepted_at=None,
-        membership=None,
+        membership_user_id=None,
     )
 
 
@@ -150,7 +150,7 @@ class TestInvitedEmailAutoJoin:
         invitation.refresh_from_db()
         assert invitation.accepted_at is not None, "Invitation accepted_at must be set"
         assert invitation.membership is not None, "Invitation must be linked to the membership"
-        assert invitation.membership_id == membership.pk
+        assert invitation.membership_user_id == membership.user_id
 
     def test_invite_wins_over_pending_organization_name(self, rf):
         """
@@ -226,7 +226,7 @@ class TestInvitedEmailAutoJoin:
         # Invitation is properly accepted.
         invitation.refresh_from_db()
         assert invitation.accepted_at is not None
-        assert invitation.membership_id == membership.pk
+        assert invitation.membership_user_id == membership.user_id
 
     def test_invitation_marked_accepted_after_autojoin(self, rf):
         """

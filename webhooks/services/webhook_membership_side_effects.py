@@ -29,7 +29,6 @@ class WebhookMembershipSideEffectsService:
             "organization_id": membership.organization_id,
             "organization_name": membership.organization.name,
             "membership_role": membership.role,
-            "membership_id": membership.id,
         }
 
     def on_member_created(self, membership: OrganizationMembership) -> None:
@@ -40,9 +39,10 @@ class WebhookMembershipSideEffectsService:
 
         Args:
             membership: The newly created OrganizationMembership. Must have
-                ``user``, ``organization``, ``role``, and ``id`` accessible
-                (i.e. already saved to the DB and related objects pre-loaded or
-                accessible via FK lookup).
+                ``user``, ``organization``, and ``role`` accessible (i.e. already
+                saved to the DB and related objects pre-loaded or accessible via
+                FK lookup). The membership identity in the payload is the
+                ``(user_id, organization_id)`` pair — no scalar membership id.
         """
         if not membership.is_active:
             return

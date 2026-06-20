@@ -302,18 +302,19 @@ class Query:
         if calendar_id is not None:
             queryset = queryset.filter(id=calendar_id)
 
-        # Optional filter by owner user (via CalendarOwnership)
+        # Optional filter by owner user (via CalendarOwnership membership)
         if user_id is not None:
-            # related_name on CalendarOwnership is `ownerships`
-            queryset = queryset.filter(ownerships__user_id=user_id)
+            # related_name on CalendarOwnership is `ownerships`; the denormalized
+            # membership_user_id carries the owning user (orphan ownerships excluded).
+            queryset = queryset.filter(ownerships__membership_user_id=user_id)
 
         # Optional filter by calendar type
         if calendar_type is not None:
             queryset = queryset.filter(calendar_type=calendar_type)
 
-        # Prefetch ownership rows + related user + profile to avoid N+1 when
-        # the caller selects `owners { user { profile { ... } } }`.
-        queryset = queryset.prefetch_related("ownerships__user__profile")
+        # Prefetch ownership rows + related membership to avoid N+1 when the
+        # caller selects `owners { membership { ... } }`.
+        queryset = queryset.prefetch_related("ownerships__membership")
 
         # Apply ordering first, then pagination
         queryset = _slice_qs(queryset.order_by("pk"), offset, limit)
@@ -364,10 +365,10 @@ class Query:
                     "calendarId or userId, startDatetime, and endDatetime. "
                 )
 
-            # Resolve calendars owned by the user, constrained to this org.
+            # Resolve calendars owned by the user (via membership), constrained to this org.
             owned_ids: set[int] = set(
                 Calendar.objects.filter_by_organization(org.id)
-                .filter(ownerships__user_id=user_id)
+                .filter(ownerships__membership_user_id=user_id)
                 .values_list("id", flat=True)
             )
 
@@ -722,7 +723,7 @@ class Query:
         org = _get_org(info)
         qs = (
             CalendarGroup.objects.filter_by_organization(org.id)
-            .prefetch_related("slots__calendars__ownerships__user__profile")
+            .prefetch_related("slots__calendars__ownerships__membership")
             .order_by("pk")
         )
         return cast(list[CalendarGroupGraphQLType], list(_slice_qs(qs, offset, limit)))
@@ -746,8 +747,8 @@ class Query:
             .filter(calendar_type=CalendarType.BUNDLE)
             .prefetch_related(
                 "bundle_children",
-                "ownerships__user__profile",
-                "bundle_children__ownerships__user__profile",
+                "ownerships__membership",
+                "bundle_children__ownerships__membership",
             )
             .order_by("pk")
         )
@@ -861,7 +862,9 @@ class Query:
         membership_sq = (
             OrganizationMembership.objects.filter(organization_id=OuterRef("pk"))
             .values("organization_id")
-            .annotate(cnt=DjangoCount("id"))
+            # OrganizationMembership has a composite PK (user, organization) and no
+            # scalar ``id``; count rows via ``user_id`` (a NOT NULL PK column).
+            .annotate(cnt=DjangoCount("user_id"))
             .values("cnt")
         )
         calendar_sq = (

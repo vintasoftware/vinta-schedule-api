@@ -24,7 +24,7 @@ from calendar_integration.exceptions import (
     NoAvailableTimeWindowsError,
     ServiceNotAuthenticatedError,
 )
-from calendar_integration.factories import CalendarEventFactory
+from calendar_integration.factories import CalendarEventFactory, create_calendar_ownership
 from calendar_integration.models import (
     AvailableTime,
     AvailableTimeBulkModification,
@@ -71,8 +71,18 @@ from calendar_integration.services.dataclasses import (
     ResourceData,
     UnavailableTimeWindow,
 )
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from users.models import Profile, User
+
+
+def _member_token_user_id(user, organization):
+    """Ensure ``user`` is a member of ``organization`` and return their id.
+
+    The membership PROTECT FK on ``CalendarManagementToken`` requires a non-null
+    ``membership_user_id`` to reference a real ``OrganizationMembership``.
+    """
+    OrganizationMembership.objects.get_or_create(user=user, organization=organization)
+    return user.id
 
 
 def create_event_management_token(event, user, organization, token_hash=None):
@@ -82,7 +92,7 @@ def create_event_management_token(event, user, organization, token_hash=None):
 
     token = CalendarManagementToken.objects.create(
         event_fk=event,
-        user=user,
+        membership_user_id=_member_token_user_id(user, organization),
         token_hash=token_hash,
         organization=organization,
     )
@@ -102,7 +112,7 @@ def create_calendar_management_token(calendar, user, organization, token_hash=No
 
     token = CalendarManagementToken.objects.create(
         calendar=calendar,
-        user=user,
+        membership_user_id=_member_token_user_id(user, organization),
         token_hash=token_hash,
         organization=organization,
     )
@@ -258,7 +268,7 @@ def calendar_management_token(db, calendar, social_account):
     """Create a calendar management token for testing."""
     token = CalendarManagementToken.objects.create(
         calendar=calendar,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, calendar.organization),
         token_hash="test_token_hash",
         organization=calendar.organization,
     )
@@ -291,7 +301,7 @@ def event_management_token(db, calendar_event, social_account):
     """Create an event-specific management token for testing."""
     token = CalendarManagementToken.objects.create(
         event_fk=calendar_event,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, calendar_event.organization),
         token_hash="test_event_token_hash",
         organization=calendar_event.organization,
     )
@@ -552,7 +562,8 @@ def test_authenticate_with_social_account_sets_owning_user(
     social_account, social_token, organization, mock_google_adapter
 ):
     """authenticate(account=<SocialAccount>) resolves the adapter and attributes
-    records to the owning user (user_or_token), so CalendarOwnership.user is set."""
+    records to the owning user (user_or_token), so ownership is attributed to that
+    user's membership."""
     service = CalendarService()
     service.authenticate(account=social_account, organization=organization)
 
@@ -664,6 +675,12 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
 
     mock_google_adapter.get_account_calendars.return_value = mock_calendar_resources
 
+    # The importing account is a member of the org, so ownership rows reference a
+    # real membership (the membership PROTECT FK requires a matching membership).
+    OrganizationMembership.objects.get_or_create(
+        user=social_account.user, organization=organization
+    )
+
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=organization)
 
@@ -690,7 +707,7 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
     primary_ownership = CalendarOwnership.objects.filter(
         organization=organization,
         calendar=primary_calendar,
-        user=social_account.user,
+        membership_user_id=social_account.user.id,
     ).first()
     assert primary_ownership is not None
     assert primary_ownership.is_default is True
@@ -698,10 +715,75 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
     work_ownership = CalendarOwnership.objects.filter(
         organization=organization,
         calendar=work_calendar,
-        user=social_account.user,
+        membership_user_id=social_account.user.id,
     ).first()
     assert work_ownership is not None
     assert work_ownership.is_default is False
+
+
+@pytest.mark.django_db
+def test_import_with_nonmember_owner_and_preexisting_orphans_does_not_raise(
+    social_account, social_token, mock_google_adapter, organization
+):
+    """Re-import by a non-member owner over multiple NULL ownerships must not raise.
+
+    Regression for the sync NULL fallback: the partial unique constraint EXCLUDES
+    NULL ``membership_user_id``, so a calendar can already hold ≥2 orphan
+    (NULL-membership) ownership rows. The importing account here is NOT a member of
+    the org, so the owner resolves to ``membership_user_id=None``. Keying
+    ``update_or_create`` on ``membership_user_id=None`` would call ``.get()`` on a
+    multi-row match and raise ``MultipleObjectsReturned``; the guarded
+    filter().first()-then-create path must reuse one orphan row instead and not
+    raise.
+    """
+    # social_account.user is deliberately NOT a member of `organization`.
+    assert not OrganizationMembership.objects.filter(
+        user=social_account.user, organization=organization
+    ).exists()
+
+    mock_google_adapter.get_account_calendars.return_value = [
+        CalendarResourceData(
+            external_id="orphan_cal",
+            name="Shared",
+            description="",
+            email="shared@example.com",
+            is_default=False,
+            provider="google",
+            original_payload={"id": "orphan_cal"},
+        ),
+    ]
+
+    # Pre-seed the calendar with two NULL (orphan) ownership rows.
+    calendar = Calendar.objects.create(
+        organization=organization,
+        external_id="orphan_cal",
+        name="Shared",
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.PERSONAL,
+    )
+    CalendarOwnership.objects.create(
+        organization=organization, calendar=calendar, membership_user_id=None
+    )
+    CalendarOwnership.objects.create(
+        organization=organization, calendar=calendar, membership_user_id=None
+    )
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=organization)
+
+    # Must not raise MultipleObjectsReturned.
+    service.import_account_calendars(sync_after_import=False)
+
+    # The two pre-existing orphan rows are preserved; no new member ownership added.
+    assert (
+        CalendarOwnership.objects.filter(
+            organization=organization, calendar=calendar, membership_user_id__isnull=True
+        ).count()
+        == 2
+    )
+    assert not CalendarOwnership.objects.filter(
+        organization=organization, calendar=calendar, membership_user_id__isnull=False
+    ).exists()
 
 
 @pytest.mark.django_db
@@ -906,6 +988,11 @@ def test_create_application_calendar(
     )
     mock_google_adapter.create_application_calendar.return_value = created_calendar_data
     mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    # The creating user owns the calendar through their membership (PROTECT FK).
+    OrganizationMembership.objects.get_or_create(
+        user=social_account.user, organization=organization
+    )
 
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=organization)
@@ -1561,8 +1648,11 @@ def test_create_recurring_exception_on_master_preserves_attendances_and_resource
     recurrence_rule = "RRULE:FREQ=WEEKLY;COUNT=3;BYDAY=MO"
     mock_google_adapter.provider = CalendarProvider.GOOGLE
 
-    # Create additional user and resource for testing
+    # Create additional member user and resource for testing. The user must be a
+    # member of the org so the membership-scoped attendance survives the recurring
+    # exception copy (orphan attendances carry no identity and are dropped).
     additional_user = User.objects.create_user(email="attendee@example.com", password="testpass123")
+    OrganizationMembership.objects.create(user=additional_user, organization=calendar.organization)
     resource_calendar = Calendar.objects.create(
         name="Test Resource",
         external_id="resource_123",
@@ -1782,7 +1872,7 @@ def test_create_recurring_event_bulk_modification_creates_continuation_and_recor
     # Create event-specific management token for bulk modification operation
     CalendarManagementToken.objects.create(
         event_fk=parent_event,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, calendar.organization),
         token_hash="test_bulk_modification_token_hash",
         organization=calendar.organization,
     )
@@ -1893,7 +1983,7 @@ def test_create_recurring_event_bulk_modification_cancelled_records_only(
     # Create event-specific management token for bulk modification operation
     CalendarManagementToken.objects.create(
         event_fk=parent_event,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, calendar.organization),
         token_hash="test_bulk_cancel_token_hash",
         organization=calendar.organization,
     )
@@ -3017,6 +3107,13 @@ def test_create_event_with_attendances(
     mock_google_adapter.create_event.return_value = created_event_data
     mock_google_adapter.provider = CalendarProvider.GOOGLE
 
+    # The attendee users must be members of the event's organization for the
+    # membership-scoped write path to persist their identity (membership_user_id).
+    for attendance in sample_event_input_data_with_attendances.attendances:
+        OrganizationMembership.objects.get_or_create(
+            user_id=attendance.user_id, organization=calendar.organization
+        )
+
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=calendar.organization)
     result = service.create_event(calendar.id, sample_event_input_data_with_attendances)
@@ -3028,7 +3125,7 @@ def test_create_event_with_attendances(
 
     # Verify user attendances were created
     assert result.attendances.count() == 2
-    user_ids = [attendance.user_id for attendance in result.attendances.all()]
+    user_ids = [attendance.membership_user_id for attendance in result.attendances.all()]
     expected_user_ids = [
         att.user_id for att in sample_event_input_data_with_attendances.attendances
     ]
@@ -3057,11 +3154,12 @@ def test_update_event_with_attendances(
     # Create initial attendances
     user1 = User.objects.create_user(email="initial1@example.com")
     Profile.objects.create(user=user1, first_name="Initial", last_name="User")
+    OrganizationMembership.objects.create(user=user1, organization=calendar_event.organization)
 
     EventAttendance.objects.create(
         organization=calendar_event.organization,
         event=calendar_event,
-        user=user1,
+        membership_user_id=user1.id,
     )
     external_attendee = ExternalAttendee.objects.create(
         organization=calendar_event.organization,
@@ -3074,11 +3172,14 @@ def test_update_event_with_attendances(
         external_attendee=external_attendee,
     )
 
-    # Create new users for updated attendances
+    # Create new users for updated attendances (members so the membership-scoped
+    # write path persists their identity)
     new_user1 = User.objects.create_user(email="new1@example.com")
     new_user2 = User.objects.create_user(email="new2@example.com")
     Profile.objects.create(user=new_user1, first_name="New", last_name="User 1")
     Profile.objects.create(user=new_user2, first_name="New", last_name="User 2")
+    OrganizationMembership.objects.create(user=new_user1, organization=calendar_event.organization)
+    OrganizationMembership.objects.create(user=new_user2, organization=calendar_event.organization)
 
     updated_event_data = CalendarEventAdapterOutputData(
         calendar_external_id="cal_123",
@@ -3126,11 +3227,13 @@ def test_update_event_with_attendances(
 
     # Verify attendances were updated correctly
     assert result.attendances.count() == 2
-    user_ids = [attendance.user_id for attendance in result.attendances.all()]
+    user_ids = [attendance.membership_user_id for attendance in result.attendances.all()]
     assert set(user_ids) == {new_user1.id, new_user2.id}
 
     # Verify old attendance was removed
-    assert not EventAttendance.objects.filter(user=user1, event=calendar_event).exists()
+    assert not EventAttendance.objects.filter(
+        membership_user_id=user1.id, event=calendar_event
+    ).exists()
 
     # Verify external attendances were updated correctly
     assert result.external_attendances.count() == 1
@@ -3142,6 +3245,150 @@ def test_update_event_with_attendances(
     assert not ExternalAttendee.objects.filter(email="initial_external@example.com").exists()
 
     mock_google_adapter.update_event.assert_called_once()
+
+
+@pytest.mark.django_db
+def test_update_event_with_unchanged_orphan_attendee_requires_no_attendee_permission(
+    social_account, social_token, mock_google_adapter, calendar_event, db
+):
+    """A pre-existing orphan attendee left unchanged must not be seen as an attendee change.
+
+    BLOCKER regression: ``serialize_event`` drops orphan attendances (no membership)
+    but the input serializer used to resolve EVERY input ``user_id`` and include
+    non-members. A persisted orphan that is unchanged in the payload then appeared only
+    on the ``new`` side of the permission diff and was falsely flagged as "attendance
+    added", forcing ``UPDATE_ATTENDEES`` and raising ``PermissionDenied`` for a caller
+    who changed nothing. The fix routes the input serializer through the same membership
+    guard so both sides agree on the member set and the orphan is symmetrically dropped.
+
+    The token here intentionally LACKS ``UPDATE_ATTENDEES``: if the orphan were still
+    flagged as an attendee change the update would be denied.
+    """
+    orphan_user = User.objects.create_user(email="orphan@example.com")  # NOT a member
+    orphan_attendance = EventAttendance.objects.create(
+        organization=calendar_event.organization,
+        event=calendar_event,
+        membership_user_id=None,
+    )
+
+    # Token without UPDATE_ATTENDEES — only the permissions a no-op update could need.
+    token = CalendarManagementToken.objects.create(
+        event_fk=calendar_event,
+        membership_user_id=_member_token_user_id(social_account.user, calendar_event.organization),
+        token_hash="orphan_unchanged_token",
+        organization=calendar_event.organization,
+    )
+    token.permissions.all().delete()
+    for permission_str in (
+        EventManagementPermissions.UPDATE_DETAILS,
+        EventManagementPermissions.RESCHEDULE,
+        EventManagementPermissions.CANCEL,
+    ):
+        token.permissions.create(
+            permission=permission_str,
+            organization_id=calendar_event.organization_id,
+        )
+
+    # Update payload carries the SAME orphan attendee and the SAME details/times.
+    event_input_data = CalendarEventInputData(
+        title=calendar_event.title,
+        description=calendar_event.description,
+        start_time=calendar_event.start_time,
+        end_time=calendar_event.end_time,
+        timezone=calendar_event.timezone,
+        attendances=[EventAttendanceInputData(user_id=orphan_user.id)],
+        external_attendances=[],
+        resource_allocations=[],
+    )
+
+    mock_google_adapter.update_event.return_value = CalendarEventAdapterOutputData(
+        calendar_external_id="cal_123",
+        external_id="event_123",
+        title=calendar_event.title,
+        description=calendar_event.description,
+        start_time=calendar_event.start_time,
+        end_time=calendar_event.end_time,
+        timezone="UTC",
+        attendees=[],
+        resources=[],
+        original_payload={},
+    )
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar_event.organization)
+
+    # Must NOT raise PermissionDenied — the unchanged orphan is not an attendee change.
+    result = service.update_event(calendar_event.calendar.id, calendar_event.id, event_input_data)
+
+    assert result.id == calendar_event.id
+    # The orphan attendance is still present and still orphaned (the dropped ``user``
+    # FK means it is retrievable only by pk, not by the original user id).
+    orphan_attendance = EventAttendance.objects.filter_by_organization(
+        calendar_event.organization_id
+    ).get(pk=orphan_attendance.pk)
+    assert orphan_attendance.membership_user_id is None
+
+
+@pytest.mark.django_db
+def test_create_event_persists_membership_user_id_for_mixed_attendees(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    patch_get_calendar,
+    calendar_management_token,
+):
+    """create_event persists membership_user_id = user id for members, NULL for non-members.
+
+    SHOULD-FIX A: drive the service bulk-write path with a MIXED member + non-member
+    attendee list and assert the denormalized ``membership_user_id`` (member -> id,
+    non-member -> NULL).
+    """
+    member_user = User.objects.create_user(email="member@example.com")
+    OrganizationMembership.objects.create(user=member_user, organization=calendar.organization)
+    non_member_user = User.objects.create_user(email="nonmember@example.com")  # NOT a member
+
+    event_input_data = CalendarEventInputData(
+        title="Mixed Attendees Event",
+        description="Member + non-member",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendances=[
+            EventAttendanceInputData(user_id=member_user.id),
+            EventAttendanceInputData(user_id=non_member_user.id),
+        ],
+        external_attendances=[],
+        resource_allocations=[],
+    )
+
+    mock_google_adapter.create_event.return_value = CalendarEventAdapterOutputData(
+        calendar_external_id="cal_123",
+        external_id="mixed_attendees_event_123",
+        title="Mixed Attendees Event",
+        description="Member + non-member",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendees=[],
+        resources=[],
+        original_payload={},
+    )
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+    result = service.create_event(calendar.id, event_input_data)
+
+    attendances_by_org = EventAttendance.objects.filter_by_organization(calendar.organization_id)
+    member_attendance = attendances_by_org.get(event=result, membership_user_id=member_user.id)
+    # The non-member attendee is now an identity-less orphan (membership_user_id IS
+    # NULL) — the dropped ``user`` column means it can only be retrieved as the lone
+    # null-membership row, not by the original user id.
+    non_member_attendance = attendances_by_org.get(event=result, membership_user_id__isnull=True)
+
+    assert member_attendance.membership_user_id == member_user.id
+    assert non_member_attendance.membership_user_id is None
 
 
 @pytest.mark.django_db
@@ -3165,7 +3412,7 @@ def test_update_event_with_resource_allocations(
     # Create token for initial resource
     CalendarManagementToken.objects.create(
         calendar_fk=initial_resource,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, organization),
         token_hash="test_token_hash_initial",
         organization=organization,
     )
@@ -3185,7 +3432,7 @@ def test_update_event_with_resource_allocations(
     # Create token for new resource
     CalendarManagementToken.objects.create(
         calendar_fk=new_resource,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, organization),
         token_hash="test_token_hash_new",
         organization=organization,
     )
@@ -3940,9 +4187,16 @@ def test_process_existing_blocked_time(social_account, social_token, mock_google
 def test_process_event_attendees_new_user(
     social_account, social_token, mock_google_adapter, calendar_event
 ):
-    """Test processing event attendees with a new user."""
-    # Create a user that matches the attendee email
-    User.objects.create_user(email="attendee@example.com", password="testpass123")
+    """Test processing event attendees with a new user.
+
+    The synced attendee is a member of the event's organization, so the created
+    attendance carries the denormalized membership_user_id (and the resolved user).
+    """
+    # Create a user that matches the attendee email and make them a member.
+    attendee_user = User.objects.create_user(email="attendee@example.com", password="testpass123")
+    OrganizationMembership.objects.create(
+        user=attendee_user, organization=calendar_event.organization
+    )
 
     event_data = CalendarEventAdapterOutputData(
         calendar_external_id="cal_123",
@@ -3967,6 +4221,72 @@ def test_process_event_attendees_new_user(
     attendance = changes.attendances_to_create[0]
     assert attendance.event_fk == calendar_event
     assert attendance.status == "accepted"
+    assert attendance.membership_user_id == attendee_user.id
+
+
+@pytest.mark.django_db
+def test_process_event_attendees_non_member_becomes_external_and_is_idempotent(
+    social_account, social_token, mock_google_adapter, calendar_event
+):
+    """A synced attendee resolving to a non-member User becomes an EXTERNAL attendee.
+
+    Post-cutover, internal attendances are membership-only: a synced attendee whose
+    email matches a ``User`` who is NOT an org member has no membership-backed identity
+    to dedupe on, so it is routed to an ``EventExternalAttendance`` (deduped by email)
+    rather than an identity-less internal ``EventAttendance``.
+
+    Running the sync path twice must stay idempotent: the external-attendance count
+    stays 1 and no internal attendance is ever created.
+    """
+    User.objects.create_user(email="nonmember@example.com", password="pw")
+
+    event_data = CalendarEventAdapterOutputData(
+        calendar_external_id="cal_123",
+        external_id="event_123",
+        title="Event with attendees",
+        description="",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendees=[
+            EventAttendeeData(email="nonmember@example.com", name="No Member", status="accepted")
+        ],
+    )
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar_event.organization)
+
+    # First sync pass: the non-member synced attendee is routed to an external
+    # attendance (deduped by email), never to an internal attendance.
+    changes = EventsSyncChanges()
+    service._process_event_attendees(event_data, calendar_event, changes)
+
+    assert len(changes.attendances_to_create) == 0
+    assert len(changes.external_attendances_to_create) == 1
+    external_attendance = changes.external_attendances_to_create[0]
+    assert external_attendance.event == calendar_event
+    assert external_attendance.external_attendee.email == "nonmember@example.com"
+
+    # Persist the first pass so the second pass sees the existing external attendance.
+    EventExternalAttendance.objects.bulk_create(changes.external_attendances_to_create)
+
+    # Second sync pass: the existing external attendance is matched by email, so no
+    # new attendance (internal or external) is produced — the regression guard against
+    # unbounded duplicate-orphan accumulation.
+    changes = EventsSyncChanges()
+    service._process_event_attendees(event_data, calendar_event, changes)
+
+    assert len(changes.attendances_to_create) == 0
+    assert len(changes.external_attendances_to_create) == 0
+
+    assert (
+        EventExternalAttendance.objects.filter(
+            event=calendar_event,
+            external_attendee__email="nonmember@example.com",
+        ).count()
+        == 1
+    )
+    assert not EventAttendance.objects.filter(event=calendar_event).exists()
 
 
 @pytest.mark.django_db
@@ -4326,7 +4646,7 @@ def test_create_event_with_available_windows(
     # Create calendar management token for this calendar
     token = CalendarManagementToken.objects.create(
         calendar_fk=calendar,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, organization),
         token_hash="test_token_hash",
         organization=organization,
     )
@@ -4418,10 +4738,9 @@ def test_create_event_no_available_windows(
     )
 
     # Create calendar ownership for the user
-    CalendarOwnership.objects.create(
+    create_calendar_ownership(
         calendar=calendar,
         user=social_account.user,
-        organization=organization,
     )
 
     # Create permission token for the user
@@ -4491,7 +4810,7 @@ def test_create_event_with_partial_availability(
     # Create calendar management token for this calendar
     token = CalendarManagementToken.objects.create(
         calendar_fk=calendar,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, organization),
         token_hash="test_token_hash",
         organization=organization,
     )
@@ -4583,7 +4902,7 @@ def test_create_event_with_multiple_availability_windows(
     # Create calendar management token for this calendar
     token = CalendarManagementToken.objects.create(
         calendar_fk=calendar,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, organization),
         token_hash="test_token_hash",
         organization=organization,
     )
@@ -4680,7 +4999,7 @@ def test_create_event_with_attendees(
     # Create calendar management token for this calendar
     token = CalendarManagementToken.objects.create(
         calendar_fk=calendar,
-        user=social_account.user,
+        membership_user_id=_member_token_user_id(social_account.user, organization),
         token_hash="test_token_hash",
         organization=organization,
     )
@@ -4796,10 +5115,9 @@ def test_create_event_adapter_failure(
     )
 
     # Create calendar ownership for the user
-    CalendarOwnership.objects.create(
+    create_calendar_ownership(
         calendar=calendar,
         user=social_account.user,
-        organization=organization,
     )
 
     # Create permission token for the user
@@ -5594,15 +5912,16 @@ def test_apply_sync_changes_attendances_to_create(
         organization=calendar.organization,
     )
 
-    # Create user for attendance
+    # Create member user for attendance
     user = User.objects.create_user(email="attendee@example.com", password="testpass123")
+    OrganizationMembership.objects.create(user=user, organization=calendar.organization)
 
     changes = EventsSyncChanges()
 
     # Create attendance to be created
     new_attendance = EventAttendance(
         event_fk=event,
-        user=user,
+        membership_user_id=user.id,
         organization=calendar.organization,
     )
     changes.attendances_to_create.append(new_attendance)
@@ -5613,7 +5932,7 @@ def test_apply_sync_changes_attendances_to_create(
 
     # Verify attendance was created
     created_attendance = EventAttendance.objects.get(
-        event_fk=event, user=user, organization=calendar.organization
+        event_fk=event, membership_user_id=user.id, organization=calendar.organization
     )
     assert created_attendance.organization == calendar.organization
 
@@ -7903,8 +8222,7 @@ def owned_calendar(db, organization, calendar_owner_user):
         calendar_type=CalendarType.PERSONAL,
     )
     # Create ownership relationship
-    CalendarOwnership.objects.create(
-        organization=organization,
+    create_calendar_ownership(
         calendar=calendar,
         user=calendar_owner_user,
         is_default=True,
@@ -8021,8 +8339,7 @@ def test_get_write_adapter_prefers_default_owner(
     )
 
     # Create ownership for the other user (not default)
-    CalendarOwnership.objects.create(
-        organization=owned_calendar.organization,
+    create_calendar_ownership(
         calendar=owned_calendar,
         user=other_owner,
         is_default=False,
@@ -8068,8 +8385,7 @@ def test_get_write_adapter_returns_self_adapter_when_no_valid_owner(
 
     # Create user without social account
     user_no_social = User.objects.create_user(email="nosocial@example.com", password="testpass123")
-    CalendarOwnership.objects.create(
-        organization=organization,
+    create_calendar_ownership(
         calendar=calendar_no_owner,
         user=user_no_social,
         is_default=True,
@@ -8124,7 +8440,12 @@ def test_create_event_uses_write_adapter_for_non_owned_calendar(
 ):
     """Test that create_event uses the write adapter for non-owned calendars."""
 
-    # Create permission token for the unrelated user to allow calendar access
+    # Create permission token for the unrelated user to allow calendar access.
+    # The user must be a member of the org for the token to carry a membership actor
+    # (a token's internal actor is now its membership reference).
+    OrganizationMembership.objects.get_or_create(
+        user=unrelated_social_account.user, organization=owned_calendar.organization
+    )
     permission_service = CalendarPermissionService()
     permission_service.create_calendar_owner_token(
         organization_id=owned_calendar.organization.id,
@@ -8213,7 +8534,11 @@ def test_update_event_uses_write_adapter_for_non_owned_calendar(
         organization=owned_calendar.organization,
     )
 
-    # Create permission token for the unrelated user to update this event
+    # Create permission token for the unrelated user to update this event.
+    # The user must be a member of the org for the token to carry a membership actor.
+    OrganizationMembership.objects.get_or_create(
+        user=unrelated_social_account.user, organization=owned_calendar.organization
+    )
     permission_service = CalendarPermissionService()
     permission_service.create_attendee_token(
         organization_id=owned_calendar.organization.id,
@@ -8299,7 +8624,11 @@ def test_delete_event_uses_write_adapter_for_non_owned_calendar(
         organization=owned_calendar.organization,
     )
 
-    # Create permission token for the unrelated user to delete this event
+    # Create permission token for the unrelated user to delete this event.
+    # The user must be a member of the org for the token to carry a membership actor.
+    OrganizationMembership.objects.get_or_create(
+        user=unrelated_social_account.user, organization=owned_calendar.organization
+    )
     permission_service = CalendarPermissionService()
     permission_service.create_attendee_token(
         organization_id=owned_calendar.organization.id,
@@ -8355,7 +8684,7 @@ def test_write_adapter_only_used_for_personal_and_resource_calendars(
     # Create calendar management token for this calendar
     token = CalendarManagementToken.objects.create(
         calendar_fk=virtual_calendar,
-        user=unrelated_social_account.user,
+        membership_user_id=_member_token_user_id(unrelated_social_account.user, organization),
         token_hash="test_token_hash",
         organization=organization,
     )
@@ -8490,10 +8819,9 @@ class TestCalendarServicePermissionIntegration:
         # Create a user and make them a calendar owner
         user = User.objects.create(email="owner@example.com")
         Profile.objects.create(user=user)
-        CalendarOwnership.objects.create(
+        create_calendar_ownership(
             calendar=calendar,
             user=user,
-            organization=organization,
         )
 
         # Create a permission service
@@ -8508,7 +8836,7 @@ class TestCalendarServicePermissionIntegration:
         # Check that a token was created for the owner
         token = CalendarManagementToken.objects.get(
             calendar_fk=calendar,
-            user=user,
+            membership_user_id=user.id,
             organization=organization,
         )
 
@@ -8522,16 +8850,17 @@ class TestCalendarServicePermissionIntegration:
         # Create users
         attendee_user = User.objects.create(email="attendee@example.com")
         Profile.objects.create(user=attendee_user)
+        OrganizationMembership.objects.create(user=attendee_user, organization=organization)
         external_attendee = ExternalAttendee.objects.create(
             email="external@example.com",
             name="External User",
             organization=organization,
         )
 
-        # Create attendances
+        # Create attendances (membership-backed internal attendee)
         EventAttendance.objects.create(
             event=calendar_event,
-            user=attendee_user,
+            membership_user_id=attendee_user.id,
             organization=organization,
             status="pending",
         )
@@ -8554,7 +8883,7 @@ class TestCalendarServicePermissionIntegration:
         # Check that tokens were created for attendees
         internal_token = CalendarManagementToken.objects.get(
             event_fk=calendar_event,
-            user=attendee_user,
+            membership_user_id=attendee_user.id,
             organization=organization,
         )
         external_token = CalendarManagementToken.objects.get(
@@ -8569,6 +8898,34 @@ class TestCalendarServicePermissionIntegration:
 
         assert set(internal_permissions) == set(DEFAULT_ATTENDEE_PERMISSIONS)
         assert set(external_permissions) == set(DEFAULT_EXTERNAL_ATTENDEE_PERMISSIONS)
+
+    def test_grant_event_attendee_permissions_skips_orphan_attendee(
+        self, organization, calendar, calendar_event, db
+    ):
+        """An orphan attendance (membership_user_id NULL) gets no attendee token.
+
+        Permissions are membership-scoped; an attendee with no backing membership
+        (an ex-member or a never-member) must not be granted a management token.
+        """
+        orphan_user = User.objects.create(email="orphan-attendee@example.com")
+        Profile.objects.create(user=orphan_user)
+
+        EventAttendance.objects.create(
+            event=calendar_event,
+            membership_user_id=None,
+            organization=organization,
+            status="pending",
+        )
+
+        permission_service = CalendarPermissionService()
+        service = CalendarService(calendar_permission_service=permission_service)
+        service._grant_event_attendee_permissions(calendar_event)
+
+        assert not CalendarManagementToken.objects.filter(
+            event_fk=calendar_event,
+            membership_user_id=orphan_user.id,
+            organization=organization,
+        ).exists()
 
     @pytest.mark.django_db
     def test_grant_permissions_without_permission_service(self, calendar, calendar_event):
@@ -8607,6 +8964,11 @@ class TestCalendarServicePermissionIntegration:
             description="Test Calendar Description",
             provider=CalendarProvider.GOOGLE,
             original_payload={},
+        )
+
+        # The creating user owns the calendar through their membership (PROTECT FK).
+        OrganizationMembership.objects.get_or_create(
+            user=social_account.user, organization=organization
         )
 
         service = CalendarService()
@@ -8687,10 +9049,9 @@ class TestCalendarServicePermissionIntegration:
         """Test that duplicate tokens are not created for the same user/calendar combination."""
         user = User.objects.create(email="owner@example.com")
         Profile.objects.create(user=user)
-        CalendarOwnership.objects.create(
+        create_calendar_ownership(
             calendar=calendar,
             user=user,
-            organization=organization,
         )
 
         permission_service = CalendarPermissionService()
@@ -8700,14 +9061,14 @@ class TestCalendarServicePermissionIntegration:
         service._grant_calendar_owner_permissions(calendar)
         initial_token_count = CalendarManagementToken.objects.filter(
             calendar_fk=calendar,
-            user=user,
+            membership_user_id=user.id,
             organization=organization,
         ).count()
 
         service._grant_calendar_owner_permissions(calendar)
         final_token_count = CalendarManagementToken.objects.filter(
             calendar_fk=calendar,
-            user=user,
+            membership_user_id=user.id,
             organization=organization,
         ).count()
 
@@ -8721,10 +9082,11 @@ class TestCalendarServicePermissionIntegration:
         """Test that duplicate event attendee tokens are not created."""
         attendee_user = User.objects.create(email="attendee@example.com")
         Profile.objects.create(user=attendee_user)
+        OrganizationMembership.objects.create(user=attendee_user, organization=organization)
 
         EventAttendance.objects.create(
             event=calendar_event,
-            user=attendee_user,
+            membership_user_id=attendee_user.id,
             organization=organization,
             status="pending",
         )
@@ -8736,14 +9098,14 @@ class TestCalendarServicePermissionIntegration:
         service._grant_event_attendee_permissions(calendar_event)
         initial_token_count = CalendarManagementToken.objects.filter(
             event_fk=calendar_event,
-            user=attendee_user,
+            membership_user_id=attendee_user.id,
             organization=organization,
         ).count()
 
         service._grant_event_attendee_permissions(calendar_event)
         final_token_count = CalendarManagementToken.objects.filter(
             event_fk=calendar_event,
-            user=attendee_user,
+            membership_user_id=attendee_user.id,
             organization=organization,
         ).count()
 
@@ -8759,10 +9121,9 @@ class TestCalendarServicePermissionScenarios:
         """Test that calendar owners receive all expected permissions."""
         user = User.objects.create_user(email="owner@example.com")
         Profile.objects.create(user=user)
-        CalendarOwnership.objects.create(
+        create_calendar_ownership(
             calendar=calendar,
             user=user,
-            organization=organization,
         )
 
         permission_service = CalendarPermissionService()
@@ -8793,10 +9154,11 @@ class TestCalendarServicePermissionScenarios:
         """Test that event attendees receive limited permissions."""
         attendee_user = User.objects.create(email="attendee@example.com")
         Profile.objects.create(user=attendee_user)
+        OrganizationMembership.objects.create(user=attendee_user, organization=organization)
 
         EventAttendance.objects.create(
             event=calendar_event,
-            user=attendee_user,
+            membership_user_id=attendee_user.id,
             organization=organization,
             status="pending",
         )
@@ -8875,10 +9237,9 @@ class TestCalendarServicePermissionScenarios:
         )
         user = User.objects.create_user(email="owner@example.com")
         Profile.objects.create(user=user)
-        CalendarOwnership.objects.create(
+        create_calendar_ownership(
             calendar=calendar,
             user=user,
-            organization=organization,
         )
 
         # Create permission service and calendar service
@@ -8928,12 +9289,12 @@ class TestCalendarServicePermissionScenarios:
                 # Check that both calendar and event tokens exist
                 calendar_token = CalendarManagementToken.objects.get(
                     calendar_fk=calendar,
-                    user=user,
+                    membership_user_id=user.id,
                     organization=organization,
                 )
                 event_token = CalendarManagementToken.objects.get(
                     event_fk=created_event,
-                    user=user,
+                    membership_user_id=user.id,
                     organization=organization,
                 )
 
