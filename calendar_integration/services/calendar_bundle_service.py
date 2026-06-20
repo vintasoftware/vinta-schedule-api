@@ -68,6 +68,7 @@ from calendar_integration.services.protocols.base_calendar_service import BaseCa
 from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
+from organizations.models import OrganizationMembership
 from users.models import User
 
 
@@ -201,12 +202,24 @@ class CalendarBundleService:
                 is_primary=is_primary,
             )
 
-        # Create calendar ownership for the user who created it
+        # Create calendar ownership for the user who created it. Guard the
+        # membership-scoped FK (same as the sync path): only set
+        # membership_user_id when the creator is a member of this org, else create
+        # an orphan ownership (membership_user_id NULL) so a non-member
+        # user_or_token never triggers an FK IntegrityError aborting the request.
         if isinstance(context.user_or_token, User):
+            owner_membership_user_id = (
+                context.user_or_token.id
+                if OrganizationMembership.objects.filter(
+                    user_id=context.user_or_token.id,
+                    organization_id=context.organization.id,
+                ).exists()
+                else None
+            )
             CalendarOwnership.objects.create(
                 organization=context.organization,
                 calendar=bundle_calendar,
-                user=context.user_or_token,
+                membership_user_id=owner_membership_user_id,
                 is_default=False,
             )
 
@@ -537,13 +550,18 @@ class CalendarBundleService:
 
         attendee_user_ids = {attendance.user_id for attendance in event_data.attendances}
 
-        # Add users who own child calendars
-        calendar_owners = User.objects.filter(
-            calendar_ownerships__calendar__in=child_calendars,
-            calendar_ownerships__organization=context.organization,
-        ).distinct()
+        # Add memberships that own child calendars (membership-backed owners only;
+        # orphan ownerships with a null membership are intentionally excluded).
+        owner_user_ids = (
+            CalendarOwnership.objects.filter_by_organization(context.organization.id)
+            .filter(
+                calendar_fk_id__in=[calendar.id for calendar in child_calendars],
+                membership_user_id__isnull=False,
+            )
+            .values_list("membership_user_id", flat=True)
+            .distinct()
+        )
 
-        for owner in calendar_owners:
-            attendee_user_ids.add(owner.id)
+        attendee_user_ids.update(owner_user_ids)
 
         return [EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids]

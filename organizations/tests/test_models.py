@@ -1,5 +1,6 @@
 """Tests for OrganizationMembership model additions (Phase 1)."""
 
+import django.db.transaction
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.urls import reverse
@@ -122,7 +123,9 @@ class TestInactiveMembershipGating:
         user, org, client = self._make_active_member_client()
         calendar = baker.make(Calendar, organization=org)
         # Non-admin members only list calendars they own (owner-scoping).
-        CalendarOwnership.objects.create(organization=org, calendar=calendar, user=user)
+        CalendarOwnership.objects.create(
+            organization=org, calendar=calendar, membership_user_id=user.id
+        )
 
         url = reverse("api:Calendars-list")
         response = client.get(url)
@@ -153,7 +156,9 @@ class TestInactiveMembershipGating:
         user, org, client = self._make_inactive_member_client()
         calendar = baker.make(Calendar, organization=org)
         # Non-admin members only list calendars they own (owner-scoping).
-        CalendarOwnership.objects.create(organization=org, calendar=calendar, user=user)
+        CalendarOwnership.objects.create(
+            organization=org, calendar=calendar, membership_user_id=user.id
+        )
 
         # Verify inactive = empty
         url = reverse("api:Calendars-list")
@@ -342,3 +347,44 @@ class TestMultiOrgMembership:
 
         assert resolved == active
         assert resolved.organization == org_a
+
+
+@pytest.mark.django_db
+class TestOrganizationMembershipCompositePK:
+    """Unit tests for Phase 7b — composite primary key (user_id, organization_id)."""
+
+    def test_pk_tuple_lookup_returns_membership(self):
+        """OrganizationMembership.objects.get(pk=(user.id, org.id)) returns the membership."""
+        user = baker.make(User)
+        org = baker.make(Organization)
+        membership = OrganizationMembership.objects.create(user=user, organization=org)
+
+        fetched = OrganizationMembership.objects.get(pk=(user.id, org.id))
+        assert fetched == membership
+
+    def test_instance_pk_is_tuple_of_user_and_org_ids(self):
+        """membership.pk is the (user_id, organization_id) tuple after save."""
+        user = baker.make(User)
+        org = baker.make(Organization)
+        membership = OrganizationMembership.objects.create(user=user, organization=org)
+
+        assert membership.pk == (user.id, org.id)
+
+
+@pytest.mark.django_db(transaction=True)
+class TestOrganizationMembershipCompositePKUniqueness:
+    """Transaction-level test for the composite PK uniqueness constraint."""
+
+    def test_duplicate_membership_raises_integrity_error(self):
+        """Creating a second OrganizationMembership for the same (user, org) raises IntegrityError.
+
+        Uses transaction=True so the IntegrityError from the DB constraint is
+        flushed immediately (not deferred to test teardown).
+        """
+        user = baker.make(User)
+        org = baker.make(Organization)
+        OrganizationMembership.objects.create(user=user, organization=org)
+
+        with pytest.raises(IntegrityError):
+            with django.db.transaction.atomic():
+                OrganizationMembership.objects.create(user=user, organization=org)

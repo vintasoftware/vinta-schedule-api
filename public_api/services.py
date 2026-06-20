@@ -59,6 +59,6 @@ class PublicAPIAuthService:
             "is_active": True,
         }
         if scoped_to_membership is not None:
-            create_kwargs["scoped_to_membership_fk"] = scoped_to_membership
+            create_kwargs["scoped_to_membership_user_id"] = scoped_to_membership.user_id
         system_user = SystemUser.objects.create(**create_kwargs)
         return system_user, token

@@ -53,7 +53,13 @@ class TestScopedCalendarIds:
         calendar = baker.make(
             Calendar, organization=organization, name="User Calendar", external_id="user-cal"
         )
-        baker.make(CalendarOwnership, calendar=calendar, user=user, organization=organization)
+        OrganizationMembership.objects.get_or_create(user=user, organization=organization)
+        baker.make(
+            CalendarOwnership,
+            calendar=calendar,
+            membership_user_id=user.id,
+            organization=organization,
+        )
         return calendar
 
     @pytest.fixture
@@ -65,8 +71,12 @@ class TestScopedCalendarIds:
             name="Another User Calendar",
             external_id="another-user-cal",
         )
+        OrganizationMembership.objects.get_or_create(user=another_user, organization=organization)
         baker.make(
-            CalendarOwnership, calendar=calendar, user=another_user, organization=organization
+            CalendarOwnership,
+            calendar=calendar,
+            membership_user_id=another_user.id,
+            organization=organization,
         )
         return calendar
 
@@ -79,8 +89,12 @@ class TestScopedCalendarIds:
             name="Other Org Calendar",
             external_id="other-org-cal",
         )
+        OrganizationMembership.objects.get_or_create(user=user, organization=another_organization)
         baker.make(
-            CalendarOwnership, calendar=calendar, user=user, organization=another_organization
+            CalendarOwnership,
+            calendar=calendar,
+            membership_user_id=user.id,
+            organization=another_organization,
         )
         return calendar
 
@@ -99,7 +113,7 @@ class TestScopedCalendarIds:
         system_user = baker.make(
             SystemUser,
             organization=organization,
-            scoped_to_membership_fk=membership,
+            scoped_to_membership_user_id=membership.user_id,
             integration_name="scoped_token",
         )
         return system_user
@@ -110,7 +124,7 @@ class TestScopedCalendarIds:
         system_user = baker.make(
             SystemUser,
             organization=organization,
-            scoped_to_membership_fk=another_membership,
+            scoped_to_membership_user_id=another_membership.user_id,
             integration_name="scoped_token_no_calendars",
         )
         return system_user
@@ -176,8 +190,19 @@ class TestScopedCalendarIds:
         calendar2 = baker.make(
             Calendar, organization=organization, name="Calendar 2", external_id="test-cal-2"
         )
-        baker.make(CalendarOwnership, calendar=calendar1, user=user, organization=organization)
-        baker.make(CalendarOwnership, calendar=calendar2, user=user, organization=organization)
+        OrganizationMembership.objects.get_or_create(user=user, organization=organization)
+        baker.make(
+            CalendarOwnership,
+            calendar=calendar1,
+            membership_user_id=user.id,
+            organization=organization,
+        )
+        baker.make(
+            CalendarOwnership,
+            calendar=calendar2,
+            membership_user_id=user.id,
+            organization=organization,
+        )
 
         result = scoped_calendar_ids(scoped_system_user, organization)
         assert result is not None
@@ -190,14 +215,14 @@ class TestScopedCalendarIds:
         system_user = baker.make(
             SystemUser,
             organization=organization,
-            scoped_to_membership_fk=membership,
+            scoped_to_membership_user_id=membership.user_id,
             integration_name="scoped_token_org_check",
         )
         # SystemUser.organization must match the membership's organization for the
-        # OrganizationForeignKey tenant join to resolve correctly.
+        # (organization_id, user_id) membership join to resolve correctly.
         assert system_user.organization_id == membership.organization_id
-        # The scalar id is always accessible regardless of the FK join path.
-        assert system_user.scoped_to_membership_fk_id == membership.id
+        # The denormalized membership user_id is always accessible on the row.
+        assert system_user.scoped_to_membership_user_id == membership.user_id
 
 
 @pytest.mark.django_db
@@ -239,7 +264,13 @@ class TestAssertCalendarInOwnerScope:
         calendar = baker.make(
             Calendar, organization=organization, name="Owned Calendar", external_id="owned-cal"
         )
-        baker.make(CalendarOwnership, calendar=calendar, user=user, organization=organization)
+        OrganizationMembership.objects.get_or_create(user=user, organization=organization)
+        baker.make(
+            CalendarOwnership,
+            calendar=calendar,
+            membership_user_id=user.id,
+            organization=organization,
+        )
         return calendar
 
     @pytest.fixture
@@ -251,7 +282,13 @@ class TestAssertCalendarInOwnerScope:
             name="Other Calendar",
             external_id="other-cal",
         )
-        baker.make(CalendarOwnership, calendar=calendar, user=other_user, organization=organization)
+        OrganizationMembership.objects.get_or_create(user=other_user, organization=organization)
+        baker.make(
+            CalendarOwnership,
+            calendar=calendar,
+            membership_user_id=other_user.id,
+            organization=organization,
+        )
         return calendar
 
     @pytest.fixture
@@ -269,7 +306,7 @@ class TestAssertCalendarInOwnerScope:
         return baker.make(
             SystemUser,
             organization=organization,
-            scoped_to_membership_fk=membership,
+            scoped_to_membership_user_id=membership.user_id,
             integration_name="scoped_write_token",
         )
 

@@ -70,7 +70,6 @@ from calendar_integration.virtual_models import (
 from common.utils.serializer_utils import VirtualModelSerializer
 from organizations.models import Organization, get_active_organization_membership
 from users.models import User
-from users.serializers import UserSerializer
 
 
 if TYPE_CHECKING:
@@ -104,13 +103,28 @@ def _localize_times_in_representation(
     return data
 
 
+class OwnershipMembershipSerializer(serializers.Serializer):
+    """Membership identity for a calendar owner.
+
+    A membership has no scalar id (it is identified by the ``(user_id,
+    organization_id)`` pair), so the representation exposes that pair plus the
+    membership ``role``.
+    """
+
+    user_id = serializers.IntegerField(read_only=True)
+    organization_id = serializers.IntegerField(read_only=True)
+    role = serializers.CharField(read_only=True)
+
+
 class CalendarOwnershipSerializer(VirtualModelSerializer):
+    membership = OwnershipMembershipSerializer(read_only=True)
+
     class Meta:
         model = CalendarOwnership
         virtual_model = CalendarOwnershipVirtualModel
         fields = (
             "id",
-            "user",
+            "membership",
             "calendar",
             "is_default",
             "created",
@@ -584,7 +598,7 @@ class EventAttendanceSerializer(VirtualModelSerializer):
     id = serializers.IntegerField(  # noqa: A003
         allow_null=True, required=False, help_text="ID of the external attendee."
     )
-    user = UserSerializer(read_only=True)
+    membership = OwnershipMembershipSerializer(read_only=True)
     user_id = serializers.PrimaryKeyRelatedField(
         source="user", queryset=User.objects.all(), required=True, allow_null=False, write_only=True
     )
@@ -594,14 +608,14 @@ class EventAttendanceSerializer(VirtualModelSerializer):
         virtual_model = EventAttendanceVirtualModel
         fields = (
             "id",
-            "user",
+            "membership",
             "user_id",
             "status",
             "created",
             "modified",
         )
         read_only_fields = (
-            "user",
+            "membership",
             "status",
         )
 
@@ -1234,7 +1248,12 @@ class CalendarEventSerializer(VirtualModelSerializer):
             [{"resource_id": ra.calendar.id} for ra in instance.resource_allocations.all()],
         )
         attendances = validated_data.pop(
-            "attendances", [{"user_id": att.user.id} for att in instance.attendances.all()]
+            "attendances",
+            [
+                {"user_id": att.membership_user_id}
+                for att in instance.attendances.all()
+                if att.membership_user_id is not None
+            ],
         )
         external_attendances = validated_data.pop(
             "external_attendances",

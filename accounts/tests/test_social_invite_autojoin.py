@@ -82,7 +82,7 @@ def _pending_invitation(
         invited_by=inviter,
         expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
         accepted_at=None,
-        membership=None,
+        membership_user_id=None,
     )
 
 
@@ -135,7 +135,7 @@ class TestSocialInviteAutojoin:
         invitation.refresh_from_db()
         assert invitation.accepted_at is not None, "invitation.accepted_at must be set"
         assert invitation.membership is not None, "invitation.membership FK must be linked"
-        assert invitation.membership_id == membership.pk
+        assert invitation.membership_user_id == membership.user_id
 
     # ------------------------------------------------------------------
     # Scenario 2 — uninvited social signup stays gated (Phase 5 regression)
@@ -191,7 +191,7 @@ class TestSocialInviteAutojoin:
 
         invitation.refresh_from_db()
         assert invitation.accepted_at is not None
-        assert invitation.membership_id == membership.pk
+        assert invitation.membership_user_id == membership.user_id
 
     # ------------------------------------------------------------------
     # Scenario 4 — re-entry / already-member is a no-op

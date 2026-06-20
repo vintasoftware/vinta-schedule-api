@@ -14,14 +14,17 @@ def scoped_calendar_ids(system_user: SystemUser, organization: Organization) -> 
         organization: The organization context.
 
     Returns:
-        None if the token is org-wide (scoped_to_membership_fk is None);
+        None if the token is org-wide (scoped_to_membership_user_id is None);
         a set of calendar IDs (possibly empty) if scoped to a membership.
     """
-    if system_user.scoped_to_membership_fk_id is None:
+    if system_user.scoped_to_membership_user_id is None:
         return None
+    # The queryset is already org-scoped via filter_by_organization, so filtering
+    # ownerships by the membership's user_id is equivalent to the full
+    # (organization_id, user_id) membership identity — the org is fixed.
     return set(
         Calendar.objects.filter_by_organization(organization.id)
-        .filter(ownerships__user__organization_memberships=system_user.scoped_to_membership_fk_id)
+        .filter(ownerships__membership_user_id=system_user.scoped_to_membership_user_id)
         .distinct()
         .values_list("id", flat=True)
     )

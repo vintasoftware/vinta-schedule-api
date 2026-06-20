@@ -25,6 +25,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
+    CalendarOwnership,
 )
 from calendar_integration.querysets import CalendarEventQuerySet
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
@@ -668,8 +669,9 @@ class CalendarGroupService:
         # Build the update input preserving all non-time details so that only
         # RESCHEDULE permission is required (same approach as Phase 6a).
         preserved_attendances = [
-            EventAttendanceInputData(user_id=attendance.user_id)
+            EventAttendanceInputData(user_id=attendance.membership_user_id)
             for attendance in event.attendances.all()
+            if attendance.membership_user_id is not None
         ]
 
         preserved_external_attendances = [
@@ -783,10 +785,16 @@ class CalendarGroupService:
         selected_calendar_ids = list(selected_calendar_ids)
         if not selected_calendar_ids:
             return {}
-        rows = User.objects.filter(
-            calendar_ownerships__calendar_fk_id__in=selected_calendar_ids,
-            calendar_ownerships__organization_id=self.organization.id,
-        ).values_list("calendar_ownerships__calendar_fk_id", "id")
+        # Resolve owners via membership; orphan ownerships (null membership) are
+        # intentionally excluded from the owner set.
+        rows = (
+            CalendarOwnership.objects.filter_by_organization(self.organization.id)
+            .filter(
+                calendar_fk_id__in=selected_calendar_ids,
+                membership_user_id__isnull=False,
+            )
+            .values_list("calendar_fk_id", "membership_user_id")
+        )
         owners_by_calendar: dict[int, set[int]] = {}
         for cal_id, user_id in rows:
             owners_by_calendar.setdefault(cal_id, set()).add(user_id)

@@ -26,7 +26,7 @@ from calendar_integration.services.dataclasses import (
     CalendarEventAdapterOutputData,
     CalendarEventInputData,
 )
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from users.models import Profile, User
 
 
@@ -81,9 +81,12 @@ def calendar(db, organization):
 
 @pytest.fixture
 def calendar_management_token(db, calendar, social_account):
+    OrganizationMembership.objects.get_or_create(
+        user=social_account.user, organization=calendar.organization
+    )
     token = CalendarManagementToken.objects.create(
         calendar=calendar,
-        user=social_account.user,
+        membership_user_id=social_account.user.id,
         token_hash="evt_service_token_hash",
         organization=calendar.organization,
     )
@@ -122,9 +125,10 @@ def event_service(authenticated_facade):
 
 def _grant_event_owner_token(event, user, organization):
     """Create an owner-level event management token so update/delete permission passes."""
+    OrganizationMembership.objects.get_or_create(user=user, organization=organization)
     token = CalendarManagementToken.objects.create(
         event_fk=event,
-        user=user,
+        membership_user_id=user.id,
         token_hash=f"evt_token_{event.id}",
         organization=organization,
     )
@@ -289,9 +293,12 @@ def test_transfer_event(
         provider=CalendarProvider.GOOGLE,
         organization=calendar.organization,
     )
+    OrganizationMembership.objects.get_or_create(
+        user=social_account.user, organization=calendar.organization
+    )
     target_token = CalendarManagementToken.objects.create(
         calendar=target_calendar,
-        user=social_account.user,
+        membership_user_id=social_account.user.id,
         token_hash="evt_target_token_hash",
         organization=calendar.organization,
     )
@@ -362,7 +369,11 @@ def scoped_event_setup(db):
         provider=CalendarProvider.GOOGLE,
         organization=organization,
     )
-    CalendarOwnership.objects.create(calendar=calendar, user=owner, organization=organization)
+    CalendarOwnership.objects.create(
+        calendar=calendar,
+        membership_user_id=owner.id,
+        organization=organization,
+    )
     return {
         "organization": organization,
         "owner": owner,
@@ -463,7 +474,10 @@ def test_create_event_blocks_scoped_token_on_non_owned_calendar(scoped_event_set
         organization=org,
     )
     # (sanity: the token is scoped to a real membership but does NOT own other_calendar)
-    assert OrganizationMembership.objects.filter(id=membership.id).exists()
+    # OrganizationMembership has a composite PK (user, organization); identify it by pair.
+    assert OrganizationMembership.objects.filter(
+        user_id=membership.user_id, organization_id=membership.organization_id
+    ).exists()
 
     system_user, _token = PublicAPIAuthService().create_system_user(
         integration_name="scoped_event_svc_foreign",

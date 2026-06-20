@@ -2,8 +2,9 @@ from typing import ClassVar
 
 from django.db import models
 
+from common.fields import OrganizationMembershipForeignKey
 from common.models import BaseModel
-from organizations.models import OrganizationForeignKey, OrganizationModel
+from organizations.models import OrganizationModel
 from public_api.constants import PublicAPIResources
 
 
@@ -20,8 +21,12 @@ class SystemUser(OrganizationModel):
         null=True,
         blank=True,
     )
-    scoped_to_membership = OrganizationForeignKey(
-        "organizations.OrganizationMembership",
+    # Membership reference via the (organization_id, scoped_to_membership_user_id)
+    # composite join rather than a real FK. Django 6 forbids a real FK to a
+    # composite-PK model (OrganizationMembership becomes composite-PK in Phase 7b).
+    # This contributes a concrete ``scoped_to_membership_user_id`` column plus a
+    # ForeignObject descriptor ``scoped_to_membership``. NULL = organization-wide token.
+    scoped_to_membership = OrganizationMembershipForeignKey(
         related_name="scoped_system_users",
         on_delete=models.CASCADE,
         null=True,

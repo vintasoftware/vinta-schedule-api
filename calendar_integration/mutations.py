@@ -1542,8 +1542,9 @@ class CalendarGroupMutations:
         # --- Step 7: build the preserved-details event data ---
         # Preserve internal attendances.
         preserved_attendances = [
-            EventAttendanceInputData(user_id=attendance.user_id)
+            EventAttendanceInputData(user_id=attendance.membership_user_id)
             for attendance in existing_event.attendances.all()
+            if attendance.membership_user_id is not None
         ]
 
         # Preserve external attendances — include the ExternalAttendee id so that

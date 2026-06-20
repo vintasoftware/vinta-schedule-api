@@ -65,7 +65,7 @@ class TestBaseVintaScheduleSignupFormUnit:
             invited_by=inviter,
             expires_at=timezone.now() + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         form = _make_form(organization_name="Should Be Ignored")
@@ -86,7 +86,7 @@ class TestBaseVintaScheduleSignupFormUnit:
             invited_by=inviter,
             expires_at=timezone.now() - datetime.timedelta(days=1),  # already expired
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         form = _make_form(
@@ -126,7 +126,7 @@ class TestBaseVintaScheduleSignupFormUnit:
             invited_by=inviter,
             expires_at=timezone.now() + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         form = _make_form(organization_name="Should Be Ignored Due To Case-Insensitive Match")
@@ -212,7 +212,7 @@ class TestBaseVintaScheduleSignupFormIntegration:
             invited_by=inviter,
             expires_at=timezone.now() + datetime.timedelta(days=3),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         form = _make_form(

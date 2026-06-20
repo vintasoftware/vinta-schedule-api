@@ -986,8 +986,9 @@ class Mutation(CalendarGroupMutations):
             )
         )
 
-        # scoped_to_membership_fk_id is always set here — we passed membership to create_system_user above.
-        assert system_user.scoped_to_membership_fk_id is not None  # noqa: S101
+        # scoped_to_membership_user_id is always set here — we passed membership to
+        # create_system_user above.
+        assert system_user.scoped_to_membership_user_id is not None  # noqa: S101
 
         return CreateScopedSystemUserResult(
             id=system_user.id,
