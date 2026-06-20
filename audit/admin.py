@@ -1,4 +1,4 @@
-"""Audit administration — repository-backed, read-only changelist.
+"""Audit administration — repository-backed, read-only changelist and detail view.
 
 Architecture
 ------------
@@ -12,16 +12,22 @@ breadcrumb handling.  The ``ModelAdmin`` is a *shell*:
   build an ``AuditQuery``, call ``repository.query(...)`` and render a custom
   template (``admin/audit/audit/change_list.html``) with the returned
   ``AuditPage``.  Django's ORM ChangeList machinery is bypassed entirely.
+- ``detail_view`` is a custom view registered via ``get_urls()`` that fetches
+  a single audit record via ``repository.get(audit_id)`` and renders a read-only
+  detail template.  If the audit is not found, HTTP 404 is returned.
 - The repository is injected via ``@inject`` / ``Provide["audit_repository"]`` on
-  the ``changelist_view`` method, matching the project's established DI convention.
-  Tests can swap the backend via ``container.audit_repository.override(stub)``.
+  both the ``changelist_view`` and ``detail_view`` methods, matching the project's
+  established DI convention.  Tests can swap the backend via
+  ``container.audit_repository.override(stub)``.
 
-Template path
--------------
-``audit/templates/admin/audit/audit/change_list.html`` — discovered by
-Django's ``app_directories.Loader``.  It also matches the template name that
-``ModelAdmin`` defaults to for this model
-(``admin/<app_label>/<model_name>/change_list.html``).
+Template paths
+--------------
+- ``audit/templates/admin/audit/audit/change_list.html`` — changelist; discovered by
+  Django's ``app_directories.Loader``.  It also matches the template name that
+  ``ModelAdmin`` defaults to for this model
+  (``admin/<app_label>/<model_name>/change_list.html``).
+- ``audit/templates/admin/audit/audit/audit_detail.html`` — detail view; custom name,
+  explicitly rendered in ``detail_view``.
 """
 
 import logging
@@ -31,7 +37,9 @@ from urllib.parse import urlencode
 
 from django.contrib import admin
 from django.http import HttpRequest, HttpResponse
+from django.http.response import Http404
 from django.template.response import TemplateResponse
+from django.urls import path
 
 from dependency_injector.wiring import Provide, inject
 
@@ -140,14 +148,18 @@ def _build_audit_query(params: dict[str, str | list[str]]) -> AuditQuery:
 class AuditAdmin(admin.ModelAdmin):
     """Read-only Django admin for Audit records.
 
-    Data is sourced exclusively from ``AuditRepository.query(...)`` so the admin
-    works against ANY repository backend (ORM or otherwise).  The ModelAdmin
-    provides the registration shell: auth, permission checks, admin index entry,
-    and breadcrumb/nav wiring.  All row data bypasses Django's ORM ChangeList.
+    Data is sourced exclusively from ``AuditRepository.query(...)`` (changelist) and
+    ``AuditRepository.get(...)`` (detail view) so the admin works against ANY
+    repository backend (ORM or otherwise).  The ModelAdmin provides the registration
+    shell: auth, permission checks, admin index entry, and breadcrumb/nav wiring.
+    All row data bypasses Django's ORM ChangeList.
     """
 
     # Changelist template — overrides Django's default ORM-driven changelist.
     change_list_template = "admin/audit/audit/change_list.html"
+
+    # Detail template — custom path for read-only detail rendering.
+    detail_template = "admin/audit/audit/audit_detail.html"
 
     # ------------------------------------------------------------------ #
     # ORM queryset override                                              #
@@ -287,5 +299,92 @@ class AuditAdmin(admin.ModelAdmin):
         return TemplateResponse(
             request,
             self.change_list_template,
+            context,
+        )
+
+    # ------------------------------------------------------------------ #
+    # URL routing                                                         #
+    # ------------------------------------------------------------------ #
+
+    def get_urls(self):  # type: ignore[no-untyped-def]
+        """Register custom URL patterns for the detail view.
+
+        Adds a pattern for ``<int:audit_id>/view/`` that routes to the custom
+        ``detail_view`` method, wrapped in ``admin_view`` for authentication
+        and permission checks.
+        """
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                "<int:audit_id>/view/",
+                self.admin_site.admin_view(self.detail_view),
+                name="audit_audit_detail",
+            ),
+        ]
+        return custom_urls + urls
+
+    # ------------------------------------------------------------------ #
+    # Repository-backed detail view                                       #
+    # ------------------------------------------------------------------ #
+
+    @inject
+    def detail_view(
+        self,
+        request: HttpRequest,
+        audit_id: int,
+        extra_context: dict[str, Any] | None = None,
+        repository: Annotated[AuditRepository | None, Provide["audit_repository"]] = None,
+    ) -> HttpResponse:
+        """Render a read-only detail page for a single audit record.
+
+        Fetches the audit via ``repository.get(audit_id)``. If not found,
+        raises HTTP 404. Renders a custom template with all fields including
+        a pretty-printed diff and system_user_scopes.
+
+        The ``repository`` argument is injected via ``@inject`` /
+        ``Provide["audit_repository"]``; it is not part of Django's
+        ``ModelAdmin`` public contract and must NOT be passed by callers.
+        Tests may override the provider via ``container.audit_repository.override(stub)``.
+
+        Security: requires staff status (checked by the ModelAdmin view
+        dispatch via ``admin_site.admin_view``).  Non-staff requests are
+        redirected to login before this method is called.
+        """
+        if repository is None:
+            logger.error("AuditAdmin.detail_view: repository not injected (DI not wired?).")
+            raise Http404("Audit record not found (repository unavailable).")
+
+        record = repository.get(audit_id)
+        if record is None:
+            raise Http404(f"Audit record {audit_id} not found.")
+
+        # Format diff for readability: convert {field: {old, new}} to a list.
+        formatted_diff = []
+        if record.diff:
+            for field_name, changes in sorted(record.diff.items()):
+                formatted_diff.append(
+                    {
+                        "field": field_name,
+                        "old": changes.get("old"),
+                        "new": changes.get("new"),
+                    }
+                )
+
+        # Format system_user_scopes: convert list[str] to readable list or None.
+        formatted_scopes = record.actor.system_user_scopes or []
+
+        context: dict[str, Any] = {
+            **self.admin_site.each_context(request),
+            "title": f"Audit record #{record.id}",
+            "record": record,
+            "formatted_diff": formatted_diff,
+            "formatted_scopes": formatted_scopes,
+            # Django admin base template requires opts for breadcrumbs.
+            "opts": self.model._meta,
+            **(extra_context or {}),
+        }
+        return TemplateResponse(
+            request,
+            self.detail_template,
             context,
         )

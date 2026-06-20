@@ -107,7 +107,7 @@
     <tbody>
       {% for record in audit_page.items %}
       <tr class="{% cycle 'row1' 'row2' %}">
-        <td>{{ record.id }}</td>
+        <td><a href="{% url 'admin:audit_audit_detail' record.id %}">{{ record.id }}</a></td>
         <td>{{ record.created_at|date:"Y-m-d H:i:s" }}</td>
         <td>{{ record.organization_id }}</td>
         <td>{{ record.action }}</td>
