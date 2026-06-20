@@ -136,14 +136,25 @@ column (4b) loses attendee identity for orphan attendances. **Before 4b drops th
   (`user_id__in=attendances_to_delete`, `__str__` on models), `mutations.py`, `calendar_bundle_service.py`,
   `calendar_group_service.py`, `serialize_event_data_input` `a.user_id` map. Plus the established 2b migration pattern.
 
+### Phase 4b — EventAttendance cutover (migration) ✅
+- **Status**: merged-ready (PR open). **DATA-LOSS DECISION: user chose "Drop user (uniform end-state)"** — orphan
+  attendances permanently lose identity (accepted). **Model**: claude-opus (T4) · migration-author + reviewer + fixer.
+- **Branch**: `…/phase-4b` (stacked on 4a) · **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/152
+- **Summary**: Dropped `EventAttendance.user` (0031 `SeparateDatabaseAndState`, lossy reverse backfill); deferrable
+  raw PROTECT FK (0032). NO partial unique (no upsert; dup-row risk). Reviewer BLOCKER: sync created duplicate orphan
+  attendances every sync for non-member resolved Users (no dedupe key post-drop) → fixed by routing non-members to the
+  external-attendee path (deduped by email; internal attendance == membership). 2662 passed. Deleted test_attendance_expand.py
+  (mirrors 2b deleting test_ownership_expand.py).
+
 ## Current phase
-- Phase 4b — EventAttendance cutover migration (drop user + PROTECT FK) — **AWAITING USER DECISION on data loss**
+- Phase 5 — CalendarManagementToken expand + backfill (next). NOTE: `CalendarManagementToken.user` is genuinely
+  NULLABLE (the `external_attendee` alternative). Backfill member rows; null-user (external) tokens stay NULL and are
+  NOT orphans; user-set-but-non-member → NULL + reported. Mirror Phase 3.
 
 ## Remaining phases
-- Phase 4b — EventAttendance cutover migration (T4 · migration-author) [DATA-LOSS CHECKPOINT — see below]
 - Phase 5 — CalendarManagementToken expand + backfill (T2 · migration-author)
-- Phase 6 — CalendarManagementToken cutover (T4 · implementer/migration-author)
-- Phase 7a — FK conversions + .id rewrites (T4 · implementer)
+- Phase 6 — CalendarManagementToken cutover (T4 · implementer/migration-author) [likely split 6a/6b]
+- Phase 7a — FK conversions (OrganizationInvitation.membership + public_api.SystemUser.scoped_to_membership) + .id rewrites (T4)
 - Phase 7b — OrganizationMembership composite PK (T4 · migration-author)
 - Phase 3 — EventAttendance expand + backfill (T3 · migration-author)
 - Phase 4 — EventAttendance cutover (T4 · implementer)
