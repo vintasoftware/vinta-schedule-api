@@ -57,7 +57,6 @@ class TestScopedCalendarIds:
         baker.make(
             CalendarOwnership,
             calendar=calendar,
-            user=user,
             membership_user_id=user.id,
             organization=organization,
         )
@@ -76,7 +75,6 @@ class TestScopedCalendarIds:
         baker.make(
             CalendarOwnership,
             calendar=calendar,
-            user=another_user,
             membership_user_id=another_user.id,
             organization=organization,
         )
@@ -95,7 +93,6 @@ class TestScopedCalendarIds:
         baker.make(
             CalendarOwnership,
             calendar=calendar,
-            user=user,
             membership_user_id=user.id,
             organization=another_organization,
         )
@@ -197,14 +194,12 @@ class TestScopedCalendarIds:
         baker.make(
             CalendarOwnership,
             calendar=calendar1,
-            user=user,
             membership_user_id=user.id,
             organization=organization,
         )
         baker.make(
             CalendarOwnership,
             calendar=calendar2,
-            user=user,
             membership_user_id=user.id,
             organization=organization,
         )
@@ -273,7 +268,6 @@ class TestAssertCalendarInOwnerScope:
         baker.make(
             CalendarOwnership,
             calendar=calendar,
-            user=user,
             membership_user_id=user.id,
             organization=organization,
         )
@@ -292,7 +286,6 @@ class TestAssertCalendarInOwnerScope:
         baker.make(
             CalendarOwnership,
             calendar=calendar,
-            user=other_user,
             membership_user_id=other_user.id,
             organization=organization,
         )

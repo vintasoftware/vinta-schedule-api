@@ -1212,13 +1212,11 @@ def test_create_grouped_event_invites_owners_of_non_primary_personal_calendars(
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=internal_calendars["phys_a"],
-        user=physician_a_user,
         membership_user_id=physician_a_user.id,
     )
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=internal_calendars["phys_b"],
-        user=physician_b_user,
         membership_user_id=physician_b_user.id,
     )
 
@@ -1266,7 +1264,6 @@ def test_create_grouped_event_dedupes_explicit_and_implicit_attendees(
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=internal_calendars["phys_a"],
-        user=physician_a_user,
         membership_user_id=physician_a_user.id,
     )
     start = timezone.now().replace(microsecond=0) + timedelta(hours=1)
@@ -1330,7 +1327,6 @@ def test_create_grouped_event_skips_blocked_time_when_provider_will_sync(
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=second,
-        user=owner,
         membership_user_id=owner.id,
     )
 
@@ -1413,7 +1409,6 @@ def test_create_grouped_event_skips_blocked_time_for_microsoft_pair(organization
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=second,
-        user=owner,
         membership_user_id=owner.id,
     )
 
@@ -1496,7 +1491,6 @@ def test_create_grouped_event_blocks_cross_provider_pair(organization):
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=second,
-        user=owner,
         membership_user_id=owner.id,
     )
 
@@ -1649,7 +1643,6 @@ def test_create_grouped_event_blocks_when_primary_is_internal(organization):
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=second,
-        user=owner,
         membership_user_id=owner.id,
     )
 

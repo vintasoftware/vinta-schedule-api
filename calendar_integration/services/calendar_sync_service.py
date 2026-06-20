@@ -72,6 +72,7 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
     InitializedOrAuthenticatedCalendarService,
 )
 from calendar_integration.services.type_guards import is_authenticated_calendar_service
+from organizations.models import OrganizationMembership
 from users.models import User
 
 
@@ -383,15 +384,31 @@ class CalendarSyncService:
                 continue
 
             owner_user = context.account.user if context.account else None
-            # Phase 2b (when `user` is dropped) must switch this lookup key to
-            # `membership_user_id` and add a unique constraint on (calendar_fk, membership_user_id).
+            # Ownership is membership-scoped after Phase 2b: the lookup key is the
+            # denormalized `membership_user_id`, matched by the partial unique
+            # constraint (calendar_fk, membership_user_id). A non-NULL
+            # `membership_user_id` is enforced by the raw-SQL composite FK to
+            # OrganizationMembership(user_id, organization_id) — so it must point
+            # at a real membership. The sync owner (context.account.user) is the
+            # account that imported the calendar and is normally a member of the
+            # organization; if no matching membership exists we fall back to
+            # membership_user_id=NULL (an orphan ownership, excluded from
+            # membership reads) rather than risk an FK RESTRICT violation.
+            owner_membership_user_id = None
+            if (
+                owner_user is not None
+                and OrganizationMembership.objects.filter(
+                    user_id=owner_user.id,
+                    organization_id=context.organization.id,
+                ).exists()
+            ):
+                owner_membership_user_id = owner_user.id
             CalendarOwnership.objects.update_or_create(
                 organization=context.organization,
                 calendar=calendar,
-                user=owner_user,
+                membership_user_id=owner_membership_user_id,
                 defaults={
                     "is_default": calendar_data.is_default,
-                    "membership_user_id": owner_user.id if owner_user else None,
                 },
             )
 

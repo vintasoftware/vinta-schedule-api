@@ -129,7 +129,6 @@ class TestNestedFieldOwnerScopeSecurity:
         baker.make(
             CalendarOwnership,
             calendar=calendar,
-            user=user,
             membership_user_id=user.id,
             organization=org,
         )

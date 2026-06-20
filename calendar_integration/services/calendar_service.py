@@ -558,7 +558,6 @@ class CalendarService(BaseCalendarService):
             CalendarOwnership.objects.create(
                 organization=organization,
                 calendar=calendar,
-                user=self.user_or_token,
                 membership_user_id=self.user_or_token.id,
                 is_default=False,
             )
@@ -650,7 +649,6 @@ class CalendarService(BaseCalendarService):
             CalendarOwnership.objects.create(
                 organization=self.organization,
                 calendar=calendar,
-                user=self.user_or_token,
                 membership_user_id=self.user_or_token.id,
                 is_default=False,
             )
@@ -703,7 +701,6 @@ class CalendarService(BaseCalendarService):
             CalendarOwnership.objects.create(
                 organization=self.organization,
                 calendar=calendar,
-                user=self.user_or_token,
                 membership_user_id=self.user_or_token.id,
                 is_default=False,
             )
@@ -749,7 +746,6 @@ class CalendarService(BaseCalendarService):
             CalendarOwnership.objects.create(
                 organization=self.organization,
                 calendar=calendar,
-                user=self.user_or_token,
                 membership_user_id=self.user_or_token.id,
                 is_default=False,
             )

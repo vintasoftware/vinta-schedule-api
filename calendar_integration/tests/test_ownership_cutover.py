@@ -132,7 +132,7 @@ def test_orphan_ownership_excluded_from_membership_reads(organization, calendar)
         calendar=calendar, user=orphan_user, with_membership=False
     )
 
-    # Row exists and retains its user, but carries no membership.
+    # Row exists but carries no membership (orphan).
     assert ownership.membership_user_id is None
 
     # Membership-based filter excludes the orphan.

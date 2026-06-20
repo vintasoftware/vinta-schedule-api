@@ -1110,7 +1110,6 @@ class TestGraphQLQueries:
         baker.make(
             "calendar_integration.CalendarOwnership",
             calendar=calendar,
-            user=owner,
             membership_user_id=owner.id,
             is_default=True,
             organization=calendar.organization,
@@ -1132,7 +1131,6 @@ class TestGraphQLQueries:
         baker.make(
             "calendar_integration.CalendarOwnership",
             calendar=other_calendar,
-            user=other_owner,
             membership_user_id=other_owner.id,
             organization=calendar.organization,
         )
@@ -3246,7 +3244,6 @@ class TestOwnerScopedTokenReadEnforcement:
         baker.make(
             CalendarOwnership,
             calendar=cal,
-            user=owner,
             membership_user_id=owner.id,
             organization=organization,
         )
@@ -3265,7 +3262,6 @@ class TestOwnerScopedTokenReadEnforcement:
         baker.make(
             CalendarOwnership,
             calendar=cal,
-            user=other_owner,
             membership_user_id=other_owner.id,
             organization=organization,
         )
@@ -4453,7 +4449,6 @@ class TestCalendarOwnersField:
         ownership_a = baker.make(
             CalendarOwnership,
             calendar=calendar,
-            user=user_a,
             membership_user_id=user_a.id,
             organization=organization,
             is_default=True,
@@ -4461,7 +4456,6 @@ class TestCalendarOwnersField:
         ownership_b = baker.make(
             CalendarOwnership,
             calendar=calendar,
-            user=user_b,
             membership_user_id=user_b.id,
             organization=organization,
             is_default=False,
@@ -4547,7 +4541,6 @@ class TestCalendarOwnersField:
         baker.make(
             CalendarOwnership,
             calendar=cal_a,
-            user=user_a,
             membership_user_id=user_a.id,
             organization=org_a,
             is_default=True,
@@ -4555,7 +4548,6 @@ class TestCalendarOwnersField:
         baker.make(
             CalendarOwnership,
             calendar=cal_b,
-            user=user_b,
             membership_user_id=user_b.id,
             organization=org_b,
             is_default=True,
@@ -4636,7 +4628,6 @@ class TestCalendarOwnersField:
                 baker.make(
                     CalendarOwnership,
                     calendar=cal,
-                    user=u,
                     membership_user_id=u.id,
                     organization=organization,
                     is_default=(j == 0),
@@ -4773,7 +4764,6 @@ def _make_group_with_owned_slot_calendars(
             CalendarOwnership,
             organization=organization,
             calendar=cal,
-            user=owner,
             membership_user_id=owner.id,
             is_default=True,
         )
@@ -4966,7 +4956,6 @@ class TestCalendarGroupOwnersN1:
             CalendarOwnership,
             organization=org_b,
             calendar=cal_b,
-            user=owner_b,
             membership_user_id=owner_b.id,
             is_default=True,
         )
@@ -5075,7 +5064,6 @@ class TestCalendarBundleOwnersN1:
                 CalendarOwnership,
                 organization=organization,
                 calendar=child,
-                user=owner,
                 membership_user_id=owner.id,
                 is_default=True,
             )
@@ -5135,7 +5123,6 @@ class TestCalendarBundleOwnersN1:
                     CalendarOwnership,
                     organization=organization,
                     calendar=child,
-                    user=owner,
                     membership_user_id=owner.id,
                     is_default=True,
                 )
@@ -5198,7 +5185,6 @@ class TestCalendarBundleOwnersN1:
             CalendarOwnership,
             organization=org_a,
             calendar=children_a[0],
-            user=owner_a,
             membership_user_id=owner_a.id,
             is_default=True,
         )
@@ -5215,7 +5201,6 @@ class TestCalendarBundleOwnersN1:
             CalendarOwnership,
             organization=org_b,
             calendar=children_b[0],
-            user=owner_b,
             membership_user_id=owner_b.id,
             is_default=True,
         )
@@ -5331,7 +5316,6 @@ class TestCalendarBundleParentOwners:
         ownership_a = baker.make(
             CalendarOwnership,
             calendar=bundle,
-            user=user_a,
             membership_user_id=user_a.id,
             organization=organization,
             is_default=True,
@@ -5339,7 +5323,6 @@ class TestCalendarBundleParentOwners:
         ownership_b = baker.make(
             CalendarOwnership,
             calendar=bundle,
-            user=user_b,
             membership_user_id=user_b.id,
             organization=organization,
             is_default=False,
@@ -5416,7 +5399,6 @@ class TestCalendarBundleParentOwners:
         baker.make(
             CalendarOwnership,
             calendar=bundle_a,
-            user=user_a,
             membership_user_id=user_a.id,
             organization=org_a,
             is_default=True,
@@ -5424,7 +5406,6 @@ class TestCalendarBundleParentOwners:
         baker.make(
             CalendarOwnership,
             calendar=bundle_b,
-            user=user_b,
             membership_user_id=user_b.id,
             organization=org_b,
             is_default=True,
@@ -5506,7 +5487,6 @@ class TestCalendarBundleParentOwners:
                 baker.make(
                     CalendarOwnership,
                     calendar=bundle,
-                    user=u,
                     membership_user_id=u.id,
                     organization=organization,
                     is_default=(j == 0),
@@ -5632,7 +5612,6 @@ class TestCalendarEventsUserIdFilter:
         baker.make(
             CalendarOwnership,
             calendar=cal,
-            user=owner,
             membership_user_id=owner.id,
             organization=organization,
         )
@@ -5651,7 +5630,6 @@ class TestCalendarEventsUserIdFilter:
         baker.make(
             CalendarOwnership,
             calendar=cal,
-            user=other_owner,
             membership_user_id=other_owner.id,
             organization=organization,
         )

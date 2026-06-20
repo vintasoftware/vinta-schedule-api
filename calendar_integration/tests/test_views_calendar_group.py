@@ -16,6 +16,7 @@ from calendar_integration.constants import (
     CalendarType,
     EventManagementPermissions,
 )
+from calendar_integration.factories import create_calendar_ownership
 from calendar_integration.models import (
     AvailableTime,
     Calendar,
@@ -25,7 +26,6 @@ from calendar_integration.models import (
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
     CalendarManagementToken,
-    CalendarOwnership,
 )
 from organizations.models import Organization, OrganizationMembership
 
@@ -90,11 +90,9 @@ def internal_calendars(organization):
 def owned_group(user, organization, internal_calendars):
     """A group where `user` owns at least one of the pool calendars so the
     CalendarGroupPermission passes object-level checks."""
-    CalendarOwnership.objects.create(
-        organization=organization,
+    create_calendar_ownership(
         calendar=internal_calendars["phys_a"],
         user=user,
-        membership_user_id=user.id,
     )
     group = CalendarGroup.objects.create(organization=organization, name="Clinic")
     physicians = CalendarGroupSlot.objects.create(
@@ -153,11 +151,9 @@ class TestCalendarGroupCrud:
         # The create endpoint uses the serializer which delegates to
         # CalendarGroupService; make sure the user owns one calendar so
         # the subsequent object-level access on retrieve works too.
-        CalendarOwnership.objects.create(
-            organization=organization,
+        create_calendar_ownership(
             calendar=internal_calendars["phys_a"],
             user=user,
-            membership_user_id=user.id,
         )
         url = reverse("api:CalendarGroups-list")
         payload = {
@@ -191,11 +187,9 @@ class TestCalendarGroupCrud:
     def test_create_group_rejects_duplicate_slot_name(
         self, auth_client, organization, internal_calendars, user
     ):
-        CalendarOwnership.objects.create(
-            organization=organization,
+        create_calendar_ownership(
             calendar=internal_calendars["phys_a"],
             user=user,
-            membership_user_id=user.id,
         )
         url = reverse("api:CalendarGroups-list")
         payload = {
@@ -428,11 +422,9 @@ class TestPermissionBoundary:
             provider=CalendarProvider.INTERNAL,
         )
         # User owns a calendar in THEIR org, but other_group belongs to another org.
-        CalendarOwnership.objects.create(
-            organization=organization,
+        create_calendar_ownership(
             calendar=internal_calendars["phys_a"],
             user=user,
-            membership_user_id=user.id,
         )
         other_group = CalendarGroup.objects.create(organization=other_org, name="Other")
         other_slot = CalendarGroupSlot.objects.create(

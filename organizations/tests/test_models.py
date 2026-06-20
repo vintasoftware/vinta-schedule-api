@@ -123,7 +123,7 @@ class TestInactiveMembershipGating:
         calendar = baker.make(Calendar, organization=org)
         # Non-admin members only list calendars they own (owner-scoping).
         CalendarOwnership.objects.create(
-            organization=org, calendar=calendar, user=user, membership_user_id=user.id
+            organization=org, calendar=calendar, membership_user_id=user.id
         )
 
         url = reverse("api:Calendars-list")
@@ -156,7 +156,7 @@ class TestInactiveMembershipGating:
         calendar = baker.make(Calendar, organization=org)
         # Non-admin members only list calendars they own (owner-scoping).
         CalendarOwnership.objects.create(
-            organization=org, calendar=calendar, user=user, membership_user_id=user.id
+            organization=org, calendar=calendar, membership_user_id=user.id
         )
 
         # Verify inactive = empty

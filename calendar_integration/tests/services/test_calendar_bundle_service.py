@@ -33,7 +33,7 @@ from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     CalendarEventInputData,
 )
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from users.models import Profile, User
 
 
@@ -271,6 +271,9 @@ def test_create_bundle_calendar_creates_ownership_for_user(organization, child_c
     """When a User initializes the facade, a CalendarOwnership row is created."""
     user = User.objects.create_user(email="bundle-owner@example.com", password="pw")
     Profile.objects.create(user=user)
+    # The owning user must be a member: the ownership PROTECT FK references
+    # OrganizationMembership(user_id, organization_id).
+    OrganizationMembership.objects.get_or_create(user=user, organization=organization)
 
     facade = CalendarService()
     facade.initialize_without_provider(user_or_token=user, organization=organization)
@@ -284,7 +287,7 @@ def test_create_bundle_calendar_creates_ownership_for_user(organization, child_c
         child_calendars=[child_calendar_internal],
     )
 
-    assert cal.ownerships.filter(user=user).exists()
+    assert cal.ownerships.filter(membership_user_id=user.id).exists()
 
 
 # ===========================================================================
@@ -920,7 +923,6 @@ def test_collect_bundle_attendees_includes_calendar_owners(
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=child_calendar_internal,
-        user=user,
         membership_user_id=user.id,
         is_default=False,
     )
@@ -959,7 +961,6 @@ def test_collect_bundle_attendees_deduplicates(
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=child_calendar_internal,
-        user=user,
         membership_user_id=user.id,
         is_default=False,
     )

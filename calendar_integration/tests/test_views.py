@@ -126,7 +126,6 @@ class CalendarIntegrationTestFactory:
         )
         return baker.make(
             CalendarOwnership,
-            user=user,
             membership_user_id=user.id,
             calendar=calendar,
             organization=calendar.organization,
@@ -944,12 +943,10 @@ class TestCalendarEventViewSet:
             role=OrganizationRole.ADMIN,
         )
 
-        # Orphan ownership: `user` FK still set this phase, but membership_user_id is
-        # NULL so the membership-scoped owner resolution skips it.
-        orphan_user = baker.make(User)
+        # Orphan ownership: membership_user_id is NULL so the membership-scoped
+        # owner resolution skips it (the `user` FK was dropped in Phase 2b).
         baker.make(
             CalendarOwnership,
-            user=orphan_user,
             membership_user_id=None,
             calendar=calendar,
             organization=organization,
@@ -3212,12 +3209,10 @@ class TestCalendarViewSet:
         )
 
         calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
-        # Orphan ownership: a `user` FK still exists this phase, but membership_user_id
-        # is NULL so the membership-scoped owner resolution skips it.
-        orphan_user = baker.make(User)
+        # Orphan ownership: membership_user_id is NULL so the membership-scoped owner
+        # resolution skips it (the `user` FK was dropped in Phase 2b).
         baker.make(
             CalendarOwnership,
-            user=orphan_user,
             membership_user_id=None,
             calendar=calendar,
             organization=organization,

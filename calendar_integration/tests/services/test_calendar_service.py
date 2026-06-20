@@ -71,7 +71,7 @@ from calendar_integration.services.dataclasses import (
     ResourceData,
     UnavailableTimeWindow,
 )
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from users.models import Profile, User
 
 
@@ -552,7 +552,8 @@ def test_authenticate_with_social_account_sets_owning_user(
     social_account, social_token, organization, mock_google_adapter
 ):
     """authenticate(account=<SocialAccount>) resolves the adapter and attributes
-    records to the owning user (user_or_token), so CalendarOwnership.user is set."""
+    records to the owning user (user_or_token), so ownership is attributed to that
+    user's membership."""
     service = CalendarService()
     service.authenticate(account=social_account, organization=organization)
 
@@ -664,6 +665,12 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
 
     mock_google_adapter.get_account_calendars.return_value = mock_calendar_resources
 
+    # The importing account is a member of the org, so ownership rows reference a
+    # real membership (the membership PROTECT FK requires a matching membership).
+    OrganizationMembership.objects.get_or_create(
+        user=social_account.user, organization=organization
+    )
+
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=organization)
 
@@ -690,7 +697,7 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
     primary_ownership = CalendarOwnership.objects.filter(
         organization=organization,
         calendar=primary_calendar,
-        user=social_account.user,
+        membership_user_id=social_account.user.id,
     ).first()
     assert primary_ownership is not None
     assert primary_ownership.is_default is True
@@ -698,7 +705,7 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
     work_ownership = CalendarOwnership.objects.filter(
         organization=organization,
         calendar=work_calendar,
-        user=social_account.user,
+        membership_user_id=social_account.user.id,
     ).first()
     assert work_ownership is not None
     assert work_ownership.is_default is False
@@ -906,6 +913,11 @@ def test_create_application_calendar(
     )
     mock_google_adapter.create_application_calendar.return_value = created_calendar_data
     mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    # The creating user owns the calendar through their membership (PROTECT FK).
+    OrganizationMembership.objects.get_or_create(
+        user=social_account.user, organization=organization
+    )
 
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=organization)
@@ -8601,6 +8613,11 @@ class TestCalendarServicePermissionIntegration:
             description="Test Calendar Description",
             provider=CalendarProvider.GOOGLE,
             original_payload={},
+        )
+
+        # The creating user owns the calendar through their membership (PROTECT FK).
+        OrganizationMembership.objects.get_or_create(
+            user=social_account.user, organization=organization
         )
 
         service = CalendarService()

@@ -23,12 +23,15 @@ def create_calendar_ownership(
     - ensures an active ``OrganizationMembership`` exists for ``(user,
       calendar.organization)`` (unless ``with_membership=False``, which models
       an *orphan* ownership for the orphan-behaviour tests);
-    - sets both the retained ``user`` FK (still ``NOT NULL`` until Phase 2b) and
-      the ``membership_user_id`` denormalized column.
+    - sets the ``membership_user_id`` denormalized column (the ``user`` FK was
+      dropped in Phase 2b — ownership is membership-only).
 
     Pass ``with_membership=False`` to create an orphan ownership whose
     ``(user, organization)`` pair has no membership: ``membership_user_id`` is
     left ``NULL`` so membership-based reads exclude it (the intended end state).
+    The raw-SQL composite FK to ``OrganizationMembership(user_id,
+    organization_id)`` enforces that a non-NULL ``membership_user_id`` references
+    a real membership, so the ``with_membership=True`` path must seed one.
     """
     from organizations.models import OrganizationMembership
 
@@ -45,7 +48,6 @@ def create_calendar_ownership(
     return CalendarOwnership.objects.create(
         organization=organization,
         calendar=calendar,
-        user=user,
         membership_user_id=membership_user_id,
         is_default=is_default,
         **kwargs,

@@ -206,7 +206,6 @@ class CalendarBundleService:
             CalendarOwnership.objects.create(
                 organization=context.organization,
                 calendar=bundle_calendar,
-                user=context.user_or_token,
                 membership_user_id=context.user_or_token.id,
                 is_default=False,
             )

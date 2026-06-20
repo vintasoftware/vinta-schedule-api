@@ -1737,7 +1737,6 @@ class TestRequestAllCalendarsSync:
             CalendarOwnership,
             organization=org,
             calendar=calendar,
-            user=owner,
             membership_user_id=owner.id,
             is_default=True,
         )
@@ -1794,7 +1793,6 @@ class TestRequestAllCalendarsSync:
             CalendarOwnership,
             organization=org,
             calendar=calendar,
-            user=owner,
             membership_user_id=owner.id,
             is_default=True,
         )
@@ -1841,7 +1839,6 @@ class TestRequestAllCalendarsSync:
             CalendarOwnership,
             organization=org,
             calendar=calendar,
-            user=owner,
             membership_user_id=owner.id,
             is_default=True,
         )

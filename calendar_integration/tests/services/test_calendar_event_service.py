@@ -364,7 +364,6 @@ def scoped_event_setup(db):
     )
     CalendarOwnership.objects.create(
         calendar=calendar,
-        user=owner,
         membership_user_id=owner.id,
         organization=organization,
     )

@@ -7057,7 +7057,6 @@ class TestScopedTokenBlockedTimeWrites:
         baker.make(
             CalendarOwnership,
             calendar=calendar,
-            user=owner,
             membership_user_id=owner.id,
             organization=org,
         )
@@ -7889,7 +7888,6 @@ class TestScopedTokenAvailabilityWrites:
         baker.make(
             CalendarOwnership,
             calendar=calendar,
-            user=owner,
             membership_user_id=owner.id,
             organization=org,
         )
@@ -8910,7 +8908,6 @@ class TestScopedTokenScheduleEvent:
         baker.make(
             CalendarOwnership,
             calendar=calendar,
-            user=owner,
             membership_user_id=owner.id,
             organization=org,
         )
@@ -8936,7 +8933,6 @@ class TestScopedTokenScheduleEvent:
         baker.make(
             CalendarOwnership,
             calendar=bundle,
-            user=owner,
             membership_user_id=owner.id,
             organization=org,
         )

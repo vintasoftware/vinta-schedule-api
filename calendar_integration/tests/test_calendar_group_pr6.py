@@ -263,7 +263,6 @@ def test_can_manage_calendar_group_true_for_owner(organization, clinic_group, ma
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=managed_calendars["phys_a"],
-        user=owner,
         membership_user_id=owner.id,
     )
     svc = CalendarPermissionService()
@@ -288,7 +287,6 @@ def test_can_manage_calendar_group_scoped_to_org(organization, other_org, clinic
     CalendarOwnership.objects.create(
         organization=other_org,
         calendar=other_calendar,
-        user=user,
         membership_user_id=user.id,
     )
     svc = CalendarPermissionService()
@@ -307,7 +305,6 @@ def test_calendar_group_permission_delegates_to_permission_service(
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=managed_calendars["phys_a"],
-        user=owner,
         membership_user_id=owner.id,
     )
 
@@ -329,7 +326,6 @@ def test_calendar_group_permission_falls_back_when_service_missing(
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=managed_calendars["phys_a"],
-        user=owner,
         membership_user_id=owner.id,
     )
     perm = CalendarGroupPermission(calendar_permission_service=None)

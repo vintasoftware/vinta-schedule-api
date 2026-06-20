@@ -226,9 +226,17 @@ class CalendarOwnership(OrganizationModel):
     Represents the ownership of a calendar by an organization.
     This is used to link calendars to their respective organizations.
 
-    Phase 1 (expand): ``membership`` is added alongside the existing ``user`` FK.
-    Both columns coexist until Phase 2 cutover drops ``user``.  Reads still use
-    ``user`` — no behaviour change in this phase.
+    Phase 2b (cutover): the legacy ``user`` FK is dropped. Ownership is now
+    membership-only — resolved through the denormalized ``membership_user_id``
+    column and the ``membership`` ForeignObject join to
+    ``OrganizationMembership(organization_id, user_id)``.
+
+    PROTECT delete semantics are enforced at the DB level by a raw-SQL composite
+    FK ``(membership_user_id, organization_id) -> OrganizationMembership
+    (user_id, organization_id) ON DELETE RESTRICT`` (the ForeignObject carries no
+    DB constraint). Rows with ``membership_user_id IS NULL`` are orphans, excluded
+    from membership reads and not covered by the FK or the partial unique
+    constraint.
     """
 
     calendar = OrganizationForeignKey(  # type:ignore
@@ -236,11 +244,6 @@ class CalendarOwnership(OrganizationModel):
         on_delete=models.CASCADE,
         null=True,
         related_name="ownerships",
-    )
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="calendar_ownerships",
     )
     membership = OrganizationMembershipForeignKey(
         on_delete=models.PROTECT,
@@ -263,9 +266,16 @@ class CalendarOwnership(OrganizationModel):
                 name="calownership_org_member_idx",
             ),
         ]
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=["calendar_fk", "membership_user_id"],
+                condition=models.Q(membership_user_id__isnull=False),
+                name="calownership_uniq_cal_member",
+            ),
+        ]
 
     def __str__(self):
-        return f"{self.calendar} owned by {self.user}"
+        return f"{self.calendar} owned by membership {self.membership_user_id}"
 
 
 class CalendarGroup(OrganizationModel):
