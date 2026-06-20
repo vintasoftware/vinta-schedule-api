@@ -74,8 +74,14 @@
 - **Commits**: `c44bfad` search + affected-membership filter, `d?` dedup stub (test(audit): deduplicate stub repository)
 - **Summary**: Wired `search` (→ AuditQuery.search; repo ORs subject_* + numeric actor_id) and `affected_membership_id` (→ through-join filter) into the admin changelist — `_build_audit_query` + `active_filters` + `base_querystring` (pagination preserves them) + two template inputs. No new query logic (repository handles it). 18 search tests; full suite green (2820 passed).
 
+### Phase 8 — Admin read-only detail view ✅
+- **Status**: complete, all 3 review layers passed (reviewer: 0 blockers, 0 should-fix, 1 nit ignored)
+- **Model used**: claude-haiku-4-5 (plan tier: Tier 2)
+- **Commit**: `af794ca` read-only repository-backed admin detail view
+- **Summary**: Custom detail view via `AuditAdmin.get_urls()` (URL `<int:audit_id>/view/`, name `audit_audit_detail`, wrapped in `admin_site.admin_view`), repository injected via `@inject` (matches the DI amendment), `repository.get(audit_id)` → Http404 on miss. Detail template renders all fields read-only with a pretty diff table (field/old/new) + scopes list + affected memberships; changelist rows link to it. Read-only (no save/delete; POST doesn't mutate). Backend-agnosticism proven via stub-repo override. 21 detail tests; full suite green (2843 passed).
+
 ## Current phase
-- Phase 8 — Admin read-only detail (Tier 2, implementer) — NEXT (after DI amend)
+- Phase 9 — Admin CSV export (Tier 2, implementer) — NEXT (final phase)
 
 ## Amendment applied (2026-06-19) — DI method-argument injection ✅
 - **Trigger**: user request to use `@inject` + `Provide` method/constructor-argument injection like the project's other services/tasks, instead of runtime `di_core.containers.container` resolution.
@@ -85,14 +91,7 @@
 - **Reviewer note rejected**: restoring explicit `repository=audit_repository` on the Factory was declined — it would reintroduce the DIWiringWarning and diverge from the `webhook_service` convention; the single-global-container model is project-wide and `.override()` works on it (stub tests pass).
 
 ## Remaining phases
-- Phase 2 — Audit model + through table + migration (Tier 2, migration-author)
-- Phase 3 — DjangoORMAuditRepository (Tier 3, implementer)
-- Phase 4 — DI wiring + compute_diff (Tier 2, implementer)
-- Phase 5 — AuditService.record + Celery task (Tier 3, implementer)
-- Phase 6 — Admin list + filters (Tier 3, implementer)
-- Phase 7 — Admin search (Tier 2, implementer)
-- Phase 8 — Admin read-only detail (Tier 2, implementer)
-- Phase 9 — Admin CSV export (Tier 2, implementer)
+- Phase 9 — Admin CSV export (Tier 2, implementer) — final phase
 
 ## Deferred phases
 _(none — no cross-repo phases, no flag-removal phase)_
