@@ -441,10 +441,11 @@ class EventAttendance(OrganizationModel):
     Represents the attendance of a user at a event.
 
     Phase 3 (expand): ``membership`` is added alongside the existing ``user`` FK.
-    Rows where ``user`` is NULL (synced/external attendees without a local account)
-    legitimately have ``membership_user_id = NULL`` and are NOT orphans.  Only rows
-    where ``user_id IS NOT NULL`` but no matching ``OrganizationMembership`` exists
-    are reported as orphans in the backfill data migration.
+    ``user_id`` is NOT NULL in the DB, so every row has a user; rows whose
+    ``(user_id, organization_id)`` has no matching ``OrganizationMembership`` are
+    reported as orphans in the backfill data migration and keep
+    ``membership_user_id = NULL``. (The null-user guard in the backfill is
+    defensive/forward-compat only — see ``_0029_backfill_helpers``.)
     """
 
     event = OrganizationForeignKey(

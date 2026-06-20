@@ -8,10 +8,12 @@ Both functions are safe to call in any order and idempotent.
 
 Null-user rows
 --------------
-``EventAttendance`` rows where ``user_id IS NULL`` represent synced/external
-attendees without a local user account.  These rows legitimately have no
-membership and are NOT reported as orphans.  The backfill and orphan queries
-both exclude them via ``AND co.user_id IS NOT NULL``.
+``EventAttendance.user_id`` is currently ``NOT NULL`` at the DB level, so no
+null-user rows can exist today; the ``AND ea.user_id IS NOT NULL`` guard in the
+backfill and orphan queries is defensive / forward-compatible (the sync service
+references ``user=None`` in code, a latent inconsistency this phase does not
+change). Were such rows to exist, they would legitimately have no membership and
+would NOT be reported as orphans.
 
 Orphans
 -------
