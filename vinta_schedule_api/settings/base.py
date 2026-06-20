@@ -116,7 +116,6 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "vinta_schedule_api.wsgi.application"
 
-DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 AUTH_PASSWORD_VALIDATORS = [
     {

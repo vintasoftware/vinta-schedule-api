@@ -31,16 +31,16 @@ class Audit(OrganizationModel):
     # when ordering or filtering Audit records.
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
-    action = models.CharField(max_length=100, choices=AuditAction.choices, db_index=True)
+    action = models.CharField(max_length=100, choices=AuditAction, db_index=True)
 
     # --- actor snapshot ---
-    actor_type = models.CharField(max_length=20, choices=AuditActorType.choices, db_index=True)
+    actor_type = models.CharField(max_length=20, choices=AuditActorType, db_index=True)
     actor_id = models.BigIntegerField(null=True, blank=True)  # null for SYSTEM
     # Snapshot of the membership role at emit time; null unless actor_type=MEMBERSHIP.
     # null=True on CharField is intentional: empty string and "no role" are distinct.
     actor_role = models.CharField(  # noqa: DJ001
         max_length=20,
-        choices=OrganizationRole.choices,
+        choices=OrganizationRole,
         null=True,
         blank=True,
     )

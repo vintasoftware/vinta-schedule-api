@@ -4,6 +4,7 @@ import django.db.models.deletion
 import django.utils.timezone
 import model_utils.fields
 from django.db import migrations, models
+from audit.constants import AuditAction, AuditActorType
 
 
 class Migration(migrations.Migration):
@@ -23,8 +24,8 @@ class Migration(migrations.Migration):
                 ('modified', model_utils.fields.AutoLastModifiedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='modified')),
                 ('meta', models.JSONField(blank=True, default=dict, verbose_name='meta')),
                 ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
-                ('action', models.CharField(choices=[('create', 'Create'), ('update', 'Update'), ('delete', 'Delete')], db_index=True, max_length=100)),
-                ('actor_type', models.CharField(choices=[('system', 'System'), ('membership', 'Membership'), ('system_user', 'System user'), ('single_use_code', 'Single-use code')], db_index=True, max_length=20)),
+                ('action', models.CharField(choices=AuditAction.choices, db_index=True, max_length=100)),
+                ('actor_type', models.CharField(choices=AuditActorType.choices, db_index=True, max_length=20)),
                 ('actor_id', models.BigIntegerField(blank=True, null=True)),
                 ('actor_role', models.CharField(blank=True, choices=[('member', 'Member'), ('admin', 'Admin')], max_length=20, null=True)),
                 ('system_user_scopes', models.JSONField(blank=True, null=True)),
