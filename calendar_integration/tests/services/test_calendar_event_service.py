@@ -474,7 +474,10 @@ def test_create_event_blocks_scoped_token_on_non_owned_calendar(scoped_event_set
         organization=org,
     )
     # (sanity: the token is scoped to a real membership but does NOT own other_calendar)
-    assert OrganizationMembership.objects.filter(id=membership.id).exists()
+    # OrganizationMembership has a composite PK (user, organization); identify it by pair.
+    assert OrganizationMembership.objects.filter(
+        user_id=membership.user_id, organization_id=membership.organization_id
+    ).exists()
 
     system_user, _token = PublicAPIAuthService().create_system_user(
         integration_name="scoped_event_svc_foreign",

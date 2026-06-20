@@ -7059,7 +7059,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedOrganizationMembershipList'
           description: ''
-  /organization-members/{id}/:
+  /organization-members/{user_id}/:
     get:
       operationId: organization_members_retrieve
       description: |-
@@ -7085,7 +7085,7 @@ paths:
           an organization the caller is not an active member of, the server returns
           **403**.
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7101,7 +7101,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
-  /organization-members/{id}{format}:
+  /organization-members/{user_id}{format}:
     get:
       operationId: organization_members_formatted_retrieve
       description: |-
@@ -7134,7 +7134,7 @@ paths:
           - .json
         required: true
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7150,7 +7150,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
-  /organization-members/{id}/deactivate/:
+  /organization-members/{user_id}/deactivate/:
     post:
       operationId: organization_members_deactivate_create
       description: |-
@@ -7174,7 +7174,7 @@ paths:
           an organization the caller is not an active member of, the server returns
           **403**.
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7207,7 +7207,7 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
-  /organization-members/{id}/deactivate{format}:
+  /organization-members/{user_id}/deactivate{format}:
     post:
       operationId: organization_members_deactivate_formatted_create
       description: |-
@@ -7238,7 +7238,7 @@ paths:
           - .json
         required: true
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7271,7 +7271,7 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
-  /organization-members/{id}/reactivate/:
+  /organization-members/{user_id}/reactivate/:
     post:
       operationId: organization_members_reactivate_create
       description: |-
@@ -7293,7 +7293,7 @@ paths:
           an organization the caller is not an active member of, the server returns
           **403**.
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7324,7 +7324,7 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
-  /organization-members/{id}/reactivate{format}:
+  /organization-members/{user_id}/reactivate{format}:
     post:
       operationId: organization_members_reactivate_formatted_create
       description: |-
@@ -7353,7 +7353,7 @@ paths:
           - .json
         required: true
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7384,7 +7384,7 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
-  /organization-members/{id}/update-role/:
+  /organization-members/{user_id}/update-role/:
     post:
       operationId: organization_members_update_role_create
       description: |-
@@ -7407,7 +7407,7 @@ paths:
           an organization the caller is not an active member of, the server returns
           **403**.
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -7441,7 +7441,7 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
-  /organization-members/{id}/update-role{format}:
+  /organization-members/{user_id}/update-role{format}:
     post:
       operationId: organization_members_update_role_formatted_create
       description: |-
@@ -7471,7 +7471,7 @@ paths:
           - .json
         required: true
       - in: path
-        name: id
+        name: user_id
         schema:
           type: string
         required: true
@@ -12136,7 +12136,10 @@ components:
         Exposes membership role, active status, and flattened user information
         (email, first_name, last_name) for the admin datatable.
       properties:
-        id:
+        user_id:
+          type: integer
+          readOnly: true
+        organization_id:
           type: integer
           readOnly: true
         role:
@@ -12167,11 +12170,12 @@ components:
           type: string
           readOnly: true
       required:
-      - id
       - is_active
+      - organization_id
       - role
       - user_email
       - user_first_name
+      - user_id
       - user_last_name
     OwnershipMembership:
       type: object

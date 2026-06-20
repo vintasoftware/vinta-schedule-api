@@ -1386,19 +1386,30 @@ class TestOrganizationMembershipViewSet:
 
         # Verify that response includes expected fields
         for result in results:
-            assert "id" in result
+            assert "user_id" in result
+            assert "organization_id" in result
             assert "role" in result
             assert "is_active" in result
             assert "user_email" in result
             assert "user_first_name" in result
             assert "user_last_name" in result
 
-        # Verify admin membership is present
-        admin_ids = [r["id"] for r in results if r["id"] == admin_membership.id]
+        # Verify admin membership is present (identified by composite (user, org))
+        admin_ids = [
+            r["user_id"]
+            for r in results
+            if r["user_id"] == admin_membership.user_id
+            and r["organization_id"] == admin_membership.organization_id
+        ]
         assert len(admin_ids) == 1
 
         # Verify inactive member is present
-        inactive_ids = [r["id"] for r in results if r["id"] == inactive_member.id]
+        inactive_ids = [
+            r["user_id"]
+            for r in results
+            if r["user_id"] == inactive_member.user_id
+            and r["organization_id"] == inactive_member.organization_id
+        ]
         assert len(inactive_ids) == 1
 
     def test_list_members_non_admin_forbidden(self, auth_client, user):
@@ -1471,7 +1482,7 @@ class TestOrganizationMembershipViewSet:
         results = response.json()["results"]
         # Should only see 1 member (the admin from org1)
         assert len(results) == 1
-        assert results[0]["id"] == user.organization_memberships.get().id
+        assert results[0]["user_id"] == user.organization_memberships.get().user_id
 
     def test_retrieve_member_admin_success(self, auth_client, user):
         """Test that admin can retrieve a specific member"""
@@ -1491,12 +1502,12 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-detail", kwargs={"pk": member.pk})
+        url = reverse("api:OrganizationMembers-detail", kwargs={"user_id": member.user_id})
         response = auth_client.get(url)
 
         assert_response_status_code(response, status.HTTP_200_OK)
         result = response.json()
-        assert result["id"] == member.id
+        assert result["user_id"] == member.user_id
         assert result["role"] == OrganizationRole.MEMBER
         assert result["is_active"] is True
         assert result["user_email"] == member.user.email
@@ -1520,7 +1531,7 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-detail", kwargs={"pk": member_in_org2.pk})
+        url = reverse("api:OrganizationMembers-detail", kwargs={"user_id": member_in_org2.user_id})
         response = auth_client.get(url)
 
         assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
@@ -1543,7 +1554,7 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-detail", kwargs={"pk": other_member.pk})
+        url = reverse("api:OrganizationMembers-detail", kwargs={"user_id": other_member.user_id})
         response = auth_client.get(url)
 
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
@@ -1575,7 +1586,7 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-detail", kwargs={"pk": member.pk})
+        url = reverse("api:OrganizationMembers-detail", kwargs={"user_id": member.user_id})
         response = auth_client.get(url)
 
         assert_response_status_code(response, status.HTTP_200_OK)
@@ -1610,13 +1621,15 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": target_member.pk})
+        url = reverse(
+            "api:OrganizationMembers-deactivate", kwargs={"user_id": target_member.user_id}
+        )
         response = auth_client.post(url)
 
         assert_response_status_code(response, status.HTTP_200_OK)
         result = response.json()
         assert result["is_active"] is False
-        assert result["id"] == target_member.id
+        assert result["user_id"] == target_member.user_id
 
         # Verify in DB
         target_member.refresh_from_db()
@@ -1640,7 +1653,9 @@ class TestOrganizationMembershipViewSet:
             is_active=False,
         )
 
-        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": target_member.pk})
+        url = reverse(
+            "api:OrganizationMembers-deactivate", kwargs={"user_id": target_member.user_id}
+        )
         response = auth_client.post(url)
 
         assert_response_status_code(response, status.HTTP_200_OK)
@@ -1666,7 +1681,9 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": admin_membership.pk})
+        url = reverse(
+            "api:OrganizationMembers-deactivate", kwargs={"user_id": admin_membership.user_id}
+        )
         response = auth_client.post(url)
 
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
@@ -1691,7 +1708,9 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": sole_admin_membership.pk})
+        url = reverse(
+            "api:OrganizationMembers-deactivate", kwargs={"user_id": sole_admin_membership.user_id}
+        )
         response = auth_client.post(url)
 
         # Self-deactivation is forbidden, even for sole admin
@@ -1724,7 +1743,7 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": other_admin.pk})
+        url = reverse("api:OrganizationMembers-deactivate", kwargs={"user_id": other_admin.user_id})
         response = auth_client.post(url)
 
         # Should succeed because there's still one admin (the requester)
@@ -1750,7 +1769,9 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": target_member.pk})
+        url = reverse(
+            "api:OrganizationMembers-deactivate", kwargs={"user_id": target_member.user_id}
+        )
         response = auth_client.post(url)
 
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
@@ -1774,7 +1795,9 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": member_in_org2.pk})
+        url = reverse(
+            "api:OrganizationMembers-deactivate", kwargs={"user_id": member_in_org2.user_id}
+        )
         response = auth_client.post(url)
 
         assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
@@ -1804,7 +1827,9 @@ class TestOrganizationMembershipViewSet:
         )
 
         # Deactivate the target member
-        url = reverse("api:OrganizationMembers-deactivate", kwargs={"pk": target_member.pk})
+        url = reverse(
+            "api:OrganizationMembers-deactivate", kwargs={"user_id": target_member.user_id}
+        )
         response = auth_client.post(url)
         assert_response_status_code(response, status.HTTP_200_OK)
 
@@ -1838,13 +1863,15 @@ class TestOrganizationMembershipViewSet:
             is_active=False,
         )
 
-        url = reverse("api:OrganizationMembers-reactivate", kwargs={"pk": target_member.pk})
+        url = reverse(
+            "api:OrganizationMembers-reactivate", kwargs={"user_id": target_member.user_id}
+        )
         response = auth_client.post(url)
 
         assert_response_status_code(response, status.HTTP_200_OK)
         result = response.json()
         assert result["is_active"] is True
-        assert result["id"] == target_member.id
+        assert result["user_id"] == target_member.user_id
 
         # Verify in DB
         target_member.refresh_from_db()
@@ -1868,7 +1895,9 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-reactivate", kwargs={"pk": target_member.pk})
+        url = reverse(
+            "api:OrganizationMembers-reactivate", kwargs={"user_id": target_member.user_id}
+        )
         response = auth_client.post(url)
 
         assert_response_status_code(response, status.HTTP_200_OK)
@@ -1893,7 +1922,9 @@ class TestOrganizationMembershipViewSet:
             is_active=False,
         )
 
-        url = reverse("api:OrganizationMembers-reactivate", kwargs={"pk": target_member.pk})
+        url = reverse(
+            "api:OrganizationMembers-reactivate", kwargs={"user_id": target_member.user_id}
+        )
         response = auth_client.post(url)
 
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
@@ -1917,7 +1948,9 @@ class TestOrganizationMembershipViewSet:
             is_active=False,
         )
 
-        url = reverse("api:OrganizationMembers-reactivate", kwargs={"pk": member_in_org2.pk})
+        url = reverse(
+            "api:OrganizationMembers-reactivate", kwargs={"user_id": member_in_org2.user_id}
+        )
         response = auth_client.post(url)
 
         assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
@@ -1947,7 +1980,9 @@ class TestOrganizationMembershipViewSet:
         )
 
         # Reactivate the target member
-        url = reverse("api:OrganizationMembers-reactivate", kwargs={"pk": target_member.pk})
+        url = reverse(
+            "api:OrganizationMembers-reactivate", kwargs={"user_id": target_member.user_id}
+        )
         response = auth_client.post(url)
         assert_response_status_code(response, status.HTTP_200_OK)
 
@@ -1983,13 +2018,15 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-update-role", kwargs={"pk": target_member.pk})
+        url = reverse(
+            "api:OrganizationMembers-update-role", kwargs={"user_id": target_member.user_id}
+        )
         response = auth_client.post(url, {"role": OrganizationRole.ADMIN}, format="json")
 
         assert_response_status_code(response, status.HTTP_200_OK)
         result = response.json()
         assert result["role"] == OrganizationRole.ADMIN
-        assert result["id"] == target_member.id
+        assert result["user_id"] == target_member.user_id
 
         target_member.refresh_from_db()
         assert target_member.role == OrganizationRole.ADMIN
@@ -2012,7 +2049,9 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-update-role", kwargs={"pk": other_admin.pk})
+        url = reverse(
+            "api:OrganizationMembers-update-role", kwargs={"user_id": other_admin.user_id}
+        )
         response = auth_client.post(url, {"role": OrganizationRole.MEMBER}, format="json")
 
         assert_response_status_code(response, status.HTTP_200_OK)
@@ -2030,7 +2069,7 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-update-role", kwargs={"pk": sole_admin.pk})
+        url = reverse("api:OrganizationMembers-update-role", kwargs={"user_id": sole_admin.user_id})
         response = auth_client.post(url, {"role": OrganizationRole.MEMBER}, format="json")
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
@@ -2055,7 +2094,9 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-update-role", kwargs={"pk": target_member.pk})
+        url = reverse(
+            "api:OrganizationMembers-update-role", kwargs={"user_id": target_member.user_id}
+        )
         response = auth_client.post(url, {"role": "superuser"}, format="json")
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
@@ -2080,7 +2121,9 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-update-role", kwargs={"pk": target_member.pk})
+        url = reverse(
+            "api:OrganizationMembers-update-role", kwargs={"user_id": target_member.user_id}
+        )
         response = auth_client.post(url, {"role": OrganizationRole.ADMIN}, format="json")
 
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
@@ -2106,7 +2149,9 @@ class TestOrganizationMembershipViewSet:
             is_active=True,
         )
 
-        url = reverse("api:OrganizationMembers-update-role", kwargs={"pk": member_in_org2.pk})
+        url = reverse(
+            "api:OrganizationMembers-update-role", kwargs={"user_id": member_in_org2.user_id}
+        )
         response = auth_client.post(url, {"role": OrganizationRole.ADMIN}, format="json")
 
         assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
@@ -3410,8 +3455,10 @@ class TestOrganizationMineAction:
         assert role_by_org[org_b.id] == OrganizationRole.MEMBER
 
         # Verify the membership objects that were created match what we get back.
-        assert membership_a.id is not None  # sanity
-        assert membership_b.id is not None
+        # OrganizationMembership has a composite PK (user, organization); its identity
+        # is the (user_id, organization_id) pair, not a scalar id.
+        assert membership_a.pk == (membership_a.user_id, membership_a.organization_id)
+        assert membership_b.pk == (membership_b.user_id, membership_b.organization_id)
 
     def test_mine_returns_org_id_and_name(self, user):
         """The nested organization object contains exactly id and name."""

@@ -9,6 +9,7 @@ from django.db import models
 
 from common.fields import (
     OrganizationMembershipForeignKey,
+    SafeCompositePrimaryKey,
     TenantSafeForeignKey,
     TenantSafeOneToOneField,
 )
@@ -255,6 +256,18 @@ class OrganizationMembership(BaseModel):
             "read unchanged."
         ),
     )
+
+    # Composite primary key on (user, organization) — a membership's identity is the
+    # (user, org) pair. The implicit ``id`` BigAutoField is dropped in the Phase 7b
+    # migration. The legacy ``uniq_membership_user_organization`` unique constraint is
+    # retained (it is what the three raw-SQL calendar PROTECT FKs bind to); it is
+    # redundant with the composite-PK unique index but kept so the FKs need no rebind.
+    #
+    # ``SafeCompositePrimaryKey`` (not stock ``models.CompositePrimaryKey``) is used so
+    # class-level ``OrganizationMembership.pk`` access does not crash third-party model
+    # introspection (e.g. ``django_virtual_models``' method discovery). See
+    # ``common.fields.SafeCompositePrimaryKey``.
+    pk = SafeCompositePrimaryKey("user", "organization")
 
     objects: OrganizationMembershipManager = OrganizationMembershipManager()
 

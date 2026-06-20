@@ -651,6 +651,11 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     serializer_class = OrganizationMembershipSerializer
     permission_classes = (IsOrganizationAdmin,)
     filterset_class = OrganizationMembershipFilterSet
+    # OrganizationMembership has a composite PK (user, organization) and no scalar
+    # ``id``. The queryset is already scoped to the caller's single organization, so a
+    # member is uniquely identified within that scope by ``user_id``; use it as the
+    # detail-route lookup instead of the (now non-existent) scalar pk.
+    lookup_field = "user_id"
 
     def get_queryset(self):
         """Org-scoped queryset: return members of the caller's organization only."""
@@ -660,7 +665,9 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
             return (
                 OrganizationMembership.objects.filter(organization_id=membership.organization_id)
                 .select_related("user", "user__profile")
-                .order_by("id")
+                # OrganizationMembership has a composite PK (user, organization) and no
+                # scalar ``id``; order by the PK columns for a stable, deterministic list.
+                .order_by("user_id", "organization_id")
             )
         return OrganizationMembership.objects.none()
 
@@ -674,7 +681,7 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         },
     )
     @action(detail=True, methods=["post"], url_path="deactivate")
-    def deactivate(self, request, pk=None):
+    def deactivate(self, request, user_id=None):
         """Deactivate a member (set is_active=False).
 
         Guards:
@@ -706,7 +713,9 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
                     role=target.role,  # Same role filter (ADMIN)
                     is_active=True,
                 )
-                .exclude(id=target.id)  # Exclude the target itself
+                # Composite PK (user, organization): exclude the target by its user_id
+                # within the already org-scoped filter.
+                .exclude(user_id=target.user_id)
                 .count()
             )
             if other_active_admin_count == 0:
@@ -731,7 +740,7 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         },
     )
     @action(detail=True, methods=["post"], url_path="reactivate")
-    def reactivate(self, request, pk=None):
+    def reactivate(self, request, user_id=None):
         """Reactivate a member (set is_active=True).
 
         No guards — re-enabling is always safe.
@@ -761,7 +770,7 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         },
     )
     @action(detail=True, methods=["post"], url_path="update-role")
-    def update_role(self, request, pk=None):
+    def update_role(self, request, user_id=None):
         """Update a member's role (member <-> admin).
 
         Guards:
@@ -786,7 +795,9 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
                     role=OrganizationRole.ADMIN,
                     is_active=True,
                 )
-                .exclude(id=target.id)
+                # Composite PK (user, organization): exclude the target by its user_id
+                # within the already org-scoped filter.
+                .exclude(user_id=target.user_id)
                 .count()
             )
             if other_active_admin_count == 0:

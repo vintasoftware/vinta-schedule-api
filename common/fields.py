@@ -33,10 +33,48 @@ import uuid
 from django.db import models
 from django.db.backends.base.operations import BaseDatabaseOperations
 from django.db.models import AutoField, UUIDField
+from django.db.models.fields.composite import CompositeAttribute, CompositePrimaryKey
 from django.db.models.fields.related import ForeignObject
 
 
 BaseDatabaseOperations.integer_field_ranges["UUIDField"] = (0, 0)
+
+
+class _SafeCompositeAttribute(CompositeAttribute):
+    """``CompositePrimaryKey`` descriptor that tolerates class-level access.
+
+    Django's stock :class:`~django.db.models.fields.composite.CompositeAttribute`
+    descriptor implements ``__get__`` as
+    ``tuple(getattr(instance, attname) for attname in self.attnames)`` with no
+    guard for ``instance is None``. Accessing the ``pk`` attribute on the *class*
+    (``Model.pk``) — which Django's own field descriptors handle by returning the
+    field/descriptor itself — therefore raises
+    ``AttributeError: 'NoneType' object has no attribute '<attname>'``.
+
+    Several introspection paths do exactly that class-level access. Notably
+    ``django_virtual_models.utils.get_methods`` runs
+    ``{attr for attr in dir(cls) if callable(getattr(cls, attr)) ...}`` over every
+    attribute of the model class while optimizing a nested serializer; on a
+    composite-PK model that ``getattr(cls, "pk")`` crashes. Returning the
+    descriptor on class-level access (the standard Django descriptor convention)
+    keeps that introspection working while instance-level access is unchanged.
+    """
+
+    def __get__(self, instance, cls=None):
+        if instance is None:
+            return self
+        return super().__get__(instance, cls)
+
+
+class SafeCompositePrimaryKey(CompositePrimaryKey):
+    """``CompositePrimaryKey`` whose descriptor tolerates class-level ``pk`` access.
+
+    Behaves identically to Django's ``CompositePrimaryKey`` for instances; only
+    differs in that ``Model.pk`` (class-level) returns the descriptor instead of
+    raising. See :class:`_SafeCompositeAttribute` for the rationale.
+    """
+
+    descriptor_class = _SafeCompositeAttribute
 
 
 class UUIDAutoField(UUIDField, AutoField):  # type: ignore

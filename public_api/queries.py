@@ -862,7 +862,9 @@ class Query:
         membership_sq = (
             OrganizationMembership.objects.filter(organization_id=OuterRef("pk"))
             .values("organization_id")
-            .annotate(cnt=DjangoCount("id"))
+            # OrganizationMembership has a composite PK (user, organization) and no
+            # scalar ``id``; count rows via ``user_id`` (a NOT NULL PK column).
+            .annotate(cnt=DjangoCount("user_id"))
             .values("cnt")
         )
         calendar_sq = (
