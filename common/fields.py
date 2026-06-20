@@ -268,11 +268,26 @@ class OrganizationMembershipForeignKey(models.Field):
         #      - "organization_id": attname of the `organization` ForeignKey
         #    This mirrors TenantSafeForeignKey's convention of using attnames
         #    (e.g. "organization_id") rather than field names in to_fields.
+        #
+        #    The ForeignObject is wired with ``on_delete=DO_NOTHING`` regardless of
+        #    the configured ``self.on_delete``. Delete integrity (PROTECT) is
+        #    enforced exclusively by the per-table raw-SQL composite FK to
+        #    OrganizationMembership, which the cutover migrations add as
+        #    ``DEFERRABLE INITIALLY DEFERRED`` so the check fires at COMMIT. If the
+        #    ForeignObject itself carried ``on_delete=PROTECT``, Django's *Python*
+        #    cascade collector would raise ``ProtectedError`` eagerly — even for a
+        #    same-transaction cascade that removes BOTH the membership and the
+        #    referencing row (e.g. deleting an Organization, which CASCADEs to its
+        #    memberships and OrganizationModel rows). Deferring to the DB-level
+        #    constraint lets such whole-object cascades succeed while a
+        #    membership-only delete (referencing row still live) still raises at
+        #    commit. ``self.on_delete`` is retained for introspection/documentation
+        #    of the intended semantics only.
         fo_field = ForeignObject(
             "organizations.OrganizationMembership",
             from_fields=[user_id_field_name, "organization_id"],
             to_fields=["user_id", "organization_id"],
-            on_delete=self.on_delete,
+            on_delete=models.DO_NOTHING,
             related_name=self.related_name or f"{name}_set",
             editable=False,
             null=self.null,

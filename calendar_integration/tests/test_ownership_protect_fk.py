@@ -4,8 +4,11 @@ After Phase 2b the legacy ``user`` column is gone and ownership integrity is
 enforced at the DB level:
 
 - a raw-SQL composite FK ``(membership_user_id, organization_id) ->
-  OrganizationMembership(user_id, organization_id) ON DELETE RESTRICT`` enforces
-  PROTECT delete semantics on the ForeignObject relation;
+  OrganizationMembership(user_id, organization_id) ON DELETE NO ACTION DEFERRABLE
+  INITIALLY DEFERRED`` enforces PROTECT delete semantics on the ForeignObject
+  relation (the check fires at COMMIT, so it raises at the close of the
+  surrounding ``transaction.atomic`` block, and a same-transaction cascade that
+  removes both rows still succeeds — see the org-delete test below);
 - a partial unique constraint ``(calendar_fk, membership_user_id) WHERE
   membership_user_id IS NOT NULL`` prevents two ownerships for the same member on
   one calendar, while still permitting multiple NULL (orphan) rows.
@@ -67,12 +70,47 @@ def test_delete_user_with_live_ownership_is_blocked(organization, member_user, c
 
     Documented behaviour change introduced in Phase 2b: a User that owns a calendar
     through their membership can no longer be deleted while the ownership is live —
-    the membership-cascade hits the ON DELETE RESTRICT FK.
+    the membership-cascade trips the deferred PROTECT FK at COMMIT (the close of
+    the ``transaction.atomic`` block).
     """
     create_calendar_ownership(calendar=calendar, user=member_user)
 
     with pytest.raises(IntegrityError), transaction.atomic():
         member_user.delete()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_delete_organization_cascade_with_member_ownership_succeeds(
+    organization, member_user, calendar
+):
+    """Deleting an Organization with a member-owned ownership cascades cleanly.
+
+    Regression guard for the deferred-PROTECT design. Deleting an Organization
+    CASCADEs (in one transaction) to both its OrganizationMembership rows and its
+    CalendarOwnership rows. Two things would otherwise abort that cascade:
+
+    1. If the ``membership`` ForeignObject carried ``on_delete=PROTECT``, Django's
+       *Python* collector would raise ``ProtectedError`` eagerly the moment it
+       sees the membership being collected — even though the referencing ownership
+       is being removed in the same transaction. The ForeignObject is therefore
+       wired ``DO_NOTHING`` (PROTECT lives at the DB level only).
+    2. A non-deferrable DB ``RESTRICT`` FK would fire per-statement if the
+       collector deletes the membership before the ownership. The constraint is
+       ``NO ACTION DEFERRABLE INITIALLY DEFERRED`` so the check is postponed to
+       COMMIT — by which point both rows are gone — and the cascade succeeds.
+
+    This test FAILS with either an eager ForeignObject PROTECT or a non-deferrable
+    RESTRICT FK, and PASSES with the deferred-DB-only PROTECT design.
+    """
+    ownership = create_calendar_ownership(calendar=calendar, user=member_user)
+    membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
+
+    organization.delete()  # must not raise IntegrityError
+
+    assert not Organization.objects.filter(pk=organization.pk).exists()
+    assert not OrganizationMembership.objects.filter(pk=membership.pk).exists()
+    assert not CalendarOwnership.objects.filter(pk=ownership.pk).exists()
+    assert not Calendar.objects.filter(pk=calendar.pk).exists()
 
 
 @pytest.mark.django_db(transaction=True)

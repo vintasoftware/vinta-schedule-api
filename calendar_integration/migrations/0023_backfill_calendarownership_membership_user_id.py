@@ -43,6 +43,20 @@ The core SQL is extracted to
 ``calendar_integration/migrations/_0023_backfill_helpers.py`` so tests can
 call ``backfill_membership_user_id_sql()`` and ``collect_orphans()`` directly
 without running the migration runner.
+
+Test coverage note (Phase 2b)
+-----------------------------
+The Phase-1 live-ORM backfill tests (``tests/test_ownership_expand.py``:
+CSV report, OSError fallback, reverse, idempotency, orphan detection) were
+removed in Phase 2b when migration 0025 dropped the ``CalendarOwnership.user``
+column — those tests referenced ``co.user_id`` via the live ORM, which no longer
+exists on the current model. ``django-test-migrations`` is **not** a project
+dependency (and was deliberately not added), so a migration-state test pinned at
+``0022 → 0023`` (where ``user_id`` still exists) could not be reintroduced
+without a new dependency. This backfill therefore remains exercised only by its
+historical migration run (``migrate`` replays it at the 0023 point against the
+real schema) and its extracted helpers in ``_0023_backfill_helpers.py``; there is
+no live-ORM test for it after the column drop.
 """
 
 import csv

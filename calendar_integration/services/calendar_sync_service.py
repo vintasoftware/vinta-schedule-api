@@ -403,14 +403,46 @@ class CalendarSyncService:
                 ).exists()
             ):
                 owner_membership_user_id = owner_user.id
-            CalendarOwnership.objects.update_or_create(
-                organization=context.organization,
-                calendar=calendar,
-                membership_user_id=owner_membership_user_id,
-                defaults={
-                    "is_default": calendar_data.is_default,
-                },
-            )
+
+            if owner_membership_user_id is not None:
+                # Member owner: the partial unique (calendar_fk, membership_user_id)
+                # guarantees at most one row for this key, so update_or_create is
+                # safe to upsert on it.
+                CalendarOwnership.objects.update_or_create(
+                    organization=context.organization,
+                    calendar=calendar,
+                    membership_user_id=owner_membership_user_id,
+                    defaults={
+                        "is_default": calendar_data.is_default,
+                    },
+                )
+            else:
+                # Owner-less (NULL membership): the partial unique constraint
+                # EXCLUDES NULLs, so a calendar may already hold ≥2 orphan
+                # ownership rows. Keying update_or_create on membership_user_id=None
+                # would call .get() on a multi-row match and raise
+                # MultipleObjectsReturned. Match the pre-cutover intent of a single
+                # owner-less ownership per calendar: reuse any existing orphan row,
+                # otherwise create one.
+                ownership = (
+                    CalendarOwnership.objects.filter(
+                        organization=context.organization,
+                        calendar=calendar,
+                        membership_user_id__isnull=True,
+                    )
+                    .order_by("pk")
+                    .first()
+                )
+                if ownership is None:
+                    CalendarOwnership.objects.create(
+                        organization=context.organization,
+                        calendar=calendar,
+                        membership_user_id=None,
+                        is_default=calendar_data.is_default,
+                    )
+                elif ownership.is_default != calendar_data.is_default:
+                    ownership.is_default = calendar_data.is_default
+                    ownership.save(update_fields=["is_default"])
 
             # Grant permissions to calendar owners
             self._host._grant_calendar_owner_permissions(calendar)

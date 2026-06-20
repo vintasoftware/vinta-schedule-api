@@ -8,7 +8,8 @@ semantics are enforced here by a raw-SQL composite FK:
       ADD CONSTRAINT calownership_membership_protect_fk
       FOREIGN KEY (membership_user_id, organization_id)
       REFERENCES organizations_organizationmembership (user_id, organization_id)
-      ON DELETE RESTRICT
+      ON DELETE NO ACTION
+      DEFERRABLE INITIALLY DEFERRED
       NOT VALID;
 
 The referenced ``(user_id, organization_id)`` columns are exactly the columns of
@@ -17,12 +18,31 @@ the ``uniq_membership_user_organization`` unique constraint on
 makes them a valid FK target. The column order ``(membership_user_id,
 organization_id)`` positionally maps to ``(user_id, organization_id)``.
 
-``ON DELETE RESTRICT`` (not ``NO ACTION``, not ``DEFERRABLE``) is the project
-convention documented in ``common/fields.py`` for these per-table membership
-PROTECT FKs: a row referencing a membership blocks that membership's deletion.
-Because deleting a ``User`` CASCADEs to their ``OrganizationMembership`` rows,
-this FK now also blocks ``User`` deletion while a live ``CalendarOwnership``
-references the membership — an intended, documented behaviour change.
+Deferred PROTECT semantics
+--------------------------
+This is the first raw-SQL membership PROTECT FK in the project; it is **not** a
+pre-existing convention from ``common/fields.py``. The constraint is
+``ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED`` so that the referential
+check fires at **COMMIT**, not at statement time. PROTECT semantics still hold:
+deleting a membership while a live ``CalendarOwnership`` still references it
+raises at commit (the ownership's dangling reference is detected then). Because
+deleting a ``User`` CASCADEs to their ``OrganizationMembership`` rows, this FK
+also blocks ``User`` deletion while a live ``CalendarOwnership`` references the
+membership — an intended behaviour change.
+
+Why DEFERRABLE (org-cascade reason)
+-----------------------------------
+Every other FK on ``calendar_integration_calendarownership`` is
+``DEFERRABLE INITIALLY DEFERRED`` / ``NO ACTION``. Using a non-deferrable
+``RESTRICT`` here would break ``Organization`` deletion: Django's Python cascade
+collector removes the ``OrganizationMembership`` and the ``CalendarOwnership`` in
+an order it chooses and is **blind** to the ``ForeignObject`` dependency (it
+carries no DB constraint Django can see). If it deletes the membership first, a
+non-deferrable RESTRICT would abort the entire org-deletion transaction. With a
+DEFERRABLE INITIALLY DEFERRED constraint the check is postponed to COMMIT, so a
+same-transaction cascade that removes **both** the membership and the referencing
+ownership succeeds, while a membership-only delete (ownership still live) still
+fails at commit — exactly the PROTECT guarantee we want.
 
 Rows with ``membership_user_id IS NULL`` (orphans) are not constrained: a
 composite FK with a NULL column is not enforced by Postgres (MATCH SIMPLE).
@@ -59,7 +79,8 @@ ALTER TABLE calendar_integration_calendarownership
   ADD CONSTRAINT {CONSTRAINT_NAME}
   FOREIGN KEY (membership_user_id, organization_id)
   REFERENCES organizations_organizationmembership (user_id, organization_id)
-  ON DELETE RESTRICT
+  ON DELETE NO ACTION
+  DEFERRABLE INITIALLY DEFERRED
   NOT VALID;
 """
 

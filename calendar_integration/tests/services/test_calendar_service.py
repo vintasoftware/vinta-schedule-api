@@ -712,6 +712,71 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
 
 
 @pytest.mark.django_db
+def test_import_with_nonmember_owner_and_preexisting_orphans_does_not_raise(
+    social_account, social_token, mock_google_adapter, organization
+):
+    """Re-import by a non-member owner over multiple NULL ownerships must not raise.
+
+    Regression for the sync NULL fallback: the partial unique constraint EXCLUDES
+    NULL ``membership_user_id``, so a calendar can already hold ≥2 orphan
+    (NULL-membership) ownership rows. The importing account here is NOT a member of
+    the org, so the owner resolves to ``membership_user_id=None``. Keying
+    ``update_or_create`` on ``membership_user_id=None`` would call ``.get()`` on a
+    multi-row match and raise ``MultipleObjectsReturned``; the guarded
+    filter().first()-then-create path must reuse one orphan row instead and not
+    raise.
+    """
+    # social_account.user is deliberately NOT a member of `organization`.
+    assert not OrganizationMembership.objects.filter(
+        user=social_account.user, organization=organization
+    ).exists()
+
+    mock_google_adapter.get_account_calendars.return_value = [
+        CalendarResourceData(
+            external_id="orphan_cal",
+            name="Shared",
+            description="",
+            email="shared@example.com",
+            is_default=False,
+            provider="google",
+            original_payload={"id": "orphan_cal"},
+        ),
+    ]
+
+    # Pre-seed the calendar with two NULL (orphan) ownership rows.
+    calendar = Calendar.objects.create(
+        organization=organization,
+        external_id="orphan_cal",
+        name="Shared",
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.PERSONAL,
+    )
+    CalendarOwnership.objects.create(
+        organization=organization, calendar=calendar, membership_user_id=None
+    )
+    CalendarOwnership.objects.create(
+        organization=organization, calendar=calendar, membership_user_id=None
+    )
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=organization)
+
+    # Must not raise MultipleObjectsReturned.
+    service.import_account_calendars(sync_after_import=False)
+
+    # The two pre-existing orphan rows are preserved; no new member ownership added.
+    assert (
+        CalendarOwnership.objects.filter(
+            organization=organization, calendar=calendar, membership_user_id__isnull=True
+        ).count()
+        == 2
+    )
+    assert not CalendarOwnership.objects.filter(
+        organization=organization, calendar=calendar, membership_user_id__isnull=False
+    ).exists()
+
+
+@pytest.mark.django_db
 def test_import_seeds_sync_enabled_from_access_role(
     social_account, social_token, mock_google_adapter, organization
 ):

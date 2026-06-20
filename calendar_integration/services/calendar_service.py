@@ -126,12 +126,30 @@ from calendar_integration.services.type_guards import (
     is_authenticated_calendar_service,
     is_initialized_or_authenticated_calendar_service,
 )
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from public_api.models import SystemUser
 from users.models import User
 
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_owner_membership_user_id(user: User, organization: Organization) -> int | None:
+    """Resolve the membership-scoped owner id for a CalendarOwnership write.
+
+    Mirrors the sync path's guard: the raw-SQL composite PROTECT FK on
+    ``CalendarOwnership.membership`` requires a non-NULL ``membership_user_id`` to
+    reference a real ``OrganizationMembership(user_id, organization_id)``. Returns
+    ``user.id`` only when such a membership exists, else ``None`` (an orphan
+    ownership) so a non-member ``user_or_token`` never triggers an FK
+    IntegrityError that aborts the request.
+    """
+    if OrganizationMembership.objects.filter(
+        user_id=user.id,
+        organization_id=organization.id,
+    ).exists():
+        return user.id
+    return None
 
 
 class CalendarService(BaseCalendarService):
@@ -553,12 +571,17 @@ class CalendarService(BaseCalendarService):
             meta={"latest_original_payload": created_calendar.original_payload} or {},
         )
 
-        # Create calendar ownership for the user who created it
+        # Create calendar ownership for the user who created it. Guard the
+        # membership-scoped FK: only set membership_user_id when the creator is a
+        # member of this org, else create an orphan ownership (membership_user_id
+        # NULL) to avoid an FK IntegrityError aborting the request.
         if isinstance(self.user_or_token, User):
             CalendarOwnership.objects.create(
                 organization=organization,
                 calendar=calendar,
-                membership_user_id=self.user_or_token.id,
+                membership_user_id=_resolve_owner_membership_user_id(
+                    self.user_or_token, organization
+                ),
                 is_default=False,
             )
 
@@ -644,12 +667,17 @@ class CalendarService(BaseCalendarService):
             calendar_type=CalendarType.VIRTUAL,
         )
 
-        # Create calendar ownership for the user who created it
+        # Create calendar ownership for the user who created it. Guard the
+        # membership-scoped FK: only set membership_user_id when the creator is a
+        # member of this org, else create an orphan ownership (membership_user_id
+        # NULL) to avoid an FK IntegrityError aborting the request.
         if isinstance(self.user_or_token, User):
             CalendarOwnership.objects.create(
                 organization=self.organization,
                 calendar=calendar,
-                membership_user_id=self.user_or_token.id,
+                membership_user_id=_resolve_owner_membership_user_id(
+                    self.user_or_token, self.organization
+                ),
                 is_default=False,
             )
 
@@ -696,12 +724,17 @@ class CalendarService(BaseCalendarService):
             accepts_public_scheduling=accepts_public_scheduling,
         )
 
-        # Create calendar ownership for the user who created it
+        # Create calendar ownership for the user who created it. Guard the
+        # membership-scoped FK: only set membership_user_id when the creator is a
+        # member of this org, else create an orphan ownership (membership_user_id
+        # NULL) to avoid an FK IntegrityError aborting the request.
         if isinstance(self.user_or_token, User):
             CalendarOwnership.objects.create(
                 organization=self.organization,
                 calendar=calendar,
-                membership_user_id=self.user_or_token.id,
+                membership_user_id=_resolve_owner_membership_user_id(
+                    self.user_or_token, self.organization
+                ),
                 is_default=False,
             )
 
@@ -741,12 +774,17 @@ class CalendarService(BaseCalendarService):
             accepts_public_scheduling=accepts_public_scheduling,
         )
 
-        # Create calendar ownership for the user who created it
+        # Create calendar ownership for the user who created it. Guard the
+        # membership-scoped FK: only set membership_user_id when the creator is a
+        # member of this org, else create an orphan ownership (membership_user_id
+        # NULL) to avoid an FK IntegrityError aborting the request.
         if isinstance(self.user_or_token, User):
             CalendarOwnership.objects.create(
                 organization=self.organization,
                 calendar=calendar,
-                membership_user_id=self.user_or_token.id,
+                membership_user_id=_resolve_owner_membership_user_id(
+                    self.user_or_token, self.organization
+                ),
                 is_default=False,
             )
 
