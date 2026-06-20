@@ -113,7 +113,7 @@ class TestScopedCalendarIds:
         system_user = baker.make(
             SystemUser,
             organization=organization,
-            scoped_to_membership_fk=membership,
+            scoped_to_membership_user_id=membership.user_id,
             integration_name="scoped_token",
         )
         return system_user
@@ -124,7 +124,7 @@ class TestScopedCalendarIds:
         system_user = baker.make(
             SystemUser,
             organization=organization,
-            scoped_to_membership_fk=another_membership,
+            scoped_to_membership_user_id=another_membership.user_id,
             integration_name="scoped_token_no_calendars",
         )
         return system_user
@@ -215,14 +215,14 @@ class TestScopedCalendarIds:
         system_user = baker.make(
             SystemUser,
             organization=organization,
-            scoped_to_membership_fk=membership,
+            scoped_to_membership_user_id=membership.user_id,
             integration_name="scoped_token_org_check",
         )
         # SystemUser.organization must match the membership's organization for the
-        # OrganizationForeignKey tenant join to resolve correctly.
+        # (organization_id, user_id) membership join to resolve correctly.
         assert system_user.organization_id == membership.organization_id
-        # The scalar id is always accessible regardless of the FK join path.
-        assert system_user.scoped_to_membership_fk_id == membership.id
+        # The denormalized membership user_id is always accessible on the row.
+        assert system_user.scoped_to_membership_user_id == membership.user_id
 
 
 @pytest.mark.django_db
@@ -306,7 +306,7 @@ class TestAssertCalendarInOwnerScope:
         return baker.make(
             SystemUser,
             organization=organization,
-            scoped_to_membership_fk=membership,
+            scoped_to_membership_user_id=membership.user_id,
             integration_name="scoped_write_token",
         )
 

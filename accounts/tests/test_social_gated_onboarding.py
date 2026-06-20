@@ -311,7 +311,7 @@ class TestSocialSignupCrossOrgInviteAccept:
             invited_by=inviter,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         # Refresh so the related manager cache is warm.

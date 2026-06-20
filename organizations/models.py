@@ -7,7 +7,11 @@ from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
 from django.db import models
 
-from common.fields import TenantSafeForeignKey, TenantSafeOneToOneField
+from common.fields import (
+    OrganizationMembershipForeignKey,
+    TenantSafeForeignKey,
+    TenantSafeOneToOneField,
+)
 from common.models import BaseModel
 from organizations.managers import BaseOrganizationModelManager, OrganizationMembershipManager
 
@@ -309,8 +313,14 @@ class OrganizationInvitation(BaseModel):
     accepted_at = models.DateTimeField(null=True, blank=True)
     token_hash = models.TextField()
     expires_at = models.DateTimeField()
-    membership = models.OneToOneField(
-        OrganizationMembership,
+    # Membership reference via the (organization_id, membership_user_id) composite join
+    # rather than a real FK. Django 6 forbids a real FK to a composite-PK model
+    # (OrganizationMembership becomes composite-PK in Phase 7b). This contributes a
+    # concrete ``membership_user_id`` column plus a ForeignObject descriptor ``membership``.
+    # OneToOne semantics are preserved by the partial UniqueConstraint below
+    # (one accepted invitation per membership). ``related_name="invitation"`` keeps the
+    # ``membership.invitation`` reverse accessor (now a reverse manager).
+    membership = OrganizationMembershipForeignKey(
         on_delete=models.CASCADE,
         related_name="invitation",
         null=True,
@@ -322,6 +332,11 @@ class OrganizationInvitation(BaseModel):
             models.UniqueConstraint(
                 fields=["email", "organization"],
                 name="uniq_invitation_email_organization",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "membership_user_id"],
+                condition=models.Q(membership_user_id__isnull=False),
+                name="uniq_invitation_membership_user_per_org",
             ),
         ]
 

@@ -317,7 +317,7 @@ class TestOrganizationService:
             token_hash=old_token_hash,
             expires_at=old_expires_at,
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         # Mock transaction.on_commit so the notification fires synchronously
@@ -369,7 +369,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         # Accept the invitation
@@ -406,7 +406,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
             role=OrganizationRole.ADMIN,
         )
 
@@ -431,7 +431,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
             role=OrganizationRole.MEMBER,
         )
 
@@ -457,7 +457,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         # Try to accept with wrong token
@@ -483,7 +483,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         # Try to accept expired invitation
@@ -514,7 +514,7 @@ class TestOrganizationService:
             invited_by=user,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         # Revoke the invitation
@@ -556,7 +556,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=datetime.datetime.now(tz=datetime.UTC),
-            membership=membership,
+            membership_user_id=membership.user_id,
         )
 
         # The hardened path now raises UserAlreadyHasMembershipError, not IntegrityError.
@@ -591,7 +591,7 @@ class TestOrganizationService:
             invited_by=invited_by,
             expires_at=expires_at,
             accepted_at=now if accepted else None,
-            membership=membership,
+            membership_user_id=membership.user_id if membership is not None else None,
         )
 
     def test_provision_tenant_for_user_with_pending_invite(
@@ -704,7 +704,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         # Phase 4: this must SUCCEED — user joins other_org as their second org.
@@ -734,7 +734,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         with pytest.raises(UserAlreadyHasMembershipError):
@@ -867,7 +867,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         with patch.object(
@@ -1019,7 +1019,7 @@ class TestOrganizationService:
             invited_by=inviter,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
         baker.make(
             OrganizationInvitation,
@@ -1028,7 +1028,7 @@ class TestOrganizationService:
             invited_by=inviter,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         # Both invitation rows coexist — the constraint only prevents duplicates per org.
@@ -1153,7 +1153,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         # The guard checks membership(organization=...) without is_active=True, so even an
@@ -1232,7 +1232,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
             role=OrganizationRole.MEMBER,
         )
 
@@ -1268,7 +1268,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
             role=OrganizationRole.ADMIN,
         )
 
@@ -1309,7 +1309,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         with container.calendar_service.override(Mock()):
@@ -1352,7 +1352,7 @@ class TestOrganizationService:
             token_hash=token_hash,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
             role=OrganizationRole.MEMBER,
         )
         baker.make(
@@ -1371,7 +1371,7 @@ class TestOrganizationService:
 
         with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
             with django_capture_on_commit_callbacks(execute=True):
-                membership = service.accept_invitation(token=token, user=invitee)
+                service.accept_invitation(token=token, user=invitee)
 
         events = WebhookEvent.objects.filter(
             organization=organization,
@@ -1386,7 +1386,6 @@ class TestOrganizationService:
         assert event.payload["organization_id"] == organization.id
         assert event.payload["organization_name"] == organization.name
         assert event.payload["membership_role"] == OrganizationRole.MEMBER
-        assert event.payload["membership_id"] == membership.id
 
     # -----------------------------------------------------------------------
     # Phase 3 — organization_member_created webhook emission on create_organization
@@ -1546,7 +1545,6 @@ class TestOrganizationService:
         assert event.payload["email"] == invitee.email
         assert event.payload["organization_id"] == organization.id
         assert event.payload["membership_role"] == OrganizationRole.MEMBER
-        assert event.payload["membership_id"] == membership.id
 
     def test_provision_org_creation_emits_exactly_once_not_twice(
         self,

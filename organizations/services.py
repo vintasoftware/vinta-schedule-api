@@ -245,7 +245,7 @@ class OrganizationService:
                 email=email,
                 organization=organization,
                 accepted_at__isnull=True,
-                membership__isnull=True,
+                membership_user_id__isnull=True,
                 defaults={
                     "invited_by": invited_by,
                     "first_name": first_name,
@@ -267,7 +267,7 @@ class OrganizationService:
             invitation.last_name = last_name
             invitation.role = role
             invitation.accepted_at = None
-            invitation.membership = None
+            invitation.membership_user_id = None
             invitation.save()
 
         # Attach the raw token as a transient attribute so the caller can surface it once.
@@ -345,7 +345,7 @@ class OrganizationService:
                 except IntegrityError as e:
                     raise UserAlreadyHasMembershipError() from e
                 invitation.accepted_at = now
-                invitation.membership = membership
+                invitation.membership_user_id = membership.user_id
                 invitation.save()
                 self.webhook_membership_side_effects_service.on_member_created(membership)
                 return membership
@@ -393,7 +393,7 @@ class OrganizationService:
             email__iexact=user.email,
             expires_at__gt=now,
             accepted_at__isnull=True,
-            membership__isnull=True,
+            membership_user_id__isnull=True,
         ).first()
 
         if pending_invitation is not None:
@@ -413,7 +413,7 @@ class OrganizationService:
             except IntegrityError as e:
                 raise UserAlreadyHasMembershipError() from e
             pending_invitation.accepted_at = now
-            pending_invitation.membership = membership
+            pending_invitation.membership_user_id = membership.user_id
             pending_invitation.save()
             self.webhook_membership_side_effects_service.on_member_created(membership)
             return membership

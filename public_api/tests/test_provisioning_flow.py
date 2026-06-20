@@ -362,7 +362,7 @@ class TestCreateInvitationProvisioning:
             email=invited_email,
             organization=child_org,
             accepted_at__isnull=True,
-            membership__isnull=True,
+            membership_user_id__isnull=True,
         )
         assert pending_invites.count() == 1
         invite = pending_invites.first()
@@ -394,7 +394,7 @@ class TestCreateInvitationProvisioning:
             role=OrganizationRole.ADMIN,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
-            membership=None,
+            membership_user_id=None,
         )
 
         org_count_before = Organization.objects.count()
@@ -416,7 +416,7 @@ class TestCreateInvitationProvisioning:
         # The invitation should be marked accepted.
         invite = OrganizationInvitation.objects.get(email=invited_email, organization=child_org)
         assert invite.accepted_at is not None
-        assert invite.membership_id == membership.pk
+        assert invite.membership_user_id == membership.user_id
 
     # -------------------------------------------------------------------------
     # Phase 4: self-managed invitation (sendEmail=false) integration tests

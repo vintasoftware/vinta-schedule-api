@@ -6604,10 +6604,9 @@ class TestCreateScopedSystemUserMutation:
         assert returned_token is not None
         assert len(returned_token) > 0
 
-        # Verify persisted SystemUser has the correct owner (stored as membership FK)
+        # Verify persisted SystemUser has the correct owner (denormalized membership column)
         minted = SystemUser.original_manager.get(id=int(result["id"]))
-        assert minted.scoped_to_membership_fk.user_id == owner.id
-        assert minted.scoped_to_membership_fk.organization_id == org.id
+        assert minted.scoped_to_membership_user_id == owner.id
         assert minted.organization_id == org.id
 
         # Verify ResourceAccess rows exactly match the request

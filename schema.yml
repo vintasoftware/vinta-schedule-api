@@ -13326,14 +13326,14 @@ components:
 
         Exposes ``id``, ``integration_name``, ``is_active``, ``available_resources``
         (list of resource_name strings from the related ``ResourceAccess`` rows), and
-        ``scoped_to_user`` (the owner's User id derived from the membership FK, null for
-        org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API stability;
-        the value is resolved via ``scoped_to_membership_fk.user_id``.
+        ``scoped_to_user`` (the owner's User id from the denormalized membership column, null
+        for org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API stability;
+        the value is the denormalized ``scoped_to_membership_user_id``.
         Never exposes ``long_lived_token_hash`` or ``token``.
 
-        Optimized for list queries: uses prefetched ``available_resources`` and
-        ``select_related("scoped_to_membership_fk")`` from the viewset's ``get_queryset``
-        to avoid N+1 queries.
+        Optimized for list queries: uses prefetched ``available_resources`` from the viewset's
+        ``get_queryset`` to avoid N+1 queries.  ``scoped_to_membership_user_id`` is a concrete
+        column on the row, so it needs no join.
       properties:
         id:
           type: integer
@@ -13356,13 +13356,10 @@ components:
           type: integer
           nullable: true
           description: |-
-            Return the owner's User id from the queryset annotation when present.
+            Return the owner's User id from the denormalized membership column, or None.
 
-            For list/retrieve the viewset annotates ``scoped_to_user_id_value`` via an
-            F-expression JOIN, so no extra query is issued per token.  For any other
-            call path (e.g. the revoke action that constructs the serializer from a
-            freshly-fetched instance without the annotation) we fall back to a single
-            membership lookup.
+            ``scoped_to_membership_user_id`` is a concrete column already storing the
+            membership's user_id, so the value is returned directly with no extra query.
           readOnly: true
       required:
       - available_resources
@@ -13407,9 +13404,9 @@ components:
 
         Includes the write-once ``token`` field (sourced from the view) and
         ``available_resources`` (derived from the related ``ResourceAccess`` rows).
-        Exposes ``scoped_to_user`` as the owner's User id derived from the stored membership FK
-        (null for org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API
-        stability; the value is resolved via ``scoped_to_membership_fk.user_id``.
+        Exposes ``scoped_to_user`` as the owner's User id derived from the stored membership
+        reference (null for org-wide tokens).  The REST field name ``scoped_to_user`` is kept
+        for API stability; the value is the denormalized ``scoped_to_membership_user_id``.
         Never exposes ``long_lived_token_hash``.
       properties:
         id:
@@ -13432,8 +13429,11 @@ components:
         scoped_to_user:
           type: integer
           nullable: true
-          description: Return the owner's User id derived from the stored membership
-            FK, or None.
+          description: |-
+            Return the owner's User id from the denormalized membership column, or None.
+
+            ``scoped_to_membership_user_id`` already stores the membership's user_id, so the
+            value is returned directly with no extra query.
           readOnly: true
         token:
           type: string

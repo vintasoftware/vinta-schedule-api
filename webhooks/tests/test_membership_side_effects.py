@@ -56,7 +56,6 @@ class TestWebhookMembershipSideEffectsService:
                 "organization_id": organization.id,
                 "organization_name": organization.name,
                 "membership_role": OrganizationRole.MEMBER,
-                "membership_id": membership.id,
             },
         )
 
@@ -121,7 +120,7 @@ class TestWebhookMembershipSideEffectsService:
         assert payload["organization_id"] == organization.id
         assert payload["organization_name"] == organization.name
         assert payload["membership_role"] == OrganizationRole.MEMBER
-        assert payload["membership_id"] == membership.id
+        # Membership identity is the (user_id, organization_id) pair — no scalar id.
         # Ensure no extra fields sneak in
         assert set(payload.keys()) == {
             "user_id",
@@ -129,7 +128,6 @@ class TestWebhookMembershipSideEffectsService:
             "organization_id",
             "organization_name",
             "membership_role",
-            "membership_id",
         }
 
     def test_on_member_created_organization_scoped_to_membership_org(

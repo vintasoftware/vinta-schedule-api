@@ -27,7 +27,6 @@ class OrganizationMemberCreatedWebhookPayload(TypedDict):
     organization_id: int
     organization_name: str
     membership_role: str
-    membership_id: int
 
 
 class WebhookEnvelope(TypedDict):

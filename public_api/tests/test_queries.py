@@ -3179,7 +3179,7 @@ def _make_all_resource_grants(system_user: SystemUser) -> None:
 
 
 def _make_org_wide_client(organization: Organization) -> tuple[APIClient, SystemUser]:
-    """Create an org-wide (scoped_to_membership_fk IS NULL) API client with all resource grants."""
+    """Create an org-wide (scoped_to_membership_user_id IS NULL) API client with all resource grants."""
     auth_service = PublicAPIAuthService()
     system_user, token = auth_service.create_system_user(
         integration_name=f"org_wide_{organization.pk}", organization=organization
@@ -3191,7 +3191,7 @@ def _make_org_wide_client(organization: Organization) -> tuple[APIClient, System
 
 
 def _make_scoped_client(organization: Organization, owner: User) -> tuple[APIClient, SystemUser]:
-    """Create a scoped API client (scoped_to_membership_fk=membership) with all resource grants."""
+    """Create a scoped API client (scoped_to_membership_user_id=owner) with all grants."""
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=owner, organization=organization, defaults={"is_active": True}
     )
@@ -3199,7 +3199,7 @@ def _make_scoped_client(organization: Organization, owner: User) -> tuple[APICli
     system_user = baker.make(
         SystemUser,
         organization=organization,
-        scoped_to_membership_fk=membership,
+        scoped_to_membership_user_id=membership.user_id,
         integration_name=f"scoped_{organization.pk}_{owner.pk}",
         long_lived_token_hash=hash_long_lived_token(token),
         is_active=True,
@@ -3312,7 +3312,7 @@ class TestOwnerScopedTokenReadEnforcement:
     def test_org_wide_token_sees_all_calendars(
         self, mock_rate_limiter, organization, owner_calendar, other_calendar
     ):
-        """Org-wide token (scoped_to_membership_fk IS NULL) returns all org calendars unchanged."""
+        """Org-wide token (scoped_to_membership_user_id IS NULL) returns all org calendars unchanged."""
         mock_rate_limiter.return_value = iter([None])
 
         client, _ = _make_org_wide_client(organization)
@@ -3441,7 +3441,7 @@ class TestOwnerScopedTokenReadEnforcement:
     def test_org_wide_token_sees_all_calendar_events(
         self, mock_rate_limiter, organization, owner_calendar, other_calendar
     ):
-        """Org-wide token (scoped_to_membership_fk IS NULL) can read events on any calendar."""
+        """Org-wide token (scoped_to_membership_user_id IS NULL) can read events on any calendar."""
         mock_rate_limiter.return_value = iter([None])
 
         owner_event = baker.make(

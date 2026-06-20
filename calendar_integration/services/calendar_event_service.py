@@ -225,8 +225,8 @@ class CalendarEventService:
         cross-organization or cross-owner token can never pass.
 
         Ownership is confirmed when a :class:`CalendarOwnership` row exists for ``calendar``
-        whose ``user`` is the member behind the token's ``scoped_to_membership`` (an
-        ``OrganizationMembership``). Org-wide tokens (``scoped_to_membership_fk_id is None``)
+        whose member is the one behind the token's ``scoped_to_membership`` (an
+        ``OrganizationMembership``). Org-wide tokens (``scoped_to_membership_user_id is None``)
         always return ``False`` — event creation stays blocked for them.
 
         Args:
@@ -237,13 +237,16 @@ class CalendarEventService:
             ``True`` only when the token is scoped AND its owner independently owns the
             target calendar in that calendar's organization; ``False`` otherwise.
         """
-        if system_user.scoped_to_membership_fk_id is None:
+        if system_user.scoped_to_membership_user_id is None:
             return False
+        # The queryset is already org-scoped via filter_by_organization, so filtering
+        # ownerships by membership_user_id is equivalent to the full (organization_id,
+        # user_id) membership identity — the org is fixed to the calendar's org.
         return (
             CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
             .filter(
                 calendar_fk_id=calendar.id,
-                membership__id=system_user.scoped_to_membership_fk_id,
+                membership_user_id=system_user.scoped_to_membership_user_id,
             )
             .exists()
         )
@@ -311,7 +314,7 @@ class CalendarEventService:
             # Public-API event creation is blocked by default. The single sanctioned
             # exception: an owner-scoped token whose owner *independently* owns the target
             # calendar (verified against CalendarOwnership, NOT trusted from the caller).
-            # Org-wide tokens (scoped_to_membership_fk_id is None) stay blocked — they must
+            # Org-wide tokens (scoped_to_membership_user_id is None) stay blocked — they must
             # route through single-use codes / public scheduling.
             if not self._scoped_system_user_owns_calendar(context.user_or_token, calendar):
                 raise PermissionDenied("Events cannot be created through the Public API.")

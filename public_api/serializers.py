@@ -1,4 +1,4 @@
-from typing import Annotated, cast
+from typing import Annotated
 
 from django.db import IntegrityError, transaction
 
@@ -154,9 +154,9 @@ class SystemUserTokenResponseSerializer(serializers.ModelSerializer):
 
     Includes the write-once ``token`` field (sourced from the view) and
     ``available_resources`` (derived from the related ``ResourceAccess`` rows).
-    Exposes ``scoped_to_user`` as the owner's User id derived from the stored membership FK
-    (null for org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API
-    stability; the value is resolved via ``scoped_to_membership_fk.user_id``.
+    Exposes ``scoped_to_user`` as the owner's User id derived from the stored membership
+    reference (null for org-wide tokens).  The REST field name ``scoped_to_user`` is kept
+    for API stability; the value is the denormalized ``scoped_to_membership_user_id``.
     Never exposes ``long_lived_token_hash``.
     """
 
@@ -183,14 +183,12 @@ class SystemUserTokenResponseSerializer(serializers.ModelSerializer):
         )
 
     def get_scoped_to_user(self, obj: SystemUser) -> int | None:
-        """Return the owner's User id derived from the stored membership FK, or None."""
-        if not obj.scoped_to_membership_fk_id:
-            return None
-        return (
-            OrganizationMembership.objects.filter(pk=obj.scoped_to_membership_fk_id)
-            .values_list("user_id", flat=True)
-            .first()
-        )
+        """Return the owner's User id from the denormalized membership column, or None.
+
+        ``scoped_to_membership_user_id`` already stores the membership's user_id, so the
+        value is returned directly with no extra query.
+        """
+        return obj.scoped_to_membership_user_id
 
 
 class SystemUserTokenSerializer(serializers.ModelSerializer):
@@ -198,14 +196,14 @@ class SystemUserTokenSerializer(serializers.ModelSerializer):
 
     Exposes ``id``, ``integration_name``, ``is_active``, ``available_resources``
     (list of resource_name strings from the related ``ResourceAccess`` rows), and
-    ``scoped_to_user`` (the owner's User id derived from the membership FK, null for
-    org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API stability;
-    the value is resolved via ``scoped_to_membership_fk.user_id``.
+    ``scoped_to_user`` (the owner's User id from the denormalized membership column, null
+    for org-wide tokens).  The REST field name ``scoped_to_user`` is kept for API stability;
+    the value is the denormalized ``scoped_to_membership_user_id``.
     Never exposes ``long_lived_token_hash`` or ``token``.
 
-    Optimized for list queries: uses prefetched ``available_resources`` and
-    ``select_related("scoped_to_membership_fk")`` from the viewset's ``get_queryset``
-    to avoid N+1 queries.
+    Optimized for list queries: uses prefetched ``available_resources`` from the viewset's
+    ``get_queryset`` to avoid N+1 queries.  ``scoped_to_membership_user_id`` is a concrete
+    column on the row, so it needs no join.
     """
 
     available_resources = serializers.SerializerMethodField()
@@ -221,25 +219,12 @@ class SystemUserTokenSerializer(serializers.ModelSerializer):
         return [ra.resource_name for ra in obj.available_resources.all()]
 
     def get_scoped_to_user(self, obj: SystemUser) -> int | None:
-        """Return the owner's User id from the queryset annotation when present.
+        """Return the owner's User id from the denormalized membership column, or None.
 
-        For list/retrieve the viewset annotates ``scoped_to_user_id_value`` via an
-        F-expression JOIN, so no extra query is issued per token.  For any other
-        call path (e.g. the revoke action that constructs the serializer from a
-        freshly-fetched instance without the annotation) we fall back to a single
-        membership lookup.
+        ``scoped_to_membership_user_id`` is a concrete column already storing the
+        membership's user_id, so the value is returned directly with no extra query.
         """
-        _missing = object()
-        annotated = getattr(obj, "scoped_to_user_id_value", _missing)
-        if annotated is not _missing:
-            return cast("int | None", annotated)
-        if not obj.scoped_to_membership_fk_id:
-            return None
-        return (
-            OrganizationMembership.objects.filter(pk=obj.scoped_to_membership_fk_id)
-            .values_list("user_id", flat=True)
-            .first()
-        )
+        return obj.scoped_to_membership_user_id
 
 
 class SystemUserTokenUpdateSerializer(serializers.Serializer):
