@@ -289,6 +289,10 @@ class TestPersistAuditRecordErrorHandling:
 
         We pass a real DjangoORMAuditRepository so the malformed-payload path
         (not the None-guard path) is exercised.
+
+        Note: repository= is passed explicitly here to isolate the error branch.
+        Injection itself is proven by the happy-path test test_full_round_trip_via_service_record,
+        which goes record() → on_commit → .delay() → task with @inject and NO explicit repository.
         """
         from audit.repositories import DjangoORMAuditRepository
 
@@ -302,7 +306,12 @@ class TestPersistAuditRecordErrorHandling:
         assert any("malformed payload" in r.message for r in caplog.records)
 
     def test_task_swallows_repository_failure(self, caplog) -> None:
-        """A repository.add() failure is logged and swallowed."""
+        """A repository.add() failure is logged and swallowed.
+
+        Note: repository= is passed explicitly here to isolate the repository-failure branch.
+        Injection itself is proven by the happy-path test test_full_round_trip_via_service_record,
+        which goes record() → on_commit → .delay() → task with @inject and NO explicit repository.
+        """
         from unittest.mock import MagicMock
 
         org = baker.make(Organization)
@@ -339,6 +348,4 @@ class TestPersistAuditRecordErrorHandling:
 
         assert any("repository is not injected" in r.message for r in caplog.records)
         # No Audit row was created.
-        from audit.models import Audit
-
         assert not Audit.original_manager.filter(organization_id=org.pk).exists()

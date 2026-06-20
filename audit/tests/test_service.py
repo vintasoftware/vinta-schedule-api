@@ -287,7 +287,7 @@ class TestRecordEnqueues:
         actor = AuditService.actor_from_membership(membership)
         subject = make_subject()
 
-        with patch("audit.tasks.persist_audit_record") as mock_task:
+        with patch("audit.services.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 service.record(
                     organization_id=org.pk,
@@ -316,7 +316,7 @@ class TestRecordEnqueues:
         actor = AuditService.actor_from_membership(membership)
         subject = make_subject()
 
-        with patch("audit.tasks.persist_audit_record") as mock_task:
+        with patch("audit.services.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 service.record(
                     organization_id=org.pk,
@@ -340,7 +340,7 @@ class TestRecordEnqueues:
             subject_label="ACME Corp",
         )
 
-        with patch("audit.tasks.persist_audit_record") as mock_task:
+        with patch("audit.services.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 service.record(
                     organization_id=org.pk,
@@ -364,7 +364,7 @@ class TestRecordEnqueues:
         user = baker.make("users.User")
         membership = OrganizationMembership.objects.create(user=user, organization=org)
 
-        with patch("audit.tasks.persist_audit_record") as mock_task:
+        with patch("audit.services.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 service.record(
                     organization_id=org.pk,
@@ -385,7 +385,7 @@ class TestRecordEnqueues:
         subject = make_subject()
         diff = {"role": {"old": "member", "new": "admin"}}
 
-        with patch("audit.tasks.persist_audit_record") as mock_task:
+        with patch("audit.services.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 service.record(
                     organization_id=org.pk,
@@ -404,7 +404,7 @@ class TestRecordEnqueues:
         actor = AuditService.system_actor()
         subject = make_subject()
 
-        with patch("audit.tasks.persist_audit_record") as mock_task:
+        with patch("audit.services.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 service.record(
                     organization_id=org.pk,
@@ -436,7 +436,7 @@ class TestRecordSwallowsEnqueueError:
         actor = AuditService.system_actor()
         subject = make_subject()
 
-        with patch("audit.tasks.persist_audit_record") as mock_task:
+        with patch("audit.services.persist_audit_record") as mock_task:
             mock_task.delay.side_effect = RuntimeError("broker unavailable")
 
             with caplog.at_level(logging.ERROR, logger="audit.services"):
@@ -457,7 +457,7 @@ class TestRecordSwallowsEnqueueError:
         actor = AuditService.system_actor()
         subject = make_subject()
 
-        with patch("audit.tasks.persist_audit_record") as mock_task:
+        with patch("audit.services.persist_audit_record") as mock_task:
             mock_task.delay.side_effect = OSError("connection refused")
 
             with caplog.at_level(logging.ERROR, logger="audit.services"):

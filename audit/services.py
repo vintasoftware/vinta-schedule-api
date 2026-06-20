@@ -31,6 +31,7 @@ from dependency_injector.wiring import Provide, inject
 
 from audit.constants import AuditActorType
 from audit.repositories import AuditRepository
+from audit.tasks import persist_audit_record
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
 
 
@@ -166,10 +167,6 @@ class AuditService:
                 Pass None (or omit) when there is no diff. An empty dict is
                 treated the same as None — the repository normalizes it to NULL.
         """
-        # Import here to avoid circular imports at module load time; the task
-        # module imports the app which triggers the DI container setup.
-        from audit.tasks import persist_audit_record
-
         data = AuditRecordData(
             organization_id=organization_id,
             action=action,
