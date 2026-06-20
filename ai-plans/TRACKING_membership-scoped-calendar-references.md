@@ -76,11 +76,41 @@
   (user_id, organization_id) ON DELETE RESTRICT` (NOT VALID then VALIDATE). Note: once the FK exists, a non-null
   `membership_user_id` MUST reference an existing membership.
 
+### Phase 2b — CalendarOwnership cutover (migration) ✅
+- **Status**: merged-ready (PR open). **Model**: claude-opus (T4) · migration-author + reviewer + fixer.
+- **Branch**: `plan/membership-scoped-calendar-references/phase-2b` (stacked on 2a) · **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/149
+- **Summary**: Dropped `CalendarOwnership.user` (0025, `SeparateDatabaseAndState` so reverse re-adds `user_id`
+  nullable + backfills); partial unique `(calendar_fk, membership_user_id) WHERE NOT NULL`; raw-SQL composite
+  PROTECT FK (0026, `atomic=False`, NOT VALID/VALIDATE). Reviewer BLOCKER: FK was non-deferrable RESTRICT →
+  changed to **`NO ACTION DEFERRABLE INITIALLY DEFERRED`** (org-cascade deletes membership+ownership in one txn;
+  deferred check passes at commit, membership-only delete still raises). Deeper fix: the `membership` ForeignObject
+  must be **`on_delete=DO_NOTHING`** (PROTECT carried by it made Django's collector raise `ProtectedError` eagerly
+  on cascade) — changed in `common/fields.py` (0027, state-only). Owner-resolution writes guarded by
+  `_resolve_owner_membership_user_id` (FK rejects non-member ids). 2640 passed.
+
+## ⚠️ CARRY-FORWARD for Phases 3–6 (EventAttendance, CalendarManagementToken) — established pattern
+1. **Field type is now `DO_NOTHING`**: `OrganizationMembershipForeignKey`'s ForeignObject uses
+   `on_delete=DO_NOTHING`; PROTECT is enforced ONLY by the per-table raw-SQL deferred FK. Do not re-add PROTECT
+   to the ForeignObject.
+2. **Expand phase (3, 5)**: add `membership = OrganizationMembershipForeignKey(null=True, ...)` alongside `user`;
+   composite index `(organization, membership_user_id)`; batched `atomic=False` backfill `UPDATE … WHERE
+   membership_user_id IS NULL AND EXISTS(membership)`; orphans → NULL + CSV report; mark cross-org raw SQL as a
+   sanctioned tenant-scope exception. NOTE: `EventAttendance.user` and `CalendarManagementToken.user` are BOTH
+   nullable (null-user rows stay null-membership).
+3. **Cutover phase (4, 6)**: rewrite app reads/writes through membership; for EventAttendance also redefine
+   `CalendarEvent.attendees` M2M → `attendee_memberships` (M2M-over-ForeignObject is proven viable);
+   `update_or_create`/create paths guard membership existence; drop `user` via `SeparateDatabaseAndState`
+   (nullable+backfill reverse); add partial unique where appropriate; raw-SQL composite FK
+   `(membership_user_id, organization_id) REFERENCES organizations_organizationmembership (user_id, organization_id)
+   ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED` (NOT VALID then VALIDATE, atomic=False).
+4. **FK column order** (plan prose is wrong): `(membership_user_id, organization_id) → (user_id, organization_id)`.
+5. API: expose membership `{user_id, organization_id, role}` (no scalar id until Phase 7).
+
 ## Current phase
-- Phase 2b — CalendarOwnership cutover (migration: drop user + PROTECT FK) (next)
+- Phase 3 — EventAttendance: expand + backfill (next)
 
 ## Remaining phases
-- Phase 2b — CalendarOwnership cutover migration (T4 · migration-author)
+- Phase 3 — EventAttendance expand + backfill (T3 · migration-author)
 - Phase 3 — EventAttendance expand + backfill (T3 · migration-author)
 - Phase 4 — EventAttendance cutover (T4 · implementer)
 - Phase 5 — CalendarManagementToken expand + backfill (T2 · migration-author)
