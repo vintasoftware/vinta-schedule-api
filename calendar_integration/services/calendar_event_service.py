@@ -762,10 +762,20 @@ class CalendarEventService:
         # denormalized membership_user_id; orphan attendances without a
         # membership-backed identity are intentionally skipped).
         if event_attendances_to_create and context.calendar_permission_service:
+            grant_user_by_id = {
+                u.id: u
+                for u in User.objects.filter(
+                    id__in={
+                        a.membership_user_id
+                        for a in event_attendances_to_create
+                        if a.membership_user_id is not None
+                    }
+                )
+            }
             for attendance in event_attendances_to_create:
                 if attendance.membership_user_id is None:
                     continue
-                user = User.objects.filter(id=attendance.membership_user_id).first()
+                user = grant_user_by_id.get(attendance.membership_user_id)
                 if user is None:
                     continue
                 # Check if user already has a token for this event

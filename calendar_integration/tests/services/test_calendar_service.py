@@ -3222,6 +3222,147 @@ def test_update_event_with_attendances(
 
 
 @pytest.mark.django_db
+def test_update_event_with_unchanged_orphan_attendee_requires_no_attendee_permission(
+    social_account, social_token, mock_google_adapter, calendar_event, db
+):
+    """A pre-existing orphan attendee left unchanged must not be seen as an attendee change.
+
+    BLOCKER regression: ``serialize_event`` drops orphan attendances (no membership)
+    but the input serializer used to resolve EVERY input ``user_id`` and include
+    non-members. A persisted orphan that is unchanged in the payload then appeared only
+    on the ``new`` side of the permission diff and was falsely flagged as "attendance
+    added", forcing ``UPDATE_ATTENDEES`` and raising ``PermissionDenied`` for a caller
+    who changed nothing. The fix routes the input serializer through the same membership
+    guard so both sides agree on the member set and the orphan is symmetrically dropped.
+
+    The token here intentionally LACKS ``UPDATE_ATTENDEES``: if the orphan were still
+    flagged as an attendee change the update would be denied.
+    """
+    orphan_user = User.objects.create_user(email="orphan@example.com")  # NOT a member
+    EventAttendance.objects.create(
+        organization=calendar_event.organization,
+        event=calendar_event,
+        user=orphan_user,
+        membership_user_id=None,
+    )
+
+    # Token without UPDATE_ATTENDEES — only the permissions a no-op update could need.
+    token = CalendarManagementToken.objects.create(
+        event_fk=calendar_event,
+        user=social_account.user,
+        token_hash="orphan_unchanged_token",
+        organization=calendar_event.organization,
+    )
+    token.permissions.all().delete()
+    for permission_str in (
+        EventManagementPermissions.UPDATE_DETAILS,
+        EventManagementPermissions.RESCHEDULE,
+        EventManagementPermissions.CANCEL,
+    ):
+        token.permissions.create(
+            permission=permission_str,
+            organization_id=calendar_event.organization_id,
+        )
+
+    # Update payload carries the SAME orphan attendee and the SAME details/times.
+    event_input_data = CalendarEventInputData(
+        title=calendar_event.title,
+        description=calendar_event.description,
+        start_time=calendar_event.start_time,
+        end_time=calendar_event.end_time,
+        timezone=calendar_event.timezone,
+        attendances=[EventAttendanceInputData(user_id=orphan_user.id)],
+        external_attendances=[],
+        resource_allocations=[],
+    )
+
+    mock_google_adapter.update_event.return_value = CalendarEventAdapterOutputData(
+        calendar_external_id="cal_123",
+        external_id="event_123",
+        title=calendar_event.title,
+        description=calendar_event.description,
+        start_time=calendar_event.start_time,
+        end_time=calendar_event.end_time,
+        timezone="UTC",
+        attendees=[],
+        resources=[],
+        original_payload={},
+    )
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar_event.organization)
+
+    # Must NOT raise PermissionDenied — the unchanged orphan is not an attendee change.
+    result = service.update_event(calendar_event.calendar.id, calendar_event.id, event_input_data)
+
+    assert result.id == calendar_event.id
+    # The orphan attendance is still present and still orphaned.
+    orphan_attendance = EventAttendance.objects.filter_by_organization(
+        calendar_event.organization_id
+    ).get(event=calendar_event, user_id=orphan_user.id)
+    assert orphan_attendance.membership_user_id is None
+
+
+@pytest.mark.django_db
+def test_create_event_persists_membership_user_id_for_mixed_attendees(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    patch_get_calendar,
+    calendar_management_token,
+):
+    """create_event persists membership_user_id = user id for members, NULL for non-members.
+
+    SHOULD-FIX A: drive the service bulk-write path with a MIXED member + non-member
+    attendee list and assert the denormalized ``membership_user_id`` (member -> id,
+    non-member -> NULL).
+    """
+    member_user = User.objects.create_user(email="member@example.com")
+    OrganizationMembership.objects.create(user=member_user, organization=calendar.organization)
+    non_member_user = User.objects.create_user(email="nonmember@example.com")  # NOT a member
+
+    event_input_data = CalendarEventInputData(
+        title="Mixed Attendees Event",
+        description="Member + non-member",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendances=[
+            EventAttendanceInputData(user_id=member_user.id),
+            EventAttendanceInputData(user_id=non_member_user.id),
+        ],
+        external_attendances=[],
+        resource_allocations=[],
+    )
+
+    mock_google_adapter.create_event.return_value = CalendarEventAdapterOutputData(
+        calendar_external_id="cal_123",
+        external_id="mixed_attendees_event_123",
+        title="Mixed Attendees Event",
+        description="Member + non-member",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendees=[],
+        resources=[],
+        original_payload={},
+    )
+    mock_google_adapter.provider = CalendarProvider.GOOGLE
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+    result = service.create_event(calendar.id, event_input_data)
+
+    attendances_by_org = EventAttendance.objects.filter_by_organization(calendar.organization_id)
+    member_attendance = attendances_by_org.get(event=result, user_id=member_user.id)
+    non_member_attendance = attendances_by_org.get(event=result, user_id=non_member_user.id)
+
+    assert member_attendance.membership_user_id == member_user.id
+    assert non_member_attendance.membership_user_id is None
+
+
+@pytest.mark.django_db
 def test_update_event_with_resource_allocations(
     social_account,
     social_token,
