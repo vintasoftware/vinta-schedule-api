@@ -1,6 +1,6 @@
 import datetime
 import zoneinfo
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -34,6 +34,7 @@ from calendar_integration.managers import (
     CalendarManager,
     CalendarSyncManager,
 )
+from common.fields import OrganizationMembershipForeignKey
 from organizations.models import (
     Organization,
     OrganizationForeignKey,
@@ -222,6 +223,10 @@ class CalendarOwnership(OrganizationModel):
     """
     Represents the ownership of a calendar by an organization.
     This is used to link calendars to their respective organizations.
+
+    Phase 1 (expand): ``membership`` is added alongside the existing ``user`` FK.
+    Both columns coexist until Phase 2 cutover drops ``user``.  Reads still use
+    ``user`` — no behaviour change in this phase.
     """
 
     calendar = OrganizationForeignKey(  # type:ignore
@@ -235,6 +240,12 @@ class CalendarOwnership(OrganizationModel):
         on_delete=models.CASCADE,
         related_name="calendar_ownerships",
     )
+    membership = OrganizationMembershipForeignKey(
+        on_delete=models.PROTECT,
+        related_name="calendar_ownerships",
+        null=True,
+        blank=True,
+    )
     is_default = models.BooleanField(
         default=False,
         help_text=(
@@ -242,6 +253,14 @@ class CalendarOwnership(OrganizationModel):
             "This means that events created by the user will be added to this calendar by default."
         ),
     )
+
+    class Meta:
+        indexes: ClassVar = [
+            models.Index(
+                fields=["organization", "membership_user_id"],
+                name="calownership_org_member_idx",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.calendar} owned by {self.user}"
