@@ -383,13 +383,15 @@ class CalendarSyncService:
                 continue
 
             owner_user = context.account.user if context.account else None
+            # Phase 2b (when `user` is dropped) must switch this lookup key to
+            # `membership_user_id` and add a unique constraint on (calendar_fk, membership_user_id).
             CalendarOwnership.objects.update_or_create(
                 organization=context.organization,
                 calendar=calendar,
-                membership_user_id=owner_user.id if owner_user else None,
+                user=owner_user,
                 defaults={
                     "is_default": calendar_data.is_default,
-                    "user": owner_user,
+                    "membership_user_id": owner_user.id if owner_user else None,
                 },
             )
 

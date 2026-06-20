@@ -924,6 +924,55 @@ class TestCalendarEventViewSet:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "no linked" in response.data["detail"].lower()
 
+    def test_transfer_event_orphan_only_ownership_returns_no_owner(
+        self, organization, calendar, calendar_event
+    ):
+        """Source calendar whose sole ownership is an orphan (membership_user_id NULL) → 400.
+
+        An ex-member (orphan ownership, no backing membership) must not provide the
+        credentials used to read the source calendar from the provider.
+        """
+        from rest_framework.test import APIClient
+
+        from di_core.containers import container
+
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        # Orphan ownership: `user` FK still set this phase, but membership_user_id is
+        # NULL so the membership-scoped owner resolution skips it.
+        orphan_user = baker.make(User)
+        baker.make(
+            CalendarOwnership,
+            user=orphan_user,
+            membership_user_id=None,
+            calendar=calendar,
+            organization=organization,
+        )
+
+        target_calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+
+        mock_calendar_service = Mock()
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = client.post(
+                url, data={"target_calendar_id": target_calendar.id}, format="json"
+            )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "no owner" in response.data["detail"].lower()
+        mock_calendar_service.authenticate.assert_not_called()
+        mock_calendar_service.transfer_event.assert_not_called()
+
     def test_transfer_event_unauthenticated(self, anonymous_client, calendar_event):
         """Unauthenticated request yields 401."""
         url = reverse("api:CalendarEvents-transfer", kwargs={"pk": calendar_event.id})
@@ -3130,6 +3179,50 @@ class TestCalendarViewSet:
         calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
 
         # Authenticate as admin and make request
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        url = reverse("api:Calendars-admin-sync", kwargs={"pk": calendar.id})
+
+        response = client.post(
+            url,
+            data={
+                "start_datetime": "2024-01-01T00:00:00Z",
+                "end_datetime": "2024-01-31T23:59:59Z",
+            },
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "has no owner" in response.data["detail"].lower()
+
+    def test_admin_sync_orphan_only_ownership_returns_no_owner(self, auth_client, organization):
+        """A calendar whose sole ownership is an orphan (membership_user_id NULL) → 400.
+
+        An ex-member (orphan ownership, no backing membership) must not drive sync.
+        """
+        admin_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=admin_user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+        )
+
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        # Orphan ownership: a `user` FK still exists this phase, but membership_user_id
+        # is NULL so the membership-scoped owner resolution skips it.
+        orphan_user = baker.make(User)
+        baker.make(
+            CalendarOwnership,
+            user=orphan_user,
+            membership_user_id=None,
+            calendar=calendar,
+            organization=organization,
+        )
+
         from rest_framework.test import APIClient
 
         client = APIClient()

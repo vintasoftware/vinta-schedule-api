@@ -950,7 +950,6 @@ class CalendarService(BaseCalendarService):
             # this calendar as default
             ownership = (
                 calendar.ownerships.order_by("-is_default", "created")
-                .select_related("membership__user")
                 .filter(
                     membership_user_id__in=User.objects.filter(
                         socialaccount__provider=calendar.provider,
@@ -959,10 +958,14 @@ class CalendarService(BaseCalendarService):
                 .first()
             )
 
-            if ownership:
-                return CalendarService.get_calendar_adapter_for_account(ownership.membership.user)[
-                    0
-                ]
+            # Resolve the owning user from the denormalized scalar instead of
+            # dereferencing ``ownership.membership`` (the ForeignObject), which
+            # resolves to ``None`` when ``membership_user_id`` is stale (the
+            # membership was deleted) and would raise ``AttributeError``.
+            if ownership and ownership.membership_user_id:
+                owner = User.objects.filter(id=ownership.membership_user_id).first()
+                if owner:
+                    return CalendarService.get_calendar_adapter_for_account(owner)[0]
 
             # if the calendar doesn't have a valid owner, try to use self.calendar_adapter
 
