@@ -106,11 +106,26 @@
 4. **FK column order** (plan prose is wrong): `(membership_user_id, organization_id) → (user_id, organization_id)`.
 5. API: expose membership `{user_id, organization_id, role}` (no scalar id until Phase 7).
 
+### Phase 3 — EventAttendance: expand + backfill ✅
+- **Status**: merged-ready (PR open). **Model**: claude-sonnet (T3) · migration-author + reviewer (+ orchestrator NIT fixes).
+- **Branch**: `plan/membership-scoped-calendar-references/phase-3` (stacked on 2b) · **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/150
+- **Summary**: Mirror of Phase 1 for EventAttendance — `membership` + `membership_user_id` + index
+  `evattend_org_member_idx`; migrations 0028 (schema) + 0029 (backfill, `atomic=False`, batched, orphan CSV,
+  reverse). Reviewer found NO blocker/should-fix (faithful pattern replication); 2 cosmetic docstring NITs fixed.
+  **KEY FINDING**: `EventAttendance.user_id` is `NOT NULL` in DB (sync code references `user=None` — latent
+  inconsistency, untouched). 15 tests. 2655 passed.
+
+## ⚠️ Phase 4b DATA-LOSS CHECKPOINT (Open Question #3)
+EventAttendance.user is NOT NULL but membership_user_id is NULL for non-member attendees. Dropping the `user`
+column (4b) loses attendee identity for orphan attendances. **Before 4b drops the column, confirm with the user**
+(or keep `user` nullable on EventAttendance as a fallback). 4a keeps the column (reversible, no data loss).
+
 ## Current phase
-- Phase 3 — EventAttendance: expand + backfill (next)
+- Phase 4a — EventAttendance cutover (app layer: reads/writes + attendees M2M + API) (next)
 
 ## Remaining phases
-- Phase 3 — EventAttendance expand + backfill (T3 · migration-author)
+- Phase 4a — EventAttendance cutover, app layer (T4 · implementer)
+- Phase 4b — EventAttendance cutover, migration drop user + PROTECT FK (T4 · migration-author) [DATA-LOSS CHECKPOINT]
 - Phase 3 — EventAttendance expand + backfill (T3 · migration-author)
 - Phase 4 — EventAttendance cutover (T4 · implementer)
 - Phase 5 — CalendarManagementToken expand + backfill (T2 · migration-author)
