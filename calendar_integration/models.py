@@ -1754,6 +1754,14 @@ class CalendarManagementToken(OrganizationModel):
         null=True,
         related_name="calendar_event_management_tokens",
     )
+    # Phase 5: membership reference alongside the kept nullable user FK.
+    # Tokens backed by external_attendee (null user) keep membership=NULL — not orphans.
+    membership = OrganizationMembershipForeignKey(
+        on_delete=models.PROTECT,
+        related_name="calendar_event_management_tokens",
+        null=True,
+        blank=True,
+    )
     external_attendee = OrganizationForeignKey(
         ExternalAttendee,
         on_delete=models.CASCADE,
@@ -1764,6 +1772,14 @@ class CalendarManagementToken(OrganizationModel):
     objects: "CalendarManagementTokenManager" = CalendarManagementTokenManager()
 
     permissions: "RelatedManager[CalendarManagementTokenPermission]"
+
+    class Meta:
+        indexes: ClassVar = [
+            models.Index(
+                fields=["organization", "membership_user_id"],
+                name="calmgmttoken_org_member_idx",
+            ),
+        ]
 
     def __str__(self):
         used_at = "" if self.used_at is None else f"(used at: {self.used_at.isoformat()})"
