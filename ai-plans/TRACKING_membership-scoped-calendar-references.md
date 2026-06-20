@@ -56,11 +56,31 @@
   (no clash, different targets); Phase 2 drops `user` and hands the name to `membership`. Real PROTECT FK
   (raw-SQL composite) lands in Phase 2 cutover.
 
+### Phase 2a — CalendarOwnership cutover (app layer) ✅
+- **Status**: merged-ready (PR open). **Note**: plan Phase 2 was split into 2a (app layer) + 2b (migration) per the plan's sanctioned split.
+- **Model used**: claude-opus (plan tier: T4) · implementer + reviewer + fixer
+- **Branch**: `plan/membership-scoped-calendar-references/phase-2a` (stacked on phase-1)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/148
+- **Summary**: Routed all `CalendarOwnership.user` reads/writes through `membership`/`membership_user_id`;
+  replaced `Calendar.users` M2M with `Calendar.memberships` (state-only migration 0024); exposed owner as
+  membership `{user_id, organization_id, role}` in GraphQL + REST. `user` column KEPT (2b drops it). M2M-over-
+  ForeignObject de-risked by spike (two-hop JOIN compiles). Orphans excluded from membership reads; orphan-only
+  `admin_sync`/`transfer` → 400 (tested). Reviewer BLOCKER fixed (stale-membership crash in write-adapter →
+  resolve user via scalar `membership_user_id`); sync `update_or_create` kept keying on `user` for the dual-column
+  window. Security scoping verified equal-or-stricter.
+- **Gate**: `pytest -n auto` → 2642 passed; `makemigrations --check` clean; `check --deploy` clean.
+- **Carry-forward for 2b**: drop `user` FK + reverse accessor; rewrite `grant_calendar_owner_permissions`
+  (still traverses `user.organization_memberships.calendar_ownerships`); re-key sync `update_or_create` to
+  `membership_user_id` + add a partial unique index `(calendar_fk, membership_user_id) WHERE membership_user_id
+  IS NOT NULL`; add raw-SQL composite PROTECT FK `(organization_id, membership_user_id) → organization_membership
+  (user_id, organization_id) ON DELETE RESTRICT` (NOT VALID then VALIDATE). Note: once the FK exists, a non-null
+  `membership_user_id` MUST reference an existing membership.
+
 ## Current phase
-- Phase 2 — CalendarOwnership cutover (next)
+- Phase 2b — CalendarOwnership cutover (migration: drop user + PROTECT FK) (next)
 
 ## Remaining phases
-- Phase 2 — CalendarOwnership cutover (T4 · implementer)
+- Phase 2b — CalendarOwnership cutover migration (T4 · migration-author)
 - Phase 3 — EventAttendance expand + backfill (T3 · migration-author)
 - Phase 4 — EventAttendance cutover (T4 · implementer)
 - Phase 5 — CalendarManagementToken expand + backfill (T2 · migration-author)
