@@ -2,19 +2,22 @@
 
 Strategy
 --------
-Tests use field-introspection (``_meta.get_field``) and the ForeignObject's
-``from_fields`` / ``to_fields`` to verify structural correctness without
-compiling querysets to SQL (which requires lazy model references to be
-resolved, something that is tricky inside ``isolate_apps``).
+The module contains two categories of tests:
 
-A SQL-string inspection test IS included but targets an intermediate step:
-the generated JOIN is verified by examining the compiled SQL of a filter
-that traverses the ForeignObject, within a ``isolate_apps`` context that
-includes both ``"common"`` and ``"organizations"`` and explicitly wires up
-the isolated ``OrganizationMembership`` copy as the ForeignObject target so
-that model-reference resolution succeeds.
+Structural tests (no DB required)
+    Use field-introspection (``_meta.get_field``) and the ForeignObject's
+    ``from_fields`` / ``to_fields`` to verify structural correctness without
+    compiling querysets to SQL.  These run inside ``@isolate_apps("common")``.
 
-Four properties are verified:
+Behavioural DB test (``@pytest.mark.django_db``)
+    Defines a throwaway ``_ProbeHost`` model (``app_label="common"``) whose
+    table is created at test time via ``connection.schema_editor()``.  Inserts
+    real ``Organization``, ``OrganizationMembership``, and ``_ProbeHost`` rows,
+    then asserts: (a) the ``membership`` descriptor resolves to the correct
+    membership instance; (b) ``select_related("membership")`` issues exactly
+    one query; (c) ``filter(membership__role=...)`` returns the host row.
+
+Five structural properties are verified:
 
 1. **Concrete column** — ``<name>_user_id`` is a real concrete ``BigIntegerField``
    on the model, not a virtual or deferred field.
@@ -22,21 +25,30 @@ Four properties are verified:
 2. **ForeignObject descriptor** — ``<name>`` is registered as a
    ``ForeignObject`` with the expected ``from_fields`` / ``to_fields``.
 
-3. **JOIN columns** — the ForeignObject's joining columns (via
-   ``get_joining_columns()``) include both ``(organization_id, organization_id)``
-   and ``(<name>_user_id, user_id)``, proving the composite join is configured.
+3. **JOIN columns** — ``from_fields`` / ``to_fields`` on the ``ForeignObject``
+   include both ``organization_id`` and ``<name>_user_id`` / ``user_id`` pairs,
+   proving the composite join is configured.
 
 4. **Nullability propagation** — ``null=True`` propagates to both the concrete
    column and the ForeignObject.
+
+5. **Non-null default** — without ``null=True``, both fields are non-nullable.
 """
 
 from __future__ import annotations
 
-from django.db import models
+from django.apps import apps
+from django.contrib.auth import get_user_model
+from django.db import connection, models
 from django.test.utils import isolate_apps
 
+import pytest
+
 from common.fields import OrganizationMembershipForeignKey
-from organizations.models import OrganizationModel
+from organizations.models import Organization, OrganizationMembership, OrganizationModel
+
+
+User = get_user_model()
 
 
 class TestOrganizationMembershipForeignKey:
@@ -210,3 +222,106 @@ class TestOrganizationMembershipForeignKey:
         assert "organization_id" in to_fields, (
             f"Expected 'organization_id' in to_fields (remote JOIN columns), got {to_fields}"
         )
+
+
+@pytest.fixture()
+def probe_host_table(transactional_db):
+    """Define a throwaway ``_ProbeHost`` model, create its table, yield it, then clean up.
+
+    The model class is defined inside the fixture (not at module scope) so that
+    Django's ``sync_apps`` mechanism during test-DB creation does NOT try to
+    create the table at startup (which would fail because the organizations
+    tables don't exist yet at that point — they are created by migrations which
+    run after ``sync_apps``).
+
+    The apps registry entry is removed in teardown so repeated fixture
+    instantiation across tests does not produce 'Model already registered'
+    warnings.
+    """
+
+    class _ProbeHost(OrganizationModel):
+        membership = OrganizationMembershipForeignKey(
+            on_delete=models.PROTECT,
+            related_name="probe_hosts",
+            null=True,
+        )
+
+        class Meta:
+            app_label = "common"
+
+    with connection.schema_editor() as editor:
+        editor.create_model(_ProbeHost)
+
+    yield _ProbeHost
+
+    with connection.schema_editor() as editor:
+        editor.delete_model(_ProbeHost)
+
+    # Remove the model from the apps registry so the next test run that invokes
+    # this fixture can re-define the class without a 'Model already registered'
+    # warning.
+    apps.all_models["common"].pop("_probehost", None)
+    apps.clear_cache()
+
+
+@pytest.mark.django_db(transaction=True)
+class TestOrganizationMembershipForeignKeyBehavior:
+    """DB-backed behavioral tests for OrganizationMembershipForeignKey.
+
+    These tests prove that the field works end-to-end: the descriptor resolves
+    correctly, select_related issues no extra queries, and filter traversal
+    via the ForeignObject JOIN works against real database rows.
+    """
+
+    def test_descriptor_resolves_membership(self, probe_host_table):
+        """host.membership resolves to the correct OrganizationMembership instance."""
+        user = User.objects.create_user(email="desc@example.com", password="pw")  # type: ignore[attr-defined]
+        org = Organization.objects.create(name="Test Org")
+        membership = OrganizationMembership.objects.create(user=user, organization=org)
+
+        host = probe_host_table.objects.create(
+            organization=org,
+            membership_user_id=user.pk,
+        )
+
+        # Reload from DB to avoid cached instance state.
+        host = probe_host_table.objects.get(pk=host.pk, organization=org)
+        assert host.membership == membership
+
+    def test_select_related_issues_one_query(self, probe_host_table, django_assert_num_queries):
+        """select_related('membership') fetches host + membership in exactly one query."""
+        user = User.objects.create_user(email="sr@example.com", password="pw")  # type: ignore[attr-defined]
+        org = Organization.objects.create(name="Test Org SR")
+        OrganizationMembership.objects.create(user=user, organization=org)
+
+        probe_host_table.objects.create(
+            organization=org,
+            membership_user_id=user.pk,
+        )
+
+        with django_assert_num_queries(1):
+            hosts = list(
+                probe_host_table.objects.filter(organization=org).select_related("membership")
+            )
+        assert len(hosts) == 1
+
+    def test_filter_traversal_via_membership_role(self, probe_host_table):
+        """filter(membership__role='admin') returns the host row for an admin member."""
+        from organizations.models import OrganizationRole
+
+        user = User.objects.create_user(email="role@example.com", password="pw")  # type: ignore[attr-defined]
+        org = Organization.objects.create(name="Test Org Role")
+        OrganizationMembership.objects.create(
+            user=user, organization=org, role=OrganizationRole.ADMIN
+        )
+
+        host = probe_host_table.objects.create(
+            organization=org,
+            membership_user_id=user.pk,
+        )
+
+        qs = probe_host_table.objects.filter(
+            organization=org, membership__role=OrganizationRole.ADMIN
+        )
+        assert qs.count() == 1
+        assert qs.first().pk == host.pk

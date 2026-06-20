@@ -187,6 +187,16 @@ class OrganizationMembershipForeignKey(models.Field):
        - The ``ForeignObject`` below already provides all ORM relationship
          features (``select_related``, reverse-accessor, filter traversal).
 
+       **Required index**: This field deliberately does NOT add a single-column
+       index on ``<name>_user_id``.  Multi-tenant queries always filter
+       ``organization_id = X AND <name>_user_id = Y``, so the useful index is
+       the tenant-leading composite ``(organization_id, <name>_user_id)``.
+       A bare single-column index on ``<name>_user_id`` alone would be mostly
+       wasted.  Adopting models MUST declare a composite index on
+       ``(organization_id, <name>_user_id)`` in the migration that adds this
+       field — alongside the raw-SQL composite FK constraint added in the
+       cutover phase.
+
     2. **ForeignObject descriptor** ``<name>`` — a non-editable ``ForeignObject``
        joining::
 
