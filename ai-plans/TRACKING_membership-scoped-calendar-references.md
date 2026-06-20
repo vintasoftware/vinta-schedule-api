@@ -171,13 +171,29 @@ PK provides a unique index on the SAME columns, but Postgres FKs bind to a speci
 the composite PK BEFORE dropping the old unique (or the 3 FKs lose their referenced target). Verify all 3 FKs still
 valid post-swap. Composite PK column order must be (user_id, organization_id) to match the FK references.
 
+### Phase 7a — De-FK OrganizationMembership + rewrite .id refs ✅
+- **Status**: merged-ready (PR open). **Model**: claude-opus (T4) · implementer + reviewer (no blocker/should-fix; 2 perf NITs skipped).
+- **Branch**: `…/phase-7a` (stacked on 6) · **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/155
+- **Summary**: Converted `OrganizationInvitation.membership` (OneToOne) + `public_api.SystemUser.scoped_to_membership`
+  (OrganizationForeignKey) → `OrganizationMembershipForeignKey` (org,user ForeignObject); partial unique preserves the
+  invitation OneToOne. Rewrote all `membership.id/.pk/membership_id` → (user_id, organization_id)/membership_user_id.
+  Migrations 0012 (organizations) + 0008 (public_api) drop the legacy real-FK columns (`membership_id`,
+  `scoped_to_membership_fk_id`) — unblocking 7b. Reviewer confirmed token-scoping has NO cross-org leak (middleware
+  forces org == system_user.organization). Webhook payload → {user_id, organization_id} shape. 2671 passed. Both
+  acceptance greps ZERO non-test; membership still has id PK.
+
+## Phase 7b sequencing (VERIFIED dependencies)
+- 3 raw FKs reference organization_membership + depend on `uniq_membership_user_organization` (UNIQUE on user_id,
+  organization_id): `calownership_membership_protect_fk`, `evattendance_membership_protect_fk`, `calmgmttoken_membership_protect_fk`.
+- Current: PK on `id`; unique on (user_id, organization_id). Goal: PK = (user_id, organization_id), drop `id`.
+- The composite PK provides a unique index on the same columns. To avoid orphaning the 3 FKs: EITHER keep
+  `uniq_membership_user_organization` (FK-safe, redundant) IF Django makemigrations/check stay clean, OR rebind FKs
+  to the PK (drop 3 FKs → drop unique → swap PK → re-add 3 deferrable FKs) via one raw-SQL migration.
+
 ## Current phase
-- Phase 7a — Convert OrganizationInvitation.membership (OneToOne) + public_api.SystemUser.scoped_to_membership (FK)
-  off real FKs to OrganizationMembership; rewrite all membership.id/.pk/membership_id refs (incl. public_api/scoping.py
-  `ownerships__membership__id=` from Phase 2a). Enables the composite PK. (next)
+- Phase 7b — OrganizationMembership composite PK (FINAL) (next)
 
 ## Remaining phases
-- Phase 7a — FK conversions + .id rewrites (T4 · implementer)
 - Phase 7b — OrganizationMembership composite PK (T4 · migration-author)
 - Phase 6 — CalendarManagementToken cutover (T4 · implementer/migration-author) [likely split 6a/6b]
 - Phase 7a — FK conversions (OrganizationInvitation.membership + public_api.SystemUser.scoped_to_membership) + .id rewrites (T4)
