@@ -78,6 +78,11 @@
     <div style="align-self: flex-end;">
       <button type="submit" class="button">Filter</button>
       <a href="?" class="button" style="margin-left: 0.5em;">Clear</a>
+      {% if base_querystring %}
+        <a href="{% url 'admin:audit_audit_export' %}?{{ base_querystring }}" class="button" style="margin-left: 0.5em; background-color: #417690;">Export CSV</a>
+      {% else %}
+        <a href="{% url 'admin:audit_audit_export' %}" class="button" style="margin-left: 0.5em; background-color: #417690;">Export CSV</a>
+      {% endif %}
     </div>
   </div>
 </form>

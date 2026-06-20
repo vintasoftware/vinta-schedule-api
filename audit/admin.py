@@ -15,9 +15,12 @@ breadcrumb handling.  The ``ModelAdmin`` is a *shell*:
 - ``detail_view`` is a custom view registered via ``get_urls()`` that fetches
   a single audit record via ``repository.get(audit_id)`` and renders a read-only
   detail template.  If the audit is not found, HTTP 404 is returned.
+- ``export_view`` is a custom view registered via ``get_urls()`` that streams
+  a CSV of matching audit records, respecting active filters. The CSV is streamed
+  row-by-row to bound memory usage for large result sets.
 - The repository is injected via ``@inject`` / ``Provide["audit_repository"]`` on
-  both the ``changelist_view`` and ``detail_view`` methods, matching the project's
-  established DI convention.  Tests can swap the backend via
+  the ``changelist_view``, ``detail_view``, and ``export_view`` methods, matching
+  the project's established DI convention.  Tests can swap the backend via
   ``container.audit_repository.override(stub)``.
 
 Template paths
@@ -30,14 +33,18 @@ Template paths
   explicitly rendered in ``detail_view``.
 """
 
+import csv
+import json
 import logging
+from collections.abc import Generator
 from datetime import UTC, datetime
+from io import StringIO
 from typing import Annotated, Any
 from urllib.parse import urlencode
 
 from django.contrib import admin
 from django.http import HttpRequest, HttpResponse
-from django.http.response import Http404
+from django.http.response import Http404, StreamingHttpResponse
 from django.template.response import TemplateResponse
 from django.urls import path
 
@@ -307,11 +314,12 @@ class AuditAdmin(admin.ModelAdmin):
     # ------------------------------------------------------------------ #
 
     def get_urls(self):  # type: ignore[no-untyped-def]
-        """Register custom URL patterns for the detail view.
+        """Register custom URL patterns for the detail and export views.
 
-        Adds a pattern for ``<int:audit_id>/view/`` that routes to the custom
-        ``detail_view`` method, wrapped in ``admin_view`` for authentication
-        and permission checks.
+        Adds patterns for:
+        - ``<int:audit_id>/view/`` that routes to the custom ``detail_view`` method.
+        - ``export/`` that routes to the custom ``export_view`` method.
+        Both are wrapped in ``admin_view`` for authentication and permission checks.
         """
         urls = super().get_urls()
         custom_urls = [
@@ -319,6 +327,11 @@ class AuditAdmin(admin.ModelAdmin):
                 "<int:audit_id>/view/",
                 self.admin_site.admin_view(self.detail_view),
                 name="audit_audit_detail",
+            ),
+            path(
+                "export/",
+                self.admin_site.admin_view(self.export_view),
+                name="audit_audit_export",
             ),
         ]
         return custom_urls + urls
@@ -388,3 +401,151 @@ class AuditAdmin(admin.ModelAdmin):
             self.detail_template,
             context,
         )
+
+    # ------------------------------------------------------------------ #
+    # CSV export view (streaming, memory-efficient)                      #
+    # ------------------------------------------------------------------ #
+
+    def _csv_row_generator(
+        self,
+        repository: AuditRepository | None,
+        q: AuditQuery,
+        chunk_size: int = 1000,
+    ) -> Generator[str]:
+        """Generate CSV rows from the filtered audit records.
+
+        Pages through the repository in chunks (default 1000 per page) and yields
+        CSV-encoded rows including the header row first. Memory usage is bounded
+        by the chunk size (not the total result count).
+
+        Each row encodes the following columns as CSV:
+        - id, created_at (ISO format)
+        - organization_id, action
+        - actor_type, actor_id, actor_role
+        - system_user_scopes (JSON string), system_user_scoped_to_membership
+        - subject_type, subject_id, subject_label
+        - affected_membership_ids (JSON string)
+        - diff (JSON string)
+
+        Args:
+            repository: The AuditRepository to query (may be None on DI failure).
+            q: The AuditQuery with active filters and search.
+            chunk_size: Records per page (default 1000).
+
+        Yields:
+            CSV-formatted strings (one per row, including header).
+        """
+        if repository is None:
+            logger.error("_csv_row_generator: repository not injected")
+            return
+
+        # --- CSV header row ---
+        header = [
+            "id",
+            "created_at",
+            "organization_id",
+            "action",
+            "actor_type",
+            "actor_id",
+            "actor_role",
+            "system_user_scopes",
+            "system_user_scoped_to_membership",
+            "subject_type",
+            "subject_id",
+            "subject_label",
+            "affected_membership_ids",
+            "diff",
+        ]
+        buffer = StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(header)
+        yield buffer.getvalue()
+
+        # --- Paginate through all records ---
+        offset = 0
+        while True:
+            page = repository.query(q, offset=offset, limit=chunk_size, ordering="-created_at")
+            if not page.items:
+                break
+
+            for record in page.items:
+                buffer = StringIO()
+                writer = csv.writer(buffer)
+
+                # Serialize complex fields as JSON strings; None → empty string
+                system_user_scopes_json = (
+                    json.dumps(record.actor.system_user_scopes)
+                    if record.actor.system_user_scopes is not None
+                    else ""
+                )
+                affected_membership_ids_json = (
+                    json.dumps(record.affected_membership_ids)
+                    if record.affected_membership_ids
+                    else ""
+                )
+                diff_json = json.dumps(record.diff) if record.diff is not None else ""
+
+                row = [
+                    record.id,
+                    record.created_at.isoformat(),
+                    record.organization_id,
+                    record.action,
+                    record.actor.actor_type,
+                    record.actor.actor_id or "",
+                    record.actor.actor_role or "",
+                    system_user_scopes_json,
+                    record.actor.system_user_scoped_to_membership or "",
+                    record.subject.subject_type,
+                    record.subject.subject_id,
+                    record.subject.subject_label or "",
+                    affected_membership_ids_json,
+                    diff_json,
+                ]
+                writer.writerow(row)
+                yield buffer.getvalue()
+
+            offset += chunk_size
+            if offset >= page.total:
+                break
+
+    @inject
+    def export_view(
+        self,
+        request: HttpRequest,
+        repository: Annotated[AuditRepository | None, Provide["audit_repository"]] = None,
+    ) -> StreamingHttpResponse:
+        """Stream a CSV export of the currently filtered/searched audits.
+
+        Respects all active GET filters (action, actor_type, created_after/before,
+        has_diff, organization_id, search, affected_membership_id) and pages through
+        the repository in chunks to bound memory usage.
+
+        Returns a StreamingHttpResponse with:
+        - Content-Type: text/csv
+        - Content-Disposition: attachment; filename=audit_export.csv
+        - One CSV row per audit record, plus a header row.
+
+        CSV columns (flattened from AuditRecord):
+        - id, created_at, organization_id, action
+        - actor_type, actor_id, actor_role
+        - system_user_scopes (JSON), system_user_scoped_to_membership
+        - subject_type, subject_id, subject_label
+        - affected_membership_ids (JSON), diff (JSON)
+
+        Complex fields (system_user_scopes, affected_membership_ids, diff) serialize
+        as JSON strings; None values map to empty strings in the CSV.
+
+        Security: requires staff status (checked by the ModelAdmin view dispatch
+        via ``admin_site.admin_view``).  Non-staff requests are redirected to login
+        before this method is called.
+        """
+        # --- parse filters from request GET ---
+        q = _build_audit_query(dict(request.GET))
+
+        # --- create streaming response ---
+        response = StreamingHttpResponse(
+            self._csv_row_generator(repository, q),
+            content_type="text/csv",
+        )
+        response["Content-Disposition"] = "attachment; filename=audit_export.csv"
+        return response
