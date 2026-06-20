@@ -38,10 +38,10 @@ from common.fields import OrganizationMembershipForeignKey
 from organizations.models import (
     Organization,
     OrganizationForeignKey,
+    OrganizationMembership,
     OrganizationModel,
     OrganizationOneToOneField,
 )
-from users.models import User
 
 
 if TYPE_CHECKING:
@@ -141,12 +141,14 @@ class Calendar(OrganizationModel):
         ),
     )
 
-    users: "models.ManyToManyField[User, CalendarOwnership]" = models.ManyToManyField(
-        User,
-        related_name="calendars",
-        through="CalendarOwnership",
-        through_fields=("calendar_fk", "user"),
-        blank=True,
+    memberships: "models.ManyToManyField[OrganizationMembership, CalendarOwnership]" = (
+        models.ManyToManyField(
+            "organizations.OrganizationMembership",
+            related_name="calendars",
+            through="CalendarOwnership",
+            through_fields=("calendar_fk", "membership"),
+            blank=True,
+        )
     )
     bundle_children: "models.ManyToManyField[Calendar, ChildrenCalendarRelationship]" = (
         models.ManyToManyField(
