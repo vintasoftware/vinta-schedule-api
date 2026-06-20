@@ -120,12 +120,31 @@ EventAttendance.user is NOT NULL but membership_user_id is NULL for non-member a
 column (4b) loses attendee identity for orphan attendances. **Before 4b drops the column, confirm with the user**
 (or keep `user` nullable on EventAttendance as a fallback). 4a keeps the column (reversible, no data loss).
 
+### Phase 4a — EventAttendance cutover (app layer) ✅
+- **Status**: merged-ready (PR open). **Model**: claude-opus (T4) · implementer + reviewer + fixer.
+- **Branch**: `plan/membership-scoped-calendar-references/phase-4a` (stacked on 3) · **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/151
+- **Summary**: Routed EventAttendance reads/writes through membership; `CalendarEvent.attendees` → `attendee_memberships`
+  M2M (state-only 0030); attendee API exposes membership `{user_id, organization_id, role}`; serialize resolves via
+  `membership_user_id` (orphan→None, dropped). `resolve_member_user_ids` bulk guard. Reviewer BLOCKER: permission-diff
+  asymmetry (serialize_event dropped orphans, serialize_event_data_input didn't → spurious UPDATE_ATTENDEES/PermissionDenied)
+  → fixed by filtering input side through the same guard; batched N+1 user lookups. `user` column KEPT. 2668 passed.
+- **Recurring non-gating note**: django-stubs can't see `membership_user_id` (the field's contributed column) → ~10 mypy
+  `attr-defined` false positives accumulating across phases. Candidate Phase-0 typing cleanup (add the attr to the field's
+  type surface). Not gating (mypy not in CI).
+- **Carry-forward for 4b** (remaining `EventAttendance.user`/`user_id` non-test refs to retarget when dropping the column):
+  `calendar_sync_service.py` (`attendances.filter(user_id=…)`/`filter(user=user)`), `calendar_event_service.py`
+  (`user_id__in=attendances_to_delete`, `__str__` on models), `mutations.py`, `calendar_bundle_service.py`,
+  `calendar_group_service.py`, `serialize_event_data_input` `a.user_id` map. Plus the established 2b migration pattern.
+
 ## Current phase
-- Phase 4a — EventAttendance cutover (app layer: reads/writes + attendees M2M + API) (next)
+- Phase 4b — EventAttendance cutover migration (drop user + PROTECT FK) — **AWAITING USER DECISION on data loss**
 
 ## Remaining phases
-- Phase 4a — EventAttendance cutover, app layer (T4 · implementer)
-- Phase 4b — EventAttendance cutover, migration drop user + PROTECT FK (T4 · migration-author) [DATA-LOSS CHECKPOINT]
+- Phase 4b — EventAttendance cutover migration (T4 · migration-author) [DATA-LOSS CHECKPOINT — see below]
+- Phase 5 — CalendarManagementToken expand + backfill (T2 · migration-author)
+- Phase 6 — CalendarManagementToken cutover (T4 · implementer/migration-author)
+- Phase 7a — FK conversions + .id rewrites (T4 · implementer)
+- Phase 7b — OrganizationMembership composite PK (T4 · migration-author)
 - Phase 3 — EventAttendance expand + backfill (T3 · migration-author)
 - Phase 4 — EventAttendance cutover (T4 · implementer)
 - Phase 5 — CalendarManagementToken expand + backfill (T2 · migration-author)
