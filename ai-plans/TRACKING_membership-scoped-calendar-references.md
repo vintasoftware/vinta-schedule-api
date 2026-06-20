@@ -37,11 +37,29 @@
   `(organization_id, <name>_user_id)`; each cutover (2/4/6) adds the raw-SQL composite FK
   `… REFERENCES organization_membership(user_id, organization_id) ON DELETE RESTRICT` for PROTECT.
 
+### Phase 1 — CalendarOwnership: expand + backfill ✅
+- **Status**: merged-ready (PR open)
+- **Model used**: claude-sonnet-4-6 (plan tier: T3) · migration-author + reviewer + fixer
+- **Branch**: `plan/membership-scoped-calendar-references/phase-1` (stacked on phase-0)
+- **Base**: `plan/membership-scoped-calendar-references/phase-0`
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/147
+- **Summary**: Added `membership = OrganizationMembershipForeignKey(PROTECT, related_name="calendar_ownerships",
+  null=True)` to `CalendarOwnership` alongside the kept `user` FK; composite index
+  `(organization, membership_user_id)` (`calownership_org_member_idx`). Migration 0022 (schema: nullable
+  column + index), 0023 (data, `atomic=False`: batched idempotent/resumable `UPDATE … WHERE … EXISTS(membership)`;
+  orphans → NULL + CSV to `.vinta-ai-workflows/one-off-runs/` + WARNING; clean reverse). Behaviour-preserving
+  (user FK + M2M untouched, no read/write/API change). Reviewer SHOULD-FIX fixed: `atomic=False`, tested the
+  CSV/OSError/reverse paths, documented the cross-org raw-SQL exception. 12 tests.
+- **Gate**: `pytest -n auto` → 2631 passed; migrate forward/reverse/forward clean; `makemigrations --check`
+  no changes; `check --deploy` clean.
+- **Carry-forward**: `related_name="calendar_ownerships"` is shared by `user`→User and `membership`→OrganizationMembership
+  (no clash, different targets); Phase 2 drops `user` and hands the name to `membership`. Real PROTECT FK
+  (raw-SQL composite) lands in Phase 2 cutover.
+
 ## Current phase
-- Phase 1 — CalendarOwnership: expand + backfill (next)
+- Phase 2 — CalendarOwnership cutover (next)
 
 ## Remaining phases
-- Phase 1 — CalendarOwnership expand + backfill (T3 · migration-author)
 - Phase 2 — CalendarOwnership cutover (T4 · implementer)
 - Phase 3 — EventAttendance expand + backfill (T3 · migration-author)
 - Phase 4 — EventAttendance cutover (T4 · implementer)
