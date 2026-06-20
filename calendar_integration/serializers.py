@@ -104,13 +104,28 @@ def _localize_times_in_representation(
     return data
 
 
+class OwnershipMembershipSerializer(serializers.Serializer):
+    """Membership identity for a calendar owner.
+
+    A membership has no scalar id (it is identified by the ``(user_id,
+    organization_id)`` pair), so the representation exposes that pair plus the
+    membership ``role``.
+    """
+
+    user_id = serializers.IntegerField(read_only=True)
+    organization_id = serializers.IntegerField(read_only=True)
+    role = serializers.CharField(read_only=True)
+
+
 class CalendarOwnershipSerializer(VirtualModelSerializer):
+    membership = OwnershipMembershipSerializer(read_only=True)
+
     class Meta:
         model = CalendarOwnership
         virtual_model = CalendarOwnershipVirtualModel
         fields = (
             "id",
-            "user",
+            "membership",
             "calendar",
             "is_default",
             "created",

@@ -133,17 +133,45 @@ def _scoped_calendar_list(
     return [c for c in calendars if c.id in allowed_ids]
 
 
+@strawberry.type
+class OwnershipMembershipGraphQLType:
+    """Membership identity for a calendar owner.
+
+    A membership has no scalar id (it is identified by the ``(user_id,
+    organization_id)`` pair), so the external representation exposes that pair
+    plus the membership ``role``.
+    """
+
+    user_id: int
+    organization_id: int
+    role: str
+
+
 @strawberry_django.type(CalendarOwnership)
 class CalendarOwnershipGraphQLType:
     """GraphQL type for a CalendarOwnership through-model row.
 
     ``id`` is the ownership row primary key, not the user id.
     ``is_default`` indicates whether this is the default calendar for the owning user.
+    ``membership`` exposes the owning membership identity ``{ user_id,
+    organization_id, role }``. It is ``None`` for orphan ownership rows whose
+    ``(user, organization)`` pair has no active membership.
     """
 
     id: strawberry.auto  # noqa: A003
     is_default: strawberry.auto
-    user: UserGraphQLType = strawberry_django.field()
+
+    @strawberry_django.field
+    def membership(self) -> OwnershipMembershipGraphQLType | None:
+        """Resolve the owning membership identity via the denormalized columns."""
+        membership = self.membership  # type: ignore[attr-defined]
+        if membership is None:
+            return None
+        return OwnershipMembershipGraphQLType(
+            user_id=membership.user_id,
+            organization_id=membership.organization_id,
+            role=membership.role,
+        )
 
 
 @strawberry_django.type(Calendar)
@@ -165,7 +193,7 @@ class CalendarGraphQLType:
     def is_private(self) -> bool:
         return not self.accepts_public_scheduling
 
-    @strawberry_django.field(prefetch_related=["ownerships__user__profile"])
+    @strawberry_django.field(prefetch_related=["ownerships__membership"])
     def owners(self) -> list["CalendarOwnershipGraphQLType"]:
         """Return all ownership records for this calendar."""
         return list(self.ownerships.all())  # type: ignore[attr-defined]
@@ -629,7 +657,7 @@ class CalendarBundleGraphQLType:
     def is_private(self) -> bool:
         return not self.accepts_public_scheduling
 
-    @strawberry_django.field(prefetch_related=["ownerships__user__profile"])
+    @strawberry_django.field(prefetch_related=["ownerships__membership"])
     def owners(self) -> list["CalendarOwnershipGraphQLType"]:
         """Return all ownership records for this bundle calendar."""
         return list(self.ownerships.all())  # type: ignore[attr-defined]
