@@ -3454,11 +3454,21 @@ class TestOrganizationMineAction:
         assert role_by_org[org_a.id] == OrganizationRole.ADMIN
         assert role_by_org[org_b.id] == OrganizationRole.MEMBER
 
-        # Verify the membership objects that were created match what we get back.
-        # OrganizationMembership has a composite PK (user, organization); its identity
-        # is the (user_id, organization_id) pair, not a scalar id.
-        assert membership_a.pk == (membership_a.user_id, membership_a.organization_id)
-        assert membership_b.pk == (membership_b.user_id, membership_b.organization_id)
+        # Verify the membership objects that were created are retrievable from the DB
+        # by composite PK — confirming the (user_id, organization_id) identity is
+        # persisted correctly after the Phase 7b PK swap.
+        assert (
+            OrganizationMembership.objects.get(
+                pk=(membership_a.user_id, membership_a.organization_id)
+            )
+            == membership_a
+        )
+        assert (
+            OrganizationMembership.objects.get(
+                pk=(membership_b.user_id, membership_b.organization_id)
+            )
+            == membership_b
+        )
 
     def test_mine_returns_org_id_and_name(self, user):
         """The nested organization object contains exactly id and name."""

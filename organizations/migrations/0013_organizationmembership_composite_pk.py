@@ -99,6 +99,8 @@ from django.db import migrations
 import common.fields
 
 
+# ``organizations_organizationmembership_pkey`` is Postgres's deterministic default
+# PK constraint name (<table>_pkey), so the hard-coded name below is safe.
 DROP_ID_PK_AND_ADD_COMPOSITE_PK = """
 ALTER TABLE organizations_organizationmembership
   DROP CONSTRAINT organizations_organizationmembership_pkey;
