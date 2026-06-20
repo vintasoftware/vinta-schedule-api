@@ -61,6 +61,9 @@ from calendar_integration.services.calendar_service_utils import (
     get_calendar_by_id as _get_calendar_by_id_util,
 )
 from calendar_integration.services.calendar_service_utils import (
+    resolve_member_user_ids as _resolve_member_user_ids,
+)
+from calendar_integration.services.calendar_service_utils import (
     serialize_event as _serialize_event_util,
 )
 from calendar_integration.services.calendar_service_utils import (
@@ -228,7 +231,7 @@ class CalendarEventService:
 
     def _serialize_event_internal_attendee(
         self, attendance: EventAttendance
-    ) -> EventInternalAttendeeData:
+    ) -> EventInternalAttendeeData | None:
         return _serialize_event_internal_attendee_util(attendance)
 
     def _serialize_event_external_attendee(
@@ -444,12 +447,23 @@ class CalendarEventService:
             ]
         )
 
+        # Resolve which attendee user_ids back an OrganizationMembership; non-members
+        # get a NULL membership_user_id (an orphan attendance) so the composite PROTECT
+        # FK is never violated.
+        member_user_ids = _resolve_member_user_ids(
+            (a.user_id for a in event_data.attendances), context.organization.id
+        )
         EventAttendance.objects.bulk_create(
             [
                 EventAttendance(
                     organization=context.organization,
                     event=event,
                     user_id=attendance_data.user_id,
+                    membership_user_id=(
+                        attendance_data.user_id
+                        if attendance_data.user_id in member_user_ids
+                        else None
+                    ),
                 )
                 for attendance_data in event_data.attendances
             ]
@@ -715,6 +729,12 @@ class CalendarEventService:
             id__in=external_attendees_to_delete
         ).delete()
 
+        # Resolve which attendee user_ids back an OrganizationMembership; non-members
+        # get a NULL membership_user_id (an orphan attendance) so the composite PROTECT
+        # FK is never violated.
+        member_user_ids = _resolve_member_user_ids(
+            (a.user_id for a in event_data.attendances), context.organization.id
+        )
         maintained_attendees_ids = []
         event_attendances_to_create = []
         serialized_attendances_to_create = []
@@ -724,19 +744,30 @@ class CalendarEventService:
                     organization=context.organization,
                     event=event,
                     user_id=attendance_data.user_id,
+                    membership_user_id=(
+                        attendance_data.user_id
+                        if attendance_data.user_id in member_user_ids
+                        else None
+                    ),
                 )
                 event_attendances_to_create.append(event_attendance_instance)
-                serialized_attendances_to_create.append(
-                    self._serialize_event_internal_attendee(event_attendance_instance)
-                )
+                serialized = self._serialize_event_internal_attendee(event_attendance_instance)
+                if serialized is not None:
+                    serialized_attendances_to_create.append(serialized)
             maintained_attendees_ids.append(attendance_data.user_id)
 
         EventAttendance.objects.bulk_create(event_attendances_to_create)
 
-        # Grant permissions to newly added internal attendees
+        # Grant permissions to newly added internal attendees (resolved via the
+        # denormalized membership_user_id; orphan attendances without a
+        # membership-backed identity are intentionally skipped).
         if event_attendances_to_create and context.calendar_permission_service:
             for attendance in event_attendances_to_create:
-                user = User.objects.get(id=attendance.user_id)
+                if attendance.membership_user_id is None:
+                    continue
+                user = User.objects.filter(id=attendance.membership_user_id).first()
+                if user is None:
+                    continue
                 # Check if user already has a token for this event
                 existing_token = CalendarManagementToken.objects.filter(
                     user=user,
@@ -777,8 +808,9 @@ class CalendarEventService:
             context.organization.id
         ).filter(user_id__in=attendances_to_delete)
         serialized_attendances_to_delete = [
-            self._serialize_event_internal_attendee(attendance)
+            serialized
             for attendance in attendances_instances_to_delete
+            if (serialized := self._serialize_event_internal_attendee(attendance)) is not None
         ]
         attendances_instances_to_delete.delete()
 

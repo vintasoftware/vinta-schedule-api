@@ -11709,9 +11709,9 @@ components:
           type: integer
           nullable: true
           description: ID of the external attendee.
-        user:
+        membership:
           allOf:
-          - $ref: '#/components/schemas/User'
+          - $ref: '#/components/schemas/OwnershipMembership'
           readOnly: true
         user_id:
           type: integer
@@ -11730,9 +11730,9 @@ components:
           readOnly: true
       required:
       - created
+      - membership
       - modified
       - status
-      - user
       - user_id
     EventBulkModification:
       type: object
@@ -12173,6 +12173,28 @@ components:
       - user_email
       - user_first_name
       - user_last_name
+    OwnershipMembership:
+      type: object
+      description: |-
+        Membership identity for a calendar owner.
+
+        A membership has no scalar id (it is identified by the ``(user_id,
+        organization_id)`` pair), so the representation exposes that pair plus the
+        membership ``role``.
+      properties:
+        user_id:
+          type: integer
+          readOnly: true
+        organization_id:
+          type: integer
+          readOnly: true
+        role:
+          type: string
+          readOnly: true
+      required:
+      - organization_id
+      - role
+      - user_id
     PaginatedAvailableTimeList:
       type: object
       required:
@@ -13481,60 +13503,6 @@ components:
           $ref: '#/components/schemas/RoleEnum'
       required:
       - role
-    User:
-      type: object
-      properties:
-        id:
-          type: integer
-          readOnly: true
-        email:
-          type: string
-          format: email
-          readOnly: true
-        phone_number:
-          type: string
-          readOnly: true
-        profile:
-          $ref: '#/components/schemas/Profile'
-        is_active:
-          type: boolean
-          readOnly: true
-          description: Designates whether this user should be treated as active. Unselect
-            this instead of deleting accounts.
-        is_staff:
-          type: boolean
-          readOnly: true
-          description: Designates whether the user can log into this admin site.
-        is_superuser:
-          type: boolean
-          readOnly: true
-          title: Superuser status
-          description: Designates that this user has all permissions without explicitly
-            assigning them.
-        created:
-          type: string
-          format: date-time
-          readOnly: true
-        modified:
-          type: string
-          format: date-time
-          readOnly: true
-        last_login:
-          type: string
-          format: date-time
-          readOnly: true
-          nullable: true
-      required:
-      - created
-      - email
-      - id
-      - is_active
-      - is_staff
-      - is_superuser
-      - last_login
-      - modified
-      - phone_number
-      - profile
     VisibilityEnum:
       enum:
       - active

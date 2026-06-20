@@ -29,7 +29,7 @@ from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
     ResourceAllocationInputData,
 )
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from users.models import Profile, User
 
 
@@ -258,22 +258,17 @@ class TestGetCalendarByIdMultiTenant:
 
 
 class TestSerializeEventInternalAttendee:
-    """serialize_event_internal_attendee should match the former method's output."""
+    """serialize_event_internal_attendee resolves identity via membership_user_id."""
 
-    def test_basic_fields(self, db, organization):
-        """Check that user fields are correctly mapped to EventInternalAttendeeData."""
-        user = User.objects.create_user(email="attendee@example.com", password="pw")
-        Profile.objects.update_or_create(
-            user=user, defaults={"first_name": "Alice", "last_name": "Smith"}
-        )
-
+    @staticmethod
+    def _make_event(organization):
         calendar = Calendar.objects.create(
             name="Test Cal",
             external_id="ext_01",
             provider=CalendarProvider.GOOGLE,
             organization=organization,
         )
-        event = CalendarEvent.objects.create(
+        return CalendarEvent.objects.create(
             calendar_fk=calendar,
             organization=organization,
             title="Test Event",
@@ -281,19 +276,46 @@ class TestSerializeEventInternalAttendee:
             end_time_tz_unaware=datetime.datetime(2025, 6, 20, 11, 0, tzinfo=datetime.UTC),
             timezone="UTC",
         )
+
+    def test_basic_fields_resolved_via_membership(self, db, organization):
+        """Identity (name/email) is resolved from the denormalized membership_user_id."""
+        user = User.objects.create_user(email="attendee@example.com", password="pw")
+        Profile.objects.update_or_create(
+            user=user, defaults={"first_name": "Alice", "last_name": "Smith"}
+        )
+        OrganizationMembership.objects.create(user=user, organization=organization)
+
+        event = self._make_event(organization)
         attendance = EventAttendance.objects.create(
             event=event,
             user=user,
+            membership_user_id=user.id,
             organization=organization,
             status="accepted",
         )
 
         result = serialize_event_internal_attendee(attendance)
 
+        assert result is not None
         assert result.user_id == user.id
         assert result.email == "attendee@example.com"
         assert result.name == "Alice Smith"
         assert result.status == "accepted"
+
+    def test_orphan_attendance_serializes_to_none(self, db, organization):
+        """An attendance whose membership_user_id is NULL has no membership-backed
+        identity and serializes to None (intentionally excluded)."""
+        user = User.objects.create_user(email="orphan@example.com", password="pw")
+        event = self._make_event(organization)
+        attendance = EventAttendance.objects.create(
+            event=event,
+            user=user,
+            membership_user_id=None,
+            organization=organization,
+            status="accepted",
+        )
+
+        assert serialize_event_internal_attendee(attendance) is None
 
 
 class TestSerializeEventDataInputResourceAllocations:

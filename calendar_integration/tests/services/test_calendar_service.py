@@ -4017,9 +4017,16 @@ def test_process_existing_blocked_time(social_account, social_token, mock_google
 def test_process_event_attendees_new_user(
     social_account, social_token, mock_google_adapter, calendar_event
 ):
-    """Test processing event attendees with a new user."""
-    # Create a user that matches the attendee email
-    User.objects.create_user(email="attendee@example.com", password="testpass123")
+    """Test processing event attendees with a new user.
+
+    The synced attendee is a member of the event's organization, so the created
+    attendance carries the denormalized membership_user_id (and the resolved user).
+    """
+    # Create a user that matches the attendee email and make them a member.
+    attendee_user = User.objects.create_user(email="attendee@example.com", password="testpass123")
+    OrganizationMembership.objects.create(
+        user=attendee_user, organization=calendar_event.organization
+    )
 
     event_data = CalendarEventAdapterOutputData(
         calendar_external_id="cal_123",
@@ -4044,6 +4051,40 @@ def test_process_event_attendees_new_user(
     attendance = changes.attendances_to_create[0]
     assert attendance.event_fk == calendar_event
     assert attendance.status == "accepted"
+    assert attendance.user_id == attendee_user.id
+    assert attendance.membership_user_id == attendee_user.id
+
+
+@pytest.mark.django_db
+def test_process_event_attendees_non_member_stays_orphan(
+    social_account, social_token, mock_google_adapter, calendar_event
+):
+    """A synced attendee who is not a member gets a NULL membership_user_id (orphan)."""
+    non_member = User.objects.create_user(email="nonmember@example.com", password="pw")
+
+    event_data = CalendarEventAdapterOutputData(
+        calendar_external_id="cal_123",
+        external_id="event_123",
+        title="Event with attendees",
+        description="",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendees=[
+            EventAttendeeData(email="nonmember@example.com", name="No Member", status="accepted")
+        ],
+    )
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar_event.organization)
+    changes = EventsSyncChanges()
+
+    service._process_event_attendees(event_data, calendar_event, changes)
+
+    assert len(changes.attendances_to_create) == 1
+    attendance = changes.attendances_to_create[0]
+    assert attendance.user_id == non_member.id
+    assert attendance.membership_user_id is None
 
 
 @pytest.mark.django_db
@@ -8593,16 +8634,18 @@ class TestCalendarServicePermissionIntegration:
         # Create users
         attendee_user = User.objects.create(email="attendee@example.com")
         Profile.objects.create(user=attendee_user)
+        OrganizationMembership.objects.create(user=attendee_user, organization=organization)
         external_attendee = ExternalAttendee.objects.create(
             email="external@example.com",
             name="External User",
             organization=organization,
         )
 
-        # Create attendances
+        # Create attendances (membership-backed internal attendee)
         EventAttendance.objects.create(
             event=calendar_event,
             user=attendee_user,
+            membership_user_id=attendee_user.id,
             organization=organization,
             status="pending",
         )
@@ -8640,6 +8683,35 @@ class TestCalendarServicePermissionIntegration:
 
         assert set(internal_permissions) == set(DEFAULT_ATTENDEE_PERMISSIONS)
         assert set(external_permissions) == set(DEFAULT_EXTERNAL_ATTENDEE_PERMISSIONS)
+
+    def test_grant_event_attendee_permissions_skips_orphan_attendee(
+        self, organization, calendar, calendar_event, db
+    ):
+        """An orphan attendance (membership_user_id NULL) gets no attendee token.
+
+        Permissions are membership-scoped; an attendee with no backing membership
+        (an ex-member or a never-member) must not be granted a management token.
+        """
+        orphan_user = User.objects.create(email="orphan-attendee@example.com")
+        Profile.objects.create(user=orphan_user)
+
+        EventAttendance.objects.create(
+            event=calendar_event,
+            user=orphan_user,
+            membership_user_id=None,
+            organization=organization,
+            status="pending",
+        )
+
+        permission_service = CalendarPermissionService()
+        service = CalendarService(calendar_permission_service=permission_service)
+        service._grant_event_attendee_permissions(calendar_event)
+
+        assert not CalendarManagementToken.objects.filter(
+            event_fk=calendar_event,
+            user=orphan_user,
+            organization=organization,
+        ).exists()
 
     @pytest.mark.django_db
     def test_grant_permissions_without_permission_service(self, calendar, calendar_event):
@@ -8796,10 +8868,12 @@ class TestCalendarServicePermissionIntegration:
         """Test that duplicate event attendee tokens are not created."""
         attendee_user = User.objects.create(email="attendee@example.com")
         Profile.objects.create(user=attendee_user)
+        OrganizationMembership.objects.create(user=attendee_user, organization=organization)
 
         EventAttendance.objects.create(
             event=calendar_event,
             user=attendee_user,
+            membership_user_id=attendee_user.id,
             organization=organization,
             status="pending",
         )
@@ -8867,10 +8941,12 @@ class TestCalendarServicePermissionScenarios:
         """Test that event attendees receive limited permissions."""
         attendee_user = User.objects.create(email="attendee@example.com")
         Profile.objects.create(user=attendee_user)
+        OrganizationMembership.objects.create(user=attendee_user, organization=organization)
 
         EventAttendance.objects.create(
             event=calendar_event,
             user=attendee_user,
+            membership_user_id=attendee_user.id,
             organization=organization,
             status="pending",
         )

@@ -35,13 +35,42 @@ from calendar_integration.services.dataclasses import (
     EventInternalAttendeeData,
     ResourceData,
 )
+from organizations.models import OrganizationMembership
 from users.models import User
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from calendar_integration.services.calendar_permission_service import CalendarPermissionService
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
     from organizations.models import Organization
+
+
+# ---------------------------------------------------------------------------
+# Membership resolution helpers
+# ---------------------------------------------------------------------------
+
+
+def resolve_member_user_ids(user_ids: Iterable[int], organization_id: int) -> set[int]:
+    """Return the subset of ``user_ids`` that have an ``OrganizationMembership``.
+
+    The raw-SQL composite PROTECT FK on ``EventAttendance.membership`` (added in the
+    cutover migration) requires a non-NULL ``membership_user_id`` to reference a real
+    ``OrganizationMembership(user_id, organization_id)``. This guard mirrors the
+    single-row ``_resolve_owner_membership_user_id`` helper for the bulk attendance
+    write paths: a user that is not a member of ``organization_id`` resolves to a
+    NULL membership (an orphan attendance) instead of triggering an FK IntegrityError.
+    """
+    user_id_list = list(dict.fromkeys(user_ids))
+    if not user_id_list:
+        return set()
+    return set(
+        OrganizationMembership.objects.filter(
+            organization_id=organization_id,
+            user_id__in=user_id_list,
+        ).values_list("user_id", flat=True)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -85,12 +114,27 @@ def convert_naive_utc_datetime_to_timezone(
 # ---------------------------------------------------------------------------
 
 
-def serialize_event_internal_attendee(attendance: EventAttendance) -> EventInternalAttendeeData:
-    """Serialize an internal event attendance to ``EventInternalAttendeeData``."""
+def serialize_event_internal_attendee(
+    attendance: EventAttendance,
+) -> EventInternalAttendeeData | None:
+    """Serialize an internal event attendance to ``EventInternalAttendeeData``.
+
+    The attendee identity is resolved from the denormalized ``membership_user_id``
+    (not ``attendance.user``, which is dropped in a later phase, nor
+    ``attendance.membership.user``, which resolves to ``None`` for a stale
+    membership). An orphan attendance whose ``membership_user_id`` is ``None`` (the
+    attendee is not — or is no longer — a member of the organization) has no
+    membership-backed identity and is skipped: the caller drops the ``None``.
+    """
+    if attendance.membership_user_id is None:
+        return None
+    user = User.objects.filter(id=attendance.membership_user_id).first()
+    if user is None:
+        return None
     return EventInternalAttendeeData(
-        user_id=attendance.user.id,
-        email=attendance.user.email,
-        name=attendance.user.get_full_name(),
+        user_id=user.id,
+        email=user.email,
+        name=user.get_full_name(),
         status=cast(Literal["accepted", "declined", "pending"], attendance.status),
     )
 
@@ -131,13 +175,16 @@ def serialize_event(event: CalendarEvent) -> CalendarEventData:
         if hasattr(event, "meta") and event.meta
         else {},
         attendees=[
-            serialize_event_internal_attendee(attendance)
+            serialized
             # For recurring instances, get attendances from the parent event; for regular events, use their own
             for attendance in (
                 event.parent_recurring_object.attendances.all()
                 if event.parent_recurring_object
                 else (event.attendances.all() if event.id else [])
             )
+            # Orphan attendances (no membership-backed identity) serialize to None
+            # and are intentionally excluded from the membership-scoped attendee list.
+            if (serialized := serialize_event_internal_attendee(attendance)) is not None
         ],
         external_attendees=[
             serialize_event_external_attendee(external_attendance)
@@ -200,7 +247,7 @@ def serialize_event_data_input(
     attendances_users_by_id = {u.id: u for u in User.objects.filter(id__in=new_attendance_user_ids)}
     existing_attendances_by_user_id = {
         a.user_id: a
-        for a in EventAttendance.objects.filter(event=event, user__id__in=new_attendance_user_ids)
+        for a in EventAttendance.objects.filter(event=event, user_id__in=new_attendance_user_ids)
     }
     existing_external_attendances_by_attendee_id = {
         a.external_attendee.id: a
@@ -317,11 +364,18 @@ def grant_event_attendee_permissions(
 
     No-ops gracefully if ``permission_service`` is ``None``.
     """
-    # Grant permissions to internal attendees
+    # Grant permissions to internal attendees (resolved via the denormalized
+    # membership_user_id; orphan attendances without a membership-backed identity
+    # are intentionally skipped).
     for attendance in event.attendances.all():
+        if attendance.membership_user_id is None:
+            continue
+        attendee_user = User.objects.filter(id=attendance.membership_user_id).first()
+        if attendee_user is None:
+            continue
         # Check if user already has a token for this event
         existing_token = CalendarManagementToken.objects.filter(
-            user=attendance.user,
+            user=attendee_user,
             event_fk_id=event.id,
             organization_id=event.organization_id,
             revoked_at__isnull=True,
@@ -330,7 +384,7 @@ def grant_event_attendee_permissions(
         if not existing_token:
             permission_service.create_attendee_token(
                 organization_id=attendance.organization_id,
-                user=attendance.user,
+                user=attendee_user,
                 event_id=event.id,
             )
 

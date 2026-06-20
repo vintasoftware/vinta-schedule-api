@@ -1129,11 +1129,11 @@ class CalendarEvent(RecurringMixin):
         help_text="If this event was booked through a CalendarGroup, references it",
     )
 
-    attendees = models.ManyToManyField(
-        settings.AUTH_USER_MODEL,
-        related_name="calendar_events",
+    attendee_memberships = models.ManyToManyField(
+        "organizations.OrganizationMembership",
+        related_name="attended_events",
         through=EventAttendance,
-        through_fields=("event", "user"),
+        through_fields=("event", "membership"),
         blank=True,
     )
     external_attendees = models.ManyToManyField(ExternalAttendee, related_name="calendar_events")

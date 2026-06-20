@@ -18,7 +18,6 @@ from calendar_integration.models import (
     ResourceAllocation,
 )
 from organizations.virtual_models import OrganizationMembershipVirtualModel
-from users.virtual_models import UserVirtualModel
 
 
 class CalendarOwnershipVirtualModel(v.VirtualModel):
@@ -49,7 +48,7 @@ class EventExternalAttendanceVirtualModel(v.VirtualModel):
 
 
 class EventAttendanceVirtualModel(v.VirtualModel):
-    user = UserVirtualModel()
+    membership = OrganizationMembershipVirtualModel()
 
     class Meta:
         model = EventAttendance

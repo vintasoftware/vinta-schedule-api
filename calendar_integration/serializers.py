@@ -70,7 +70,6 @@ from calendar_integration.virtual_models import (
 from common.utils.serializer_utils import VirtualModelSerializer
 from organizations.models import Organization, get_active_organization_membership
 from users.models import User
-from users.serializers import UserSerializer
 
 
 if TYPE_CHECKING:
@@ -599,7 +598,7 @@ class EventAttendanceSerializer(VirtualModelSerializer):
     id = serializers.IntegerField(  # noqa: A003
         allow_null=True, required=False, help_text="ID of the external attendee."
     )
-    user = UserSerializer(read_only=True)
+    membership = OwnershipMembershipSerializer(read_only=True)
     user_id = serializers.PrimaryKeyRelatedField(
         source="user", queryset=User.objects.all(), required=True, allow_null=False, write_only=True
     )
@@ -609,14 +608,14 @@ class EventAttendanceSerializer(VirtualModelSerializer):
         virtual_model = EventAttendanceVirtualModel
         fields = (
             "id",
-            "user",
+            "membership",
             "user_id",
             "status",
             "created",
             "modified",
         )
         read_only_fields = (
-            "user",
+            "membership",
             "status",
         )
 
@@ -1249,7 +1248,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
             [{"resource_id": ra.calendar.id} for ra in instance.resource_allocations.all()],
         )
         attendances = validated_data.pop(
-            "attendances", [{"user_id": att.user.id} for att in instance.attendances.all()]
+            "attendances", [{"user_id": att.user_id} for att in instance.attendances.all()]
         )
         external_attendances = validated_data.pop(
             "external_attendances",

@@ -864,11 +864,23 @@ class CalendarSyncService:
         for attendee in event.attendees:
             user = User.objects.filter(email=attendee.email).first()
 
-            if user and not existing_event.attendees.filter(id=user.id).exists():
+            if user and not existing_event.attendances.filter(user_id=user.id).exists():
+                # Resolve the membership-backed identity for the synced attendee;
+                # a non-member (orphan) stays NULL so the composite PROTECT FK holds.
+                membership_user_id = (
+                    user.id
+                    if OrganizationMembership.objects.filter(
+                        organization_id=existing_event.organization_id,
+                        user_id=user.id,
+                    ).exists()
+                    else None
+                )
                 changes.attendances_to_create.append(
                     EventAttendance(
+                        organization_id=existing_event.organization_id,
                         event=existing_event,
-                        user=None,
+                        user=user,
+                        membership_user_id=membership_user_id,
                         status=attendee.status,
                     )
                 )
