@@ -174,7 +174,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
             is_admin = user.is_organization_admin(membership.organization_id)
             owner = params.get("owner")
             if owner == "me":
-                qs = qs.filter(users=user)
+                qs = qs.filter(ownerships__membership_user_id=user.id).distinct()
             elif owner:
                 # A specific user id — admin-only; members cannot list others' calendars.
                 if not is_admin:
@@ -185,10 +185,10 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                     owner_id = int(owner)
                 except (TypeError, ValueError) as err:
                     raise ValidationError({"owner": "Must be 'me' or a numeric user id."}) from err
-                qs = qs.filter(users__id=owner_id)
+                qs = qs.filter(ownerships__membership_user_id=owner_id).distinct()
             elif not is_admin:
                 # No owner filter + non-admin: restrict to the caller's own calendars.
-                qs = qs.filter(users=user)
+                qs = qs.filter(ownerships__membership_user_id=user.id).distinct()
 
             include_unlisted = params.get("include_unlisted", "").lower() == "true"
             include_inactive = params.get("include_inactive", "").lower() == "true"
@@ -244,7 +244,9 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         ownership = (
             CalendarOwnership.objects.filter_by_organization(membership.organization_id)
             .filter(
-                user=request.user, is_default=True, calendar__visibility=CalendarVisibility.ACTIVE
+                membership=membership,
+                is_default=True,
+                calendar__visibility=CalendarVisibility.ACTIVE,
             )
             .select_related("calendar")
             .order_by("id")
@@ -294,7 +296,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
             # Non-bundle calendars (PERSONAL/RESOURCE/VIRTUAL): owner or admin.
             is_owner = CalendarOwnership.objects.filter(
                 calendar=calendar,
-                user=request.user,
+                membership_user_id=request.user.id,
                 organization_id=calendar.organization_id,
             ).exists()
             is_admin = request.user.is_organization_admin(calendar.organization_id)
@@ -519,7 +521,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         # Check ownership - user must own this calendar
         if not CalendarOwnership.objects.filter(
             calendar=calendar,
-            user=user,
+            membership_user_id=user.id,
             organization_id=calendar.organization_id,
         ).exists():
             return Response(
@@ -614,12 +616,14 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         end_datetime = data["end_datetime"]
         should_update_events = data["should_update_events"]
 
-        # Resolve the calendar's owner via CalendarOwnership
+        # Resolve the calendar's owner via CalendarOwnership (membership-backed only;
+        # orphan ownerships with a null membership cannot resolve an owner).
         # Use the default owner if multiple owners exist; else the first
         ownership = (
             CalendarOwnership.objects.filter(
                 calendar=calendar,
                 organization_id=calendar.organization_id,
+                membership_user_id__isnull=False,
             )
             .order_by("-is_default", "id")
             .first()
@@ -631,11 +635,9 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        calendar_owner = ownership.user
-
         # Resolve the owner's SocialAccount for the calendar's provider
         owner_social_account = SocialAccount.objects.filter(
-            user=calendar_owner, provider=calendar.provider
+            user_id=ownership.membership_user_id, provider=calendar.provider
         ).first()
 
         if not owner_social_account:
@@ -1151,6 +1153,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
             CalendarOwnership.objects.filter(
                 calendar=source_calendar,
                 organization_id=source_calendar.organization_id,
+                membership_user_id__isnull=False,
             )
             .order_by("-is_default", "id")
             .first()
@@ -1162,9 +1165,8 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        source_owner = ownership.user
         owner_social_account = SocialAccount.objects.filter(
-            user=source_owner, provider=source_calendar.provider
+            user_id=ownership.membership_user_id, provider=source_calendar.provider
         ).first()
 
         if not owner_social_account:

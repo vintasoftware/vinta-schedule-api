@@ -168,7 +168,7 @@ class OrganizationService:
         for calendar in calendars:
             ownership = (
                 CalendarOwnership.objects.filter_by_organization(organization.id)
-                .filter(calendar=calendar)
+                .filter(calendar=calendar, membership_user_id__isnull=False)
                 .order_by("-is_default", "id")
                 .first()
             )
@@ -177,7 +177,7 @@ class OrganizationService:
                 continue
 
             social_account = SocialAccount.objects.filter(
-                user=ownership.user, provider=calendar.provider
+                user_id=ownership.membership_user_id, provider=calendar.provider
             ).first()
             if social_account is None:
                 skipped.append(

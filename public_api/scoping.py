@@ -21,7 +21,7 @@ def scoped_calendar_ids(system_user: SystemUser, organization: Organization) -> 
         return None
     return set(
         Calendar.objects.filter_by_organization(organization.id)
-        .filter(ownerships__user__organization_memberships=system_user.scoped_to_membership_fk_id)
+        .filter(ownerships__membership__id=system_user.scoped_to_membership_fk_id)
         .distinct()
         .values_list("id", flat=True)
     )

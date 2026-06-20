@@ -285,10 +285,11 @@ def grant_calendar_owner_permissions(
 
     No-ops gracefully if ``permission_service`` is ``None``.
     """
-    # Grant permissions to all calendar owners
+    # Grant permissions to all calendar owners (resolved via membership; orphan
+    # ownerships with a null membership are intentionally skipped).
     calendar_owners = User.objects.filter(
-        calendar_ownerships__calendar=calendar,
-        calendar_ownerships__organization=calendar.organization,
+        organization_memberships__calendar_ownerships__calendar_fk_id=calendar.id,
+        organization_memberships__calendar_ownerships__organization_id=calendar.organization_id,
     ).distinct()
 
     for owner in calendar_owners:

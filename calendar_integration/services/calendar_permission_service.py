@@ -427,7 +427,7 @@ class CalendarPermissionService:
         return (
             CalendarOwnership.objects.filter_by_organization(group.organization_id)
             .filter(
-                user=user,
+                membership_user_id=user.id,
                 calendar_fk__group_slots__group_fk=group,
             )
             .exists()

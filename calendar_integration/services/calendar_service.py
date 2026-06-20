@@ -559,6 +559,7 @@ class CalendarService(BaseCalendarService):
                 organization=organization,
                 calendar=calendar,
                 user=self.user_or_token,
+                membership_user_id=self.user_or_token.id,
                 is_default=False,
             )
 
@@ -650,6 +651,7 @@ class CalendarService(BaseCalendarService):
                 organization=self.organization,
                 calendar=calendar,
                 user=self.user_or_token,
+                membership_user_id=self.user_or_token.id,
                 is_default=False,
             )
 
@@ -702,6 +704,7 @@ class CalendarService(BaseCalendarService):
                 organization=self.organization,
                 calendar=calendar,
                 user=self.user_or_token,
+                membership_user_id=self.user_or_token.id,
                 is_default=False,
             )
 
@@ -747,6 +750,7 @@ class CalendarService(BaseCalendarService):
                 organization=self.organization,
                 calendar=calendar,
                 user=self.user_or_token,
+                membership_user_id=self.user_or_token.id,
                 is_default=False,
             )
 
@@ -935,7 +939,7 @@ class CalendarService(BaseCalendarService):
         if not self.account or not (
             (
                 isinstance(self.account, SocialAccount)
-                and calendar.users.filter(id=self.account.user_id).exists()
+                and calendar.ownerships.filter(membership_user_id=self.account.user_id).exists()
             )
             or (
                 isinstance(self.account, GoogleCalendarServiceAccount)
@@ -946,17 +950,19 @@ class CalendarService(BaseCalendarService):
             # this calendar as default
             ownership = (
                 calendar.ownerships.order_by("-is_default", "created")
-                .select_related("user")
+                .select_related("membership__user")
                 .filter(
-                    user__in=User.objects.filter(
+                    membership_user_id__in=User.objects.filter(
                         socialaccount__provider=calendar.provider,
-                    )
+                    ).values("id")
                 )
                 .first()
             )
 
             if ownership:
-                return CalendarService.get_calendar_adapter_for_account(ownership.user)[0]
+                return CalendarService.get_calendar_adapter_for_account(ownership.membership.user)[
+                    0
+                ]
 
             # if the calendar doesn't have a valid owner, try to use self.calendar_adapter
 
@@ -1391,7 +1397,11 @@ class CalendarService(BaseCalendarService):
 
         ownership = (
             CalendarOwnership.objects.filter_by_organization(self.organization.id)
-            .filter(user=user, is_default=True, calendar__visibility=CalendarVisibility.ACTIVE)
+            .filter(
+                membership_user_id=user.id,
+                is_default=True,
+                calendar__visibility=CalendarVisibility.ACTIVE,
+            )
             .select_related("calendar")
             .order_by("id")
             .first()

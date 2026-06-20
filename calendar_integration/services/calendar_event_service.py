@@ -217,7 +217,7 @@ class CalendarEventService:
             CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
             .filter(
                 calendar_fk_id=calendar.id,
-                user__organization_memberships=system_user.scoped_to_membership_fk_id,
+                membership__id=system_user.scoped_to_membership_fk_id,
             )
             .exists()
         )

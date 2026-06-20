@@ -207,6 +207,7 @@ class CalendarBundleService:
                 organization=context.organization,
                 calendar=bundle_calendar,
                 user=context.user_or_token,
+                membership_user_id=context.user_or_token.id,
                 is_default=False,
             )
 
@@ -537,13 +538,18 @@ class CalendarBundleService:
 
         attendee_user_ids = {attendance.user_id for attendance in event_data.attendances}
 
-        # Add users who own child calendars
-        calendar_owners = User.objects.filter(
-            calendar_ownerships__calendar__in=child_calendars,
-            calendar_ownerships__organization=context.organization,
-        ).distinct()
+        # Add memberships that own child calendars (membership-backed owners only;
+        # orphan ownerships with a null membership are intentionally excluded).
+        owner_user_ids = (
+            CalendarOwnership.objects.filter_by_organization(context.organization.id)
+            .filter(
+                calendar_fk_id__in=[calendar.id for calendar in child_calendars],
+                membership_user_id__isnull=False,
+            )
+            .values_list("membership_user_id", flat=True)
+            .distinct()
+        )
 
-        for owner in calendar_owners:
-            attendee_user_ids.add(owner.id)
+        attendee_user_ids.update(owner_user_ids)
 
         return [EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids]

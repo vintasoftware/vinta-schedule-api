@@ -382,11 +382,15 @@ class CalendarSyncService:
             if calendar.calendar_type == CalendarType.RESOURCE:
                 continue
 
+            owner_user = context.account.user if context.account else None
             CalendarOwnership.objects.update_or_create(
                 organization=context.organization,
                 calendar=calendar,
-                user=context.account.user if context.account else None,
-                defaults={"is_default": calendar_data.is_default},
+                membership_user_id=owner_user.id if owner_user else None,
+                defaults={
+                    "is_default": calendar_data.is_default,
+                    "user": owner_user,
+                },
             )
 
             # Grant permissions to calendar owners
