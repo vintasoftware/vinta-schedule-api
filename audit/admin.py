@@ -38,13 +38,12 @@ import json
 import logging
 from collections.abc import Generator
 from datetime import UTC, datetime
-from io import StringIO
 from typing import Annotated, Any
 from urllib.parse import urlencode
 
 from django.contrib import admin
-from django.http import HttpRequest, HttpResponse
-from django.http.response import Http404, StreamingHttpResponse
+from django.http import HttpRequest, HttpResponse, HttpResponseNotAllowed
+from django.http.response import Http404, HttpResponseBase, StreamingHttpResponse
 from django.template.response import TemplateResponse
 from django.urls import path
 
@@ -75,14 +74,29 @@ def _parse_int(value: str | None) -> int | None:
 def _parse_datetime(value: str | None) -> datetime | None:
     """Parse an ISO datetime string (or date string) to a timezone-aware datetime.
 
-    Accepts:
-    - ``YYYY-MM-DDTHH:MM`` (datetime-local input)
-    - ``YYYY-MM-DD`` (date input — interpreted as start of that day UTC)
+    Accepts the full range of ISO 8601 forms recognised by ``datetime.fromisoformat``
+    (Python 3.11+), including:
 
-    Returns None on parse failure so the filter is silently skipped.
+    - ``YYYY-MM-DD`` (date only — interpreted as midnight UTC)
+    - ``YYYY-MM-DDTHH:MM`` (datetime-local, no offset — treated as UTC)
+    - ``YYYY-MM-DDTHH:MM:SS`` (with seconds)
+    - ``YYYY-MM-DDTHH:MM:SS.ffffff`` (with microseconds)
+    - ``YYYY-MM-DDTHH:MM:SSZ`` or ``YYYY-MM-DDTHH:MM:SS+00:00`` (offset-aware)
+
+    Falls back to explicit ``strptime`` patterns for extra safety, then returns
+    ``None`` on any unparseable input so the filter is silently skipped.
     """
     if not value:
         return None
+    # Python 3.11+ fromisoformat handles Z suffix and offsets directly.
+    try:
+        result = datetime.fromisoformat(value)
+        if result.tzinfo is None:
+            result = result.replace(tzinfo=UTC)
+        return result
+    except ValueError:
+        pass
+    # Fallback: explicit strptime patterns (belt-and-suspenders).
     for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d"):
         try:
             return datetime.strptime(value, fmt).replace(tzinfo=UTC)
@@ -282,6 +296,10 @@ class AuditAdmin(admin.ModelAdmin):
         base_qs_params["per_page"] = str(per_page)
         base_querystring = urlencode(base_qs_params)
 
+        # --- export querystring: active filters only, no per_page / page ---
+        export_qs_params = {k: v for k, v in active_filters.items() if v}
+        export_querystring = urlencode(export_qs_params)
+
         context: dict[str, Any] = {
             **self.admin_site.each_context(request),
             "title": "Audit records",
@@ -299,6 +317,7 @@ class AuditAdmin(admin.ModelAdmin):
             "has_diff_choices": has_diff_choices,
             "active_filters": active_filters,
             "base_querystring": base_querystring,
+            "export_querystring": export_querystring,
             # Django admin base template requires opts for breadcrumbs.
             "opts": self.model._meta,
             **(extra_context or {}),
@@ -439,6 +458,14 @@ class AuditAdmin(admin.ModelAdmin):
             logger.error("_csv_row_generator: repository not injected")
             return
 
+        class _Echo:
+            """Pseudo-buffer whose write() returns the value directly."""
+
+            def write(self, value: str) -> str:
+                return value
+
+        writer = csv.writer(_Echo())
+
         # --- CSV header row ---
         header = [
             "id",
@@ -456,10 +483,7 @@ class AuditAdmin(admin.ModelAdmin):
             "affected_membership_ids",
             "diff",
         ]
-        buffer = StringIO()
-        writer = csv.writer(buffer)
-        writer.writerow(header)
-        yield buffer.getvalue()
+        yield writer.writerow(header)
 
         # --- Paginate through all records ---
         offset = 0
@@ -469,9 +493,6 @@ class AuditAdmin(admin.ModelAdmin):
                 break
 
             for record in page.items:
-                buffer = StringIO()
-                writer = csv.writer(buffer)
-
                 # Serialize complex fields as JSON strings; None → empty string
                 system_user_scopes_json = (
                     json.dumps(record.actor.system_user_scopes)
@@ -501,8 +522,7 @@ class AuditAdmin(admin.ModelAdmin):
                     affected_membership_ids_json,
                     diff_json,
                 ]
-                writer.writerow(row)
-                yield buffer.getvalue()
+                yield writer.writerow(row)
 
             offset += chunk_size
             if offset >= page.total:
@@ -513,7 +533,7 @@ class AuditAdmin(admin.ModelAdmin):
         self,
         request: HttpRequest,
         repository: Annotated[AuditRepository | None, Provide["audit_repository"]] = None,
-    ) -> StreamingHttpResponse:
+    ) -> HttpResponseBase:
         """Stream a CSV export of the currently filtered/searched audits.
 
         Respects all active GET filters (action, actor_type, created_after/before,
@@ -539,13 +559,17 @@ class AuditAdmin(admin.ModelAdmin):
         via ``admin_site.admin_view``).  Non-staff requests are redirected to login
         before this method is called.
         """
+        # --- reject non-GET methods (export is strictly read-only) ---
+        if request.method != "GET":
+            return HttpResponseNotAllowed(["GET"])
+
         # --- parse filters from request GET ---
         q = _build_audit_query(dict(request.GET))
 
         # --- create streaming response ---
         response = StreamingHttpResponse(
             self._csv_row_generator(repository, q),
-            content_type="text/csv",
+            content_type="text/csv; charset=utf-8",
         )
         response["Content-Disposition"] = "attachment; filename=audit_export.csv"
         return response

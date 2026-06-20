@@ -2,7 +2,7 @@
 
 import csv
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from io import StringIO
 
 from django.contrib.auth import get_user_model
@@ -31,11 +31,11 @@ class TestAuditAdminExportAccess:
         return client
 
     @pytest.fixture
-    def org(self):
+    def org(self, db):
         """Test organization."""
         return Organization.objects.create(name="Test Org")
 
-    def test_anonymous_redirects_to_login(self, client, db, org):
+    def test_anonymous_redirects_to_login(self, client, db):
         """GET /admin/audit/audit/export/ without auth redirects to login."""
         response = client.get(reverse("admin:audit_audit_export"))
         assert response.status_code == 302
@@ -56,7 +56,7 @@ class TestAuditAdminExportAccess:
         """Superuser can access the export endpoint."""
         response = admin_client.get(reverse("admin:audit_audit_export"))
         assert response.status_code == 200
-        assert response["Content-Type"] == "text/csv"
+        assert "text/csv" in response["Content-Type"]
         assert "attachment" in response["Content-Disposition"]
 
     def test_staff_user_can_access(self, admin_client, db):
@@ -75,19 +75,15 @@ class TestAuditAdminExportAccess:
         assert response["Content-Disposition"] == "attachment; filename=audit_export.csv"
 
     def test_content_type_is_csv(self, admin_client):
-        """Response has Content-Type: text/csv."""
+        """Response has Content-Type: text/csv; charset=utf-8."""
         response = admin_client.get(reverse("admin:audit_audit_export"))
         assert response.status_code == 200
-        assert response["Content-Type"] == "text/csv"
+        assert response["Content-Type"] == "text/csv; charset=utf-8"
 
     def test_export_is_read_only_get_only(self, admin_client):
-        """POST to export endpoint works but doesn't mutate anything."""
-        # Streaming responses don't restrict POST, but it's read-only so it still works
-        # This test verifies that no mutation occurs - data should be the same after POST
+        """POST to export endpoint returns 405 Method Not Allowed."""
         response = admin_client.post(reverse("admin:audit_audit_export"))
-        # Expect a successful response (streaming response accepts POST same as GET)
-        assert response.status_code == 200
-        assert response["Content-Type"] == "text/csv"
+        assert response.status_code == 405
 
 
 class TestAuditAdminExportStructure:
@@ -102,7 +98,7 @@ class TestAuditAdminExportStructure:
         return client
 
     @pytest.fixture
-    def org(self):
+    def org(self, db):
         """Test organization."""
         return Organization.objects.create(name="Test Org")
 
@@ -192,56 +188,65 @@ class TestAuditAdminExportFilters:
         return client
 
     @pytest.fixture
-    def org(self):
+    def org(self, db):
         """Test organization."""
         return Organization.objects.create(name="Test Org")
 
     @pytest.fixture
     def audit_records(self, org):
-        """Create multiple audit records for filtering tests."""
-        base_time = datetime.now(UTC)
+        """Create multiple audit records for filtering tests.
+
+        Records are backdated via update() after creation (auto_now_add prevents
+        setting created_at on create) to well-separated timestamps so that
+        date-range filter tests can use unambiguous boundaries.
+
+        Timestamps:
+        - Record 1 (CREATE):  2020-01-01T00:00:00Z
+        - Record 2 (UPDATE):  2022-06-01T00:00:00Z
+        - Record 3 (DELETE):  2024-01-01T00:00:00Z
+        """
         records = []
 
         # Record 1: action=CREATE
-        records.append(
-            Audit.objects.create(
-                organization_id=org.id,
-                action=AuditAction.CREATE,
-                actor_type=AuditActorType.SYSTEM,
-                actor_id=None,
-                subject_type="app.Model",
-                subject_id="1",
-                created_at=base_time,
-            )
+        r1 = Audit.objects.create(
+            organization_id=org.id,
+            action=AuditAction.CREATE,
+            actor_type=AuditActorType.SYSTEM,
+            actor_id=None,
+            subject_type="app.Model",
+            subject_id="1",
         )
+        Audit.original_manager.filter(pk=r1.pk).update(created_at=datetime(2020, 1, 1, tzinfo=UTC))
+        r1.refresh_from_db()
+        records.append(r1)
 
         # Record 2: action=UPDATE with diff
-        records.append(
-            Audit.objects.create(
-                organization_id=org.id,
-                action=AuditAction.UPDATE,
-                actor_type=AuditActorType.SYSTEM,
-                actor_id=None,
-                subject_type="app.Model",
-                subject_id="2",
-                diff={"field": {"old": "old_value", "new": "new_value"}},
-                created_at=base_time + timedelta(seconds=1),
-            )
+        r2 = Audit.objects.create(
+            organization_id=org.id,
+            action=AuditAction.UPDATE,
+            actor_type=AuditActorType.SYSTEM,
+            actor_id=None,
+            subject_type="app.Model",
+            subject_id="2",
+            diff={"field": {"old": "old_value", "new": "new_value"}},
         )
+        Audit.original_manager.filter(pk=r2.pk).update(created_at=datetime(2022, 6, 1, tzinfo=UTC))
+        r2.refresh_from_db()
+        records.append(r2)
 
         # Record 3: action=DELETE, different actor type
-        records.append(
-            Audit.objects.create(
-                organization_id=org.id,
-                action=AuditAction.DELETE,
-                actor_type=AuditActorType.MEMBERSHIP,
-                actor_id=999,
-                actor_role=OrganizationRole.ADMIN,
-                subject_type="app.Model",
-                subject_id="3",
-                created_at=base_time + timedelta(seconds=2),
-            )
+        r3 = Audit.objects.create(
+            organization_id=org.id,
+            action=AuditAction.DELETE,
+            actor_type=AuditActorType.MEMBERSHIP,
+            actor_id=999,
+            actor_role=OrganizationRole.ADMIN,
+            subject_type="app.Model",
+            subject_id="3",
         )
+        Audit.original_manager.filter(pk=r3.pk).update(created_at=datetime(2024, 1, 1, tzinfo=UTC))
+        r3.refresh_from_db()
+        records.append(r3)
 
         return records
 
@@ -313,10 +318,14 @@ class TestAuditAdminExportFilters:
         assert rows[0]["subject_id"] == "2"
 
     def test_created_after_filter_narrows_export(self, admin_client, org, audit_records):
-        """Export with created_after filter includes only newer records."""
-        base_time = audit_records[0].created_at
-        # Use a time between record 1 and record 2 (which is 1 second apart)
-        after_time = base_time.isoformat()
+        """Export with created_after filter excludes older records.
+
+        Records are at 2020-01-01, 2022-06-01, 2024-01-01 UTC.
+        Filtering with created_after = 2021-01-01Z should return only
+        records 2 and 3 (those strictly after the boundary).
+        """
+        # Boundary between record 1 (2020) and record 2 (2022).
+        after_time = "2021-01-01T00:00:00Z"
         response = admin_client.get(
             reverse("admin:audit_audit_export"),
             {
@@ -327,26 +336,34 @@ class TestAuditAdminExportFilters:
         content = b"".join(response.streaming_content).decode("utf-8")
         reader = csv.DictReader(StringIO(content))
         rows = list(reader)
-        # Records with created_at >= base_time should include all 3 (since they're >= the exact time)
-        # so we need to use a time strictly after record 1
-        # For now, just verify that filtering works by checking at least one record is returned
-        assert len(rows) >= 1
+        # Only records 2 and 3 are after 2021-01-01.
+        assert len(rows) == 2
+        returned_ids = {int(r["id"]) for r in rows}
+        assert returned_ids == {audit_records[1].id, audit_records[2].id}
 
     def test_created_before_filter_narrows_export(self, admin_client, org, audit_records):
-        """Export with created_before filter is applied (integration test)."""
-        # Just verify that the endpoint accepts the param and returns valid CSV
+        """Export with created_before filter excludes newer records.
+
+        Records are at 2020-01-01, 2022-06-01, 2024-01-01 UTC.
+        Filtering with created_before = 2023-01-01Z should return only
+        records 1 and 2 (those strictly before the boundary).
+        """
+        # Boundary between record 2 (2022-06-01) and record 3 (2024-01-01).
+        before_time = "2023-01-01T00:00:00Z"
         response = admin_client.get(
             reverse("admin:audit_audit_export"),
             {
-                "created_before": "2099-12-31T23:59:59Z",
+                "created_before": before_time,
                 "organization_id": str(org.id),
             },
         )
         content = b"".join(response.streaming_content).decode("utf-8")
         reader = csv.DictReader(StringIO(content))
         rows = list(reader)
-        # With a future before_time, all records should be included
-        assert len(rows) == len(audit_records)
+        # Only records 1 and 2 are before 2023-01-01.
+        assert len(rows) == 2
+        returned_ids = {int(r["id"]) for r in rows}
+        assert returned_ids == {audit_records[0].id, audit_records[1].id}
 
     def test_organization_filter_narrows_export(self, admin_client):
         """Export with organization_id filter includes only that org's records."""
@@ -394,7 +411,7 @@ class TestAuditAdminExportSerialization:
         return client
 
     @pytest.fixture
-    def org(self):
+    def org(self, db):
         """Test organization."""
         return Organization.objects.create(name="Test Org")
 
@@ -580,7 +597,7 @@ class TestAuditAdminExportLargeResultSet:
         return client
 
     @pytest.fixture
-    def org(self):
+    def org(self, db):
         """Test organization."""
         return Organization.objects.create(name="Test Org")
 
@@ -611,3 +628,5 @@ class TestAuditAdminExportLargeResultSet:
         reader = csv.DictReader(StringIO(content))
         rows = list(reader)
         assert len(rows) == num_records
+        # Prove no chunk-boundary duplication (not just count coincidence).
+        assert len({r["id"] for r in rows}) == num_records
