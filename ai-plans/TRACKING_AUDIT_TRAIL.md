@@ -77,8 +77,12 @@
 ## Current phase
 - Phase 8 — Admin read-only detail (Tier 2, implementer) — NEXT (after DI amend)
 
-## Pending amendment
-- User request (2026-06-19): rework DI to use method-argument injection (`@inject` + `Provide`) like other services — primarily the Phase 5 Celery task (`persist_audit_record`), which currently resolves the repository at runtime from the container. Also restore `@inject` on `AuditService`. Handled via /amend-plan.
+## Amendment applied (2026-06-19) — DI method-argument injection ✅
+- **Trigger**: user request to use `@inject` + `Provide` method/constructor-argument injection like the project's other services/tasks, instead of runtime `di_core.containers.container` resolution.
+- **Path**: amend-plan refuses modular-commits force-push, so resolved as a **forward corrective commit** on `plan/audit-trail` (no history rewrite). Plan amended (Guiding Decisions "DI injection style" row + Phase 5/6 bodies + Amendments log).
+- **Commits**: `b6aed1a` plan amendment, `2037969` DI rework (service/task/admin/container), `07f37c9` wiring test + DI test polish.
+- **Result**: `AuditService.__init__` injects `repository` via `@inject` (container = `providers.Factory(AuditService)`, no explicit dep — `webhook_service` pattern); `persist_audit_record` task uses `@app.task`+`@inject` (`webhooks/tasks.py` pattern) with a `None` guard; admin `changelist_view` injects via `@inject`. All runtime container resolution removed. **Root cause of the original failure found**: `from __future__ import annotations` (PEP 563) stringified annotations so dependency-injector couldn't see `Provide[...]` markers — removed from the 3 modules. DIWiringWarning eliminated. Full suite green (2822 passed).
+- **Reviewer note rejected**: restoring explicit `repository=audit_repository` on the Factory was declined — it would reintroduce the DIWiringWarning and diverge from the `webhook_service` convention; the single-global-container model is project-wide and `.override()` works on it (stub tests pass).
 
 ## Remaining phases
 - Phase 2 — Audit model + through table + migration (Tier 2, migration-author)
