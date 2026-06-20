@@ -154,12 +154,30 @@ column (4b) loses attendee identity for orphan attendances. **Before 4b drops th
   (external_attendee alt); null-user tokens excluded from backfill + orphan report via `AND user_id IS NOT NULL`.
   10 tests. 2672 passed. Reviewer: no findings.
 
+### Phase 6 — CalendarManagementToken cutover ✅
+- **Status**: merged-ready (PR open). **Model**: claude-opus (T4) · implementer + reviewer-by-orchestrator (sub-agent reviewer
+  hit transient 529; orchestrator performed Layer 3 directly).
+- **Branch**: `…/phase-6` (stacked on 5) · **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/154
+- **Summary**: Full token cutover (no M2M → single phase). `_resolve_token_audit_actor` preserves the old 3-way audit
+  behavior (member→User, external→token, none→user_or_token; verified equivalent against phase-5). Mint guard
+  `_resolve_token_membership_user_id` (member mints guarded; external/booking tokens leave membership_user_id NULL).
+  Dropped `user` (0035 SeparateDatabaseAndState) + deferrable PROTECT FK (0036). No partial unique (member holds many
+  tokens). All mint sites FK-safe; org-cascade test present. 2671 passed.
+
+## ⚠️ Phase 7b CRITICAL: the three calendar PROTECT FKs (calownership/evattendance/calmgmttoken) reference
+`organizations_organizationmembership (user_id, organization_id)` via the `uniq_membership_user_organization`
+unique constraint. The plan removes that unique when adding the composite PK `(user, organization)`. The composite
+PK provides a unique index on the SAME columns, but Postgres FKs bind to a specific unique constraint — 7b MUST add
+the composite PK BEFORE dropping the old unique (or the 3 FKs lose their referenced target). Verify all 3 FKs still
+valid post-swap. Composite PK column order must be (user_id, organization_id) to match the FK references.
+
 ## Current phase
-- Phase 6 — CalendarManagementToken cutover (app layer + drop user + PROTECT FK) (next; token has no M2M → may be single phase)
+- Phase 7a — Convert OrganizationInvitation.membership (OneToOne) + public_api.SystemUser.scoped_to_membership (FK)
+  off real FKs to OrganizationMembership; rewrite all membership.id/.pk/membership_id refs (incl. public_api/scoping.py
+  `ownerships__membership__id=` from Phase 2a). Enables the composite PK. (next)
 
 ## Remaining phases
-- Phase 6 — CalendarManagementToken cutover (T4 · implementer/migration-author)
-- Phase 7a — FK conversions (OrganizationInvitation.membership + public_api.SystemUser.scoped_to_membership) + .id rewrites (T4)
+- Phase 7a — FK conversions + .id rewrites (T4 · implementer)
 - Phase 7b — OrganizationMembership composite PK (T4 · migration-author)
 - Phase 6 — CalendarManagementToken cutover (T4 · implementer/migration-author) [likely split 6a/6b]
 - Phase 7a — FK conversions (OrganizationInvitation.membership + public_api.SystemUser.scoped_to_membership) + .id rewrites (T4)
