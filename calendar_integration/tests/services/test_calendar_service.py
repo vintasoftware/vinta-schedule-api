@@ -4215,14 +4215,18 @@ def test_process_event_attendees_new_user(
 
 
 @pytest.mark.django_db
-def test_process_event_attendees_non_member_stays_orphan(
+def test_process_event_attendees_non_member_becomes_external_and_is_idempotent(
     social_account, social_token, mock_google_adapter, calendar_event
 ):
-    """A synced attendee who is not a member gets a NULL membership_user_id (orphan).
+    """A synced attendee resolving to a non-member User becomes an EXTERNAL attendee.
 
-    The orphan still becomes an internal attendance (the synced attendee resolves to
-    a real User), but with no membership-backed identity — the dropped ``user`` FK
-    means the row is identity-less going forward.
+    Post-cutover, internal attendances are membership-only: a synced attendee whose
+    email matches a ``User`` who is NOT an org member has no membership-backed identity
+    to dedupe on, so it is routed to an ``EventExternalAttendance`` (deduped by email)
+    rather than an identity-less internal ``EventAttendance``.
+
+    Running the sync path twice must stay idempotent: the external-attendance count
+    stays 1 and no internal attendance is ever created.
     """
     User.objects.create_user(email="nonmember@example.com", password="pw")
 
@@ -4241,13 +4245,38 @@ def test_process_event_attendees_non_member_stays_orphan(
 
     service = CalendarService()
     service.authenticate(account=social_account.user, organization=calendar_event.organization)
-    changes = EventsSyncChanges()
 
+    # First sync pass: the non-member synced attendee is routed to an external
+    # attendance (deduped by email), never to an internal attendance.
+    changes = EventsSyncChanges()
     service._process_event_attendees(event_data, calendar_event, changes)
 
-    assert len(changes.attendances_to_create) == 1
-    attendance = changes.attendances_to_create[0]
-    assert attendance.membership_user_id is None
+    assert len(changes.attendances_to_create) == 0
+    assert len(changes.external_attendances_to_create) == 1
+    external_attendance = changes.external_attendances_to_create[0]
+    assert external_attendance.event == calendar_event
+    assert external_attendance.external_attendee.email == "nonmember@example.com"
+
+    # Persist the first pass so the second pass sees the existing external attendance.
+    EventExternalAttendance.objects.bulk_create(changes.external_attendances_to_create)
+
+    # Second sync pass: the existing external attendance is matched by email, so no
+    # new attendance (internal or external) is produced — the regression guard against
+    # unbounded duplicate-orphan accumulation.
+    changes = EventsSyncChanges()
+    service._process_event_attendees(event_data, calendar_event, changes)
+
+    assert len(changes.attendances_to_create) == 0
+    assert len(changes.external_attendances_to_create) == 0
+
+    assert (
+        EventExternalAttendance.objects.filter(
+            event=calendar_event,
+            external_attendee__email="nonmember@example.com",
+        ).count()
+        == 1
+    )
+    assert not EventAttendance.objects.filter(event=calendar_event).exists()
 
 
 @pytest.mark.django_db

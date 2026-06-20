@@ -876,9 +876,7 @@ class CalendarSyncService:
                 else None
             )
 
-            # A member attendance is deduped by ``membership_user_id``; an orphan
-            # (non-member with a matching User) has no membership-backed identity and
-            # cannot be deduped, so it is created each time the sync sees it.
+            # A member attendance is deduped by ``membership_user_id``.
             member_attendance_exists = (
                 membership_user_id is not None
                 and existing_event.attendances.filter(
@@ -886,7 +884,11 @@ class CalendarSyncService:
                 ).exists()
             )
 
-            if user and not member_attendance_exists:
+            # A synced attendee whose email matches a ``User`` who is NOT an org member
+            # is treated as an EXTERNAL attendee (deduped by email) — internal
+            # attendances are membership-only post-cutover, so a non-member has no
+            # membership-backed identity to dedupe on.
+            if membership_user_id is not None and not member_attendance_exists:
                 changes.attendances_to_create.append(
                     EventAttendance(
                         organization_id=existing_event.organization_id,
@@ -896,7 +898,7 @@ class CalendarSyncService:
                     )
                 )
             elif (
-                not user
+                membership_user_id is None
                 and not existing_event.external_attendances.filter(
                     external_attendee__email=attendee.email
                 ).exists()
