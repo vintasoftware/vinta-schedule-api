@@ -757,7 +757,7 @@ class CalendarSyncService:
                 }
                 # Derive the provider from the sync adapter when available.
                 if context.calendar_adapter is not None:
-                    provider: CalendarProvider | str = context.calendar_adapter.provider
+                    provider = context.calendar_adapter.provider
                 elif existing_event.calendar is not None:
                     provider = existing_event.calendar.provider
                 else:

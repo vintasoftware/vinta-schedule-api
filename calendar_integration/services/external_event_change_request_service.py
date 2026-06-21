@@ -201,16 +201,14 @@ class ExternalEventChangeRequestService:
             )
 
         # Record audit entry after the atomic block so the commit-based
-        # on_commit delivery in AuditService fires after the row is visible.
+        # on_commit delivery in AuditService fires after the outermost transaction commits.
         if self.audit_service is not None:
             actor = self.audit_service.system_actor()
             subject = self.audit_service.subject_from_instance(change_request)
-            # Diff: retained_values as "old" (what existed), None as "new"
+            # Diff: all retained_values fields shown as "old" (what existed), None as "new"
             # (nothing remains if the deletion is approved).
             diff: dict[str, Any] = {
-                field: {"old": retained_values.get(field), "new": None}
-                for field in retained_values
-                if retained_values.get(field) is not None
+                field: {"old": retained_values.get(field), "new": None} for field in retained_values
             }
             self.audit_service.record(
                 organization_id=event.organization_id,

@@ -656,6 +656,20 @@ def test_change_request_deletion_creation_records_audit_entry(
     assert payload["diff"]["title"]["old"] == "Audited Event Title"
     assert payload["diff"]["title"]["new"] is None
 
+    # Description must be in the audit diff with the correct old value.
+    assert "description" in payload["diff"]
+    assert payload["diff"]["description"]["old"] == "Audited description"
+    assert payload["diff"]["description"]["new"] is None
+
+    # start_time and end_time must be in the audit diff with correct isoformat values.
+    assert "start_time" in payload["diff"]
+    assert payload["diff"]["start_time"]["old"] == "2025-09-01T09:00:00+00:00"
+    assert payload["diff"]["start_time"]["new"] is None
+
+    assert "end_time" in payload["diff"]
+    assert payload["diff"]["end_time"]["old"] == "2025-09-01T10:00:00+00:00"
+    assert payload["diff"]["end_time"]["new"] is None
+
     # The local event is still present (not deleted).
     assert CalendarEvent.objects.filter(
         external_id="evt_del_audit_cr",
