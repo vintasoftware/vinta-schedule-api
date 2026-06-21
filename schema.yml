@@ -11249,6 +11249,7 @@ components:
       - update_calendar_bundle
       - disable_calendar_bundle
       - webhook_configuration
+      - external_event_change_request
       type: string
       description: |-
         * `calendar_event` - Calendar Event
@@ -11291,6 +11292,7 @@ components:
         * `update_calendar_bundle` - Update Calendar Bundle
         * `disable_calendar_bundle` - Disable Calendar Bundle
         * `webhook_configuration` - Webhook Configuration
+        * `external_event_change_request` - External Event Change Request
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.

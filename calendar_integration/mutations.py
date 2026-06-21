@@ -8,12 +8,16 @@ from django.core.exceptions import PermissionDenied
 from django.db import transaction
 
 import strawberry
+from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
+from calendar_integration.constants import ExternalEventChangeRequestStatus
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarGroupValidationError,
+    ChangeRequestIneligibleError,
+    ChangeRequestNotPendingError,
     EventManagementError,
     InvalidTokenError,
     NoAvailableTimeWindowsError,
@@ -23,18 +27,22 @@ from calendar_integration.exceptions import (
     TokenRevokedError,
 )
 from calendar_integration.graphql import (
+    ApproveExternalEventChangeRequestResult,
     BookingCodeErrorCode,
     BookingCodeResult,
     CalendarEventGraphQLType,
     CalendarGroupGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
     CodeEventResult,
+    RejectExternalEventChangeRequestResult,
 )
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    CalendarOwnership,
     EventManagementPermissions,
+    ExternalEventChangeRequest,
 )
 from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
@@ -47,8 +55,11 @@ from calendar_integration.services.dataclasses import (
     ExternalAttendeeInputData,
     ResourceAllocationInputData,
 )
+from calendar_integration.services.external_event_change_request_service import (
+    ExternalEventChangeRequestService,
+)
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 
 
@@ -2002,3 +2013,262 @@ class CalendarGroupMutations:
 
         # The event is deleted; return success without attempting to include it.
         return CodeEventResult(success=True)
+
+
+# ---------------------------------------------------------------------------
+# ExternalEventChangeRequest mutations
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ExternalEventChangeRequestMutationDependencies:
+    """Dependencies for ExternalEventChangeRequest mutations."""
+
+    external_event_change_request_service: ExternalEventChangeRequestService
+    calendar_service: "CalendarService"
+
+
+@inject
+def get_external_event_change_request_mutation_dependencies(
+    external_event_change_request_service: Annotated[
+        ExternalEventChangeRequestService | None,
+        Provide["external_event_change_request_service"],
+    ] = None,
+    calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+) -> ExternalEventChangeRequestMutationDependencies:
+    """Get ExternalEventChangeRequest mutation dependencies from DI container."""
+    required = [external_event_change_request_service, calendar_service]
+    if any(dep is None for dep in required):
+        raise GraphQLError(
+            f"Missing required dependency {', '.join([str(d) for d in required if d is None])}"
+        )
+    return ExternalEventChangeRequestMutationDependencies(
+        external_event_change_request_service=cast(
+            ExternalEventChangeRequestService, external_event_change_request_service
+        ),
+        calendar_service=cast("CalendarService", calendar_service),
+    )
+
+
+def _resolve_acting_membership_from_info(
+    info: strawberry.Info, org: Organization
+) -> OrganizationMembership:
+    """Resolve the acting OrganizationMembership from the public-API request context.
+
+    For scoped tokens (``scoped_to_membership_user_id`` is set), the
+    membership is the one the token was scoped to.  For org-wide tokens
+    (``scoped_to_membership_user_id`` is None), there is no user-level
+    membership identity — raise ``GraphQLError`` so callers get a clean
+    "membership required" error.
+
+    Args:
+        info: Strawberry GraphQL execution info carrying the request context.
+        org: The organization the token belongs to (already resolved from
+            ``request.public_api_organization``).
+
+    Returns:
+        The active ``OrganizationMembership`` for the scoped token's owner.
+
+    Raises:
+        GraphQLError: When the token is org-wide (no acting membership) or
+            the membership is no longer active.
+    """
+    request = info.context.request
+    system_user = getattr(request, "public_api_system_user", None)
+    if system_user is None or system_user.scoped_to_membership_user_id is None:
+        raise GraphQLError(
+            "This operation requires a provider-scoped token with an associated membership. "
+            "Org-wide tokens cannot approve or reject change requests."
+        )
+    try:
+        return OrganizationMembership.objects.get(
+            organization_id=org.id,
+            user_id=system_user.scoped_to_membership_user_id,
+            is_active=True,
+        )
+    except OrganizationMembership.DoesNotExist as exc:
+        raise GraphQLError(
+            "The token's scoped membership is no longer active in this organization."
+        ) from exc
+
+
+@strawberry.type
+class ExternalEventChangeRequestMutations:
+    """GraphQL mutations for approving and rejecting external event change requests."""
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def approve_external_event_change_request(
+        self,
+        info: strawberry.Info,
+        id: int,  # noqa: A002
+    ) -> ApproveExternalEventChangeRequestResult:
+        """Approve a PENDING external event change request.
+
+        Applies the proposed change locally (update: writes proposed field values;
+        delete: removes the local event) and marks the request APPROVED.
+
+        The acting membership is resolved from the token's ``scoped_to_membership``.
+        Only provider-scoped tokens (with an associated membership) can resolve
+        change requests — org-wide tokens are rejected.
+
+        The token's OrganizationResourceAccess must include the
+        EXTERNAL_EVENT_CHANGE_REQUEST resource.
+
+        Returns:
+            ApproveExternalEventChangeRequestResult with the updated change request
+            on success; error_message set on failure.
+
+        GraphQL errors:
+        - Org-wide token (no acting membership) → GraphQLError.
+        - Caller not eligible to resolve this request → GraphQLError (403 semantics).
+        - Request is no longer PENDING → GraphQLError (409 semantics).
+        """
+        org = info.context.request.public_api_organization
+        if not org:
+            raise GraphQLError("Organization not found in request context")
+
+        acting_membership = _resolve_acting_membership_from_info(info, org)
+        deps = get_external_event_change_request_mutation_dependencies()
+
+        try:
+            change_request = ExternalEventChangeRequest.objects.filter_by_organization(org.id).get(
+                id=id
+            )
+        except ExternalEventChangeRequest.DoesNotExist:
+            return ApproveExternalEventChangeRequestResult(
+                success=False,
+                error_message="Change request not found.",
+            )
+
+        try:
+            updated = deps.external_event_change_request_service.approve(
+                change_request,
+                membership=acting_membership,
+            )
+        except ChangeRequestIneligibleError as exc:
+            raise GraphQLError(
+                str(exc) or "You are not eligible to resolve this change request."
+            ) from exc
+        except ChangeRequestNotPendingError as exc:
+            raise GraphQLError(str(exc) or "This change request is no longer pending.") from exc
+
+        return ApproveExternalEventChangeRequestResult(
+            success=True,
+            change_request=updated,  # type: ignore[arg-type]
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def reject_external_event_change_request(
+        self,
+        info: strawberry.Info,
+        id: int,  # noqa: A002
+    ) -> RejectExternalEventChangeRequestResult:
+        """Reject a PENDING external event change request, re-converging the provider.
+
+        Pushes the retained local values back to the external provider (update:
+        calls ``update_event`` with retained values; delete: re-creates the event
+        on the provider via ``create_event`` and rebinds the local external id) and
+        marks the request REJECTED.
+
+        Authentication for the outbound provider write is established using the
+        calendar owner's social account credentials — the same pattern used by the
+        REST Phase 8a reject action. The calendar's primary ownership row is resolved
+        to find the owner's SocialAccount for the calendar's provider.
+
+        The acting membership is resolved from the token's ``scoped_to_membership``.
+        Only provider-scoped tokens (with an associated membership) can resolve
+        change requests — org-wide tokens are rejected.
+
+        The token's OrganizationResourceAccess must include the
+        EXTERNAL_EVENT_CHANGE_REQUEST resource.
+
+        Returns:
+            RejectExternalEventChangeRequestResult with the updated change request
+            on success; error_message set on failure.
+
+        GraphQL errors:
+        - Org-wide token (no acting membership) → GraphQLError.
+        - Caller not eligible to resolve this request → GraphQLError (403 semantics).
+        - Request is no longer PENDING → GraphQLError (409 semantics).
+        - No calendar / owner / social account found → GraphQLError (400 semantics).
+        """
+        org = info.context.request.public_api_organization
+        if not org:
+            raise GraphQLError("Organization not found in request context")
+
+        acting_membership = _resolve_acting_membership_from_info(info, org)
+        deps = get_external_event_change_request_mutation_dependencies()
+
+        try:
+            change_request = ExternalEventChangeRequest.objects.filter_by_organization(org.id).get(
+                id=id
+            )
+        except ExternalEventChangeRequest.DoesNotExist:
+            return RejectExternalEventChangeRequestResult(
+                success=False,
+                error_message="Change request not found.",
+            )
+
+        # Guard 1: non-PENDING → GraphQLError immediately, before any outbound-auth work.
+        if change_request.status != ExternalEventChangeRequestStatus.PENDING:
+            raise GraphQLError("This change request is no longer pending.")
+
+        # Guard 2: event was deleted → ineligible to reject.
+        event = change_request.event
+        if event is None:
+            raise GraphQLError("Cannot reject a change request with no associated event.")
+
+        calendar = event.calendar
+        if calendar is None:
+            raise GraphQLError("Event has no associated calendar; cannot authenticate provider.")
+
+        # Resolve the calendar owner and authenticate the CalendarService using the
+        # owner's social account credentials (matching the REST phase 8a pattern).
+        # The calendar's primary ownership row determines which social account to use.
+        ownership = (
+            CalendarOwnership.objects.filter(
+                calendar=calendar,
+                organization_id=calendar.organization_id,
+                membership_user_id__isnull=False,
+            )
+            .order_by("-is_default", "id")
+            .first()
+        )
+        if not ownership:
+            raise GraphQLError("Calendar has no owner; cannot authenticate with provider.")
+
+        owner_social_account = SocialAccount.objects.filter(
+            user_id=ownership.membership_user_id, provider=calendar.provider
+        ).first()
+        if not owner_social_account:
+            raise GraphQLError(
+                f"Calendar owner has no linked {calendar.provider} account; "
+                "cannot push the undo to the provider."
+            )
+
+        # Authenticate the CalendarService and resolve the write adapter.
+        deps.calendar_service.authenticate(
+            account=owner_social_account,
+            organization=acting_membership.organization,
+        )
+        write_adapter = deps.calendar_service._get_write_adapter_for_calendar(calendar)
+        if write_adapter is None:
+            raise GraphQLError("Could not resolve a write adapter for the calendar's provider.")
+
+        try:
+            updated = deps.external_event_change_request_service.reject(
+                change_request,
+                membership=acting_membership,
+                write_adapter=write_adapter,
+            )
+        except ChangeRequestIneligibleError as exc:
+            raise GraphQLError(
+                str(exc) or "You are not eligible to resolve this change request."
+            ) from exc
+        except ChangeRequestNotPendingError as exc:
+            raise GraphQLError(str(exc) or "This change request is no longer pending.") from exc
+
+        return RejectExternalEventChangeRequestResult(
+            success=True,
+            change_request=updated,  # type: ignore[arg-type]
+        )
