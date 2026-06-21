@@ -542,6 +542,10 @@ def test_build_ics_recurring_event_with_cancelled_exception_emits_exdate():
         frequency="DAILY",
         external_id="evt-with-exdate",
     )
+    # Use a non-UTC timezone so DTSTART carries a TZID and we can assert EXDATE
+    # uses the SAME TZID (RFC 5545 §3.8.5.1) rather than a UTC `Z` instant.
+    # (Set via update so the generated start_time recomputes on reload below.)
+    CalendarEvent.objects.filter(id=event.id).update(timezone="America/New_York")
 
     # Create a cancelled exception for 2025-06-25 08:00 UTC
     cancelled_dt = datetime.datetime(2025, 6, 25, 8, 0, tzinfo=datetime.UTC)
@@ -579,9 +583,25 @@ def test_build_ics_recurring_event_with_cancelled_exception_emits_exdate():
         else:
             exdate_dts.append(ed.dt)
 
-    # Verify the cancelled occurrence datetime is present
+    # Verify the cancelled occurrence datetime is present (absolute instant)
     exdate_utcs = [dt.astimezone(datetime.UTC) for dt in exdate_dts]
     assert cancelled_dt in exdate_utcs, f"Expected {cancelled_dt} in EXDATE list, got {exdate_utcs}"
+
+    # RFC 5545 §3.8.5.1: EXDATE must use the SAME value type / TZID as DTSTART,
+    # else Google Calendar silently drops it. Parse the RAW serialized lines and
+    # assert the EXDATE TZID parameter equals the DTSTART TZID parameter.
+    ics_str = ics_bytes.decode("utf-8")
+    dtstart_line = next(line for line in ics_str.splitlines() if line.startswith("DTSTART"))
+    exdate_line = next(line for line in ics_str.splitlines() if line.startswith("EXDATE"))
+    assert "TZID=America/New_York" in dtstart_line, (
+        f"DTSTART should carry the event TZID, got: {dtstart_line}"
+    )
+    dtstart_tzid = dtstart_line.split(":", 1)[0].partition("TZID=")[2]
+    exdate_tzid = exdate_line.split(":", 1)[0].partition("TZID=")[2]
+    assert exdate_tzid == dtstart_tzid, (
+        f"EXDATE TZID ({exdate_tzid!r}) must match DTSTART TZID ({dtstart_tzid!r}); "
+        f"DTSTART={dtstart_line!r} EXDATE={exdate_line!r}"
+    )
 
 
 @pytest.mark.django_db
@@ -804,6 +824,52 @@ def test_build_ics_organizer_present_when_calendar_has_owner():
 
 
 @pytest.mark.django_db
+def test_build_ics_organizer_is_default_owner_when_multiple_owners():
+    """When a calendar has multiple ownerships, the ORGANIZER is the one flagged
+    ``is_default=True`` (deterministic), not an arbitrary ``first()`` row."""
+    from users.factories import UserFactory
+
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+
+    # Non-default owner created first so a naive first()/ORDER BY pk would pick it.
+    non_default_user = UserFactory().create_user(email="non-default@example.com")
+    create_calendar_ownership(calendar=calendar, user=non_default_user, is_default=False)
+
+    default_user = UserFactory().create_user(email="default@example.com")
+    create_calendar_ownership(calendar=calendar, user=default_user, is_default=True)
+
+    event = baker.make(
+        CalendarEvent,
+        organization=org,
+        calendar=calendar,
+        title="Multi Owner Event",
+        description="",
+        external_id="evt-multi-owner",
+        start_time_tz_unaware=datetime.datetime(2025, 6, 23, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 23, 10, 0),
+        timezone="UTC",
+    )
+
+    event_reloaded = (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .select_related("calendar")
+        .prefetch_related("calendar__ownerships__membership__user")
+        .get(id=event.id)
+    )
+
+    service = CalendarEventICSService()
+    vevent = _parse_vevent(service.build_ics(event_reloaded))
+
+    organizer = vevent.get("organizer")
+    assert organizer is not None
+    assert "default@example.com" in str(organizer), (
+        "ORGANIZER must be the default owner, not an arbitrary first() row"
+    )
+    assert "non-default@example.com" not in str(organizer)
+
+
+@pytest.mark.django_db
 def test_build_ics_organizer_omitted_when_calendar_has_no_owner():
     """ORGANIZER line is omitted (and build_ics does not crash) when the
     calendar has no ownership rows."""
@@ -872,10 +938,15 @@ def test_build_ics_cancelled_exception_event_emits_status_cancelled():
     """An event that is a cancelled exception (is_recurring_exception=True and
     matched by a cancelled EventRecurrenceException) emits STATUS:CANCELLED.
 
-    NOTE: In the current schema a cancelled occurrence does NOT spawn a separate
-    CalendarEvent row. This test creates the scenario by manufacturing an
-    ``exception_for`` relation with ``is_cancelled=True`` to verify the code
-    path executes correctly when such a row exists.
+    WARNING — this test guards a CURRENTLY-UNREACHABLE future path, not a
+    production-path assertion. In the current schema a cancelled occurrence does
+    NOT spawn a separate CalendarEvent row (``EventRecurrenceException.is_cancelled``
+    is set and ``modified_event`` is NULL), so the ``exception_for`` +
+    ``is_cancelled=True`` state exercised below is manufactured by the test and
+    never produced by the real system today. It exists only to verify the
+    defensive STATUS:CANCELLED builder branch keeps working if a future schema
+    change starts spawning a cancelled CalendarEvent. Do NOT read its coverage as
+    evidence that this path is reachable in production.
     """
     org = baker.make("organizations.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)

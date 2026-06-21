@@ -40,6 +40,9 @@ RSVPStatus → PARTSTAT mapping
 - (unknown)            → PARTSTAT=NEEDS-ACTION
 """
 
+import datetime
+import zoneinfo
+
 import icalendar
 
 from calendar_integration.constants import RSVPStatus
@@ -104,9 +107,15 @@ class CalendarEventICSService:
         # Summary (title)
         vevent.add("summary", event.title)
 
-        # Start and end times (timezone-aware)
-        vevent.add("dtstart", event.start_time)
-        vevent.add("dtend", event.end_time)
+        # Start and end times, expressed in the event's IANA timezone so DTSTART/
+        # DTEND carry a TZID parameter. The ORM returns start_time/end_time as
+        # UTC-aware instants (the DB stores TIMESTAMPTZ); converting to
+        # event.timezone makes the serialized DTSTART carry TZID=<event.timezone>,
+        # which EXDATE must match per RFC 5545 §3.8.5.1 (see
+        # _collect_cancelled_exdates).
+        tz = zoneinfo.ZoneInfo(event.timezone)
+        vevent.add("dtstart", event.start_time.astimezone(tz))
+        vevent.add("dtend", event.end_time.astimezone(tz))
 
         # DTSTAMP: use a deterministic value from the event's modified timestamp
         vevent.add("dtstamp", event.modified or event.created)
@@ -202,9 +211,19 @@ class CalendarEventICSService:
             if calendar is None:
                 return None
             # CalendarOwnership.membership is an OrganizationMembershipForeignKey
-            # which joins on (organization_id, membership_user_id). Use first()
-            # since a calendar may have multiple owners; take the first for ORGANIZER.
-            ownership = calendar.ownerships.first()
+            # which joins on (organization_id, membership_user_id). A calendar may
+            # have multiple owners; pick the default owner deterministically from
+            # the prefetched cache (use .all() so the documented
+            # `calendar__ownerships__membership__user` prefetch is reused — never
+            # .filter()/.first(), which would issue a fresh query and bypass it).
+            ownership = next((o for o in calendar.ownerships.all() if o.is_default), None)
+            if ownership is None:
+                # Deterministic fallback when no default is flagged.
+                ownership = min(
+                    calendar.ownerships.all(),
+                    key=lambda o: o.membership_user_id,
+                    default=None,
+                )
             if ownership is None:
                 return None
             membership = ownership.membership
@@ -273,26 +292,30 @@ class CalendarEventICSService:
         except AttributeError:
             return None
 
-    def _collect_cancelled_exdates(self, event: CalendarEvent) -> list[object]:
+    def _collect_cancelled_exdates(self, event: CalendarEvent) -> list[datetime.datetime]:
         """Collect the cancelled-occurrence datetimes for EXDATE lines.
 
         Iterates over ``event.recurrence_exceptions`` (the ``EventRecurrenceException``
         related manager, related_name="recurrence_exceptions") and returns the
         ``exception_date`` of every row where ``is_cancelled=True``.
 
-        The returned datetimes are tz-aware; ``EventRecurrenceException.exception_date``
-        is a plain DateTimeField. If the stored value is naive we leave it as-is
-        (icalendar handles naive datetimes as floating) — the correct approach is for
-        callers to store tz-aware values, which the service layer already does.
+        With ``USE_TZ=True`` the ORM returns aware datetimes for
+        ``EventRecurrenceException.exception_date`` in UTC. Each value is converted
+        to the event's IANA timezone (``event.timezone``) using the SAME conversion
+        ``build_ics`` applies to DTSTART/DTEND, so the emitted EXDATE carries the
+        same ``TZID`` parameter as DTSTART, as required by RFC 5545 §3.8.5.1.
+        (Google Calendar silently drops EXDATEs whose TZID differs from DTSTART,
+        causing the cancelled occurrence to reappear.)
         """
-        exdates: list[object] = []
+        exdates: list[datetime.datetime] = []
         try:
             exceptions = event.recurrence_exceptions.all()  # type: ignore[union-attr]
         except AttributeError:
             return exdates
 
+        tz = zoneinfo.ZoneInfo(event.timezone)
         for exc in exceptions:
             if exc.is_cancelled:
-                exdates.append(exc.exception_date)
+                exdates.append(exc.exception_date.astimezone(tz))
 
         return exdates
