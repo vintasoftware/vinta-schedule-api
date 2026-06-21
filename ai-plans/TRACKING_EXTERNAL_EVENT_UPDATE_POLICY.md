@@ -32,11 +32,17 @@
   - Verified: migrations reverse+reapply cleanly; `makemigrations --check` clean; full `pytest -n auto` = 2981 passed.
   - ⚠️ Phase 5a note: `event` is now nullable (`SET_NULL`). Approving a `delete`-kind request deletes the CalendarEvent; the resolved request row survives with `event=NULL`.
 
+- **Phase 3 — Intercept inbound UPDATES into change requests** ✅
+  - Model: sonnet (Tier 3), agent: implementer + reviewer + fixer (sonnet)
+  - Commits: `feat(calendar): add ExternalEventChangeRequestService for inbound update requests`, `feat(calendar): divert inbound external updates to change requests under change_request policy`, `fix(calendar): fail loud on missing change-request service + derive provider + typing`
+  - New `ExternalEventChangeRequestService.create_or_supersede_update_request` (atomic supersede: prior PENDING→STALE, new PENDING, audit via SYSTEM actor); `audit/constants.py` gained all 4 `EXTERNAL_CHANGE_*` actions. `_process_existing_event` reads policy: ALLOW=direct-apply (byte-for-byte), CHANGE_REQUEST=divert + `matched_event_ids` (raises `ImproperlyConfigured` if service missing), FORBIDDEN=falls through to ALLOW (Phase 6 TODO). Service is optional `__init__` param threaded via facade `_get_sync_service()` + DI; provider derived from `context.calendar_adapter.provider`.
+  - Review: 1 BLOCKER (silent None-service fallback → fail loud) + SHOULD-FIX (provider, typing) all applied; BLOCKER guard test added.
+  - Verified: full `pytest -n auto` = 2987 passed; mypy 0 new errors; `makemigrations --check` clean.
+
 ## Current phase
-- **Phase 3 — Intercept inbound UPDATES into change requests** (Tier 3 → sonnet, implementer) — next
+- **Phase 4 — Intercept inbound DELETIONS into change requests** (Tier 3 → sonnet, implementer) — next
 
 ## Remaining phases
-- Phase 3 — Intercept inbound UPDATES into change requests (Tier 3 → sonnet)
 - Phase 4 — Intercept inbound DELETIONS into change requests (Tier 3 → sonnet)
 - Phase 5a — Approve a change request (Tier 3 → sonnet)
 - Phase 5b — Reject a change request / outbound undo (Tier 4 → opus)
