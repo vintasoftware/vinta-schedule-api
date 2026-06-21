@@ -61,11 +61,28 @@
   `check --deploy` + `pytest`, not mypy). A pre-existing `CalendarEventFactory.create_recurring_event`
   double-`timezone` kwarg bug was worked around in-test (not fixed — out of scope).
 
+### Phase 3 — REST ICS download action ✅
+- **Status**: complete, reviewed (3-layer), outer gate green (2999 passed).
+- **Model**: claude-haiku-4-5 (plan tier: Tier 2). Reviewer + fixer agents.
+- **Commits**:
+  - `1aaf866` feat(calendar): add REST endpoint to download event ICS
+  - `9d6c8a7` refactor(calendar): scope ICS re-fetch via viewset queryset
+  - `91232aa` test(calendar): cover unauthorized ICS download + lock prefetch query count
+- **Summary**: Added `download_ics` `@action(detail=True, url_path="ics", url_name="ics")` on
+  `CalendarEventViewSet`. `get_object()` enforces org-scope + `CalendarEventPermission` (404/403),
+  then re-fetches via `self.get_queryset()` with the documented prefetch set and calls
+  `CalendarEventICSService().build_ics(event)`. Returns `HttpResponse` `text/calendar; charset=utf-8`
+  + `Content-Disposition: attachment; filename="event-{id}.ics"`. `schema.yml` regenerated
+  (`@extend_schema` BINARY response). reverse: `api:CalendarEvents-ics`.
+- **Review findings**: 0 BLOCKER (double-fetch confirmed tenant-safe), 2 SHOULD-FIX (missing
+  authenticated-but-unauthorized → 403 security-branch test added; prefetch locked with
+  `django_assert_num_queries(22)`), 1 cleanup (re-fetch via `get_queryset()` for single-source org
+  scoping), 2 NITs (hoisted icalendar import, assert attendee emails) — all addressed.
+
 ## Current Phase
-Phase 3 — REST ICS download action (next).
+Phase 4 — Public GraphQL `eventIcs` query (next).
 
 ## Remaining Phases
-- Phase 3 — REST ICS download action (Tier 2).
 - Phase 4 — Public GraphQL `eventIcs` query (Tier 3).
 
 ## Deferred Phases
