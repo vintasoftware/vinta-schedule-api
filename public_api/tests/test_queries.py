@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 
+import icalendar
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
@@ -6150,4 +6151,244 @@ class TestCalendarEventsUserIdFilter:
         ), (
             "userId without datetimes must raise the missing-required-parameters error, "
             f"got: {error_messages}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# eventIcs query integration tests
+# ---------------------------------------------------------------------------
+
+_EVENT_ICS_QUERY = """
+    query GetEventIcs($eventId: Int!) {
+        eventIcs(eventId: $eventId)
+    }
+"""
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestEventIcsQuery:
+    """Integration tests for the eventIcs(eventId: Int!): String? public GraphQL field.
+
+    Covers:
+    - Org-wide token returns valid ICS for an in-scope event.
+    - Calendar-scoped token returns ICS for its own calendar's event.
+    - Calendar-scoped token returns null for another owner's event (no existence leak).
+    - Token lacking CALENDAR_EVENT resource is denied by OrganizationResourceAccess.
+    - Unknown / out-of-org event id returns null.
+    """
+
+    @pytest.fixture
+    def organization(self):
+        return baker.make(Organization, name="IcsTestOrg")
+
+    @pytest.fixture
+    def owner(self):
+        return baker.make(User, email="ics_owner@example.com")
+
+    @pytest.fixture
+    def other_owner(self):
+        return baker.make(User, email="ics_other_owner@example.com")
+
+    @pytest.fixture
+    def owner_calendar(self, organization, owner):
+        """Calendar owned by `owner`."""
+        cal = baker.make(
+            Calendar,
+            organization=organization,
+            name="ICS Owner Calendar",
+            external_id="ics-owner-cal",
+        )
+        OrganizationMembership.objects.get_or_create(
+            user=owner, organization=organization, defaults={"is_active": True}
+        )
+        baker.make(
+            CalendarOwnership, calendar=cal, membership_user_id=owner.id, organization=organization
+        )
+        return cal
+
+    @pytest.fixture
+    def other_calendar(self, organization, other_owner):
+        """Calendar owned by `other_owner`."""
+        cal = baker.make(
+            Calendar,
+            organization=organization,
+            name="ICS Other Calendar",
+            external_id="ics-other-cal",
+        )
+        OrganizationMembership.objects.get_or_create(
+            user=other_owner, organization=organization, defaults={"is_active": True}
+        )
+        baker.make(
+            CalendarOwnership,
+            calendar=cal,
+            membership_user_id=other_owner.id,
+            organization=organization,
+        )
+        return cal
+
+    @pytest.fixture
+    def owner_event(self, organization, owner_calendar):
+        """A CalendarEvent on the owner's calendar."""
+        return baker.make(
+            CalendarEvent,
+            organization=organization,
+            calendar=owner_calendar,
+            title="ICS Test Event",
+            external_id="ics-test-event-external-id",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+    @pytest.fixture
+    def other_event(self, organization, other_calendar):
+        """A CalendarEvent on the other owner's calendar."""
+        return baker.make(
+            CalendarEvent,
+            organization=organization,
+            calendar=other_calendar,
+            title="ICS Other Event",
+            external_id="ics-other-event-external-id",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 12, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+    def _post_graphql(self, client, query, variables):
+        return client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+    # ------------------------------------------------------------------ #
+    # Org-wide token — positive case                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_org_wide_token_returns_valid_ics(self, mock_rate_limiter, organization, owner_event):
+        """Org-wide token with CALENDAR_EVENT scope returns a parseable ICS string."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        response = self._post_graphql(client, _EVENT_ICS_QUERY, {"eventId": owner_event.id})
+
+        data = assert_graphql_success(response)
+        ics_text = data["eventIcs"]
+        assert ics_text is not None, "eventIcs must return a non-null ICS string"
+
+        # Verify the output is a parseable ICS document
+        cal = icalendar.Calendar.from_ical(ics_text)
+        vevents = [c for c in cal.walk() if c.name == "VEVENT"]
+        assert len(vevents) == 1, "ICS must contain exactly one VEVENT"
+
+        vevent = vevents[0]
+        assert str(vevent.get("UID")) == owner_event.external_id, (
+            "UID must match the event's external_id"
+        )
+        assert str(vevent.get("SUMMARY")) == owner_event.title
+
+    # ------------------------------------------------------------------ #
+    # Calendar-scoped token — positive case (own event)                   #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_returns_ics_for_own_event(
+        self, mock_rate_limiter, organization, owner, owner_event
+    ):
+        """Calendar-scoped token returns ICS for an event on its owner's calendar."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_scoped_client(organization, owner)
+        response = self._post_graphql(client, _EVENT_ICS_QUERY, {"eventId": owner_event.id})
+
+        data = assert_graphql_success(response)
+        ics_text = data["eventIcs"]
+        assert ics_text is not None, "Scoped token must return ICS for its owner's event"
+
+        cal = icalendar.Calendar.from_ical(ics_text)
+        vevents = [c for c in cal.walk() if c.name == "VEVENT"]
+        assert len(vevents) == 1
+        assert str(vevents[0].get("UID")) == owner_event.external_id
+
+    # ------------------------------------------------------------------ #
+    # Calendar-scoped token — negative case (other owner's event)         #
+    # ------------------------------------------------------------------ #
+
+    def test_scoped_token_returns_null_for_other_owners_event(
+        self, mock_rate_limiter, organization, owner, other_event
+    ):
+        """Scoped token returns null for another owner's event (no existence leak)."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_scoped_client(organization, owner)
+        response = self._post_graphql(client, _EVENT_ICS_QUERY, {"eventId": other_event.id})
+
+        data = assert_graphql_success(response)
+        assert data["eventIcs"] is None, (
+            "Scoped token must return null for another owner's event (no existence leak)"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Token lacking CALENDAR_EVENT resource                               #
+    # ------------------------------------------------------------------ #
+
+    def test_token_without_calendar_event_resource_is_denied(
+        self, mock_rate_limiter, organization, owner_event
+    ):
+        """A token without CALENDAR_EVENT resource is rejected by OrganizationResourceAccess."""
+        mock_rate_limiter.return_value = iter([None])
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="no_calendar_event_resource", organization=organization
+        )
+        # Grant a different resource — not CALENDAR_EVENT
+        baker.make(
+            ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR
+        )
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+
+        response = self._post_graphql(client, _EVENT_ICS_QUERY, {"eventId": owner_event.id})
+
+        assert response.status_code == 200
+        response_data = response.json()
+        assert "errors" in response_data, (
+            "Token without CALENDAR_EVENT resource must receive a permission error"
+        )
+        error_messages = [e.get("message", "") for e in response_data["errors"]]
+        assert any(
+            "access" in m.lower() or "permission" in m.lower() or "authenticated" in m.lower()
+            for m in error_messages
+        ), f"Expected a permission-related error, got: {error_messages}"
+
+    # ------------------------------------------------------------------ #
+    # Unknown / out-of-org event id                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_unknown_event_id_returns_null(self, mock_rate_limiter, organization):
+        """An unknown event id returns null without leaking existence information."""
+        mock_rate_limiter.return_value = iter([None])
+
+        client, _ = _make_org_wide_client(organization)
+        response = self._post_graphql(client, _EVENT_ICS_QUERY, {"eventId": 999999})
+
+        data = assert_graphql_success(response)
+        assert data["eventIcs"] is None, "Unknown event id must return null"
+
+    def test_out_of_org_event_id_returns_null(self, mock_rate_limiter, organization, owner_event):
+        """An event from a different org is not visible and returns null."""
+        mock_rate_limiter.return_value = iter([None])
+
+        # Create a second org with its own client — that client asks for owner_event.id
+        # which belongs to the first org, so the org filter must reject it.
+        other_org = baker.make(Organization, name="OtherIcsOrg")
+        other_client, _ = _make_org_wide_client(other_org)
+
+        response = self._post_graphql(other_client, _EVENT_ICS_QUERY, {"eventId": owner_event.id})
+
+        data = assert_graphql_success(response)
+        assert data["eventIcs"] is None, (
+            "Event from a different org must not be visible (org filter)"
         )

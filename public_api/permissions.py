@@ -29,6 +29,7 @@ class OrganizationResourceAccess(BasePermission):
     FIELD_TO_RESOURCE_MAPPING: ClassVar[dict[str, str]] = {
         "calendars": PublicAPIResources.CALENDAR,
         "calendarEvents": PublicAPIResources.CALENDAR_EVENT,
+        "eventIcs": PublicAPIResources.CALENDAR_EVENT,
         "blockedTimes": PublicAPIResources.BLOCKED_TIME,
         "availableTimes": PublicAPIResources.AVAILABLE_TIME,
         "availabilityWindows": PublicAPIResources.AVAILABILITY_WINDOWS,

@@ -44,6 +44,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarManagementToken,
 )
+from calendar_integration.services.ics_service import CalendarEventICSService
 from organizations.models import Organization, OrganizationMembership, resolve_branding
 from public_api.capabilities import assert_org_can_invite
 from public_api.permissions import (
@@ -422,6 +423,47 @@ class Query:
             list[CalendarEventGraphQLType],
             events,
         )
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def event_ics(self, info: strawberry.Info, event_id: int) -> str | None:
+        """Fetch the ICS string for a single calendar event.
+
+        Returns the RFC 5545 iCalendar document for the requested event as a plain
+        string, or ``None`` when the event does not exist, belongs to another
+        organization, or is outside the scoped token's allowed calendar set.
+
+        No existence leak: all failure modes return ``None``.
+        """
+        org = _get_org(info)
+        request: PublicApiHttpRequest = info.context.request
+
+        qs = (
+            CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(id=event_id)
+            .select_related("calendar")
+            .prefetch_related(
+                "calendar__ownerships__membership__user",
+                "attendances__membership__user",
+                "external_attendances__external_attendee",
+                "recurrence_rule",
+                "recurrence_exceptions",
+            )
+        )
+
+        # Owner-scope: for scoped tokens, only return the event if its calendar is
+        # in the token owner's set. Return None (not an error) to avoid existence
+        # leaks, matching the calendarEvents eventId branch.
+        system_user = request.public_api_system_user
+        if system_user is not None:
+            allowed_ids = scoped_calendar_ids(system_user, org)
+            if allowed_ids is not None:
+                qs = qs.filter(calendar_fk__in=allowed_ids)
+
+        event = qs.first()
+        if event is None:
+            return None
+
+        return CalendarEventICSService().build_ics(event).decode("utf-8")
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def blocked_times(
