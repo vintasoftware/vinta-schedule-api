@@ -1221,10 +1221,11 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
         event = self.get_object()
 
         # Re-fetch the event with the required prefetch set from the ICS service
-        # docstring to avoid N+1 queries during ICS generation.
+        # docstring to avoid N+1 queries during ICS generation. Reuse the viewset's
+        # canonical org-scoped queryset (get_object() above already owns the 404/403)
+        # and key the re-fetch by the authorized pk.
         event = (
-            CalendarEvent.objects.filter_by_organization(event.organization_id)
-            .filter(id=event.id)
+            self.get_queryset()
             .select_related("calendar")
             .prefetch_related(
                 "calendar__ownerships__membership__user",
@@ -1233,7 +1234,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
                 "recurrence_rule",
                 "recurrence_exceptions",
             )
-            .get()
+            .get(pk=event.id)
         )
 
         # Generate the ICS bytes using the service.
