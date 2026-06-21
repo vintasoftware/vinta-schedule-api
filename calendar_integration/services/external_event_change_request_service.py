@@ -6,7 +6,27 @@ approves, rejects, and auto-undoes change requests. It is DI-injected and consum
 
 Phase 3 implements the *create / supersede for inbound updates* path.
 Phase 4 adds *create / supersede for inbound deletions*.
-Phases 5-6 extend this service with approve/reject and the FORBIDDEN auto-undo path.
+Phase 5a adds ``approve`` (apply locally) + the ``can_resolve`` eligibility gate.
+Phase 5b adds ``reject`` (outbound undo): re-converge the external provider to the
+retained (approved) state.
+
+**Outbound-undo seam (Phase 5b / 6).** Re-converging the provider needs an
+*authenticated* write adapter for the event's calendar. Rather than injecting a
+``CalendarService`` into this service (``CalendarSyncService`` already depends on this
+service, so injecting the facade back would risk an import cycle and couple the two),
+the outbound-undo logic accepts the authenticated write capability **as a parameter**:
+``_undo_on_provider(request, *, write_adapter)`` and ``reject(request, *, membership,
+write_adapter)`` take a ``CalendarAdapter`` the caller has already authenticated. This
+keeps the service free of provider-credential concerns and import-cycle-free.
+
+- **Phase 8 (API reject)** authenticates a ``CalendarService`` for the event's calendar,
+  resolves the write adapter via ``CalendarService._get_write_adapter_for_calendar`` and
+  passes it to ``reject``.
+- **Phase 6 (FORBIDDEN auto-undo, during sync)** already holds an authenticated adapter
+  (``context.calendar_adapter``) and reuses ``_undo_on_provider`` directly.
+
+Phase 6 extends this service with the FORBIDDEN auto-undo path, reusing
+``_undo_on_provider``.
 """
 
 from __future__ import annotations
@@ -31,11 +51,13 @@ from calendar_integration.exceptions import (
     ChangeRequestNotPendingError,
 )
 from calendar_integration.models import EventAttendance, ExternalEventChangeRequest
+from calendar_integration.services.dataclasses import CalendarEventAdapterInputData
 
 
 if TYPE_CHECKING:
     from audit.services import AuditService
     from calendar_integration.models import CalendarEvent
+    from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
     from organizations.models import OrganizationMembership
 
 
@@ -392,6 +414,194 @@ class ExternalEventChangeRequestService:
             self.audit_service.record(
                 organization_id=organization_id,
                 action=AuditAction.EXTERNAL_CHANGE_APPROVED,
+                actor=actor,
+                subject=subject,
+                diff=diff or None,
+            )
+
+        return request
+
+    # ------------------------------------------------------------------
+    # Outbound undo (Phase 5b / Phase 6)
+    # ------------------------------------------------------------------
+
+    def _undo_on_provider(
+        self,
+        request: ExternalEventChangeRequest,
+        *,
+        write_adapter: CalendarAdapter,
+    ) -> None:
+        """Re-converge the external provider to the retained (approved) local state.
+
+        This is the shared outbound-undo body reused by both ``reject`` (Phase 5b,
+        triggered by a user via the API) and the FORBIDDEN auto-undo path (Phase 6,
+        triggered during sync). The caller must supply an **already-authenticated**
+        ``write_adapter`` (a ``CalendarAdapter``) for the event's calendar — this
+        service never resolves provider credentials itself (see module docstring for
+        the rationale).
+
+        Behavior per ``request.kind``:
+
+        - **UPDATE**: the local event was never mutated (the interception in Phase 3
+          kept it at the retained values), so its current field values *are* the
+          retained state. We push them back to the provider via
+          ``write_adapter.update_event(calendar_external_id, event_external_id, ...)``
+          so the provider re-converges to match local. The event's ``external_id`` is
+          unchanged.
+
+        - **DELETE**: the local event still exists (Phase 4 did not delete it); the
+          provider deleted it. We re-create it on the provider via
+          ``write_adapter.create_event(...)``. Re-creation yields a **new** provider
+          ``external_id`` — the old id is gone forever (external-id churn). We rebind
+          the local event's ``external_id`` to the newly returned id and save. The
+          adapter call is the commit boundary: the local ``external_id`` save runs
+          inside the surrounding ``reject``/auto-undo transaction *after* a successful
+          create, so a create that succeeds is always followed by the rebind (or the
+          whole transaction rolls back, never leaving the local event pointing at a
+          dead external id). A create that fails propagates before any local mutation.
+
+        Args:
+            request: The ``ExternalEventChangeRequest`` whose change must be undone on
+                the provider. Its ``event`` must still exist (a PENDING request always
+                has a live event for both kinds in this flow).
+            write_adapter: An authenticated provider write adapter for the event's
+                calendar.
+
+        Raises:
+            ChangeRequestNotPendingError: If the request's event has been deleted and
+                there is nothing to re-converge.
+        """
+        event = request.event
+        if event is None:
+            # No live event to push back / re-create — should not happen for a PENDING
+            # request in either the update or delete flow.
+            raise ChangeRequestNotPendingError(
+                "Cannot undo a change request whose event no longer exists."
+            )
+
+        calendar = event.calendar
+        # The provider speaks in external ids, never the internal PKs.
+        calendar_external_id = calendar.external_id if calendar is not None else ""
+
+        adapter_input = CalendarEventAdapterInputData(
+            calendar_external_id=calendar_external_id,
+            title=event.title,
+            description=event.description,
+            start_time=event.start_time,
+            end_time=event.end_time,
+            timezone=event.timezone,
+            attendees=[],
+            external_id=event.external_id,
+        )
+
+        if request.kind == ExternalEventChangeKind.UPDATE:
+            # Push the local (retained) values back so the provider re-converges to the
+            # approved state. The external id is preserved.
+            write_adapter.update_event(
+                calendar_external_id,
+                event.external_id,
+                adapter_input,
+            )
+            return
+
+        # DELETE: re-create the event on the provider. The external id churns — the
+        # provider returns a brand-new id we must rebind locally.
+        created = write_adapter.create_event(adapter_input)
+        event.external_id = created.external_id
+        event.save(update_fields=["external_id"])
+
+    def reject(
+        self,
+        request: ExternalEventChangeRequest,
+        *,
+        membership: OrganizationMembership,
+        write_adapter: CalendarAdapter,
+    ) -> ExternalEventChangeRequest:
+        """Reject a PENDING change request, re-converging the provider, mark REJECTED.
+
+        Eligibility is checked first via ``can_resolve`` (the same gate as ``approve``).
+        Only ``PENDING`` requests can be rejected; any other status raises
+        ``ChangeRequestNotPendingError``. An ineligible membership raises
+        ``ChangeRequestIneligibleError``.
+
+        The outbound undo is delegated to ``_undo_on_provider`` (see its docstring):
+
+        - **UPDATE**: ``write_adapter.update_event`` is called with the local event's
+          current (retained) field values + its external id, so the provider re-converges
+          to the approved state.
+        - **DELETE**: ``write_adapter.create_event`` re-creates the event on the provider
+          and the local event's ``external_id`` is rebound to the newly returned id.
+
+        The provider re-convergence and the local status transition run in one
+        ``transaction.atomic()`` block: if the adapter call (the commit boundary) fails,
+        nothing is persisted; if it succeeds, the ``REJECTED`` transition and any
+        external-id rebind commit together. An
+        ``AuditAction.EXTERNAL_CHANGE_REJECTED`` entry is recorded with the rejecting
+        membership as the actor.
+
+        Args:
+            request: The ``ExternalEventChangeRequest`` to reject. Must be ``PENDING``
+                and belong to the same organization as ``membership``.
+            membership: The ``OrganizationMembership`` rejecting the request. Must
+                satisfy ``can_resolve``.
+            write_adapter: An authenticated provider write adapter for the event's
+                calendar (resolved + authenticated by the caller — see module docstring).
+
+        Returns:
+            The updated ``ExternalEventChangeRequest`` with ``status=REJECTED``,
+            ``resolved_by``, and ``resolved_at`` set.
+
+        Raises:
+            ChangeRequestNotPendingError: If ``request.status`` is not ``PENDING``.
+            ChangeRequestIneligibleError: If ``membership`` is not eligible to resolve
+                this request.
+        """
+        if request.status != ExternalEventChangeRequestStatus.PENDING:
+            raise ChangeRequestNotPendingError()
+
+        if not self.can_resolve(request, membership):
+            raise ChangeRequestIneligibleError()
+
+        # Capture values needed for the audit diff before any mutation.
+        organization_id = request.organization_id
+        retained_values = dict(request.retained_values)
+        proposed_values = dict(request.proposed_values)
+        kind = request.kind
+
+        if kind == ExternalEventChangeKind.UPDATE:
+            # The undo restores retained_values over the (rejected) proposed_values:
+            # "old" is what the inbound change proposed, "new" is what we re-converge to.
+            diff: dict[str, Any] = {
+                field: {"old": proposed_values.get(field), "new": retained_values.get(field)}
+                for field in set(proposed_values) | set(retained_values)
+                if proposed_values.get(field) != retained_values.get(field)
+            }
+        else:
+            # DELETE: the inbound deletion (proposed: nothing) is undone by re-creating
+            # the event with its retained values.
+            diff = {
+                field: {"old": None, "new": retained_values.get(field)} for field in retained_values
+            }
+
+        with transaction.atomic():
+            # Re-converge the provider first; the adapter call is the commit boundary.
+            # On success the local state transition (and any external-id rebind) commit
+            # together; on failure the whole transaction rolls back.
+            self._undo_on_provider(request, write_adapter=write_adapter)
+
+            resolved_at = timezone.now()
+            request.status = ExternalEventChangeRequestStatus.REJECTED
+            request.resolved_by_user_id = membership.user_id
+            request.resolved_at = resolved_at
+            request.save(update_fields=["status", "resolved_by_user_id", "resolved_at"])
+
+        # Record audit after the atomic block so on_commit delivery fires after commit.
+        if self.audit_service is not None:
+            actor = self.audit_service.actor_from_membership(membership)
+            subject = self.audit_service.subject_from_instance(request)
+            self.audit_service.record(
+                organization_id=organization_id,
+                action=AuditAction.EXTERNAL_CHANGE_REJECTED,
                 actor=actor,
                 subject=subject,
                 diff=diff or None,
