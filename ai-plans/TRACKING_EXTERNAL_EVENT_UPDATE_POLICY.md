@@ -54,11 +54,18 @@
   - Verified: full `pytest -n auto` = 3004 passed; `makemigrations --check` clean; no trailers.
   - 🔑 `can_resolve` is the shared eligibility helper for Phase 5b + Phase 8 API.
 
+- **Phase 5b — Reject a change request / outbound undo** ✅
+  - Model: opus (Tier 4), agent: implementer + reviewer (opus) + fixer (opus)
+  - Commits: `feat(calendar): add reject + outbound undo to ExternalEventChangeRequestService`, `fix(calendar): hydrate attendees/recurrence + de-orphan provider create in reject undo`
+  - `reject(request, *, membership, write_adapter)` + reusable `_undo_on_provider` + `_build_adapter_input(event)`. UPDATE→`update_event` re-converges GCal to retained; DELETE→`create_event` re-creates + rebinds local `external_id`. **Auth seam**: authenticated `write_adapter` passed in by caller (no `CalendarService` injection → no import cycle); Phase 6 (sync) + Phase 8 (API) reuse `_undo_on_provider`.
+  - Review (opus): id-semantics → reject CORRECTLY uses external ids (existing `CalendarEventService` internal-id usage is a separate latent bug). **2 BLOCKERs fixed**: (C) undo was wiping attendees/recurrence via full-replace PUT → now `_build_adapter_input` hydrates attendees+external attendees+resources+recurrence via shared serialization utils; (B) provider `create_event` was inside `transaction.atomic()` (orphan/duplicate risk) → now provider call is OUTSIDE the txn, short atomic rebinds id+status, compensating `delete_event` on local failure then re-raise. SHOULD-FIX (event-None error type) + NITs applied.
+  - Verified: provider-call-outside-txn + compensation confirmed by reading the code; full `pytest -n auto` = 3014 passed; no import cycle; `makemigrations --check` clean; no trailers.
+  - ⚠️ Pre-existing latent bug noted (out of scope): `CalendarEventService.update_event` passes INTERNAL ids to the adapter where external ids are needed — masked by mocked tests.
+
 ## Current phase
-- **Phase 5b — Reject a change request / outbound undo** (Tier 4 → opus, implementer) — next
+- **Phase 6 — FORBIDDEN mode auto-undo during sync** (Tier 3 → sonnet, implementer) — next
 
 ## Remaining phases
-- Phase 5b — Reject a change request / outbound undo (Tier 4 → opus)
 - Phase 6 — FORBIDDEN mode auto-undo during sync (Tier 3 → sonnet)
 - Phase 7 — Notify eligible approvers on request creation (Tier 2 → sonnet)
 - Phase 8a — REST endpoints (Tier 3 → sonnet)
