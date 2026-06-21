@@ -62,11 +62,17 @@
   - Verified: provider-call-outside-txn + compensation confirmed by reading the code; full `pytest -n auto` = 3014 passed; no import cycle; `makemigrations --check` clean; no trailers.
   - ⚠️ Pre-existing latent bug noted (out of scope): `CalendarEventService.update_event` passes INTERNAL ids to the adapter where external ids are needed — masked by mocked tests.
 
+- **Phase 6 — FORBIDDEN mode auto-undo during sync** ✅
+  - Model: sonnet (Tier 3), agent: implementer + reviewer + fixer (sonnet)
+  - Commits: `refactor(calendar): extract shared resolve-with-undo orchestration`, `feat(calendar): auto-undo inbound external changes under FORBIDDEN policy`, `fix(calendar): make FORBIDDEN auto-undo atomic (single txn + provider-first + compensation)`
+  - Extracted shared `_resolve_with_undo` (reused by reject + auto-undo); `auto_undo_inbound_change` creates an `AUTO_UNDONE` row + runs the undo with SYSTEM actor. Sync FORBIDDEN branches (UPDATE+DELETE) wired to call it with `context.calendar_adapter`; fail-loud `ImproperlyConfigured` on service-None OR adapter-None; `matched_event_ids` kept; local event not mutated/deleted.
+  - Review: 0→1 BLOCKER fixed — auto-undo atomicity: row creation + supersede were in a SEPARATE txn from the rebind/status (dangling AUTO_UNDONE + destroyed PENDING on provider failure). Fixed via `prepare_fn` closure run INSIDE the single atomic block AFTER the provider call; provider-failure now commits nothing. SHOULD-FIX (dead-code elif/else removed; 2 tests added: supersede→STALE, provider-raises→no row) applied. Reject's 10 tests pass unchanged.
+  - Verified: full `pytest -n auto` = 3029 passed; no new mypy; no import cycle; `makemigrations --check` clean; no trailers.
+
 ## Current phase
-- **Phase 6 — FORBIDDEN mode auto-undo during sync** (Tier 3 → sonnet, implementer) — next
+- **Phase 7 — Notify eligible approvers on request creation** (Tier 2 → sonnet, implementer) — next
 
 ## Remaining phases
-- Phase 6 — FORBIDDEN mode auto-undo during sync (Tier 3 → sonnet)
 - Phase 7 — Notify eligible approvers on request creation (Tier 2 → sonnet)
 - Phase 8a — REST endpoints (Tier 3 → sonnet)
 - Phase 8b — Public GraphQL query + mutations (Tier 3 → sonnet)
