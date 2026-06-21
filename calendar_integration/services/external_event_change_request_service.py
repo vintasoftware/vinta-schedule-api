@@ -4,9 +4,9 @@
 approves, rejects, and auto-undoes change requests. It is DI-injected and consumes
 ``AuditService`` for audit trail emission.
 
-Phase 3 implements only the *create / supersede for inbound updates* path.
-Phases 4-6 extend this service with delete-kind requests, approve/reject, and the
-FORBIDDEN auto-undo path.
+Phase 3 implements the *create / supersede for inbound updates* path.
+Phase 4 adds *create / supersede for inbound deletions*.
+Phases 5-6 extend this service with approve/reject and the FORBIDDEN auto-undo path.
 """
 
 from __future__ import annotations
@@ -53,6 +53,28 @@ class ExternalEventChangeRequestService:
     ) -> None:
         self.audit_service = audit_service
 
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _supersede_pending(self, event: CalendarEvent) -> None:
+        """Mark any existing PENDING request for *event* as STALE.
+
+        Shared helper used by both ``create_or_supersede_update_request`` and
+        ``create_or_supersede_delete_request``.  Must be called inside a
+        ``transaction.atomic()`` block so the stale-mark and the new-PENDING
+        creation are a single unit.
+        """
+        ExternalEventChangeRequest.objects.filter(
+            organization_id=event.organization_id,
+            event=event,
+            status=ExternalEventChangeRequestStatus.PENDING,
+        ).update(status=ExternalEventChangeRequestStatus.STALE)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def create_or_supersede_update_request(
         self,
         *,
@@ -89,11 +111,7 @@ class ExternalEventChangeRequestService:
         """
         with transaction.atomic():
             # Mark any existing PENDING request for this event as STALE.
-            ExternalEventChangeRequest.objects.filter(
-                organization_id=event.organization_id,
-                event=event,
-                status=ExternalEventChangeRequestStatus.PENDING,
-            ).update(status=ExternalEventChangeRequestStatus.STALE)
+            self._supersede_pending(event)
 
             # Create the new PENDING request.
             change_request = ExternalEventChangeRequest.objects.create(
@@ -116,6 +134,83 @@ class ExternalEventChangeRequestService:
                 field: {"old": retained_values.get(field), "new": proposed_values.get(field)}
                 for field in set(proposed_values) | set(retained_values)
                 if retained_values.get(field) != proposed_values.get(field)
+            }
+            self.audit_service.record(
+                organization_id=event.organization_id,
+                action=AuditAction.EXTERNAL_CHANGE_REQUESTED,
+                actor=actor,
+                subject=subject,
+                diff=diff or None,
+            )
+
+        return change_request
+
+    def create_or_supersede_delete_request(
+        self,
+        *,
+        event: CalendarEvent,
+        retained_values: dict[str, Any],
+        payload: dict[str, Any],
+        provider: CalendarProvider | str,
+    ) -> ExternalEventChangeRequest:
+        """Create a new PENDING delete request, superseding any prior PENDING one.
+
+        Marks any existing ``PENDING`` request for *event* as ``STALE``, then
+        creates a new ``PENDING`` request with ``kind=DELETE``.  Both writes are
+        executed in a single ``transaction.atomic()`` block so there is never a
+        window where the partial unique constraint is violated by two coexistent
+        PENDING rows.
+
+        For a deletion there are no proposed values to apply — instead,
+        ``retained_values`` captures the local event's current state (title,
+        description, start_time, end_time) so Phase 5b can re-create the event
+        on GCal when a delete request is rejected.  ``payload`` is the raw
+        inbound provider payload stored for debugging / replay.
+
+        An audit entry is recorded via the injected ``audit_service`` using the
+        SYSTEM actor.  The diff captures the deletion intent: retained_values as
+        "from" (old) and ``None`` as "to" (new), reflecting that the fields will
+        disappear if the deletion is approved.
+
+        Args:
+            event: The local ``CalendarEvent`` the inbound deletion targets.
+            retained_values: Snapshot of the local event fields (title,
+                description, start_time, end_time as ISO strings) used to
+                re-create on rejection (Phase 5b).
+            payload: Raw provider payload (for debugging / replay).
+            provider: Calendar provider string (``CalendarProvider.GOOGLE``).
+
+        Returns:
+            The newly created ``PENDING`` ``ExternalEventChangeRequest``.
+        """
+        with transaction.atomic():
+            self._supersede_pending(event)
+
+            # Create the new PENDING delete request.
+            # proposed_values is empty for a deletion — there are no incoming
+            # field values to apply; what matters is retained_values for undo.
+            change_request = ExternalEventChangeRequest.objects.create(
+                organization=event.organization,
+                event=event,
+                kind=ExternalEventChangeKind.DELETE,
+                status=ExternalEventChangeRequestStatus.PENDING,
+                provider=provider,
+                proposed_values={},
+                proposed_payload=payload,
+                retained_values=retained_values,
+            )
+
+        # Record audit entry after the atomic block so the commit-based
+        # on_commit delivery in AuditService fires after the row is visible.
+        if self.audit_service is not None:
+            actor = self.audit_service.system_actor()
+            subject = self.audit_service.subject_from_instance(change_request)
+            # Diff: retained_values as "old" (what existed), None as "new"
+            # (nothing remains if the deletion is approved).
+            diff: dict[str, Any] = {
+                field: {"old": retained_values.get(field), "new": None}
+                for field in retained_values
+                if retained_values.get(field) is not None
             }
             self.audit_service.record(
                 organization_id=event.organization_id,
