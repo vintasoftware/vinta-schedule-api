@@ -20,6 +20,7 @@ from calendar_integration.querysets import (
     CalendarManagementTokenQuerySet,
     CalendarQuerySet,
     CalendarSyncQuerySet,
+    ExternalEventChangeRequestQuerySet,
     RecurringQuerySetMixin,
 )
 from organizations.managers import BaseOrganizationModelManager
@@ -319,3 +320,18 @@ class CalendarManagementTokenManager(BaseOrganizationModelManager):
         if token.expires_at is not None and token.expires_at <= timezone.now():
             return "EXPIRED"
         return None
+
+
+class ExternalEventChangeRequestManager(BaseOrganizationModelManager):
+    """Manager for ExternalEventChangeRequest."""
+
+    def get_queryset(self) -> ExternalEventChangeRequestQuerySet:
+        return ExternalEventChangeRequestQuerySet(self.model, using=self._db)
+
+    def pending(self) -> ExternalEventChangeRequestQuerySet:
+        """Return only PENDING requests."""
+        return self.get_queryset().pending()
+
+    def for_event(self, event_id: int) -> ExternalEventChangeRequestQuerySet:
+        """Return requests targeting a specific CalendarEvent PK."""
+        return self.get_queryset().for_event(event_id)

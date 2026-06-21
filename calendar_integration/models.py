@@ -1,6 +1,6 @@
 import datetime
 import zoneinfo
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -32,6 +32,7 @@ from calendar_integration.managers import (
     CalendarManagementTokenManager,
     CalendarManager,
     CalendarSyncManager,
+    ExternalEventChangeRequestManager,
 )
 from common.fields import OrganizationMembershipForeignKey
 from organizations.models import (
@@ -1902,3 +1903,119 @@ class CalendarWebhookEvent(OrganizationModel):
         if self.calendar_sync and self.calendar_sync.status == CalendarSyncStatus.FAILED:
             return self.calendar_sync.error_message
         return None
+
+
+class ExternalEventChangeKind(models.TextChoices):
+    """Kind of inbound external change being requested."""
+
+    UPDATE = "update", "Update"
+    DELETE = "delete", "Delete"
+
+
+class ExternalEventChangeRequestStatus(models.TextChoices):
+    """Lifecycle status of an ExternalEventChangeRequest."""
+
+    PENDING = "pending", "Pending"
+    APPROVED = "approved", "Approved"
+    REJECTED = "rejected", "Rejected"
+    STALE = "stale", "Stale"
+    AUTO_UNDONE = "auto_undone", "Auto-undone"
+
+
+class ExternalEventChangeRequest(OrganizationModel):
+    """Approval record for an inbound external (e.g. Google Calendar) edit or deletion.
+
+    Under the ``CHANGE_REQUEST`` policy, every inbound update or deletion to an
+    existing synced ``CalendarEvent`` is persisted here instead of being applied
+    directly. Approving the request applies the proposed change locally; rejecting
+    it pushes the retained value back to the provider (or re-creates the event for
+    ``delete`` kind).
+
+    At most one ``PENDING`` request may exist per event at any time. A subsequent
+    inbound edit while one is pending marks the prior ``PENDING`` row ``STALE``
+    and creates a fresh ``PENDING`` one — history is preserved, never
+    updated-in-place.  The partial unique constraint
+    ``uniq_pending_change_request_per_event`` enforces this invariant at the DB
+    level.
+
+    Fields
+    ------
+    event
+        The ``CalendarEvent`` targeted by this change request.
+    kind
+        Whether the inbound change is an update or a deletion.
+    status
+        Lifecycle status; defaults to ``PENDING``.
+    provider
+        Calendar provider that originated the change (``google`` in v1).
+    proposed_values
+        Proposed field values extracted from the inbound payload
+        (title / description / start_time / end_time).
+    proposed_payload
+        Raw provider payload that produced this request (for debugging /
+        re-processing).
+    retained_values
+        Snapshot of the local event values before the change, used to
+        undo on rejection or in ``FORBIDDEN`` mode.
+    resolved_by
+        The ``OrganizationMembership`` that approved or rejected this request.
+        ``null`` while the request is ``PENDING`` or ``STALE``.
+    resolved_at
+        When the request was resolved (approved / rejected / auto-undone).
+    """
+
+    event = OrganizationForeignKey(
+        "CalendarEvent",
+        on_delete=models.PROTECT,
+        related_name="external_change_requests",
+    )
+    kind = models.CharField(
+        max_length=6,
+        choices=ExternalEventChangeKind,
+    )
+    status = models.CharField(
+        max_length=11,
+        choices=ExternalEventChangeRequestStatus,
+        default=ExternalEventChangeRequestStatus.PENDING,
+        db_default=ExternalEventChangeRequestStatus.PENDING,
+    )
+    provider = models.CharField(
+        max_length=50,
+        choices=CalendarProvider.choices,
+    )
+    proposed_values = models.JSONField(
+        default=dict,
+        help_text="Proposed field values: title, description, start_time, end_time.",
+    )
+    proposed_payload = models.JSONField(
+        default=dict,
+        help_text="Raw provider payload that produced this request.",
+    )
+    retained_values = models.JSONField(
+        default=dict,
+        help_text="Snapshot of local field values before the change, used to undo on rejection.",
+    )
+    resolved_by = OrganizationMembershipForeignKey(
+        on_delete=models.PROTECT,
+        related_name="resolved_external_change_requests",
+        null=True,
+        blank=True,
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    objects: ExternalEventChangeRequestManager = ExternalEventChangeRequestManager()
+
+    class Meta:
+        constraints: ClassVar[list[Any]] = [
+            models.UniqueConstraint(
+                fields=["event_fk"],
+                condition=models.Q(status="pending"),
+                name="uniq_pending_change_request_per_event",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"ExternalEventChangeRequest(event={self.event_fk_id}, kind={self.kind},"
+            f" status={self.status})"
+        )

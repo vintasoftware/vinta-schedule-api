@@ -547,3 +547,17 @@ class AvailableTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
                 "id", start, end, max_occurrences
             )
         )
+
+
+class ExternalEventChangeRequestQuerySet(BaseOrganizationModelQuerySet):
+    """QuerySet for ExternalEventChangeRequest."""
+
+    def pending(self) -> "ExternalEventChangeRequestQuerySet":
+        """Return only PENDING requests."""
+        from calendar_integration.models import ExternalEventChangeRequestStatus
+
+        return self.filter(status=ExternalEventChangeRequestStatus.PENDING)
+
+    def for_event(self, event_id: int) -> "ExternalEventChangeRequestQuerySet":
+        """Return requests targeting a specific CalendarEvent PK."""
+        return self.filter(event_fk_id=event_id)
