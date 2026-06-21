@@ -76,11 +76,17 @@
   - Review: 0 BLOCKERs; SHOULD-FIX (attendee query + `can_resolve` now require active membership; pass `event` to avoid extra query; inactive-admin test) + NITs applied.
   - Verified: full `pytest -n auto` = 3041 passed; `makemigrations --check` clean; no trailers.
 
+- **Phase 8a — REST endpoints** ✅
+  - Model: sonnet (Tier 3), agent: implementer + reviewer + fixer (sonnet)
+  - Commits: `feat(change-requests): add REST endpoints for listing, approving, and rejecting ExternalEventChangeRequests`, `fix(calendar): correct reject status codes + ordering + prune virtual model per review`
+  - `ExternalEventChangeRequestViewSet` (list/approve/reject) + serializer + filterset + permission + `resolvable_by(membership)` queryset/manager (admin→all org; member→their attended events) + route + regenerated `schema.yml`. reject authenticates outbound via CalendarOwnership→owner SocialAccount→`authenticate`→`_get_write_adapter_for_calendar` (mirrors `CalendarEventViewSet.transfer`). Guard ordering: 409 non-PENDING (before auth) → 403 event-None → 400 missing owner/account/adapter → 403 service-ineligible → 200. Default PENDING filter scoped to `list` only.
+  - Review: 0 BLOCKERs; SHOULD-FIX (reject 409→403 for event-None + reorder so non-PENDING returns 409 before auth work; prune unused virtual-model traversals; +4 error-path tests + field assertions) applied.
+  - Verified: full `pytest -n auto` = 3065 passed; `makemigrations --check` clean; schema validated; no trailers.
+
 ## Current phase
-- **Phase 8a — REST endpoints** (Tier 3 → sonnet, implementer) — next
+- **Phase 8b — Public GraphQL query + mutations** (Tier 3 → sonnet, implementer) — next
 
 ## Remaining phases
-- Phase 8a — REST endpoints (Tier 3 → sonnet)
 - Phase 8b — Public GraphQL query + mutations (Tier 3 → sonnet)
 
 ## Deferred phases
