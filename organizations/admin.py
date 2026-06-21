@@ -7,7 +7,8 @@ from organizations.models import Organization, OrganizationBranding
 class OrganizationAdmin(admin.ModelAdmin):
     """Admin interface for Organization.
 
-    Exposes can_invite_organizations, external_event_update_policy, and other settings.
+    Exposes can_invite_organizations as the ONLY place it can be toggled.
+    Also exposes external_event_update_policy for managing event edit/delete policies.
     """
 
     list_display = (
