@@ -4094,7 +4094,17 @@ def test_process_new_event_recurring_instance_parent_missing_creates_blocked_tim
 def test_process_existing_event_cancelled(
     social_account, social_token, mock_google_adapter, calendar_event
 ):
-    """Test processing a cancelled existing event marks it for deletion."""
+    """Test processing a cancelled existing event marks it for deletion under ALLOW policy.
+
+    Under ALLOW, inbound cancellations are applied directly (legacy behavior).
+    Set the organization policy explicitly to ALLOW so this test covers the
+    direct-delete code path regardless of the model's default.
+    """
+    # Under ALLOW, inbound cancellations delete the local event directly.
+    org = calendar_event.organization
+    org.external_event_update_policy = ExternalEventUpdatePolicy.ALLOW
+    org.save(update_fields=["external_event_update_policy"])
+
     cancelled_event_data = CalendarEventAdapterOutputData(
         calendar_external_id="cal_123",
         external_id="event_123",
@@ -4108,7 +4118,7 @@ def test_process_existing_event_cancelled(
     )
 
     service = CalendarService()
-    service.authenticate(account=social_account.user, organization=calendar_event.organization)
+    service.authenticate(account=social_account.user, organization=org)
     changes = EventsSyncChanges()
 
     service._process_existing_event(
