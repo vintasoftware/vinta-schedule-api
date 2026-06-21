@@ -83,11 +83,15 @@
   - Review: 0 BLOCKERs; SHOULD-FIX (reject 409→403 for event-None + reorder so non-PENDING returns 409 before auth work; prune unused virtual-model traversals; +4 error-path tests + field assertions) applied.
   - Verified: full `pytest -n auto` = 3065 passed; `makemigrations --check` clean; schema validated; no trailers.
 
-## Current phase
-- **Phase 8b — Public GraphQL query + mutations** (Tier 3 → sonnet, implementer) — next
+- **Phase 8b — Public GraphQL query + mutations** ✅
+  - Model: sonnet (Tier 3), agent: implementer + reviewer + fixer (sonnet)
+  - Commits: `feat(public-api): add GraphQL query + mutations for ExternalEventChangeRequest`, `fix(public-api): fix resolvedBy resolver + add cross-org/pagination validation + tests`
+  - Strawberry type + `externalEventChangeRequests` query (scoped token → `resolvable_by`; org-wide token → all org) + `approve`/`reject` mutations (mutations require a scoped/acting membership; reject authenticates outbound like REST). `FIELD_TO_RESOURCE_MAPPING` (3 fields) + `PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST`.
+  - Review: 1 BLOCKER fixed — `resolvedBy` resolver accessed `self.resolved_by` self-referentially (RecursionError on any query selecting it; untested) → fixed via `resolved_by_user_id` null-guard + `object.__getattribute__`. SHOULD-FIX (cross-org isolation tests for both mutations; offset/limit/status validation; reject N+1 → pass resolved `org`) applied.
+  - Verified: full `pytest -n auto` = 3093 passed; `makemigrations --check` clean; schema unchanged; no trailers.
 
-## Remaining phases
-- Phase 8b — Public GraphQL query + mutations (Tier 3 → sonnet)
+## 🎉 ALL PHASES COMPLETE
+All 10 executable phases (1, 2, 3, 4, 5a, 5b, 6, 7, 8a, 8b) implemented, reviewed (adversarial reviewer + fixer loop each), and verified. No cross-repo or flag-removal phases. Branch `plan/external-event-update-policy` (36 commits) pushed to origin. Full suite green at 3093 passed.
 
 ## Deferred phases
 _(none — no cross-repo or flag-removal phases in this plan)_
