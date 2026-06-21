@@ -37,6 +37,7 @@ import datetime
 import logging
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
+from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.db.models import Q
 
@@ -163,8 +164,9 @@ class CalendarSyncService:
         # helper are reached through the host (the facade). See ``SyncServiceHost``.
         self._host = host
         # Phase 3 seam: inbound-update interception under CHANGE_REQUEST/FORBIDDEN policy.
-        # Optional so existing tests that build the service directly without DI remain valid;
-        # when None, the service falls back to ALLOW behavior (direct-apply).
+        # Optional so existing tests that build the service under ALLOW policy (without DI)
+        # remain valid. None is only tolerated when the organization policy is ALLOW;
+        # CHANGE_REQUEST and FORBIDDEN require the service to be injected.
         self._external_event_change_request_service = external_event_change_request_service
 
     # ------------------------------------------------------------------
@@ -742,9 +744,12 @@ class CalendarSyncService:
         # ``matched_event_ids`` so the full-sync deletion pass does not treat the
         # event as vanished (the sync token still advances normally at the sync
         # level — this method only controls the diff-engine behavior).
-        if policy == ExternalEventUpdatePolicy.CHANGE_REQUEST and (
-            self._external_event_change_request_service is not None
-        ):
+        if policy == ExternalEventUpdatePolicy.CHANGE_REQUEST:
+            if self._external_event_change_request_service is None:
+                raise ImproperlyConfigured(
+                    "ExternalEventChangeRequestService must be injected when an organization's "
+                    "external_event_update_policy is CHANGE_REQUEST (check di_core/containers.py wiring)."
+                )
             proposed_values = {
                 "title": event.title,
                 "description": event.description,
@@ -761,12 +766,24 @@ class CalendarSyncService:
                     existing_event.end_time.isoformat() if existing_event.end_time else None
                 ),
             }
+            # Derive the provider from the sync adapter when available; fall back to
+            # the local event's calendar provider so non-Google adapters are recorded
+            # correctly when wired in the future.
+            if context.calendar_adapter is not None:
+                provider: CalendarProvider | str = context.calendar_adapter.provider
+            elif existing_event.calendar is not None:
+                provider = existing_event.calendar.provider
+            else:
+                # Should not be reachable: calendar is always set when syncing events.
+                raise ImproperlyConfigured(
+                    "CalendarEvent.calendar must be set when processing an existing event"
+                )
             self._external_event_change_request_service.create_or_supersede_update_request(
                 event=existing_event,
                 proposed_values=proposed_values,
                 retained_values=retained_values,
                 payload=event.original_payload or {},
-                provider=CalendarProvider.GOOGLE,
+                provider=provider,
             )
             changes.matched_event_ids.add(existing_event.external_id)
             return

@@ -24,6 +24,8 @@ import datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from django.core.exceptions import ImproperlyConfigured
+
 import pytest
 from allauth.socialaccount.models import SocialAccount
 
@@ -645,3 +647,46 @@ def test_change_request_creation_records_audit_entry(
     # The local event is still unchanged.
     existing.refresh_from_db()
     assert existing.title == "Original Title"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Misconfiguration guard — CHANGE_REQUEST without service raises loud
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_change_request_policy_without_service_raises_improperly_configured(
+    context_cr: CalendarServiceContext,
+    calendar_cr: Calendar,
+    organization_change_request: Organization,
+    fake_adapter: MagicMock,
+) -> None:
+    """Under CHANGE_REQUEST policy, if ExternalEventChangeRequestService is not
+    injected (None), the sync must raise ImproperlyConfigured rather than silently
+    falling through to direct-apply (which would defeat the safety guarantee)."""
+    _make_existing_event(
+        calendar_cr,
+        external_id="evt_cr_misconfig",
+        title="Original Title",
+    )
+
+    inbound = _inbound_event(
+        "evt_cr_misconfig",
+        title="Attempted Edit",
+        calendar_external_id="cr_cal_001",
+    )
+    fake_adapter.get_events.return_value = {
+        "events": [inbound],
+        "next_sync_token": "tok-misconfig",
+    }
+
+    calendar_sync = _make_calendar_sync(calendar_cr, organization_change_request)
+    # Deliberately omit external_event_change_request_service (defaults to None).
+    service = CalendarSyncService(
+        context=context_cr,
+        calendar_cache={},
+        host=FakeHost(),
+    )
+
+    with pytest.raises(ImproperlyConfigured, match="ExternalEventChangeRequestService"):
+        service._execute_calendar_sync(calendar_sync, sync_token="tok-prev")

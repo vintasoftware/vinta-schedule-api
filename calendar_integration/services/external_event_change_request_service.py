@@ -12,14 +12,18 @@ FORBIDDEN auto-undo path.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 from django.db import transaction
 
 from dependency_injector.wiring import Provide, inject
 
 from audit.constants import AuditAction
-from calendar_integration.constants import ExternalEventChangeKind, ExternalEventChangeRequestStatus
+from calendar_integration.constants import (
+    CalendarProvider,
+    ExternalEventChangeKind,
+    ExternalEventChangeRequestStatus,
+)
 from calendar_integration.models import ExternalEventChangeRequest
 
 
@@ -53,10 +57,10 @@ class ExternalEventChangeRequestService:
         self,
         *,
         event: CalendarEvent,
-        proposed_values: dict,
-        retained_values: dict,
-        payload: dict,
-        provider: str,
+        proposed_values: dict[str, Any],
+        retained_values: dict[str, Any],
+        payload: dict[str, Any],
+        provider: CalendarProvider | str,
     ) -> ExternalEventChangeRequest:
         """Create a new PENDING update request, superseding any prior PENDING one.
 
@@ -108,7 +112,7 @@ class ExternalEventChangeRequestService:
         if self.audit_service is not None:
             actor = self.audit_service.system_actor()
             subject = self.audit_service.subject_from_instance(change_request)
-            diff: dict = {
+            diff: dict[str, Any] = {
                 field: {"old": retained_values.get(field), "new": proposed_values.get(field)}
                 for field in set(proposed_values) | set(retained_values)
                 if retained_values.get(field) != proposed_values.get(field)
