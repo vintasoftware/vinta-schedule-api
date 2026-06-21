@@ -16,6 +16,7 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
+    ExternalEventChangeRequest,
 )
 
 
@@ -462,3 +463,56 @@ class WebhookHealthDashboard:
             if success_rate >= 80
             else "red",
         )
+
+
+@admin.register(ExternalEventChangeRequest)
+class ExternalEventChangeRequestAdmin(admin.ModelAdmin):
+    """Admin interface for ExternalEventChangeRequest."""
+
+    list_display = (
+        "id",
+        "event_fk",
+        "kind",
+        "status",
+        "provider",
+        "resolved_by_user_id",
+        "resolved_at",
+        "created",
+    )
+    list_filter = ("status", "kind", "provider", "created")
+    search_fields = ("event_fk__title",)
+    readonly_fields = (
+        "organization",
+        "event_fk",
+        "kind",
+        "provider",
+        "proposed_values",
+        "proposed_payload",
+        "retained_values",
+        "resolved_by_user_id",
+        "resolved_at",
+        "created",
+        "modified",
+    )
+    fields = (
+        "organization",
+        "event_fk",
+        "kind",
+        "status",
+        "provider",
+        "proposed_values",
+        "proposed_payload",
+        "retained_values",
+        "resolved_by_user_id",
+        "resolved_at",
+        "created",
+        "modified",
+    )
+
+    def get_queryset(self, request: HttpRequest):
+        return super().get_queryset(request).select_related("organization", "event_fk")
+
+    @admin.display(description="Resolved by (user id)")
+    def resolved_by_user_id(self, obj: ExternalEventChangeRequest) -> int | None:
+        """Display the user ID of the resolver membership."""
+        return obj.resolved_by_user_id
