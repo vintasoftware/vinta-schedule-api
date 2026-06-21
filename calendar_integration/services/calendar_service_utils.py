@@ -39,6 +39,24 @@ from organizations.models import OrganizationMembership
 from users.models import User
 
 
+def resolve_acting_single_use_token(
+    user_or_token: object,
+    permission_service: object | None,
+) -> CalendarManagementToken | None:
+    """Return the resolved single-use token backing a ``str`` ``user_or_token``.
+
+    When the caller acts via a single-use code, ``user_or_token`` is the raw code
+    string and the permission service has already resolved it into a
+    ``CalendarManagementToken`` row (``permission_service.token``). Audit actor
+    resolution uses that row to attribute the action to SINGLE_USE_CODE. Returns
+    ``None`` for non-token principals (User / SystemUser / None) or when no token
+    has been resolved.
+    """
+    if not isinstance(user_or_token, str) or permission_service is None:
+        return None
+    return getattr(permission_service, "token", None)
+
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 

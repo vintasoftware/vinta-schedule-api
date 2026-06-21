@@ -13,6 +13,9 @@ from vintasend.services.notification_service import (
     NotificationTypes,
 )
 
+from audit.constants import AuditAction
+from audit.diff import compute_diff
+from audit.services import AuditService
 from calendar_integration.constants import CalendarSyncTriggerSource
 from calendar_integration.models import (
     Calendar,
@@ -55,10 +58,12 @@ class OrganizationService:
             WebhookMembershipSideEffectsService,
             Provide["webhook_membership_side_effects_service"],
         ],
+        audit_service: Annotated[AuditService, Provide["audit_service"]],
     ):
         self.calendar_service = calendar_service
         self.notification_service = notification_service
         self.webhook_membership_side_effects_service = webhook_membership_side_effects_service
+        self.audit_service = audit_service
 
     def create_organization(
         self, creator: User, name: str, should_sync_rooms: bool = False
@@ -81,6 +86,23 @@ class OrganizationService:
             role=OrganizationRole.ADMIN,
         )
         self.webhook_membership_side_effects_service.on_member_created(admin_membership)
+
+        # Audit: the creator (now the org's first admin) is the actor for both the
+        # organization creation and their own admin membership.
+        actor = self.audit_service.actor_from_membership(admin_membership)
+        self.audit_service.record(
+            organization_id=self.organization.id,
+            action=AuditAction.CREATE,
+            actor=actor,
+            subject=self.audit_service.subject_from_instance(self.organization),
+        )
+        self.audit_service.record(
+            organization_id=self.organization.id,
+            action=AuditAction.CREATE,
+            actor=actor,
+            subject=self.audit_service.subject_from_instance(admin_membership),
+            affected_membership_ids=[admin_membership.user_id],
+        )
 
         if should_sync_rooms:
             # A newly created organization cannot have a service account yet, so
@@ -259,7 +281,15 @@ class OrganizationService:
             # Handle the case where the invitation with this email already exists
             raise DuplicateInvitationError() from e
 
+        diff = None
         if not created:
+            before = {
+                "expires_at": invitation.expires_at.isoformat() if invitation.expires_at else None,
+                "role": invitation.role,
+                "accepted_at": invitation.accepted_at.isoformat()
+                if invitation.accepted_at
+                else None,
+            }
             invitation.token_hash = token_hash
             invitation.expires_at = seven_days_from_now
             invitation.invited_by = invited_by
@@ -269,6 +299,28 @@ class OrganizationService:
             invitation.accepted_at = None
             invitation.membership_user_id = None
             invitation.save()
+            after = {
+                "expires_at": seven_days_from_now.isoformat(),
+                "role": role,
+                "accepted_at": None,
+            }
+            diff = compute_diff(before, after)
+
+        # Audit: an admin (or an API-level actor with no Django User) invites a user.
+        # A fresh invitation is a CREATE; reusing an existing pending row is an UPDATE
+        # (token/expiry/role reset).
+        actor = (
+            self.audit_service.actor_from_user(invited_by, organization.id)
+            if invited_by is not None
+            else self.audit_service.system_actor()
+        )
+        self.audit_service.record(
+            organization_id=organization.id,
+            action=AuditAction.CREATE if created else AuditAction.UPDATE,
+            actor=actor,
+            subject=self.audit_service.subject_from_instance(invitation),
+            diff=diff,
+        )
 
         # Attach the raw token as a transient attribute so the caller can surface it once.
         # It is never persisted — only token_hash is stored in the DB row.
@@ -348,6 +400,24 @@ class OrganizationService:
                 invitation.membership_user_id = membership.user_id
                 invitation.save()
                 self.webhook_membership_side_effects_service.on_member_created(membership)
+
+                # Audit: the accepting user joins the org (new membership) and the
+                # invitation transitions to accepted. The user is the actor for both.
+                actor = self.audit_service.actor_from_membership(membership)
+                self.audit_service.record(
+                    organization_id=invitation.organization_id,
+                    action=AuditAction.CREATE,
+                    actor=actor,
+                    subject=self.audit_service.subject_from_instance(membership),
+                    affected_membership_ids=[membership.user_id],
+                )
+                self.audit_service.record(
+                    organization_id=invitation.organization_id,
+                    action=AuditAction.UPDATE,
+                    actor=actor,
+                    subject=self.audit_service.subject_from_instance(invitation),
+                    diff={"accepted_at": {"old": None, "new": now.isoformat()}},
+                )
                 return membership
 
         raise InvalidInvitationTokenError()
@@ -416,6 +486,24 @@ class OrganizationService:
             pending_invitation.membership_user_id = membership.user_id
             pending_invitation.save()
             self.webhook_membership_side_effects_service.on_member_created(membership)
+
+            # Audit: user joins the inviting org via the signup path; same shape as
+            # accept_invitation (membership CREATE + invitation accepted UPDATE).
+            actor = self.audit_service.actor_from_membership(membership)
+            self.audit_service.record(
+                organization_id=pending_invitation.organization_id,
+                action=AuditAction.CREATE,
+                actor=actor,
+                subject=self.audit_service.subject_from_instance(membership),
+                affected_membership_ids=[membership.user_id],
+            )
+            self.audit_service.record(
+                organization_id=pending_invitation.organization_id,
+                action=AuditAction.UPDATE,
+                actor=actor,
+                subject=self.audit_service.subject_from_instance(pending_invitation),
+                diff={"accepted_at": {"old": None, "new": now.isoformat()}},
+            )
             return membership
 
         if organization_name:
@@ -440,7 +528,24 @@ class OrganizationService:
         """
         try:
             invitation = OrganizationInvitation.objects.get(id=invitation_id)
-            invitation.expires_at = datetime.datetime.now(tz=datetime.UTC)
+            old_expires_at = invitation.expires_at
+            now = datetime.datetime.now(tz=datetime.UTC)
+            invitation.expires_at = now
             invitation.save()
         except OrganizationInvitation.DoesNotExist as e:
             raise InvitationNotFoundError() from e
+
+        # Audit: revoking an invitation expires it immediately. No acting User is
+        # threaded into this method, so the actor is the system.
+        self.audit_service.record(
+            organization_id=invitation.organization_id,
+            action=AuditAction.UPDATE,
+            actor=self.audit_service.system_actor(),
+            subject=self.audit_service.subject_from_instance(invitation),
+            diff={
+                "expires_at": {
+                    "old": old_expires_at.isoformat() if old_expires_at else None,
+                    "new": now.isoformat(),
+                }
+            },
+        )

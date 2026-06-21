@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from allauth.socialaccount.models import SocialAccount
 
+    from audit.services import AuditService
     from calendar_integration.models import GoogleCalendarServiceAccount
     from calendar_integration.services.calendar_permission_service import CalendarPermissionService
     from calendar_integration.services.calendar_side_effects_service import (
@@ -47,3 +48,7 @@ class CalendarServiceContext:
     calendar_adapter: CalendarAdapter | None
     calendar_permission_service: CalendarPermissionService | None
     calendar_side_effects_service: CalendarSideEffectsService | None
+    # Audit trail recorder, threaded from the facade so sub-services can emit audit
+    # records for the business writes they perform. Defaults to None so contexts built
+    # directly in tests (without DI) still construct.
+    audit_service: AuditService | None = None

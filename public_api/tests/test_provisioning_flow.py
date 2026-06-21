@@ -531,7 +531,9 @@ class TestCreateInvitationProvisioning:
 
         with (
             container.public_api_auth_service.override(auth_service),
-            patch("organizations.services.transaction.on_commit") as mock_on_commit,
+            patch(
+                "organizations.services.NotificationService.create_one_off_notification"
+            ) as mock_send_email,
         ):
             response = self.client.post(
                 "/graphql/",
@@ -552,8 +554,10 @@ class TestCreateInvitationProvisioning:
         assert response.status_code == 200
         data = response.json()
         assert "errors" not in data or len(data.get("errors", [])) == 0
-        # transaction.on_commit must NOT have been called — no email was scheduled
-        mock_on_commit.assert_not_called()
+        # The invitation email must NOT be scheduled when sendEmail=False. (We assert
+        # on the notification directly rather than transaction.on_commit, since the
+        # audit trail now also schedules an on_commit to enqueue its record.)
+        mock_send_email.assert_not_called()
 
 
 CREATE_SYSTEM_USER_TOKEN_MUTATION = """

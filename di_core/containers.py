@@ -112,28 +112,33 @@ class AppContainer(containers.DeclarativeContainer):
 
     calendar_permission_service = providers.Factory(
         CalendarPermissionService,
+        audit_service=audit_service,
     )
 
     calendar_service = providers.Factory(
         CalendarService,
         calendar_side_effects_service=calendar_side_effects_service,
         calendar_permission_service=calendar_permission_service,
+        audit_service=audit_service,
     )
 
     calendar_group_service = providers.Factory(
         CalendarGroupService,
         calendar_service=calendar_service,
         calendar_permission_service=calendar_permission_service,
+        audit_service=audit_service,
     )
 
     organization_service = providers.Factory(
         OrganizationService,
         calendar_service=calendar_service,
         webhook_membership_side_effects_service=webhook_membership_side_effects_service,
+        audit_service=audit_service,
     )
 
     public_api_auth_service = providers.Factory(
         PublicAPIAuthService,
+        audit_service=audit_service,
     )
 
 

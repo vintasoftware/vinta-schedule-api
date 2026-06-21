@@ -1,5 +1,9 @@
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
+from dependency_injector.wiring import Provide, inject
+
+from audit.constants import AuditAction
+from audit.services import AuditService
 from common.utils.authentication_utils import (
     generate_long_lived_token,
     hash_long_lived_token,
@@ -13,6 +17,13 @@ if TYPE_CHECKING:
 
 
 class PublicAPIAuthService:
+    @inject
+    def __init__(
+        self,
+        audit_service: Annotated[AuditService, Provide["audit_service"]],
+    ) -> None:
+        self.audit_service = audit_service
+
     def check_system_user_token(self, system_user_id: int, token: str) -> tuple[SystemUser, bool]:
         """
         Check if the provided token matches the system user's long-lived token.
@@ -61,4 +72,17 @@ class PublicAPIAuthService:
         if scoped_to_membership is not None:
             create_kwargs["scoped_to_membership_user_id"] = scoped_to_membership.user_id
         system_user = SystemUser.objects.create(**create_kwargs)
+
+        # Audit: a system-user (API integration credential) is provisioned for the org.
+        # No acting Django User is threaded here, so the actor is the system; when the
+        # token is membership-scoped, that membership is the affected party.
+        self.audit_service.record(
+            organization_id=organization.id,
+            action=AuditAction.CREATE,
+            actor=self.audit_service.system_actor(),
+            subject=self.audit_service.subject_from_instance(system_user),
+            affected_membership_ids=(
+                [scoped_to_membership.user_id] if scoped_to_membership is not None else []
+            ),
+        )
         return system_user, token

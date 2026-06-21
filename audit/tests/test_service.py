@@ -250,6 +250,108 @@ class TestActorFromSingleUseCode:
         assert snapshot.system_user_scoped_to_membership is None
 
 
+@pytest.mark.django_db
+class TestActorFromUser:
+    """actor_from_user resolves a User to a membership actor, else system."""
+
+    def test_membership_actor_when_user_is_member(self) -> None:
+        org = baker.make(Organization)
+        user = baker.make("users.User")
+        membership = OrganizationMembership.objects.create(
+            user=user, organization=org, role=OrganizationRole.ADMIN
+        )
+
+        snapshot = AuditService.actor_from_user(user, org.pk)
+
+        assert snapshot.actor_type == AuditActorType.MEMBERSHIP
+        assert snapshot.actor_id == membership.user_id
+        assert snapshot.actor_role == OrganizationRole.ADMIN
+
+    def test_system_actor_when_user_not_member(self) -> None:
+        org = baker.make(Organization)
+        user = baker.make("users.User")  # no membership in org
+
+        snapshot = AuditService.actor_from_user(user, org.pk)
+
+        assert snapshot.actor_type == AuditActorType.SYSTEM
+        assert snapshot.actor_id is None
+
+
+@pytest.mark.django_db
+class TestActorFromUserOrToken:
+    """actor_from_user_or_token dispatches on the principal type."""
+
+    def test_user_resolves_to_membership(self) -> None:
+        org = baker.make(Organization)
+        user = baker.make("users.User")
+        OrganizationMembership.objects.create(
+            user=user, organization=org, role=OrganizationRole.MEMBER
+        )
+
+        snapshot = AuditService.actor_from_user_or_token(user, org.pk)
+
+        assert snapshot.actor_type == AuditActorType.MEMBERSHIP
+
+    def test_system_user_resolves_to_system_user_actor(self) -> None:
+        from public_api.models import SystemUser
+
+        org = baker.make(Organization)
+        system_user = SystemUser.objects.create(
+            organization=org,
+            integration_name="audit_dispatch",
+            long_lived_token_hash="abc123",
+        )
+
+        snapshot = AuditService.actor_from_user_or_token(system_user, org.pk)
+
+        assert snapshot.actor_type == AuditActorType.SYSTEM_USER
+        assert snapshot.actor_id == system_user.id
+
+    def test_token_string_without_resolved_token_is_system_actor(self) -> None:
+        # A raw code with no resolved token row falls back to system.
+        snapshot = AuditService.actor_from_user_or_token("raw-token", 1)
+        assert snapshot.actor_type == AuditActorType.SYSTEM
+
+    def test_token_string_with_resolved_token_is_single_use_code(self) -> None:
+        from calendar_integration.models import CalendarManagementToken
+
+        org = baker.make(Organization)
+        token = baker.make(CalendarManagementToken, organization=org)
+
+        snapshot = AuditService.actor_from_user_or_token(
+            "raw-token", org.pk, single_use_token=token
+        )
+
+        assert snapshot.actor_type == AuditActorType.SINGLE_USE_CODE
+        assert snapshot.actor_id == token.id
+
+    def test_none_resolves_to_system_actor(self) -> None:
+        snapshot = AuditService.actor_from_user_or_token(None, 1)
+        assert snapshot.actor_type == AuditActorType.SYSTEM
+
+
+@pytest.mark.django_db
+class TestSubjectFromInstance:
+    """subject_from_instance derives a SubjectRef from a model instance."""
+
+    def test_derives_type_and_id_no_auto_label(self) -> None:
+        org = baker.make(Organization, name="ACME")
+
+        subject = AuditService.subject_from_instance(org)
+
+        assert subject.subject_type == "organizations.Organization"
+        assert subject.subject_id == str(org.pk)
+        # Label is NOT auto-computed from str(instance) — stays None unless passed.
+        assert subject.subject_label is None
+
+    def test_label_override(self) -> None:
+        org = baker.make(Organization)
+
+        subject = AuditService.subject_from_instance(org, label="custom")
+
+        assert subject.subject_label == "custom"
+
+
 class TestSystemActor:
     """system_actor returns a SYSTEM snapshot with actor_id=None."""
 

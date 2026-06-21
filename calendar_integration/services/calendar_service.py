@@ -32,7 +32,7 @@ services such as ``CalendarGroupService``.
 import datetime
 import logging
 from collections.abc import Callable, Iterable
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from django.db import transaction
 from django.db.models import QuerySet
@@ -41,6 +41,8 @@ from django.http import HttpRequest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from dependency_injector.wiring import Provide, inject
 
+from audit.constants import AuditAction
+from audit.diff import compute_diff
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncTriggerSource,
@@ -87,6 +89,9 @@ from calendar_integration.services.calendar_service_utils import (
     grant_event_attendee_permissions as _grant_event_attendee_permissions_util,
 )
 from calendar_integration.services.calendar_service_utils import (
+    resolve_acting_single_use_token as _resolve_acting_single_use_token,
+)
+from calendar_integration.services.calendar_service_utils import (
     serialize_event as _serialize_event_util,
 )
 from calendar_integration.services.calendar_service_utils import (
@@ -131,6 +136,10 @@ from public_api.models import SystemUser
 from users.models import User
 
 
+if TYPE_CHECKING:
+    from audit.services import AuditService
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -167,6 +176,7 @@ class CalendarService(BaseCalendarService):
         calendar_permission_service: Annotated[
             "CalendarPermissionService | None", Provide["calendar_permission_service"]
         ] = None,
+        audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
     ) -> None:
         """Initialize a CalendarService instance. Call authenticate() before using calendar operations."""
         self.organization = None
@@ -175,6 +185,7 @@ class CalendarService(BaseCalendarService):
         self.calendar_adapter = None
         self.calendar_side_effects_service = calendar_side_effects_service
         self.calendar_permission_service = calendar_permission_service
+        self.audit_service = audit_service
         # Per-instance calendar lookup cache: keyed on (organization_id, id_or_external_id).
         # This replaces the @lru_cache approach which was keyed only on id/external_id and
         # could return a cached Calendar from a different organization when the service
@@ -185,6 +196,34 @@ class CalendarService(BaseCalendarService):
         # Stateless recurrence engine shared by event/blocked-time/available-time methods.
         # Constructed once; it holds no auth state (everything arrives as method params).
         self._recurrence_manager = RecurrenceManager()
+
+    def _audit_calendar_write(
+        self,
+        action: str,
+        calendar: Calendar,
+        diff: dict | None = None,
+    ) -> None:
+        """Emit an audit record for a calendar-level business write.
+
+        Resolves the actor from the facade's ``user_or_token`` auth context. A no-op
+        when no ``audit_service`` or ``organization`` is bound (e.g. a service built
+        directly in a test without DI), so instrumentation never breaks a write path.
+        """
+        if self.audit_service is None or self.organization is None:
+            return
+        self.audit_service.record(
+            organization_id=self.organization.id,
+            action=action,
+            actor=self.audit_service.actor_from_user_or_token(
+                self.user_or_token,
+                self.organization.id,
+                single_use_token=_resolve_acting_single_use_token(
+                    self.user_or_token, self.calendar_permission_service
+                ),
+            ),
+            subject=self.audit_service.subject_from_instance(calendar, label=calendar.name),
+            diff=diff,
+        )
 
     def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None:
         """
@@ -363,6 +402,7 @@ class CalendarService(BaseCalendarService):
             calendar_adapter=self.calendar_adapter,
             calendar_permission_service=self.calendar_permission_service,
             calendar_side_effects_service=self.calendar_side_effects_service,
+            audit_service=self.audit_service,
         )
 
     def initialize_without_provider(
@@ -399,6 +439,7 @@ class CalendarService(BaseCalendarService):
             calendar_adapter=self.calendar_adapter,
             calendar_permission_service=self.calendar_permission_service,
             calendar_side_effects_service=self.calendar_side_effects_service,
+            audit_service=self.audit_service,
         )
 
     def _build_context_snapshot(self) -> CalendarServiceContext:
@@ -417,6 +458,7 @@ class CalendarService(BaseCalendarService):
             calendar_adapter=self.calendar_adapter,
             calendar_permission_service=self.calendar_permission_service,
             calendar_side_effects_service=self.calendar_side_effects_service,
+            audit_service=self.audit_service,
         )
 
     def _get_event_service(self) -> CalendarEventService:
@@ -599,6 +641,8 @@ class CalendarService(BaseCalendarService):
         # Grant permissions to calendar owners
         self._grant_calendar_owner_permissions(calendar)
 
+        self._audit_calendar_write(AuditAction.CREATE, calendar)
+
         return created_calendar
 
     def _get_calendar_by_external_id(self, calendar_external_id: str) -> Calendar:
@@ -684,6 +728,8 @@ class CalendarService(BaseCalendarService):
         # Grant permissions to calendar owners
         self._grant_calendar_owner_permissions(calendar)
 
+        self._audit_calendar_write(AuditAction.CREATE, calendar)
+
         return calendar
 
     @transaction.atomic()
@@ -741,6 +787,8 @@ class CalendarService(BaseCalendarService):
         # Grant permissions to calendar owners
         self._grant_calendar_owner_permissions(calendar)
 
+        self._audit_calendar_write(AuditAction.CREATE, calendar)
+
         return calendar
 
     @transaction.atomic()
@@ -791,6 +839,8 @@ class CalendarService(BaseCalendarService):
         # Grant permissions to calendar owners
         self._grant_calendar_owner_permissions(calendar)
 
+        self._audit_calendar_write(AuditAction.CREATE, calendar)
+
         return calendar
 
     @transaction.atomic()
@@ -826,6 +876,11 @@ class CalendarService(BaseCalendarService):
                 f"(type={calendar.calendar_type})."
             )
 
+        before = {
+            "name": calendar.name,
+            "description": calendar.description,
+            "accepts_public_scheduling": calendar.accepts_public_scheduling,
+        }
         update_fields: list[str] = []
         if name is not None:
             calendar.name = name
@@ -838,6 +893,14 @@ class CalendarService(BaseCalendarService):
             update_fields.append("accepts_public_scheduling")
         if update_fields:
             calendar.save(update_fields=update_fields)
+            after = {
+                "name": calendar.name,
+                "description": calendar.description,
+                "accepts_public_scheduling": calendar.accepts_public_scheduling,
+            }
+            self._audit_calendar_write(
+                AuditAction.UPDATE, calendar, diff=compute_diff(before, after)
+            )
 
         return calendar
 
@@ -863,8 +926,15 @@ class CalendarService(BaseCalendarService):
                 f"(type={calendar.calendar_type})."
             )
 
+        old_visibility = calendar.visibility
         calendar.visibility = CalendarVisibility.INACTIVE
         calendar.save(update_fields=["visibility"])
+
+        self._audit_calendar_write(
+            AuditAction.UPDATE,
+            calendar,
+            diff={"visibility": {"old": old_visibility, "new": calendar.visibility}},
+        )
 
         return calendar
 
@@ -889,8 +959,15 @@ class CalendarService(BaseCalendarService):
                 f"Calendar {bundle_id} is not a bundle calendar (type={calendar.calendar_type})."
             )
 
+        old_visibility = calendar.visibility
         calendar.visibility = CalendarVisibility.INACTIVE
         calendar.save(update_fields=["visibility"])
+
+        self._audit_calendar_write(
+            AuditAction.UPDATE,
+            calendar,
+            diff={"visibility": {"old": old_visibility, "new": calendar.visibility}},
+        )
 
         return calendar
 

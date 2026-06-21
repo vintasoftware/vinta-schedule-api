@@ -129,6 +129,103 @@ class AuditService:
             actor_id=None,
         )
 
+    @staticmethod
+    def actor_from_user(user: object, organization_id: int) -> ActorSnapshot:
+        """Resolve a ``User`` acting within an organization to an actor snapshot.
+
+        Looks up the OrganizationMembership identifying this user in the org and,
+        when present, returns a MEMBERSHIP actor capturing its role. Falls back to
+        a SYSTEM actor when the user has no membership in the organization — this
+        mirrors the orphan-ownership guard (a non-member acting leaves no
+        membership FK to point at), so the record is still emitted with a stable
+        actor rather than a dangling membership reference.
+
+        Args:
+            user: A users.User instance (the acting principal).
+            organization_id: The organization the action happens in.
+
+        Returns:
+            A MEMBERSHIP ActorSnapshot when a membership exists, else a SYSTEM one.
+        """
+        # Lazy import: audit is a leaf app; importing organizations at module load
+        # would create an import cycle (organizations services import audit_service).
+        from organizations.models import OrganizationMembership
+
+        membership = OrganizationMembership.objects.filter(
+            user_id=user.id,  # type: ignore[attr-defined]
+            organization_id=organization_id,
+        ).first()
+        if membership is None:
+            return AuditService.system_actor()
+        return AuditService.actor_from_membership(membership)
+
+    @staticmethod
+    def actor_from_user_or_token(
+        user_or_token: object,
+        organization_id: int,
+        single_use_token: object | None = None,
+    ) -> ActorSnapshot:
+        """Resolve a calendar service ``user_or_token`` value to an actor snapshot.
+
+        The calendar services carry a ``user_or_token`` of ``User | str | SystemUser
+        | None`` on their auth context. This maps each variant to the right actor:
+
+        - ``User``      -> membership actor (or system, via actor_from_user)
+        - ``SystemUser`` -> system-user actor with scopes
+        - ``str``       -> a single-use CalendarManagementToken *code*. When the
+          resolved token row is supplied via ``single_use_token`` (the calendar
+          permission service resolves the code and exposes the row), attribute the
+          action to that token (SINGLE_USE_CODE); otherwise fall back to system.
+        - ``None``      -> system actor.
+
+        Args:
+            user_or_token: The context principal (User, SystemUser, token str, None).
+            organization_id: The organization the action happens in.
+            single_use_token: The resolved CalendarManagementToken row backing a
+                ``str`` code, when available. Ignored for non-str principals.
+
+        Returns:
+            The most specific ActorSnapshot resolvable from the principal.
+        """
+        # Lazy imports for the same import-cycle reason as actor_from_user.
+        from public_api.models import SystemUser
+        from users.models import User
+
+        if isinstance(user_or_token, User):
+            return AuditService.actor_from_user(user_or_token, organization_id)
+        if isinstance(user_or_token, SystemUser):
+            return AuditService.actor_from_system_user(user_or_token)
+        if isinstance(user_or_token, str) and single_use_token is not None:
+            return AuditService.actor_from_single_use_code(single_use_token)
+        return AuditService.system_actor()
+
+    @staticmethod
+    def subject_from_instance(instance: object, label: str | None = None) -> SubjectRef:
+        """Build a SubjectRef from a Django model instance.
+
+        Derives ``subject_type`` as ``"<app_label>.<ModelName>"`` and ``subject_id``
+        from the instance pk, so call sites don't repeat the soft-reference shape.
+
+        ``subject_label`` is left ``None`` unless a caller passes one. We deliberately
+        do NOT default to ``str(instance)``: a model ``__str__`` can dereference
+        related rows (e.g. a profile) and raise, and building the audit payload must
+        never break the business action it describes. Pass a cheap label explicitly
+        (a name already in memory) when a human-readable label is worthwhile.
+
+        Args:
+            instance: A Django model instance (must have ``_meta`` and ``pk``).
+            label: Optional human-readable label; not auto-computed from ``str()``.
+
+        Returns:
+            A SubjectRef referencing the instance.
+        """
+        meta = instance._meta  # type: ignore[attr-defined]
+        return SubjectRef(
+            subject_type=f"{meta.app_label}.{instance.__class__.__name__}",
+            subject_id=str(instance.pk),  # type: ignore[attr-defined]
+            subject_label=label,
+        )
+
     # ------------------------------------------------------------------
     # Write path
     # ------------------------------------------------------------------

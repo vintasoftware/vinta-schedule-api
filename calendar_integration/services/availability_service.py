@@ -47,6 +47,8 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from django.db import transaction
 from django.db.models import Q
 
+from audit.constants import AuditAction
+from audit.diff import compute_diff
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import (
     AvailableTime,
@@ -59,6 +61,9 @@ from calendar_integration.models import (
     CalendarEvent,
     RecurrenceRule,
     RecurringMixin,
+)
+from calendar_integration.services.calendar_service_utils import (
+    resolve_acting_single_use_token,
 )
 from calendar_integration.services.calendar_service_utils import (
     serialize_event as _serialize_event_util,
@@ -138,6 +143,41 @@ class AvailabilityService:
         # recurrence-rule helper are reached through the host (the facade).
         # See ``AvailabilityServiceHost``.
         self._host = host
+
+    def _audit_availability_write(
+        self,
+        action: str,
+        subject_instance: BlockedTime | AvailableTime,
+        diff: dict | None = None,
+    ) -> None:
+        """Emit an audit record for an availability-level business write.
+
+        Resolves the actor from the context's ``user_or_token`` auth state. A no-op
+        when no ``audit_service`` or ``organization`` is bound (e.g. a context built
+        directly in a test without DI), so instrumentation never breaks a write path.
+
+        ``BlockedTime`` carries a cheap in-memory ``reason`` scalar used as the subject
+        label; ``AvailableTime`` has no human-readable scalar so no label is passed.
+        """
+        audit_service = self._context.audit_service
+        organization = self._context.organization
+        if audit_service is None or organization is None:
+            return
+
+        label = subject_instance.reason if isinstance(subject_instance, BlockedTime) else None
+        audit_service.record(
+            organization_id=organization.id,
+            action=action,
+            actor=audit_service.actor_from_user_or_token(
+                self._context.user_or_token,
+                organization.id,
+                single_use_token=resolve_acting_single_use_token(
+                    self._context.user_or_token, self._context.calendar_permission_service
+                ),
+            ),
+            subject=audit_service.subject_from_instance(subject_instance, label=label),
+            diff=diff,
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -438,6 +478,7 @@ class AvailabilityService:
         if not calendar.manage_available_windows:
             raise ValueError("This calendar does not manage available windows.")
 
+        # NOTE: batch availability writes are not individually audited (see audit rollout)
         availability_windows_to_create = []
 
         for start_time, end_time, timezone, rrule_string in availability_windows:
@@ -481,6 +522,7 @@ class AvailabilityService:
         if not calendar.manage_available_windows:
             raise ValueError("This calendar does not manage available windows.")
 
+        # NOTE: batch availability writes are not individually audited (see audit rollout)
         scoped = AvailableTime.objects.filter_by_organization(context.organization.id).filter(
             calendar_fk=calendar
         )
@@ -545,7 +587,9 @@ class AvailabilityService:
         result = self.bulk_create_availability_windows(
             calendar=calendar, availability_windows=[(start_time, end_time, timezone, rrule_string)]
         )
-        return next(iter(result))
+        available_time = next(iter(result))
+        self._audit_availability_write(AuditAction.CREATE, available_time)
+        return available_time
 
     def get_available_times_expanded(
         self,
@@ -620,7 +664,9 @@ class AvailabilityService:
             calendar=calendar,
             blocked_times=[(start_time, end_time, timezone, reason, rrule_string)],
         )
-        return next(iter(result))
+        blocked_time = next(iter(result))
+        self._audit_availability_write(AuditAction.CREATE, blocked_time)
+        return blocked_time
 
     @transaction.atomic()
     def update_blocked_time(
@@ -658,6 +704,14 @@ class AvailabilityService:
         except BlockedTime.DoesNotExist as e:
             raise ValueError(f"Blocked time {blocked_time_id} not found in this calendar.") from e
 
+        # Capture the cheap, comparable scalar BEFORE mutation so we can emit a
+        # field-level diff. Only ``reason`` is diffed here: ``start_time`` /
+        # ``end_time`` are db-persisted GeneratedFields whose stored (IANA-local)
+        # representation isn't directly comparable to the tz-unaware inputs, so a
+        # field-level time diff would be misleading. A pure time/timezone change is
+        # still captured by the UPDATE action + subject with diff=None.
+        before_scalars = {"reason": blocked_time.reason}
+
         if start_time is not None:
             blocked_time.start_time_tz_unaware = start_time
         if end_time is not None:
@@ -672,6 +726,13 @@ class AvailabilityService:
             )
 
         blocked_time.save()
+
+        after_scalars = {"reason": blocked_time.reason}
+        self._audit_availability_write(
+            AuditAction.UPDATE,
+            blocked_time,
+            diff=compute_diff(before_scalars, after_scalars),
+        )
         return blocked_time
 
     @transaction.atomic()
@@ -700,9 +761,16 @@ class AvailabilityService:
         )
 
         try:
-            scoped.get(id=blocked_time_id).delete()
+            blocked_time = scoped.get(id=blocked_time_id)
         except BlockedTime.DoesNotExist as e:
             raise ValueError(f"Blocked time {blocked_time_id} not found in this calendar.") from e
+
+        # Build the audit subject from the instance BEFORE the delete, while its pk
+        # is still authoritative (subject_from_instance reads the pk). record() itself
+        # only fires on transaction commit, so ordering relative to the delete below
+        # is irrelevant to persistence.
+        self._audit_availability_write(AuditAction.DELETE, blocked_time)
+        blocked_time.delete()
 
     def get_blocked_times_expanded(
         self,
@@ -859,6 +927,10 @@ class AvailabilityService:
             exception_manager_update_callback=update_exception_manager,
             exception_manager_delete_callback=delete_exception_manager,
         )
+        # An exception modifies the recurring series; record an UPDATE against the
+        # parent series. The change spans new/cancelled occurrence rows with no single
+        # comparable before/after, so diff=None.
+        self._audit_availability_write(AuditAction.UPDATE, parent_blocked_time, diff=None)
         return cast(BlockedTime, result) if result else None
 
     def create_recurring_available_time_exception(
@@ -947,6 +1019,10 @@ class AvailabilityService:
             exception_manager_update_callback=update_exception_manager,
             exception_manager_delete_callback=delete_exception_manager,
         )
+        # An exception modifies the recurring series; record an UPDATE against the
+        # parent series. The change spans new/cancelled occurrence rows with no single
+        # comparable before/after, so diff=None.
+        self._audit_availability_write(AuditAction.UPDATE, parent_available_time, diff=None)
         return cast(AvailableTime, result) if result else None
 
     def create_recurring_blocked_time_bulk_modification(
@@ -1029,6 +1105,10 @@ class AvailabilityService:
             bulk_modification_record_callback=record_bulk,
             modification_rrule_string=modification_rrule_string,
         )
+        # Bulk modification truncates the parent series and may spawn a continuation;
+        # record an UPDATE against the parent series. No single comparable before/after
+        # spans the truncate + continuation, so diff=None.
+        self._audit_availability_write(AuditAction.UPDATE, parent_blocked_time, diff=None)
         return cast(BlockedTime, result) if result else None
 
     def create_recurring_available_time_bulk_modification(
@@ -1108,6 +1188,10 @@ class AvailabilityService:
             bulk_modification_record_callback=record_bulk,
             modification_rrule_string=modification_rrule_string,
         )
+        # Bulk modification truncates the parent series and may spawn a continuation;
+        # record an UPDATE against the parent series. No single comparable before/after
+        # spans the truncate + continuation, so diff=None.
+        self._audit_availability_write(AuditAction.UPDATE, parent_available_time, diff=None)
         return cast(AvailableTime, result) if result else None
 
     def modify_recurring_blocked_time_from_date(

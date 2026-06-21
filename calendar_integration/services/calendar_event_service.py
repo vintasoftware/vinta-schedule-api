@@ -38,6 +38,8 @@ from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Q
 
+from audit.constants import AuditAction, AuditActorType
+from audit.diff import compute_diff
 from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import NoAvailableTimeWindowsError
 from calendar_integration.models import (
@@ -59,6 +61,9 @@ from calendar_integration.services.calendar_service_utils import (
 )
 from calendar_integration.services.calendar_service_utils import (
     get_calendar_by_id as _get_calendar_by_id_util,
+)
+from calendar_integration.services.calendar_service_utils import (
+    resolve_acting_single_use_token,
 )
 from calendar_integration.services.calendar_service_utils import (
     resolve_member_user_ids as _resolve_member_user_ids,
@@ -203,6 +208,84 @@ class CalendarEventService:
     # ------------------------------------------------------------------
     # Internal helpers (event-write concern)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _event_audit_scalar_snapshot(event: CalendarEvent) -> dict[str, Any]:
+        """Capture the event's own scalar fields that ``update_event`` mutates.
+
+        Datetimes are rendered to ISO strings so the resulting diff is JSON-safe for
+        the audit Celery payload. Only the event's direct fields are captured — never
+        attendees or resources.
+        """
+
+        def _iso(value: datetime.datetime | None) -> str | None:
+            return value.isoformat() if value is not None else None
+
+        return {
+            "title": event.title,
+            "description": event.description,
+            "start_time_tz_unaware": _iso(event.start_time_tz_unaware),
+            "end_time_tz_unaware": _iso(event.end_time_tz_unaware),
+            "timezone": event.timezone,
+        }
+
+    @staticmethod
+    def _event_attendee_membership_ids(event: CalendarEvent) -> set[int]:
+        """Org-scoped user_ids of the event's internal (member) attendees.
+
+        Reads the event's ``EventAttendance`` rows; orphan attendances
+        (``membership_user_id IS NULL`` — non-members) carry no membership identity
+        and are excluded. Must be called while the rows still exist (before a delete).
+        """
+        return set(
+            event.attendances.filter(membership_user_id__isnull=False).values_list(
+                "membership_user_id", flat=True
+            )
+        )
+
+    def _audit_event_write(
+        self,
+        action: str,
+        event: CalendarEvent,
+        diff: dict | None = None,
+    ) -> None:
+        """Emit an audit record for an event-level business write.
+
+        Resolves the actor from the context's ``user_or_token`` auth snapshot. A no-op
+        when no ``audit_service`` or ``organization`` is bound (e.g. a service built
+        directly in a test without DI), so instrumentation never breaks a write path.
+        Mirrors ``CalendarService._audit_calendar_write``.
+
+        ``affected_membership_ids`` carries the memberships touched by the change: the
+        event's internal attendees plus the acting member (the host/organizer), when
+        the actor resolves to a membership. These are org-scoped user_ids per the
+        OrganizationMembershipForeignKey convention.
+        """
+        audit_service = self._context.audit_service
+        organization = self._context.organization
+        if audit_service is None or organization is None:
+            return
+        actor = audit_service.actor_from_user_or_token(
+            self._context.user_or_token,
+            organization.id,
+            single_use_token=resolve_acting_single_use_token(
+                self._context.user_or_token, self._context.calendar_permission_service
+            ),
+        )
+        affected = self._event_attendee_membership_ids(event)
+        # The acting member is an affected party (the host/organizer). actor_from_user
+        # only yields a MEMBERSHIP actor when a real membership exists, so actor_id is a
+        # valid membership user_id to include.
+        if actor.actor_type == AuditActorType.MEMBERSHIP and actor.actor_id is not None:
+            affected.add(actor.actor_id)
+        audit_service.record(
+            organization_id=organization.id,
+            action=action,
+            actor=actor,
+            subject=audit_service.subject_from_instance(event, label=event.title),
+            affected_membership_ids=sorted(affected),
+            diff=diff,
+        )
 
     def _get_calendar_by_id(self, calendar_id: int) -> Calendar:
         context = cast("BaseCalendarService", self._context)
@@ -508,6 +591,8 @@ class CalendarEventService:
         # Grant permissions to event attendees
         self._host._grant_event_attendee_permissions(event)
 
+        self._audit_event_write(AuditAction.CREATE, event)
+
         # Resolve the audit actor *before* queueing the post-commit side-effect.
         # The owner-scoped public-API path never initializes a permission token, so
         # ``calendar_permission_service.token`` may be unset entirely — read it through
@@ -642,6 +727,12 @@ class CalendarEventService:
             )
             original_payload = updated_event.original_payload or {}
 
+        # Snapshot the event's OWN scalar fields BEFORE mutation so the audit diff
+        # captures exactly what this method changes (attendees/resources are excluded).
+        # Datetimes are serialized to ISO strings so the diff is JSON-safe for the
+        # audit Celery payload.
+        audit_before = self._event_audit_scalar_snapshot(event)
+
         event.title = event_data.title
         event.description = event_data.description
         # ``start_time`` / ``end_time`` are DB-generated fields (``GeneratedField``
@@ -675,6 +766,12 @@ class CalendarEventService:
             event.recurrence_rule = None
 
         event.save()
+
+        self._audit_event_write(
+            AuditAction.UPDATE,
+            event,
+            diff=compute_diff(audit_before, self._event_audit_scalar_snapshot(event)),
+        )
 
         existing_attendances = {a.membership_user_id: a for a in event.attendances.all()}
         existing_external_attendances = {
@@ -1415,6 +1512,12 @@ class CalendarEventService:
                 )
 
         serialized_event = self._serialize_event(event)
+
+        # Capture the audit subject (needs the pk) BEFORE the row is deleted. This
+        # records one DELETE for the event the caller asked to delete, covering both
+        # the single-event and recurring-series delete paths (the series' child rows /
+        # exceptions / rule are mechanical sync writes and are intentionally not audited).
+        self._audit_event_write(AuditAction.DELETE, event)
 
         event.delete()
 

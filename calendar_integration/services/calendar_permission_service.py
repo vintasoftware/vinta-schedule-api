@@ -1,10 +1,13 @@
 import base64
 import datetime
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
 from django.utils import timezone
 
+from dependency_injector.wiring import Provide, inject
+
+from audit.constants import AuditAction
 from calendar_integration.exceptions import (
     InvalidParameterCombinationError,
     InvalidTokenError,
@@ -39,6 +42,7 @@ from users.models import User
 
 
 if TYPE_CHECKING:
+    from audit.services import AuditService
     from public_api.models import SystemUser
 
 
@@ -89,6 +93,37 @@ DEFAULT_EXTERNAL_ATTENDEE_PERMISSIONS = [
 
 class CalendarPermissionService:
     token: CalendarManagementToken | None
+
+    @inject
+    def __init__(
+        self,
+        audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
+    ) -> None:
+        self.token = None
+        self.audit_service = audit_service
+
+    def _audit_token_write(
+        self,
+        action: str,
+        token: CalendarManagementToken,
+        organization_id: int,
+        actor: object,
+        diff: dict | None = None,
+    ) -> None:
+        """Emit an audit record for a CalendarManagementToken lifecycle write.
+
+        No-op when no ``audit_service`` is bound, so token minting/revocation never
+        breaks if the service was built without DI (e.g. directly in a test).
+        """
+        if self.audit_service is None:
+            return
+        self.audit_service.record(
+            organization_id=organization_id,
+            action=action,
+            actor=actor,  # type: ignore[arg-type]
+            subject=self.audit_service.subject_from_instance(token),
+            diff=diff,
+        )
 
     def initialize_with_token(self, token_str_base64: str, organization_id: int):
         try:
@@ -486,6 +521,14 @@ class CalendarPermissionService:
         for perm in permissions:
             token.permissions.create(permission=perm, organization_id=organization_id)
 
+        if self.audit_service is not None:
+            self._audit_token_write(
+                AuditAction.CREATE,
+                token,
+                organization_id,
+                self.audit_service.actor_from_user_or_token(user, organization_id),
+            )
+
         return token
 
     def create_attendee_token(
@@ -520,6 +563,14 @@ class CalendarPermissionService:
         for perm in permissions:
             token.permissions.create(permission=perm, organization_id=organization_id)
 
+        if self.audit_service is not None:
+            self._audit_token_write(
+                AuditAction.CREATE,
+                token,
+                organization_id,
+                self.audit_service.actor_from_user_or_token(user, organization_id),
+            )
+
         return token
 
     def create_external_attendee_update_token(
@@ -553,6 +604,14 @@ class CalendarPermissionService:
         for perm in permissions:
             token.permissions.create(permission=perm, organization_id=organization_id)
 
+        if self.audit_service is not None:
+            self._audit_token_write(
+                AuditAction.CREATE,
+                token,
+                organization_id,
+                self.audit_service.system_actor(),
+            )
+
         return token
 
     def create_external_attendee_schedule_token(
@@ -578,6 +637,14 @@ class CalendarPermissionService:
         token.permissions.create(
             permission=EventManagementPermissions.CREATE, organization_id=organization_id
         )
+
+        if self.audit_service is not None:
+            self._audit_token_write(
+                AuditAction.CREATE,
+                token,
+                organization_id,
+                self.audit_service.system_actor(),
+            )
 
         return token
 
@@ -652,6 +719,14 @@ class CalendarPermissionService:
 
         for perm in permissions:
             token.permissions.create(permission=perm, organization_id=organization_id)
+
+        if self.audit_service is not None:
+            self._audit_token_write(
+                AuditAction.CREATE,
+                token,
+                organization_id,
+                self.audit_service.actor_from_user_or_token(minted_by, organization_id),
+            )
 
         # Encode as "<id>:<raw>" in base64, matching initialize_with_token's decode logic.
         plaintext_code = base64.b64encode(f"{token.pk}:{token_str}".encode()).decode("utf-8")
@@ -807,5 +882,14 @@ class CalendarPermissionService:
         if token.revoked_at is None:
             token.revoked_at = timezone.now()
             token.save(update_fields=["revoked_at"])
+
+            if self.audit_service is not None:
+                self._audit_token_write(
+                    AuditAction.UPDATE,
+                    token,
+                    organization_id,
+                    self.audit_service.system_actor(),
+                    diff={"revoked_at": {"old": None, "new": token.revoked_at.isoformat()}},
+                )
 
         return True
