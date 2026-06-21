@@ -6110,6 +6110,470 @@ paths:
               schema:
                 $ref: '#/components/schemas/Calendar'
           description: ''
+  /change-requests/:
+    get:
+      operationId: change_requests_list
+      description: |-
+        List and act on external-event change requests (approve / reject).
+
+        **Eligibility scoping (GET /change-requests/):**
+        - **Admins** see all change requests in their organization.
+        - **Members** see only requests whose target event they attend
+          (``EventAttendance`` row for their membership).
+
+        **Default filter:** ``status=PENDING``.  Pass ``?status=approved`` (or any
+        valid status) to retrieve historical / resolved requests.
+
+        **Approve (POST /change-requests/{id}/approve/):**
+        Apply the proposed change locally.  Returns the updated request (200).
+
+        **Reject (POST /change-requests/{id}/reject/):**
+        Push the retained value back to the external provider (GCal) and mark
+        the request ``REJECTED``.  Returns the updated request (200).
+
+        **Error responses:**
+        - ``403`` when the caller is not eligible to resolve the specific request.
+        - ``409`` when the request is no longer ``PENDING``.
+        - ``401`` when the caller is not authenticated.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: query
+        name: event
+        schema:
+          type: number
+        description: Filter by CalendarEvent ID
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: status
+        schema:
+          type: string
+          enum:
+          - approved
+          - auto_undone
+          - pending
+          - rejected
+          - stale
+        description: |-
+          Filter by request status (default: pending)
+
+          * `pending` - Pending
+          * `approved` - Approved
+          * `rejected` - Rejected
+          * `stale` - Stale
+          * `auto_undone` - Auto-undone
+      tags:
+      - External Event Change Requests
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedExternalEventChangeRequestList'
+          description: ''
+  /change-requests{format}:
+    get:
+      operationId: change_requests_formatted_list
+      description: |-
+        List and act on external-event change requests (approve / reject).
+
+        **Eligibility scoping (GET /change-requests/):**
+        - **Admins** see all change requests in their organization.
+        - **Members** see only requests whose target event they attend
+          (``EventAttendance`` row for their membership).
+
+        **Default filter:** ``status=PENDING``.  Pass ``?status=approved`` (or any
+        valid status) to retrieve historical / resolved requests.
+
+        **Approve (POST /change-requests/{id}/approve/):**
+        Apply the proposed change locally.  Returns the updated request (200).
+
+        **Reject (POST /change-requests/{id}/reject/):**
+        Push the retained value back to the external provider (GCal) and mark
+        the request ``REJECTED``.  Returns the updated request (200).
+
+        **Error responses:**
+        - ``403`` when the caller is not eligible to resolve the specific request.
+        - ``409`` when the request is no longer ``PENDING``.
+        - ``401`` when the caller is not authenticated.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: query
+        name: event
+        schema:
+          type: number
+        description: Filter by CalendarEvent ID
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: status
+        schema:
+          type: string
+          enum:
+          - approved
+          - auto_undone
+          - pending
+          - rejected
+          - stale
+        description: |-
+          Filter by request status (default: pending)
+
+          * `pending` - Pending
+          * `approved` - Approved
+          * `rejected` - Rejected
+          * `stale` - Stale
+          * `auto_undone` - Auto-undone
+      tags:
+      - External Event Change Requests
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedExternalEventChangeRequestList'
+          description: ''
+  /change-requests/{id}/:
+    get:
+      operationId: change_requests_retrieve
+      description: |-
+        List and act on external-event change requests (approve / reject).
+
+        **Eligibility scoping (GET /change-requests/):**
+        - **Admins** see all change requests in their organization.
+        - **Members** see only requests whose target event they attend
+          (``EventAttendance`` row for their membership).
+
+        **Default filter:** ``status=PENDING``.  Pass ``?status=approved`` (or any
+        valid status) to retrieve historical / resolved requests.
+
+        **Approve (POST /change-requests/{id}/approve/):**
+        Apply the proposed change locally.  Returns the updated request (200).
+
+        **Reject (POST /change-requests/{id}/reject/):**
+        Push the retained value back to the external provider (GCal) and mark
+        the request ``REJECTED``.  Returns the updated request (200).
+
+        **Error responses:**
+        - ``403`` when the caller is not eligible to resolve the specific request.
+        - ``409`` when the request is no longer ``PENDING``.
+        - ``401`` when the caller is not authenticated.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - External Event Change Requests
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalEventChangeRequest'
+          description: ''
+  /change-requests/{id}{format}:
+    get:
+      operationId: change_requests_formatted_retrieve
+      description: |-
+        List and act on external-event change requests (approve / reject).
+
+        **Eligibility scoping (GET /change-requests/):**
+        - **Admins** see all change requests in their organization.
+        - **Members** see only requests whose target event they attend
+          (``EventAttendance`` row for their membership).
+
+        **Default filter:** ``status=PENDING``.  Pass ``?status=approved`` (or any
+        valid status) to retrieve historical / resolved requests.
+
+        **Approve (POST /change-requests/{id}/approve/):**
+        Apply the proposed change locally.  Returns the updated request (200).
+
+        **Reject (POST /change-requests/{id}/reject/):**
+        Push the retained value back to the external provider (GCal) and mark
+        the request ``REJECTED``.  Returns the updated request (200).
+
+        **Error responses:**
+        - ``403`` when the caller is not eligible to resolve the specific request.
+        - ``409`` when the request is no longer ``PENDING``.
+        - ``401`` when the caller is not authenticated.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - External Event Change Requests
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalEventChangeRequest'
+          description: ''
+  /change-requests/{id}/approve/:
+    post:
+      operationId: change_requests_approve_create
+      description: Apply the proposed change locally and mark the request APPROVED.
+        Returns 403 when the caller is not eligible to resolve this request; 409 when
+        the request is no longer PENDING.
+      summary: Approve a change request
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - External Event Change Requests
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalEventChangeRequest'
+          description: ''
+        '403':
+          description: Caller is not eligible to resolve this request.
+        '409':
+          description: Request is no longer PENDING.
+  /change-requests/{id}/approve{format}:
+    post:
+      operationId: change_requests_approve_formatted_create
+      description: Apply the proposed change locally and mark the request APPROVED.
+        Returns 403 when the caller is not eligible to resolve this request; 409 when
+        the request is no longer PENDING.
+      summary: Approve a change request
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - External Event Change Requests
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalEventChangeRequest'
+          description: ''
+        '403':
+          description: Caller is not eligible to resolve this request.
+        '409':
+          description: Request is no longer PENDING.
+  /change-requests/{id}/reject/:
+    post:
+      operationId: change_requests_reject_create
+      description: Push the retained value back to the external provider and mark
+        the request REJECTED. Requires a valid social account for the event's calendar
+        provider. Returns 403 when the caller is not eligible to resolve this request;
+        409 when the request is no longer PENDING.
+      summary: Reject a change request
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - External Event Change Requests
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalEventChangeRequest'
+          description: ''
+        '400':
+          description: No social account for the calendar's provider or no calendar
+            owner.
+        '403':
+          description: Caller is not eligible to resolve this request.
+        '409':
+          description: Request is no longer PENDING.
+  /change-requests/{id}/reject{format}:
+    post:
+      operationId: change_requests_reject_formatted_create
+      description: Push the retained value back to the external provider and mark
+        the request REJECTED. Requires a valid social account for the event's calendar
+        provider. Returns 403 when the caller is not eligible to resolve this request;
+        409 when the request is no longer PENDING.
+      summary: Reject a change request
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - External Event Change Requests
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalEventChangeRequest'
+          description: ''
+        '400':
+          description: No social account for the calendar's provider or no calendar
+            owner.
+        '403':
+          description: Caller is not eligible to resolve this request.
+        '409':
+          description: Request is no longer PENDING.
   /invitations/:
     get:
       operationId: invitations_list
@@ -11871,6 +12335,80 @@ components:
       - created
       - email
       - modified
+    ExternalEventChangeRequest:
+      type: object
+      description: |-
+        Read-only serializer for ``ExternalEventChangeRequest``.
+
+        Exposes the fields needed by the first-party frontend to list, approve,
+        and reject change requests.  The ``resolved_by`` field surfaces only the
+        user id and display name — never raw membership / organization ids — to
+        avoid leaking cross-tenant identity data.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        event_id:
+          type: integer
+          readOnly: true
+        kind:
+          allOf:
+          - $ref: '#/components/schemas/KindEnum'
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/ExternalEventChangeRequestStatusEnum'
+          readOnly: true
+        provider:
+          allOf:
+          - $ref: '#/components/schemas/ProviderEnum'
+          readOnly: true
+        proposed_values:
+          readOnly: true
+          description: 'Proposed field values: title, description, start_time, end_time.'
+        retained_values:
+          readOnly: true
+          description: Snapshot of local field values before the change, used to undo
+            on rejection.
+        resolved_by_user_id:
+          type: integer
+          nullable: true
+          description: Return the resolver's user id, or ``None`` when unresolved.
+          readOnly: true
+        resolved_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created
+      - event_id
+      - id
+      - kind
+      - proposed_values
+      - provider
+      - resolved_at
+      - resolved_by_user_id
+      - retained_values
+      - status
+    ExternalEventChangeRequestStatusEnum:
+      enum:
+      - pending
+      - approved
+      - rejected
+      - stale
+      - auto_undone
+      type: string
+      description: |-
+        * `pending` - Pending
+        * `approved` - Approved
+        * `rejected` - Rejected
+        * `stale` - Stale
+        * `auto_undone` - Auto-undone
     FrequencyEnum:
       enum:
       - DAILY
@@ -11883,6 +12421,14 @@ components:
         * `WEEKLY` - Weekly
         * `MONTHLY` - Monthly
         * `YEARLY` - Yearly
+    KindEnum:
+      enum:
+      - update
+      - delete
+      type: string
+      description: |-
+        * `update` - Update
+        * `delete` - Delete
     MyMembership:
       type: object
       description: |-
@@ -12360,6 +12906,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Calendar'
+    PaginatedExternalEventChangeRequestList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExternalEventChangeRequest'
     PaginatedOrganizationInvitationList:
       type: object
       required:

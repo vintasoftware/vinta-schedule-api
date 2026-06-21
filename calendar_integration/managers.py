@@ -28,6 +28,7 @@ from organizations.managers import BaseOrganizationModelManager
 
 if TYPE_CHECKING:
     from calendar_integration.models import CalendarManagementToken
+    from organizations.models import OrganizationMembership as OrganizationMembershipType
 
 
 class RecurringManagerMixin:
@@ -327,3 +328,12 @@ class ExternalEventChangeRequestManager(BaseOrganizationModelManager):
 
     def get_queryset(self) -> ExternalEventChangeRequestQuerySet:
         return ExternalEventChangeRequestQuerySet(self.model, using=self._db)
+
+    def resolvable_by(
+        self, membership: "OrganizationMembershipType"
+    ) -> ExternalEventChangeRequestQuerySet:
+        """Delegate to the queryset's ``resolvable_by`` method.
+
+        Returns change requests the given membership is eligible to resolve.
+        """
+        return self.get_queryset().resolvable_by(membership)

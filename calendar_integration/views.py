@@ -23,10 +23,13 @@ from calendar_integration.constants import (
     CalendarSyncTriggerSource,
     CalendarType,
     CalendarVisibility,
+    ExternalEventChangeRequestStatus,
 )
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarIntegrationError,
+    ChangeRequestIneligibleError,
+    ChangeRequestNotPendingError,
 )
 from calendar_integration.filtersets import (
     AvailableTimeFilterSet,
@@ -34,6 +37,7 @@ from calendar_integration.filtersets import (
     CalendarEventFilterSet,
     CalendarFilterSet,
     CalendarGroupFilterSet,
+    ExternalEventChangeRequestFilterSet,
 )
 from calendar_integration.models import (
     AvailableTime,
@@ -42,11 +46,13 @@ from calendar_integration.models import (
     CalendarEvent,
     CalendarGroup,
     CalendarOwnership,
+    ExternalEventChangeRequest,
 )
 from calendar_integration.permissions import (
     CalendarAvailabilityPermission,
     CalendarEventPermission,
     CalendarGroupPermission,
+    ExternalEventChangeRequestPermission,
 )
 from calendar_integration.serializers import (
     AvailableTimeBatchSerializer,
@@ -72,12 +78,16 @@ from calendar_integration.serializers import (
     CalendarSyncSerializer,
     EventBulkModificationSerializer,
     EventRecurringExceptionSerializer,
+    ExternalEventChangeRequestSerializer,
     ResourceCalendarCreateSerializer,
     UnavailableTimeWindowSerializer,
 )
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_service import CalendarService
-from common.utils.view_utils import VintaScheduleModelViewSet
+from calendar_integration.services.external_event_change_request_service import (
+    ExternalEventChangeRequestService,
+)
+from common.utils.view_utils import ReadOnlyVintaScheduleModelViewSet, VintaScheduleModelViewSet
 from organizations.models import get_active_organization_membership
 from organizations.permissions import IsOrganizationAdmin
 
@@ -1944,3 +1954,215 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
 
         payload = [{"start_time": p.start_time, "end_time": p.end_time} for p in proposals]
         return Response(BookableSlotProposalSerializer(payload, many=True).data)
+
+
+@extend_schema(tags=["External Event Change Requests"])
+class ExternalEventChangeRequestViewSet(ReadOnlyVintaScheduleModelViewSet):
+    """List and act on external-event change requests (approve / reject).
+
+    **Eligibility scoping (GET /change-requests/):**
+    - **Admins** see all change requests in their organization.
+    - **Members** see only requests whose target event they attend
+      (``EventAttendance`` row for their membership).
+
+    **Default filter:** ``status=PENDING``.  Pass ``?status=approved`` (or any
+    valid status) to retrieve historical / resolved requests.
+
+    **Approve (POST /change-requests/{id}/approve/):**
+    Apply the proposed change locally.  Returns the updated request (200).
+
+    **Reject (POST /change-requests/{id}/reject/):**
+    Push the retained value back to the external provider (GCal) and mark
+    the request ``REJECTED``.  Returns the updated request (200).
+
+    **Error responses:**
+    - ``403`` when the caller is not eligible to resolve the specific request.
+    - ``409`` when the request is no longer ``PENDING``.
+    - ``401`` when the caller is not authenticated.
+    """
+
+    permission_classes = (ExternalEventChangeRequestPermission,)
+    queryset = ExternalEventChangeRequest.objects.all()
+    serializer_class = ExternalEventChangeRequestSerializer
+    filterset_class = ExternalEventChangeRequestFilterSet
+    http_method_names = ("get", "post", "head", "options")
+
+    def get_queryset(self):
+        """Return change requests the authenticated membership is eligible to resolve.
+
+        Defaults to ``PENDING`` requests when no ``status`` filter is passed in the
+        query string (detected by checking ``self.request.query_params``).  The
+        filterset later narrows by ``?status=...`` or ``?event=...`` when provided.
+        """
+        membership = get_active_organization_membership(self.request.user)
+        if not membership:
+            return ExternalEventChangeRequest.original_manager.none()
+
+        qs = ExternalEventChangeRequest.objects.filter_by_organization(
+            membership.organization_id
+        ).resolvable_by(membership)
+
+        # Default to PENDING only on the list action.  Detail actions (approve,
+        # reject) must find the request regardless of status so the service can
+        # raise ChangeRequestNotPendingError (→ 409) rather than returning 404.
+        if self.action == "list" and "status" not in self.request.query_params:
+            qs = qs.filter(status=ExternalEventChangeRequestStatus.PENDING)
+
+        return qs
+
+    @extend_schema(
+        summary="Approve a change request",
+        description=(
+            "Apply the proposed change locally and mark the request APPROVED. "
+            "Returns 403 when the caller is not eligible to resolve this request; "
+            "409 when the request is no longer PENDING."
+        ),
+        request=None,
+        responses={
+            200: ExternalEventChangeRequestSerializer,
+            403: OpenApiResponse(description="Caller is not eligible to resolve this request."),
+            409: OpenApiResponse(description="Request is no longer PENDING."),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="approve", url_name="approve")
+    @inject
+    def approve(
+        self,
+        request,
+        pk: str | None = None,
+        change_request_service: Annotated[
+            ExternalEventChangeRequestService, Provide["external_event_change_request_service"]
+        ] = None,  # type: ignore[assignment]
+    ) -> Response:
+        """POST /change-requests/{id}/approve/ — apply the change locally."""
+        change_request = self.get_object()
+        membership = get_active_organization_membership(request.user)
+        if not membership:
+            return Response(
+                {"detail": "User is not an active member of any organization."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            updated = change_request_service.approve(change_request, membership=membership)
+        except ChangeRequestIneligibleError as exc:
+            raise PermissionDenied(str(exc)) from exc
+        except ChangeRequestNotPendingError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+
+        serializer = self.get_serializer(updated)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Reject a change request",
+        description=(
+            "Push the retained value back to the external provider and mark the request REJECTED. "
+            "Requires a valid social account for the event's calendar provider. "
+            "Returns 403 when the caller is not eligible to resolve this request; "
+            "409 when the request is no longer PENDING."
+        ),
+        request=None,
+        responses={
+            200: ExternalEventChangeRequestSerializer,
+            400: OpenApiResponse(
+                description="No social account for the calendar's provider or no calendar owner."
+            ),
+            403: OpenApiResponse(description="Caller is not eligible to resolve this request."),
+            409: OpenApiResponse(description="Request is no longer PENDING."),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="reject", url_name="reject")
+    @inject
+    def reject(
+        self,
+        request,
+        pk: str | None = None,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]] = None,  # type: ignore[assignment]
+        change_request_service: Annotated[
+            ExternalEventChangeRequestService, Provide["external_event_change_request_service"]
+        ] = None,  # type: ignore[assignment]
+    ) -> Response:
+        """POST /change-requests/{id}/reject/ — outbound undo on the provider."""
+        change_request = self.get_object()
+        membership = get_active_organization_membership(request.user)
+        if not membership:
+            return Response(
+                {"detail": "User is not an active member of any organization."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Resolve the event and calendar for outbound authentication.
+        event = change_request.event
+        if event is None:
+            return Response(
+                {"detail": "Cannot reject a change request with no associated event."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        calendar = event.calendar
+        if calendar is None:
+            return Response(
+                {"detail": "Event has no associated calendar; cannot authenticate provider."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Authenticate the CalendarService using the calendar's owner's credentials
+        # (matching the pattern in ``CalendarEventViewSet.transfer`` and
+        # ``CalendarViewSet.admin_sync``).  Use the owner of the event's calendar
+        # rather than the requester's credentials, because the requester may not own
+        # the calendar (e.g. an admin approving on behalf of a team member).
+        ownership = (
+            CalendarOwnership.objects.filter(
+                calendar=calendar,
+                organization_id=calendar.organization_id,
+                membership_user_id__isnull=False,
+            )
+            .order_by("-is_default", "id")
+            .first()
+        )
+
+        if not ownership:
+            return Response(
+                {"detail": "Calendar has no owner; cannot authenticate with provider."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        owner_social_account = SocialAccount.objects.filter(
+            user_id=ownership.membership_user_id, provider=calendar.provider
+        ).first()
+
+        if not owner_social_account:
+            return Response(
+                {
+                    "detail": (
+                        f"Calendar owner has no linked {calendar.provider} account; "
+                        "cannot push the undo to the provider."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Authenticate the service and resolve the write adapter for the event's calendar.
+        calendar_service.authenticate(
+            account=owner_social_account,
+            organization=membership.organization,
+        )
+        write_adapter = calendar_service._get_write_adapter_for_calendar(calendar)
+
+        if write_adapter is None:
+            return Response(
+                {"detail": "Could not resolve a write adapter for the calendar's provider."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            updated = change_request_service.reject(
+                change_request, membership=membership, write_adapter=write_adapter
+            )
+        except ChangeRequestIneligibleError as exc:
+            raise PermissionDenied(str(exc)) from exc
+        except ChangeRequestNotPendingError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+
+        serializer = self.get_serializer(updated)
+        return Response(serializer.data, status=status.HTTP_200_OK)

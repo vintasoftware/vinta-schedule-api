@@ -25,6 +25,7 @@ from organizations.querysets import BaseOrganizationModelQuerySet
 if TYPE_CHECKING:
     from calendar_integration.models import CalendarEvent as CalendarEventType
     from calendar_integration.models import CalendarSync as CalendarSyncType
+    from organizations.models import OrganizationMembership as OrganizationMembershipType
 
 
 class CalendarManagementTokenQuerySet(BaseOrganizationModelQuerySet):
@@ -569,3 +570,41 @@ class ExternalEventChangeRequestQuerySet(BaseOrganizationModelQuerySet):
         automatically included in the join condition.
         """
         return self.filter(event=event)
+
+    def resolvable_by(
+        self, membership: "OrganizationMembershipType"
+    ) -> "ExternalEventChangeRequestQuerySet":
+        """Return requests the given membership is eligible to resolve.
+
+        Eligibility rules (mirroring ``ExternalEventChangeRequestService.can_resolve``):
+
+        - **Admin** (``membership.is_admin``): sees all change requests in the
+          organization.
+        - **Member-attendee**: sees only requests whose target event has an
+          ``EventAttendance`` row for this membership (matched by ``membership_user_id``
+          so the ForeignObject join is honoured).
+
+        The result is always scoped to the membership's organization — the base
+        manager enforces ``filter_by_organization`` before this queryset is built.
+
+        Args:
+            membership: The ``OrganizationMembership`` whose eligibility to
+                evaluate.
+
+        Returns:
+            A filtered ``ExternalEventChangeRequestQuerySet`` containing only the
+            change requests the membership can resolve.
+        """
+        from calendar_integration.models import EventAttendance  # noqa: PLC0415
+
+        if membership.is_admin:
+            return self
+
+        # Non-admins: restrict to requests whose event they attend.
+        attendee_event_ids = EventAttendance.objects.filter(
+            organization_id=membership.organization_id,
+            membership_user_id=membership.user_id,
+            membership__is_active=True,
+        ).values("event_fk_id")
+
+        return self.filter(event_fk_id__in=attendee_event_ids)
