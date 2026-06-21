@@ -11,6 +11,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from organizations.models import (
+    ExternalEventUpdatePolicy,
     Organization,
     OrganizationMembership,
     OrganizationRole,
@@ -388,3 +389,40 @@ class TestOrganizationMembershipCompositePKUniqueness:
         with pytest.raises(IntegrityError):
             with django.db.transaction.atomic():
                 OrganizationMembership.objects.create(user=user, organization=org)
+
+
+@pytest.mark.django_db
+class TestExternalEventUpdatePolicy:
+    """Unit tests for external_event_update_policy field on Organization."""
+
+    def test_default_is_change_request(self):
+        """A freshly created Organization has external_event_update_policy=CHANGE_REQUEST."""
+        org = baker.make(Organization)
+        assert org.external_event_update_policy == ExternalEventUpdatePolicy.CHANGE_REQUEST
+        assert org.external_event_update_policy == "change_request"
+
+    def test_choices_are_allow_change_request_forbidden(self):
+        """ExternalEventUpdatePolicy has exactly the three expected choices."""
+        assert set(ExternalEventUpdatePolicy.choices) == {
+            ("allow", "Allow direct updates"),
+            ("change_request", "Updates create change requests"),
+            ("forbidden", "Updates are forbidden"),
+        }
+
+    def test_choices_have_correct_values(self):
+        """ExternalEventUpdatePolicy members have the correct values."""
+        assert ExternalEventUpdatePolicy.ALLOW == "allow"
+        assert ExternalEventUpdatePolicy.CHANGE_REQUEST == "change_request"
+        assert ExternalEventUpdatePolicy.FORBIDDEN == "forbidden"
+
+    def test_can_set_to_allow(self):
+        """external_event_update_policy can be set to ALLOW."""
+        org = baker.make(Organization, external_event_update_policy=ExternalEventUpdatePolicy.ALLOW)
+        assert org.external_event_update_policy == ExternalEventUpdatePolicy.ALLOW
+
+    def test_can_set_to_forbidden(self):
+        """external_event_update_policy can be set to FORBIDDEN."""
+        org = baker.make(
+            Organization, external_event_update_policy=ExternalEventUpdatePolicy.FORBIDDEN
+        )
+        assert org.external_event_update_policy == ExternalEventUpdatePolicy.FORBIDDEN
