@@ -7,11 +7,24 @@ from organizations.models import Organization, OrganizationBranding
 class OrganizationAdmin(admin.ModelAdmin):
     """Admin interface for Organization.
 
-    Exposes can_invite_organizations as the ONLY place it can be toggled.
+    Exposes can_invite_organizations, external_event_update_policy, and other settings.
     """
 
-    list_display = ("id", "name", "can_invite_organizations", "parent", "created", "modified")
-    list_filter = ("can_invite_organizations", "created", "modified")
+    list_display = (
+        "id",
+        "name",
+        "can_invite_organizations",
+        "external_event_update_policy",
+        "parent",
+        "created",
+        "modified",
+    )
+    list_filter = (
+        "can_invite_organizations",
+        "external_event_update_policy",
+        "created",
+        "modified",
+    )
     search_fields = ("name", "id")
     ordering = ("-created",)
     readonly_fields = ("created", "modified", "id")
@@ -26,6 +39,7 @@ class OrganizationAdmin(admin.ModelAdmin):
                     "parent",
                     "tier",
                     "should_sync_rooms",
+                    "external_event_update_policy",
                     "created",
                     "modified",
                 )
