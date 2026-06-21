@@ -40,7 +40,10 @@ from calendar_integration.constants import (
     ExternalEventChangeKind,
     ExternalEventChangeRequestStatus,
 )
-from calendar_integration.factories import create_event_attendance
+from calendar_integration.factories import (
+    create_event_attendance,
+    create_external_event_change_request,
+)
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
@@ -1096,3 +1099,149 @@ def test_allow_policy_inbound_cancellation_deletes_event_no_change_request(
     # No outbound adapter calls.
     fake_adapter.update_event.assert_not_called()
     fake_adapter.create_event.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests: _supersede_pending under FORBIDDEN
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_forbidden_update_supersedes_prior_pending_request(
+    context_forbidden: CalendarServiceContext,
+    calendar_forbidden: Calendar,
+    organization_forbidden: Organization,
+    fake_adapter: MagicMock,
+    change_request_service: ExternalEventChangeRequestService,
+) -> None:
+    """Under FORBIDDEN, triggering auto-undo when a PENDING request already exists for
+    the event must mark that prior request STALE and create exactly one AUTO_UNDONE row.
+    This verifies the _supersede_pending call fires inside the single atomic block so it
+    only takes effect after the provider call succeeds."""
+    existing = _make_existing_event(
+        calendar_forbidden,
+        external_id="evt_forbidden_supersede_001",
+        title="Original Title",
+    )
+
+    # Create a prior PENDING request for the same event (simulates a CHANGE_REQUEST
+    # intercept that was not yet resolved when the FORBIDDEN auto-undo fires).
+    prior_pending = create_external_event_change_request(
+        event=existing,
+        kind=ExternalEventChangeKind.UPDATE,
+        status=ExternalEventChangeRequestStatus.PENDING,
+        proposed_values={"title": "Earlier Edit"},
+        retained_values={"title": "Original Title"},
+    )
+
+    inbound = _inbound_edit_event(
+        "evt_forbidden_supersede_001",
+        title="New Inbound Edit",
+        calendar_external_id="forbidden_cal_001",
+    )
+    fake_adapter.get_events.return_value = {
+        "events": [inbound],
+        "next_sync_token": "tok-supersede",
+    }
+    fake_adapter.update_event.return_value = None
+
+    calendar_sync = _make_calendar_sync(calendar_forbidden, organization_forbidden)
+    service = CalendarSyncService(
+        context=context_forbidden,
+        calendar_cache={},
+        host=FakeHost(),
+        external_event_change_request_service=change_request_service,
+    )
+    service._execute_calendar_sync(calendar_sync, sync_token="tok-prev")
+
+    # The prior PENDING request must now be STALE.
+    prior_pending.refresh_from_db()
+    assert prior_pending.status == ExternalEventChangeRequestStatus.STALE
+
+    # Exactly one AUTO_UNDONE row must exist for the event.
+    auto_undone = ExternalEventChangeRequest.objects.filter(
+        organization_id=organization_forbidden.id,
+        event=existing,
+        status=ExternalEventChangeRequestStatus.AUTO_UNDONE,
+    )
+    assert auto_undone.count() == 1
+    cr = auto_undone.get()
+    assert cr.kind == ExternalEventChangeKind.UPDATE
+    assert cr.proposed_values["title"] == "New Inbound Edit"
+
+
+# ---------------------------------------------------------------------------
+# Tests: provider-call-raises regression guard for the BLOCKER fix
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_forbidden_update_provider_call_raises_no_db_mutation(
+    calendar_forbidden: Calendar,
+    organization_forbidden: Organization,
+    fake_adapter: MagicMock,
+    change_request_service: ExternalEventChangeRequestService,
+) -> None:
+    """Regression guard for the BLOCKER fix: if the provider call (update_event) raises,
+    NO AUTO_UNDONE row is created and NO prior PENDING request is transitioned to STALE.
+
+    Before the fix: the AUTO_UNDONE row + STALE supersede were committed in a separate
+    atomic block BEFORE the provider call, leaving dangling orphans on provider failure.
+    After the fix: the row + supersede only run inside the single atomic block that
+    executes AFTER the provider call succeeds, so a provider failure leaves the DB
+    completely unmutated."""
+    existing = _make_existing_event(
+        calendar_forbidden,
+        external_id="evt_forbidden_provider_raises_001",
+        title="Original Title",
+    )
+
+    # Create a prior PENDING request — must remain PENDING if the provider call fails.
+    prior_pending = create_external_event_change_request(
+        event=existing,
+        kind=ExternalEventChangeKind.UPDATE,
+        status=ExternalEventChangeRequestStatus.PENDING,
+        proposed_values={"title": "Earlier Edit"},
+        retained_values={"title": "Original Title"},
+    )
+
+    class _ProviderError(RuntimeError):
+        pass
+
+    fake_adapter.update_event.side_effect = _ProviderError("provider unavailable")
+
+    with pytest.raises(_ProviderError):
+        change_request_service.auto_undo_inbound_change(
+            event=existing,
+            kind=ExternalEventChangeKind.UPDATE,
+            proposed_values={
+                "title": "New Inbound Edit",
+                "description": "Inbound description",
+                "start_time": "2025-09-01T11:00:00+00:00",
+                "end_time": "2025-09-01T12:00:00+00:00",
+            },
+            retained_values={
+                "title": "Original Title",
+                "description": "Original description",
+                "start_time": "2025-09-01T09:00:00+00:00",
+                "end_time": "2025-09-01T10:00:00+00:00",
+            },
+            payload={"id": "evt_forbidden_provider_raises_001"},
+            provider=CalendarProvider.GOOGLE,
+            write_adapter=fake_adapter,
+        )
+
+    # NO AUTO_UNDONE row must have been created.
+    assert not ExternalEventChangeRequest.objects.filter(
+        organization_id=organization_forbidden.id,
+        event=existing,
+        status=ExternalEventChangeRequestStatus.AUTO_UNDONE,
+    ).exists()
+
+    # The prior PENDING must still be PENDING — NOT transitioned to STALE.
+    prior_pending.refresh_from_db()
+    assert prior_pending.status == ExternalEventChangeRequestStatus.PENDING
+
+    # The local event must be unmutated.
+    existing.refresh_from_db()
+    assert existing.title == "Original Title"

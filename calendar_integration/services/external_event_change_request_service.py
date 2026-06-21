@@ -516,73 +516,53 @@ class ExternalEventChangeRequestService:
     # Outbound undo (Phase 5b / Phase 6)
     # ------------------------------------------------------------------
 
-    def _undo_on_provider(
+    def _undo_on_provider_for_event(
         self,
-        request: ExternalEventChangeRequest,
         *,
+        event: CalendarEvent,
+        kind: str,
         write_adapter: CalendarAdapter,
     ) -> str | None:
         """Re-converge the external provider to the retained (approved) local state.
 
-        This is the shared outbound-undo body reused by both ``reject`` (Phase 5b,
-        triggered by a user via the API) and the FORBIDDEN auto-undo path (Phase 6,
-        triggered during sync). The caller must supply an **already-authenticated**
-        ``write_adapter`` (a ``CalendarAdapter``) for the event's calendar — this
-        service never resolves provider credentials itself (see module docstring for
-        the rationale).
+        The shared provider-write body used by both ``reject`` (Phase 5b) and the
+        FORBIDDEN auto-undo path (Phase 6). Callers must supply an already-authenticated
+        ``write_adapter`` — this service never resolves provider credentials itself (see
+        module docstring for the rationale).
 
-        The provider re-convergence runs **outside** any surrounding DB transaction
-        (the caller arranges this) because the provider write is a non-transactional
-        side effect that cannot be rolled back. The adapter input is hydrated with the
-        event's full attendees / resources / recurrence via ``_build_adapter_input`` so
-        the full-replace PUT does not wipe them on the provider.
+        This method performs the provider write OUTSIDE any DB transaction block the
+        calling method opens, because the provider write is a non-transactional side
+        effect that cannot be rolled back. The adapter input is hydrated with the event's
+        full attendees / resources / recurrence via ``_build_adapter_input`` so the
+        full-replace PUT does not wipe them on the provider.
 
-        Behavior per ``request.kind``:
+        Behavior per ``kind``:
 
-        - **UPDATE**: the local event was never mutated (the interception in Phase 3
-          kept it at the retained values), so its current field values *are* the
-          retained state. We push them back to the provider via
-          ``write_adapter.update_event(calendar_external_id, event_external_id, ...)``
-          so the provider re-converges to match local. The event's ``external_id`` is
-          unchanged — this is an idempotent re-convergence to the retained state (no new
-          id), so a subsequent local status-flip failure is not catastrophic (no
-          provider duplicate is created) and no compensation is needed.
+        - **UPDATE**: push the local (retained) values back to the provider via
+          ``write_adapter.update_event``. The event's ``external_id`` is unchanged — this
+          is an idempotent re-convergence to the retained state (no new id is created), so
+          a subsequent local-commit failure is not catastrophic and no compensation is
+          needed.
 
-        - **DELETE**: the local event still exists (Phase 4 did not delete it); the
-          provider deleted it. We re-create it on the provider via
-          ``write_adapter.create_event(...)``. Re-creation yields a **new** provider
-          ``external_id`` — the old id is gone forever (external-id churn). The local
-          ``external_id`` rebind is **not** done here; the caller performs it inside a
-          short DB transaction and compensates (deletes the just-created provider event)
-          if that local commit fails, so a successful create is never orphaned by a DB
-          rollback.
+        - **DELETE**: re-create the event on the provider via ``write_adapter.create_event``.
+          Re-creation yields a brand-new provider ``external_id`` (external-id churn). The
+          local ``external_id`` rebind is deferred to the caller's atomic block; the caller
+          compensates (deletes the just-created provider event) if that local commit fails,
+          so a successful create is never orphaned by a DB rollback.
 
         Args:
-            request: The ``ExternalEventChangeRequest`` whose change must be undone on
-                the provider. Its ``event`` must still exist (a PENDING request always
-                has a live event for both kinds in this flow).
-            write_adapter: An authenticated provider write adapter for the event's
-                calendar.
+            event: The live ``CalendarEvent`` whose retained state must be pushed back to
+                the provider.
+            kind: ``ExternalEventChangeKind.UPDATE`` or ``ExternalEventChangeKind.DELETE``.
+            write_adapter: An authenticated provider write adapter for the event's calendar.
 
         Returns:
             For ``DELETE``: the new provider ``external_id`` the caller must rebind the
             local event to. For ``UPDATE``: ``None``.
-
-        Raises:
-            ChangeRequestIneligibleError: If the request has no associated event to undo
-                against (the event was deleted), so there is nothing to re-converge.
         """
-        event = request.event
-        if event is None:
-            # No live event to push back / re-create — the request has no associated
-            # event to undo against (e.g. the event was deleted out from under it).
-            raise ChangeRequestIneligibleError(
-                "Cannot undo a change request that has no associated event to undo against."
-            )
-
         adapter_input = self._build_adapter_input(event)
 
-        if request.kind == ExternalEventChangeKind.UPDATE:
+        if kind == ExternalEventChangeKind.UPDATE:
             # Push the local (retained) values back so the provider re-converges to the
             # approved state. The external id is preserved.
             write_adapter.update_event(
@@ -597,9 +577,36 @@ class ExternalEventChangeRequestService:
         created = write_adapter.create_event(adapter_input)
         return created.external_id
 
-    def _resolve_with_undo(
+    def _undo_on_provider(
         self,
         request: ExternalEventChangeRequest,
+        *,
+        write_adapter: CalendarAdapter,
+    ) -> str | None:
+        """Re-converge the external provider to the retained (approved) local state.
+
+        Thin wrapper around ``_undo_on_provider_for_event`` that extracts ``event`` and
+        ``kind`` from an existing ``ExternalEventChangeRequest``. Kept for backward
+        compatibility with callers that already hold a saved request (e.g. ``reject``).
+
+        Raises:
+            ChangeRequestIneligibleError: If the request has no associated event to undo
+                against (the event was deleted), so there is nothing to re-converge.
+        """
+        event = request.event
+        if event is None:
+            # No live event to push back / re-create — the request has no associated
+            # event to undo against (e.g. the event was deleted out from under it).
+            raise ChangeRequestIneligibleError(
+                "Cannot undo a change request that has no associated event to undo against."
+            )
+        return self._undo_on_provider_for_event(
+            event=event, kind=request.kind, write_adapter=write_adapter
+        )
+
+    def _resolve_with_undo(
+        self,
+        request: ExternalEventChangeRequest | None,
         *,
         write_adapter: CalendarAdapter,
         final_status: str,
@@ -607,6 +614,10 @@ class ExternalEventChangeRequestService:
         audit_action: AuditAction,
         actor: ActorSnapshot,
         diff: dict[str, Any],
+        event: CalendarEvent,
+        organization_id: int,
+        kind: str,
+        prepare_fn: Any = None,
     ) -> ExternalEventChangeRequest:
         """Shared outbound-undo orchestration used by both ``reject`` and ``auto_undo_inbound_change``.
 
@@ -616,10 +627,19 @@ class ExternalEventChangeRequestService:
 
         Sequence:
         1. Call ``_undo_on_provider`` (UPDATE→update_event; DELETE→create_event) OUTSIDE
-           any DB transaction — the provider write is a non-transactional side effect.
-        2. Open a short ``transaction.atomic()`` to:
+           any DB transaction this method opens. The provider write is a non-transactional
+           side effect that cannot be rolled back. (Under the outer ``sync_events``
+           transaction these all sit inside a single outer transaction; this step is
+           "outside" the atomic block *this method* opens, not necessarily outside every
+           surrounding transaction.) For DELETE, returns the new provider external id.
+        2. Open a SINGLE ``transaction.atomic()`` to perform ALL DB writes atomically:
+           - If ``prepare_fn`` is supplied (auto-undo path): call it to create the
+             change-request row and supersede any prior PENDING request for the event.
+             This ensures no AUTO_UNDONE row or STALE supersede is persisted unless the
+             provider call already succeeded.
            - For DELETE: rebind the local event's ``external_id`` to the new provider id.
-           - Flip ``request.status`` to ``final_status`` + set resolved fields.
+           - Flip ``request.status`` (or the newly-created request) to ``final_status``
+             + set resolved fields.
         3. If the local commit fails AFTER a successful provider create (DELETE kind):
            compensate by deleting the just-created provider event so it is never orphaned,
            then re-raise the original exception.
@@ -627,38 +647,58 @@ class ExternalEventChangeRequestService:
            after the transaction is committed and the rows are visible.
 
         Args:
-            request: The ``ExternalEventChangeRequest`` to resolve via undo. Must have a
-                live associated event (the caller must verify this before calling).
+            request: The ``ExternalEventChangeRequest`` to resolve via undo. Pass ``None``
+                when ``prepare_fn`` will create the request inside the atomic block
+                (auto-undo path). Must be non-``None`` for the reject path.
             write_adapter: Authenticated provider write adapter for the event's calendar.
             final_status: The ``ExternalEventChangeRequestStatus`` value to set on success.
             resolved_by_user_id: The user ID of the resolver (``None`` for SYSTEM).
             audit_action: The ``AuditAction`` to record on success.
             actor: The actor snapshot to record in the audit entry.
             diff: The pre-computed audit diff dict.
+            event: The live ``CalendarEvent`` associated with the request. The caller must
+                verify this is not ``None`` before calling.
+            organization_id: The organization id for the audit record.
+            kind: The ``ExternalEventChangeKind`` of the request.
+            prepare_fn: Optional zero-argument callable invoked INSIDE the atomic block
+                before the status flip. It must create and return the
+                ``ExternalEventChangeRequest`` row (and may perform ``_supersede_pending``).
+                Used by the auto-undo path to ensure the row is only created after the
+                provider call succeeds. Must be ``None`` when ``request`` is already saved
+                (reject path).
 
         Returns:
             The mutated ``ExternalEventChangeRequest`` instance with the updated status
             and resolved fields.
-
-        Raises:
-            ChangeRequestIneligibleError: If the request has no associated event.
         """
-        event = request.event
-        if event is None:
-            raise ChangeRequestIneligibleError(
-                "Cannot undo a change request that has no associated event to undo against."
-            )
-
-        kind = request.kind
-        organization_id = request.organization_id
-
-        # Perform the provider re-convergence OUTSIDE the DB transaction: it is a
-        # non-transactional side effect that a DB rollback cannot undo. For DELETE this
-        # returns the new provider external id we must rebind locally.
-        new_external_id = self._undo_on_provider(request, write_adapter=write_adapter)
+        # Perform the provider re-convergence OUTSIDE any atomic block this method opens:
+        # it is a non-transactional side effect that a DB rollback cannot undo. For DELETE
+        # this returns the new provider external id we must rebind locally. If this raises,
+        # nothing is committed — no AUTO_UNDONE row, no STALE supersede, no DB mutation.
+        #
+        # Note: under the outer ``sync_events`` transaction all of this sits inside a
+        # single outer transaction; "outside" here means outside the savepoint this method
+        # opens, so a failure in the next block can roll back the DB writes without leaving
+        # a partially-committed state that a later savepoint release would expose.
+        new_external_id = self._undo_on_provider_for_event(
+            event=event, kind=kind, write_adapter=write_adapter
+        )
 
         try:
             with transaction.atomic():
+                # If prepare_fn is provided (auto-undo path), create the change-request
+                # row + supersede any prior PENDING request INSIDE this atomic block. This
+                # guarantees: if the provider call above raised, we never reach here (no
+                # dangling AUTO_UNDONE row); if the block below fails, the create + supersede
+                # roll back with it (no orphan row, no destroyed PENDING).
+                if prepare_fn is not None:
+                    request = prepare_fn()
+
+                if request is None:
+                    # Should never happen: prepare_fn must return a row (auto-undo path),
+                    # and the reject path always passes a non-None request.
+                    raise RuntimeError("_resolve_with_undo: request is None after prepare_fn")
+
                 if kind == ExternalEventChangeKind.DELETE and new_external_id is not None:
                     # Rebind the local event to the re-created provider event's new id.
                     event.external_id = new_external_id
@@ -687,7 +727,7 @@ class ExternalEventChangeRequestService:
                         "Compensating delete of orphaned provider event %s failed during "
                         "undo rollback for change request %s.",
                         new_external_id,
-                        request.pk,
+                        request.pk if request is not None else "<unsaved>",
                     )
             raise
 
@@ -804,6 +844,9 @@ class ExternalEventChangeRequestService:
                 actor_id=membership.user_id,
             )
 
+        # request.event was already guarded non-None above; cast for mypy.
+        event: CalendarEvent = request.event  # type: ignore[assignment]
+
         return self._resolve_with_undo(
             request,
             write_adapter=write_adapter,
@@ -812,6 +855,9 @@ class ExternalEventChangeRequestService:
             audit_action=AuditAction.EXTERNAL_CHANGE_REJECTED,
             actor=actor,
             diff=diff,
+            event=event,
+            organization_id=request.organization_id,
+            kind=request.kind,
         )
 
     def auto_undo_inbound_change(
@@ -835,19 +881,23 @@ class ExternalEventChangeRequestService:
         No human approver is involved — the SYSTEM actor is used for both row creation
         and the audit entry.
 
-        The safe outbound-undo orchestration (provider-call-outside-txn + atomic local
-        commit + compensating-delete) is shared with ``reject`` via
+        The safe outbound-undo orchestration (provider-call-outside-txn + single atomic
+        block for all DB writes + compensating-delete) is shared with ``reject`` via
         ``_resolve_with_undo``.
 
-        Sequence:
-        1. Create an ``ExternalEventChangeRequest`` row with ``status=AUTO_UNDONE``
-           directly (no PENDING intermediate — the change is handled immediately).
-        2. Call ``_resolve_with_undo``:
-           - **UPDATE**: push the retained (local) values back to the provider via
-             ``update_event`` so the provider re-converges.
-           - **DELETE**: re-create the event on the provider via ``create_event``; the
-             new external id is rebound on the local event atomically.
-        3. Emit an ``EXTERNAL_CHANGE_AUTO_UNDONE`` audit entry via the SYSTEM actor.
+        Sequence (delegated to ``_resolve_with_undo``):
+        1. Call the provider write (``update_event`` or ``create_event``) OUTSIDE the
+           atomic block this method opens. If this raises, nothing is committed — no
+           AUTO_UNDONE row, no STALE supersede, no DB mutation.
+        2. Open a SINGLE ``transaction.atomic()`` that performs ALL DB writes:
+           - Supersede any existing PENDING request for this event (``_supersede_pending``).
+           - Create the ``AUTO_UNDONE`` ``ExternalEventChangeRequest`` row (no PENDING
+             intermediate — the change is handled immediately).
+           - For DELETE: rebind the local event's ``external_id`` to the new provider id.
+           - Set ``status=AUTO_UNDONE``, ``resolved_at``, ``resolved_by_user_id=None``.
+        3. If the atomic block fails AFTER a successful provider ``create_event`` (DELETE):
+           compensate by ``delete_event(new_external_id)`` so no provider orphan survives.
+        4. Emit an ``EXTERNAL_CHANGE_AUTO_UNDONE`` audit entry via the SYSTEM actor.
 
         Args:
             event: The local ``CalendarEvent`` targeted by the inbound change.
@@ -879,15 +929,22 @@ class ExternalEventChangeRequestService:
                 field: {"old": None, "new": retained_values.get(field)} for field in retained_values
             }
 
-        # Create the AUTO_UNDONE row for history. We do NOT create a PENDING row first
-        # (the change is resolved synchronously during sync), but we still go through the
-        # atomic block so the row is created transactionally with the status flip.
-        with transaction.atomic():
-            # Supersede any existing PENDING request for this event: an inbound change
-            # under FORBIDDEN still supersedes a prior PENDING so history is consistent.
-            self._supersede_pending(event)
+        # Resolve the system actor for the audit entry.
+        if self.audit_service is not None:
+            system_actor: ActorSnapshot = self.audit_service.system_actor()
+        else:
+            # No audit service — build a minimal actor; the audit call will be skipped.
+            system_actor = ActorSnapshot(actor_type=AuditActorType.SYSTEM, actor_id=None)
 
-            change_request = ExternalEventChangeRequest.objects.create(
+        def _prepare() -> ExternalEventChangeRequest:
+            # Called INSIDE the single atomic block in _resolve_with_undo, AFTER the
+            # provider call succeeds. This guarantees:
+            # - If the provider call raised → we never reach here → no AUTO_UNDONE row,
+            #   no STALE supersede (invariant 4 of the atomicity contract).
+            # - If the block below fails → both the row creation and supersede roll back
+            #   with it → no dangling AUTO_UNDONE row, no destroyed PENDING (invariant 2).
+            self._supersede_pending(event)
+            return ExternalEventChangeRequest.objects.create(
                 organization=event.organization,
                 event=event,
                 kind=kind,
@@ -898,19 +955,16 @@ class ExternalEventChangeRequestService:
                 retained_values=retained_values,
             )
 
-        # Resolve the system actor for both the outbound undo and the audit entry.
-        if self.audit_service is not None:
-            system_actor: ActorSnapshot = self.audit_service.system_actor()
-        else:
-            # No audit service — build a minimal actor; the audit call will be skipped.
-            system_actor = ActorSnapshot(actor_type=AuditActorType.SYSTEM, actor_id=None)
-
         return self._resolve_with_undo(
-            change_request,
+            None,
             write_adapter=write_adapter,
             final_status=ExternalEventChangeRequestStatus.AUTO_UNDONE,
             resolved_by_user_id=None,
             audit_action=AuditAction.EXTERNAL_CHANGE_AUTO_UNDONE,
             actor=system_actor,
             diff=diff,
+            event=event,
+            organization_id=event.organization_id,
+            kind=kind,
+            prepare_fn=_prepare,
         )

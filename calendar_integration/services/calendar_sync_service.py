@@ -801,14 +801,8 @@ class CalendarSyncService:
                         existing_event.end_time.isoformat() if existing_event.end_time else None
                     ),
                 }
-                if context.calendar_adapter is not None:
-                    provider = context.calendar_adapter.provider
-                elif existing_event.calendar is not None:
-                    provider = existing_event.calendar.provider
-                else:
-                    raise ImproperlyConfigured(
-                        "CalendarEvent.calendar must be set when processing an existing event"
-                    )
+                # The None-guard above guarantees calendar_adapter is non-None here.
+                provider = context.calendar_adapter.provider
                 self._external_event_change_request_service.auto_undo_inbound_change(
                     event=existing_event,
                     kind=ExternalEventChangeKind.DELETE,
@@ -916,14 +910,8 @@ class CalendarSyncService:
                     existing_event.end_time.isoformat() if existing_event.end_time else None
                 ),
             }
-            if context.calendar_adapter is not None:
-                provider = context.calendar_adapter.provider
-            elif existing_event.calendar is not None:
-                provider = existing_event.calendar.provider
-            else:
-                raise ImproperlyConfigured(
-                    "CalendarEvent.calendar must be set when processing an existing event"
-                )
+            # The None-guard above guarantees calendar_adapter is non-None here.
+            provider = context.calendar_adapter.provider
             self._external_event_change_request_service.auto_undo_inbound_change(
                 event=existing_event,
                 kind=ExternalEventChangeKind.UPDATE,
