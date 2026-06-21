@@ -1,11 +1,10 @@
 import datetime
 
-from .constants import CalendarProvider, RecurrenceFrequency
+from .constants import CalendarProvider, ExternalEventChangeKind, RecurrenceFrequency
 from .models import (
     CalendarEvent,
     CalendarOwnership,
     EventAttendance,
-    ExternalEventChangeKind,
     ExternalEventChangeRequest,
     RecurrenceRule,
 )
@@ -305,6 +304,7 @@ def create_external_event_change_request(
     proposed_values: dict | None = None,
     proposed_payload: dict | None = None,
     retained_values: dict | None = None,
+    organization=None,
     **kwargs,
 ) -> ExternalEventChangeRequest:
     """Create an ``ExternalEventChangeRequest`` linked to *event*.
@@ -312,10 +312,17 @@ def create_external_event_change_request(
     Defaults to a ``PENDING`` / ``update`` / ``google`` request with empty JSON
     fields.  Override any field via keyword arguments.
 
-    The request is scoped to the same organization as *event*.
+    The request is scoped to the same organization as *event*. If an explicit
+    ``organization`` is passed it must match ``event.organization``; a mismatch
+    raises ``ValueError`` to prevent silent cross-tenant data creation.
     """
+    effective_org = event.organization
+    if organization is not None and organization != effective_org:
+        raise ValueError(
+            f"organization mismatch: passed {organization!r} but event belongs to {effective_org!r}"
+        )
     return ExternalEventChangeRequest.objects.create(
-        organization=event.organization,
+        organization=effective_org,
         event=event,
         kind=kind,
         status=status,

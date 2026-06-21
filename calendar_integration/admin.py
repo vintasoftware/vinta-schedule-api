@@ -475,7 +475,7 @@ class ExternalEventChangeRequestAdmin(admin.ModelAdmin):
         "kind",
         "status",
         "provider",
-        "resolved_by_user_id",
+        "get_resolved_by_user_id",
         "resolved_at",
         "created",
     )
@@ -513,6 +513,6 @@ class ExternalEventChangeRequestAdmin(admin.ModelAdmin):
         return super().get_queryset(request).select_related("organization", "event_fk")
 
     @admin.display(description="Resolved by (user id)")
-    def resolved_by_user_id(self, obj: ExternalEventChangeRequest) -> int | None:
+    def get_resolved_by_user_id(self, obj: ExternalEventChangeRequest) -> int | None:
         """Display the user ID of the resolver membership."""
         return obj.resolved_by_user_id

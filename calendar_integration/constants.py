@@ -80,3 +80,20 @@ class IncomingWebhookProcessingStatus(TextChoices):
     PROCESSED = "processed", "Processed"
     FAILED = "failed", "Failed"
     IGNORED = "ignored", "Ignored"
+
+
+class ExternalEventChangeKind(TextChoices):
+    """Kind of inbound external change being requested."""
+
+    UPDATE = "update", "Update"
+    DELETE = "delete", "Delete"
+
+
+class ExternalEventChangeRequestStatus(TextChoices):
+    """Lifecycle status of an ExternalEventChangeRequest."""
+
+    PENDING = "pending", "Pending"
+    APPROVED = "approved", "Approved"
+    REJECTED = "rejected", "Rejected"
+    STALE = "stale", "Stale"
+    AUTO_UNDONE = "auto_undone", "Auto-undone"

@@ -5,7 +5,12 @@ from typing import TYPE_CHECKING
 from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q, Subquery
 from django.utils import timezone
 
-from calendar_integration.constants import CalendarSyncStatus, CalendarType, CalendarVisibility
+from calendar_integration.constants import (
+    CalendarSyncStatus,
+    CalendarType,
+    CalendarVisibility,
+    ExternalEventChangeRequestStatus,
+)
 from calendar_integration.database_functions import (
     GetAvailableTimeOccurrencesJSON,
     GetAvailableTimeOccurrencesWithBulkModificationsJSON,
@@ -18,6 +23,7 @@ from organizations.querysets import BaseOrganizationModelQuerySet
 
 
 if TYPE_CHECKING:
+    from calendar_integration.models import CalendarEvent as CalendarEventType
     from calendar_integration.models import CalendarSync as CalendarSyncType
 
 
@@ -554,10 +560,12 @@ class ExternalEventChangeRequestQuerySet(BaseOrganizationModelQuerySet):
 
     def pending(self) -> "ExternalEventChangeRequestQuerySet":
         """Return only PENDING requests."""
-        from calendar_integration.models import ExternalEventChangeRequestStatus
-
         return self.filter(status=ExternalEventChangeRequestStatus.PENDING)
 
-    def for_event(self, event_id: int) -> "ExternalEventChangeRequestQuerySet":
-        """Return requests targeting a specific CalendarEvent PK."""
-        return self.filter(event_fk_id=event_id)
+    def for_event(self, event: "CalendarEventType") -> "ExternalEventChangeRequestQuerySet":
+        """Return requests targeting a specific CalendarEvent instance.
+
+        Filters through the ``event`` ForeignObject so the organization scope is
+        automatically included in the join condition.
+        """
+        return self.filter(event=event)

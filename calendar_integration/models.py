@@ -16,6 +16,8 @@ from calendar_integration.constants import (
     CalendarType,
     CalendarVisibility,
     EventManagementPermissions,
+    ExternalEventChangeKind,
+    ExternalEventChangeRequestStatus,
     IncomingWebhookProcessingStatus,
     RecurrenceFrequency,
     RecurrenceWeekday,
@@ -1905,23 +1907,6 @@ class CalendarWebhookEvent(OrganizationModel):
         return None
 
 
-class ExternalEventChangeKind(models.TextChoices):
-    """Kind of inbound external change being requested."""
-
-    UPDATE = "update", "Update"
-    DELETE = "delete", "Delete"
-
-
-class ExternalEventChangeRequestStatus(models.TextChoices):
-    """Lifecycle status of an ExternalEventChangeRequest."""
-
-    PENDING = "pending", "Pending"
-    APPROVED = "approved", "Approved"
-    REJECTED = "rejected", "Rejected"
-    STALE = "stale", "Stale"
-    AUTO_UNDONE = "auto_undone", "Auto-undone"
-
-
 class ExternalEventChangeRequest(OrganizationModel):
     """Approval record for an inbound external (e.g. Google Calendar) edit or deletion.
 
@@ -1964,10 +1949,29 @@ class ExternalEventChangeRequest(OrganizationModel):
         When the request was resolved (approved / rejected / auto-undone).
     """
 
-    event = OrganizationForeignKey(
+    # ``event_fk`` + ``event`` are the two constituent parts of what would normally
+    # be a single OrganizationForeignKey.  They are declared manually here because
+    # OrganizationForeignKey forwards ``on_delete`` to *both* the concrete FK and the
+    # ForeignObject.  With SET_NULL, Django's cascade collector would try to null the
+    # ForeignObject (a non-concrete field), raising FieldError.  By wiring the concrete
+    # FK as SET_NULL and the ForeignObject as DO_NOTHING, the concrete FK handles
+    # nullification while the ForeignObject stays out of the cascade, matching the
+    # pattern already used by OrganizationMembershipForeignKey.
+    event_fk = models.ForeignKey(
         "CalendarEvent",
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="external_change_requests_fk_rel",
+    )
+    event = models.ForeignObject(
+        "CalendarEvent",
+        from_fields=["event_fk", "organization_id"],
+        to_fields=["id", "organization_id"],
+        on_delete=models.DO_NOTHING,
         related_name="external_change_requests",
+        editable=False,
+        null=True,
     )
     kind = models.CharField(
         max_length=6,
@@ -2006,16 +2010,22 @@ class ExternalEventChangeRequest(OrganizationModel):
     objects: ExternalEventChangeRequestManager = ExternalEventChangeRequestManager()
 
     class Meta:
+        indexes: ClassVar = [
+            models.Index(
+                fields=["organization", "resolved_by_user_id"],
+                name="extevtcr_org_resolver_idx",
+            ),
+        ]
         constraints: ClassVar[list[Any]] = [
             models.UniqueConstraint(
-                fields=["event_fk"],
+                fields=["event_fk", "organization"],
                 condition=models.Q(status="pending"),
                 name="uniq_pending_change_request_per_event",
             ),
         ]
 
     def __str__(self) -> str:
+        event_id = self.event_fk_id if self.event_fk_id is not None else "deleted"
         return (
-            f"ExternalEventChangeRequest(event={self.event_fk_id}, kind={self.kind},"
-            f" status={self.status})"
+            f"ExternalEventChangeRequest(event={event_id}, kind={self.kind}, status={self.status})"
         )
