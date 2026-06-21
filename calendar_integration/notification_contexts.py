@@ -1,9 +1,8 @@
 """Notification contexts for calendar_integration in-app notifications.
 
-Contexts registered here are auto-discovered via the AppConfig ready() hook
-(or the ``@register_context`` decorator which registers on import). Import
-this module from the ``CalendarIntegrationConfig.ready()`` method to ensure
-the contexts are registered at startup.
+Contexts are registered via the ``@register_context`` decorator, which registers
+on import. Import this module from the ``CalendarIntegrationConfig.ready()``
+method to ensure the contexts are registered at startup.
 """
 
 from typing import Any

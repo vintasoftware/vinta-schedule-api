@@ -202,7 +202,9 @@ class ExternalEventChangeRequestService:
             status=ExternalEventChangeRequestStatus.PENDING,
         ).update(status=ExternalEventChangeRequestStatus.STALE)
 
-    def _notify_eligible_approvers(self, request: ExternalEventChangeRequest) -> None:
+    def _notify_eligible_approvers(
+        self, request: ExternalEventChangeRequest, event: CalendarEvent | None
+    ) -> None:
         """Dispatch in-app notifications to each eligible approver for *request*.
 
         Eligible approvers are (deduplication by user id):
@@ -221,11 +223,12 @@ class ExternalEventChangeRequestService:
 
         Args:
             request: The newly created ``PENDING`` ``ExternalEventChangeRequest``.
+            event: The associated ``CalendarEvent`` (passed to avoid an extra DB query).
+                If ``None``, no approvers can be identified — the method returns silently.
         """
         if self.notification_service is None:
             return
 
-        event = request.event
         if event is None:
             # Guard: the event was deleted between request creation and this call.
             # No approvers can be identified — skip silently.
@@ -239,12 +242,14 @@ class ExternalEventChangeRequestService:
         # Collect eligible approver user ids, deduplicated.
         approver_user_ids: set[int] = set()
 
-        # Member-attendees: EventAttendance rows for this event with a non-NULL membership.
+        # Member-attendees: EventAttendance rows for this event with a non-NULL membership
+        # that is ACTIVE (matching the admin query which filters is_active=True).
         attendee_user_ids = (
             EventAttendance.objects.filter(
                 organization_id=organization_id,
                 event_fk_id=request.event_fk_id,
                 membership_user_id__isnull=False,
+                membership__is_active=True,
             )
             .values_list("membership_user_id", flat=True)
             .distinct()
@@ -269,33 +274,34 @@ class ExternalEventChangeRequestService:
         # Bind to a local with a narrowed type annotation so mypy does not see
         # ``Optional[NotificationService]`` inside the nested _send closure.
         notification_service: NotificationService = self.notification_service  # type: ignore[assignment]
+
+        # Use a factory function to capture the loop variable correctly — a
+        # default-arg lambda would also work, but an explicit closure is clearer
+        # and mypy can infer the return type (None) without ambiguity.
+        def _make_callback(uid: int) -> Callable[[], None]:
+            def _send() -> None:
+                notification_service.create_notification(
+                    user_id=uid,
+                    notification_type=NotificationTypes.IN_APP.value,
+                    title="Pending external calendar change requires your approval",
+                    body_template=(
+                        "calendar_integration/in_app/"
+                        "external_event_change_request_approver.body.txt"
+                    ),
+                    context_name="external_event_change_request_approver_context",
+                    context_kwargs=NotificationContextDict(
+                        {
+                            "change_request_id": change_request_id,
+                            "event_title": event_title,
+                            "change_kind": change_kind,
+                            "organization_id": organization_id,
+                        }
+                    ),
+                )
+
+            return _send
+
         for user_id in approver_user_ids:
-            # Use a factory function to capture the loop variable correctly — a
-            # default-arg lambda would also work, but an explicit closure is clearer
-            # and mypy can infer the return type (None) without ambiguity.
-            def _make_callback(uid: int) -> Callable[[], None]:
-                def _send() -> None:
-                    notification_service.create_notification(
-                        user_id=uid,
-                        notification_type=NotificationTypes.IN_APP.value,
-                        title="Pending external calendar change requires your approval",
-                        body_template=(
-                            "calendar_integration/in_app/"
-                            "external_event_change_request_approver.body.txt"
-                        ),
-                        context_name="external_event_change_request_approver_context",
-                        context_kwargs=NotificationContextDict(
-                            {
-                                "change_request_id": change_request_id,
-                                "event_title": event_title,
-                                "change_kind": change_kind,
-                                "organization_id": organization_id,
-                            }
-                        ),
-                    )
-
-                return _send
-
             transaction.on_commit(_make_callback(user_id))
 
     # ------------------------------------------------------------------
@@ -371,7 +377,8 @@ class ExternalEventChangeRequestService:
             )
 
         # Notify each eligible approver in-app via on_commit (fires after the PENDING row commits).
-        self._notify_eligible_approvers(change_request)
+        # Pass the event to avoid an extra DB query via request.event.
+        self._notify_eligible_approvers(change_request, event)
 
         return change_request
 
@@ -449,7 +456,8 @@ class ExternalEventChangeRequestService:
             )
 
         # Notify each eligible approver in-app via on_commit (fires after the PENDING row commits).
-        self._notify_eligible_approvers(change_request)
+        # Pass the event to avoid an extra DB query via request.event.
+        self._notify_eligible_approvers(change_request, event)
 
         return change_request
 
@@ -495,6 +503,7 @@ class ExternalEventChangeRequestService:
             organization_id=request.organization_id,
             event_fk_id=request.event_fk_id,
             membership_user_id=membership.user_id,
+            membership__is_active=True,
         ).exists()
 
     def approve(

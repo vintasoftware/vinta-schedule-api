@@ -227,6 +227,31 @@ def test_update_request_notifies_admin(
 
 
 @pytest.mark.django_db
+def test_inactive_admin_is_not_notified(
+    service: ExternalEventChangeRequestService,
+    event: CalendarEvent,
+    admin_membership: OrganizationMembership,
+    mock_notification_service: MagicMock,
+) -> None:
+    """An inactive admin membership receives NO notification."""
+    # Mark the admin as inactive.
+    admin_membership.is_active = False
+    admin_membership.save()
+
+    with _patch_on_commit():
+        service.create_or_supersede_update_request(
+            event=event,
+            proposed_values=_UPDATE_PROPOSED,
+            retained_values=_UPDATE_RETAINED,
+            payload={},
+            provider=CalendarProvider.GOOGLE,
+        )
+
+    # No notification should be dispatched.
+    mock_notification_service.create_notification.assert_not_called()
+
+
+@pytest.mark.django_db
 def test_update_request_notifies_both_attendee_and_admin(
     service: ExternalEventChangeRequestService,
     event: CalendarEvent,
