@@ -46,11 +46,18 @@
   - Review: 0 BLOCKERs; SHOULD-FIX (audit-diff include all retained fields, stronger test assertions) + NITs (annotation parity, comment accuracy) applied.
   - Verified: full `pytest -n auto` = 2993 passed (re-ran after fixer reported a transient "108 collection errors" — confirmed false; collect-only = 2993 clean); `makemigrations --check` clean.
 
+- **Phase 5a — Approve a change request** ✅
+  - Model: sonnet (Tier 3), agent: implementer + reviewer + fixer (sonnet)
+  - Commits: `feat(calendar): add change-request eligibility + approve to ExternalEventChangeRequestService`, `test(calendar): add cross-timezone approval test + fix comment/imports per review`
+  - `can_resolve(request, membership)` (admin OR member-attendee, org-scoped) + `approve(request, *, membership)`: UPDATE applies `proposed_values` to the local event's `start_time_tz_unaware`/`end_time_tz_unaware` (GeneratedField base columns; `.replace(tzinfo=None)` keeps event-local wall-clock — **cross-tz round-trip proven by test**), DELETE deletes the CalendarEvent (request survives `event=NULL` via SET_NULL). New domain exceptions `ChangeRequestNotPendingError` (→409) / `ChangeRequestIneligibleError` (→403, PermissionDenied). Audit `EXTERNAL_CHANGE_APPROVED`.
+  - Review: 0 BLOCKERs; reviewer's "co-author trailers" + tz-BLOCKER claims both verified FALSE (no trailers; round-trip correct). SHOULD-FIX (cross-tz test, comment, tenant-scope, hoist imports) applied.
+  - Verified: full `pytest -n auto` = 3004 passed; `makemigrations --check` clean; no trailers.
+  - 🔑 `can_resolve` is the shared eligibility helper for Phase 5b + Phase 8 API.
+
 ## Current phase
-- **Phase 5a — Approve a change request** (Tier 3 → sonnet, implementer) — next
+- **Phase 5b — Reject a change request / outbound undo** (Tier 4 → opus, implementer) — next
 
 ## Remaining phases
-- Phase 5a — Approve a change request (Tier 3 → sonnet)
 - Phase 5b — Reject a change request / outbound undo (Tier 4 → opus)
 - Phase 6 — FORBIDDEN mode auto-undo during sync (Tier 3 → sonnet)
 - Phase 7 — Notify eligible approvers on request creation (Tier 2 → sonnet)
