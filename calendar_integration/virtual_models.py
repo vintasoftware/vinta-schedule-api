@@ -155,12 +155,9 @@ class AvailableTimeVirtualModel(v.VirtualModel):
 class ExternalEventChangeRequestVirtualModel(v.VirtualModel):
     """Virtual model for ``ExternalEventChangeRequest`` serialization.
 
-    Prefetches the related ``CalendarEvent`` (via the ``event`` ForeignObject)
-    and the resolver membership so the serializer does not N+1.
+    The serializer only reads direct columns (``event_fk_id``,
+    ``resolved_by_user_id``) so no nested prefetches are required.
     """
-
-    event = NestedCalendarEventVirtualModel()
-    resolved_by = OrganizationMembershipVirtualModel()
 
     class Meta:
         model = ExternalEventChangeRequest

@@ -327,6 +327,10 @@ class TestChangeRequestApprove:
 
         assert response.status_code == status.HTTP_200_OK
         assert response.data["status"] == ExternalEventChangeRequestStatus.APPROVED
+        assert response.data["event_id"] == event.id
+        assert response.data["kind"] == ExternalEventChangeKind.UPDATE
+        assert response.data["proposed_values"] == {"title": "Updated title"}
+        assert response.data["retained_values"] == {"title": "Original title"}
         cr.refresh_from_db()
         assert cr.status == ExternalEventChangeRequestStatus.APPROVED
 
@@ -350,8 +354,8 @@ class TestChangeRequestApprove:
         assert response.status_code == status.HTTP_200_OK
         assert response.data["status"] == ExternalEventChangeRequestStatus.APPROVED
 
-    def test_non_attendee_member_gets_403(self):
-        """A member who does not attend the event cannot approve."""
+    def test_non_attendee_member_gets_404(self):
+        """A member who does not attend the event cannot see the request → 404."""
         org, member = _make_org_with_member(is_admin=False)
         cal = _make_calendar(org)
         event = _make_event(cal)
@@ -362,13 +366,9 @@ class TestChangeRequestApprove:
         )
 
         client = _auth_client(member)
-        # The request is not even visible to the member (no attendance), so
-        # the viewset returns 404 — which is the correct tenant-scoped behaviour.
+        # The request is not visible to the member (no attendance) — get_object() 404s.
         response = client.post(reverse(APPROVE_URL, kwargs={"pk": cr.id}))
-        assert response.status_code in (
-            status.HTTP_403_FORBIDDEN,
-            status.HTTP_404_NOT_FOUND,
-        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
     def test_non_pending_returns_409(self):
         """Approving a non-PENDING (e.g. APPROVED) request returns 409."""
@@ -550,8 +550,8 @@ class TestChangeRequestReject:
         assert response.status_code == status.HTTP_200_OK, response.data
         assert response.data["status"] == ExternalEventChangeRequestStatus.REJECTED
 
-    def test_non_attendee_member_gets_404_or_403(self):
-        """A member who does not attend the event cannot see or reject the request."""
+    def test_non_attendee_member_gets_404(self):
+        """A member who does not attend the event cannot see the request → 404."""
         org, member = _make_org_with_member(is_admin=False)
         cal = _make_calendar(org)
         event = _make_event(cal)
@@ -563,10 +563,7 @@ class TestChangeRequestReject:
 
         client = _auth_client(member)
         response = client.post(reverse(REJECT_URL, kwargs={"pk": cr.id}))
-        assert response.status_code in (
-            status.HTTP_403_FORBIDDEN,
-            status.HTTP_404_NOT_FOUND,
-        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
     def test_non_pending_returns_409(self):
         """Rejecting a non-PENDING request returns 409."""
@@ -587,6 +584,84 @@ class TestChangeRequestReject:
             response = client.post(reverse(REJECT_URL, kwargs={"pk": cr.id}))
 
         assert response.status_code == status.HTTP_409_CONFLICT
+
+    def test_reject_no_calendar_owner_returns_400(self):
+        """PENDING request whose calendar has no CalendarOwnership → reject returns 400."""
+        org, admin = _make_org_with_member(is_admin=True)
+        cal = _make_calendar(org, provider=CalendarProvider.GOOGLE)
+        event = _make_event(cal)
+        # Deliberately NOT creating a CalendarOwnership for this calendar.
+        cr = create_external_event_change_request(
+            event=event,
+            kind=ExternalEventChangeKind.UPDATE,
+            status=ExternalEventChangeRequestStatus.PENDING,
+            proposed_values={"title": "New"},
+            retained_values={"title": "Old"},
+        )
+
+        client = _auth_client(admin)
+        response = client.post(reverse(REJECT_URL, kwargs={"pk": cr.id}))
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "owner" in response.data["detail"].lower()
+
+    def test_reject_no_social_account_returns_400(self):
+        """Owner exists but no SocialAccount for the provider → reject returns 400."""
+        org, admin = _make_org_with_member(is_admin=True)
+        cal = _make_calendar(org, provider=CalendarProvider.GOOGLE)
+        event = _make_event(cal)
+        _make_ownership(admin, cal)
+        # Deliberately NOT creating a SocialAccount for the owner.
+        cr = create_external_event_change_request(
+            event=event,
+            kind=ExternalEventChangeKind.UPDATE,
+            status=ExternalEventChangeRequestStatus.PENDING,
+            proposed_values={"title": "New"},
+            retained_values={"title": "Old"},
+        )
+
+        client = _auth_client(admin)
+        response = client.post(reverse(REJECT_URL, kwargs={"pk": cr.id}))
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert CalendarProvider.GOOGLE in response.data["detail"]
+
+    def test_reject_non_pending_returns_409_without_auth(self):
+        """A non-PENDING (APPROVED) request → reject returns 409, no owner/account setup needed."""
+        org, admin = _make_org_with_member(is_admin=True)
+        cal = _make_calendar(org, provider=CalendarProvider.GOOGLE)
+        event = _make_event(cal)
+        # No CalendarOwnership, no SocialAccount — the 409 guard fires before auth work.
+        cr = create_external_event_change_request(
+            event=event,
+            kind=ExternalEventChangeKind.UPDATE,
+            status=ExternalEventChangeRequestStatus.APPROVED,
+        )
+
+        client = _auth_client(admin)
+        response = client.post(reverse(REJECT_URL, kwargs={"pk": cr.id}))
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+
+    def test_reject_deleted_event_returns_403(self):
+        """A PENDING request with event=None (event was deleted) → reject returns 403."""
+        org, admin = _make_org_with_member(is_admin=True)
+        # Create a change request with event_fk=None (simulates a deleted event).
+        cr = ExternalEventChangeRequest.objects.create(
+            organization=org,
+            event_fk=None,
+            kind=ExternalEventChangeKind.UPDATE,
+            status=ExternalEventChangeRequestStatus.PENDING,
+            proposed_values={"title": "New"},
+            proposed_payload={},
+            retained_values={"title": "Old"},
+            provider=CalendarProvider.GOOGLE,
+        )
+
+        client = _auth_client(admin)
+        response = client.post(reverse(REJECT_URL, kwargs={"pk": cr.id}))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
 
     def test_cross_org_request_not_found(self):
         """An admin from another org cannot see or reject a request."""

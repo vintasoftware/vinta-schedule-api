@@ -2091,12 +2091,19 @@ class ExternalEventChangeRequestViewSet(ReadOnlyVintaScheduleModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Resolve the event and calendar for outbound authentication.
+        # Guard 1: non-PENDING → 409 immediately, before any outbound-auth work.
+        if change_request.status != ExternalEventChangeRequestStatus.PENDING:
+            return Response(
+                {"detail": "Change request is no longer pending."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Guard 2: event was deleted → ineligible to reject (403, not 409).
         event = change_request.event
         if event is None:
             return Response(
                 {"detail": "Cannot reject a change request with no associated event."},
-                status=status.HTTP_409_CONFLICT,
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         calendar = event.calendar
@@ -2106,6 +2113,7 @@ class ExternalEventChangeRequestViewSet(ReadOnlyVintaScheduleModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Guard 3+: event present + PENDING — resolve calendar owner and social account.
         # Authenticate the CalendarService using the calendar's owner's credentials
         # (matching the pattern in ``CalendarEventViewSet.transfer`` and
         # ``CalendarViewSet.admin_sync``).  Use the owner of the event's calendar
