@@ -24,8 +24,16 @@
   - Review: 0 BLOCKERs; SHOULD-FIX (db_default, refresh_from_db round-trip, change_request test) + NIT (admin docstring) all applied.
   - Outer gate green: `check --deploy` clean (5 expected dev warnings), full `pytest -n auto` = 2971 passed.
 
+- **Phase 2 — Add the `ExternalEventChangeRequest` model** ✅
+  - Model: sonnet (Tier 2), agent: migration-author + reviewer (sonnet) + fixer (migration-author, sonnet)
+  - Commits: `feat(calendar): add ExternalEventChangeRequest model`, `chore(calendar): register ExternalEventChangeRequest in admin`, `fix(calendar): harden ExternalEventChangeRequest model per review`
+  - Model `ExternalEventChangeRequest(OrganizationModel)` + `ExternalEventChangeKind`/`ExternalEventChangeRequestStatus` (in `constants.py`); `event` FK `SET_NULL`+nullable (preserves request history when Phase 5a deletes the event); partial unique constraint `(event_fk, organization) WHERE status=pending`; composite resolver index; manager/queryset/admin/factory; migration `0037` + raw-SQL composite PROTECT FK `0038` (deferrable, NOT VALID+VALIDATE). 10 model tests.
+  - Review: 2 BLOCKERs (PROTECT→SET_NULL; late import → enums to constants) + 6 SHOULD-FIX (org in unique key, mandated resolver index, raw-SQL composite FK, manager/queryset/for_event, missing tests, factory org guard) all applied. Reviewer's `from_queryset` suggestion correctly declined (siblings use explicit `get_queryset`).
+  - Verified: migrations reverse+reapply cleanly; `makemigrations --check` clean; full `pytest -n auto` = 2981 passed.
+  - ⚠️ Phase 5a note: `event` is now nullable (`SET_NULL`). Approving a `delete`-kind request deletes the CalendarEvent; the resolved request row survives with `event=NULL`.
+
 ## Current phase
-- **Phase 2 — Add the `ExternalEventChangeRequest` model** (Tier 2 → sonnet, migration-author) — next
+- **Phase 3 — Intercept inbound UPDATES into change requests** (Tier 3 → sonnet, implementer) — next
 
 ## Remaining phases
 - Phase 3 — Intercept inbound UPDATES into change requests (Tier 3 → sonnet)
