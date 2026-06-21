@@ -3,10 +3,11 @@ from collections.abc import Callable
 from typing import Annotated
 
 from django.db.models import Case, IntegerField, Value, When
-from django.http import Http404
+from django.http import Http404, HttpResponse
 
 from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
     OpenApiParameter,
     OpenApiResponse,
@@ -77,6 +78,7 @@ from calendar_integration.serializers import (
 )
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_service import CalendarService
+from calendar_integration.services.ics_service import CalendarEventICSService
 from common.utils.view_utils import VintaScheduleModelViewSet
 from organizations.models import get_active_organization_membership
 from organizations.permissions import IsOrganizationAdmin
@@ -1203,6 +1205,45 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
             )
         except (ValueError, CalendarIntegrationError, NotImplementedError) as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+    @extend_schema(
+        summary="Download calendar event ICS",
+        responses={(200, "text/calendar"): OpenApiTypes.BINARY},
+    )
+    @action(detail=True, methods=["get"], url_path="ics", url_name="ics")
+    def download_ics(self, request, *args, **kwargs):
+        """Download a calendar event as an iCalendar (.ics) file.
+
+        Returns the event in RFC 5545 format with proper timezone handling,
+        recurrence rules (if applicable), and attendee information.
+        """
+        # Resolve the event with get_object() for org scoping and permission checks.
+        event = self.get_object()
+
+        # Re-fetch the event with the required prefetch set from the ICS service
+        # docstring to avoid N+1 queries during ICS generation. Reuse the viewset's
+        # canonical org-scoped queryset (get_object() above already owns the 404/403)
+        # and key the re-fetch by the authorized pk.
+        event = (
+            self.get_queryset()
+            .select_related("calendar")
+            .prefetch_related(
+                "calendar__ownerships__membership__user",
+                "attendances__membership__user",
+                "external_attendances__external_attendee",
+                "recurrence_rule",
+                "recurrence_exceptions",
+            )
+            .get(pk=event.id)
+        )
+
+        # Generate the ICS bytes using the service.
+        ics_bytes = CalendarEventICSService().build_ics(event)
+
+        # Return as an HTTP response with proper content type and attachment header.
+        response = HttpResponse(ics_bytes, content_type="text/calendar; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="event-{event.id}.ics"'
+        return response
 
 
 class BlockedTimeViewSet(VintaScheduleModelViewSet):

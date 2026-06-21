@@ -3465,6 +3465,89 @@ paths:
           description: ''
         '204':
           description: No response body
+  /calendar-events/{id}/ics/:
+    get:
+      operationId: calendar_events_ics_retrieve
+      description: |-
+        Download a calendar event as an iCalendar (.ics) file.
+
+        Returns the event in RFC 5545 format with proper timezone handling,
+        recurrence rules (if applicable), and attendee information.
+      summary: Download calendar event ICS
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            text/calendar:
+              schema:
+                type: string
+                format: binary
+          description: ''
+  /calendar-events/{id}/ics{format}:
+    get:
+      operationId: calendar_events_ics_formatted_retrieve
+      description: |-
+        Download a calendar event as an iCalendar (.ics) file.
+
+        Returns the event in RFC 5545 format with proper timezone handling,
+        recurrence rules (if applicable), and attendee information.
+      summary: Download calendar event ICS
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar-events
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            text/calendar:
+              schema:
+                type: string
+                format: binary
+          description: ''
   /calendar-events/{id}/transfer/:
     post:
       operationId: calendar_events_transfer_create

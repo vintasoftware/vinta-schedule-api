@@ -6,6 +6,7 @@ from unittest.mock import Mock
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
+import icalendar
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from model_bakery import baker
@@ -24,6 +25,9 @@ from calendar_integration.models import (
     CalendarEvent,
     CalendarOwnership,
     ChildrenCalendarRelationship,
+    EventAttendance,
+    EventExternalAttendance,
+    ExternalAttendee,
     RecurrenceRule,
 )
 from calendar_integration.services.dataclasses import (
@@ -6031,3 +6035,246 @@ class TestCalendarDefaultAction:
         response = anonymous_client.get(url)
 
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+
+@pytest.mark.django_db
+class TestCalendarEventDownloadICS:
+    """Tests for the GET /calendar-events/{id}/ics/ endpoint."""
+
+    @pytest.fixture
+    def calendar_event_with_owner(self, user):
+        """Create a calendar event with the user as owner."""
+        organization = CalendarIntegrationTestFactory.create_organization()
+        # Ensure user is a member of the organization
+        OrganizationMembership.objects.get_or_create(
+            user=user,
+            organization=organization,
+        )
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create event with start/end times
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = start_time + datetime.timedelta(hours=1)
+        event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Test ICS Event",
+            description="Test description for ICS",
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
+            timezone="UTC",
+            external_id="test-external-id-123",
+        )
+        return event, organization
+
+    def test_authenticated_user_downloads_ics(self, auth_client, user, calendar_event_with_owner):
+        """Authenticated in-org user with permission gets 200, text/calendar, valid ICS."""
+        event, _ = calendar_event_with_owner
+
+        url = reverse("api:CalendarEvents-ics", kwargs={"pk": event.id})
+        response = auth_client.get(url)
+
+        # Verify response status and headers
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response["Content-Type"].startswith("text/calendar")
+        assert "attachment" in response["Content-Disposition"]
+        assert f'filename="event-{event.id}.ics"' in response["Content-Disposition"]
+
+        # Verify the content is valid iCalendar
+        cal = icalendar.Calendar.from_ical(response.content)
+        assert cal is not None
+        # Extract the VEVENT from the calendar
+        events = list(cal.walk("VEVENT"))
+        assert len(events) == 1
+        vevent = events[0]
+
+        # Verify expected properties
+        assert str(vevent.get("uid")) == "test-external-id-123"
+        assert str(vevent.get("summary")) == "Test ICS Event"
+        assert str(vevent.get("status")) == "CONFIRMED"
+
+    def test_cross_org_event_returns_404(self, auth_client, user):
+        """User accessing an event from a different organization gets 404."""
+        # Create first organization with user
+        org1 = CalendarIntegrationTestFactory.create_organization(name="Org 1")
+        OrganizationMembership.objects.get_or_create(user=user, organization=org1)
+
+        # Create second organization and event (user not in this org)
+        org2 = CalendarIntegrationTestFactory.create_organization(name="Org 2")
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=org2)
+
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = start_time + datetime.timedelta(hours=1)
+        event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
+        )
+
+        url = reverse("api:CalendarEvents-ics", kwargs={"pk": event.id})
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_unknown_event_id_returns_404(self, auth_client):
+        """Accessing a non-existent event id returns 404."""
+        url = reverse("api:CalendarEvents-ics", kwargs={"pk": 99999})
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+    def test_unauthenticated_user_returns_401(self, anonymous_client, calendar_event_with_owner):
+        """Unauthenticated request returns 401."""
+        event, _ = calendar_event_with_owner
+
+        url = reverse("api:CalendarEvents-ics", kwargs={"pk": event.id})
+        response = anonymous_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_in_org_user_without_ownership_returns_403(self):
+        """In-org member without CalendarOwnership on the event's calendar gets 403.
+
+        The event IS found by the org-scoped get_queryset(), so get_object() raises
+        PermissionDenied (403) from has_object_permission's False branch rather than
+        Http404 — distinguishing an unauthorized member from a cross-org/unknown event.
+        """
+        from rest_framework.test import APIClient
+
+        organization = CalendarIntegrationTestFactory.create_organization()
+        member_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=member_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Calendar owned by someone else — member_user has NO CalendarOwnership on it.
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = start_time + datetime.timedelta(hours=1)
+        event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=member_user)
+        url = reverse("api:CalendarEvents-ics", kwargs={"pk": event.id})
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_ics_with_recurring_event(self, auth_client, user):
+        """Recurring events include RRULE in the ICS output."""
+        organization = CalendarIntegrationTestFactory.create_organization()
+        OrganizationMembership.objects.get_or_create(user=user, organization=organization)
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        # Create a recurrence rule
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+            by_weekday="MO,WE",
+        )
+
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = start_time + datetime.timedelta(hours=1)
+        event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Recurring Event",
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
+        )
+        event.recurrence_rule = recurrence_rule
+        event.save(update_fields=["recurrence_rule_fk"])
+
+        url = reverse("api:CalendarEvents-ics", kwargs={"pk": event.id})
+        response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify RRULE is present
+        cal = icalendar.Calendar.from_ical(response.content)
+        events = list(cal.walk("VEVENT"))
+        assert len(events) == 1
+        vevent = events[0]
+
+        # Check for RRULE property
+        assert "RRULE" in vevent
+        rrule = vevent.get("rrule")
+        assert rrule is not None
+        assert rrule["freq"][0] == "WEEKLY"
+
+    def test_ics_with_attendees(self, auth_client, user, django_assert_num_queries):
+        """Events with attendees include ATTENDEE lines in the ICS output."""
+        organization = CalendarIntegrationTestFactory.create_organization()
+        OrganizationMembership.objects.get_or_create(user=user, organization=organization)
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = start_time + datetime.timedelta(hours=1)
+        event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Event with Attendees",
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
+        )
+
+        # Add an internal attendee (another organization member)
+        attendee_user = baker.make(User, email="attendee@example.com")
+        attendee_membership = baker.make(
+            OrganizationMembership,
+            user=attendee_user,
+            organization=organization,
+        )
+        baker.make(
+            EventAttendance,
+            event=event,
+            membership=attendee_membership,
+            organization=organization,
+        )
+
+        # Add an external attendee
+        external_attendee = baker.make(
+            ExternalAttendee,
+            email="external@example.com",
+            organization=organization,
+        )
+        baker.make(
+            EventExternalAttendance,
+            event=event,
+            external_attendee=external_attendee,
+            organization=organization,
+        )
+
+        url = reverse("api:CalendarEvents-ics", kwargs={"pk": event.id})
+        # The view applies a documented prefetch set to avoid N+1 queries during ICS
+        # generation. Pin the query count so a regression to per-attendee queries (which
+        # would scale with attendee count) trips this assertion. N reflects the
+        # prefetched query set, not the number of attendees.
+        with django_assert_num_queries(22):
+            response = auth_client.get(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        # Verify ATTENDEE lines are present
+        cal = icalendar.Calendar.from_ical(response.content)
+        events = list(cal.walk("VEVENT"))
+        assert len(events) == 1
+        vevent = events[0]
+
+        # Check that attendees are present
+        attendees = vevent.get("attendee", [])
+        if not isinstance(attendees, list):
+            attendees = [attendees]
+        assert len(attendees) >= 2  # internal + external
+
+        # Assert the actual attendee emails appear in the ATTENDEE lines.
+        attendee_values = {str(att).lower() for att in attendees}
+        assert "mailto:attendee@example.com" in attendee_values
+        assert "mailto:external@example.com" in attendee_values
