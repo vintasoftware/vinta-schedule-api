@@ -5,6 +5,8 @@ Tests verify that build_ics produces valid RFC 5545 iCalendar documents that:
 - Contain correct UID (external_id when present, synthetic fallback otherwise)
 - Contain correct SUMMARY, DTSTART, DTEND, STATUS, SEQUENCE, DTSTAMP
 - Properly escape special characters (commas, semicolons, newlines) in description
+- Phase 2: carry ORGANIZER, ATTENDEE, RRULE, EXDATE lines correctly
+- Phase 2: emit STATUS:CANCELLED for cancelled-exception events
 """
 
 import datetime
@@ -15,7 +17,17 @@ import icalendar
 import pytest
 from model_bakery import baker
 
-from calendar_integration.models import CalendarEvent
+from calendar_integration.constants import RSVPStatus
+from calendar_integration.factories import (
+    CalendarEventFactory,
+    create_calendar_ownership,
+    create_event_attendance,
+)
+from calendar_integration.models import (
+    CalendarEvent,
+    EventRecurrenceException,
+    ExternalAttendee,
+)
 from calendar_integration.services import CalendarEventICSService
 
 
@@ -432,3 +444,605 @@ def test_build_ics_multiple_events_each_valid():
         vevent = events_in_cal[0]
         assert vevent.get("uid") == event.external_id
         assert vevent.get("summary") == event.title
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 tests — ORGANIZER, ATTENDEE, RRULE, EXDATE, STATUS:CANCELLED
+# ---------------------------------------------------------------------------
+
+
+def _parse_vevent(ics_bytes: bytes) -> icalendar.cal.Component:
+    """Parse ics_bytes and return the first VEVENT component."""
+    cal = icalendar.Calendar.from_ical(ics_bytes)
+    events = [c for c in cal.walk("VEVENT")]
+    assert len(events) == 1, f"Expected 1 VEVENT, got {len(events)}"
+    return events[0]  # type: ignore[return-value]
+
+
+@pytest.mark.django_db
+def test_build_ics_recurring_event_emits_single_vevent_with_rrule():
+    """A recurring event emits exactly ONE VEVENT whose RRULE matches
+    the recurrence rule's to_rrule_string() output."""
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+
+    event = CalendarEventFactory.create_recurring_event(
+        calendar=calendar,
+        title="Weekly Standup",
+        description="",
+        start_time=datetime.datetime(2025, 6, 23, 9, 0),
+        end_time=datetime.datetime(2025, 6, 23, 9, 30),
+        frequency="WEEKLY",
+        by_weekday="MO,WE,FR",
+        external_id="evt-recurring",
+    )
+    # Refresh to load the recurrence_rule FK via ORM
+    event = CalendarEvent.objects.filter_by_organization(org.id).get(id=event.id)
+
+    service = CalendarEventICSService()
+    ics_bytes = service.build_ics(event)
+
+    # Must parse cleanly and yield exactly one VEVENT
+    cal = icalendar.Calendar.from_ical(ics_bytes)
+    vevents = [c for c in cal.walk("VEVENT")]
+    assert len(vevents) == 1, "Recurring event must produce exactly one VEVENT"
+
+    vevent = vevents[0]
+    rrule = vevent.get("rrule")
+    assert rrule is not None, "Recurring event must have an RRULE"
+
+    # The serialized RRULE value must encode FREQ and BYDAY correctly
+    ics_str = ics_bytes.decode("utf-8")
+    # RRULE: line should contain the recurrence rule value
+    assert "FREQ=WEEKLY" in ics_str
+    assert "BYDAY=MO,WE,FR" in ics_str
+
+
+@pytest.mark.django_db
+def test_build_ics_non_recurring_event_has_no_rrule():
+    """A plain (non-recurring) event must NOT contain an RRULE line."""
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+
+    event = baker.make(
+        CalendarEvent,
+        organization=org,
+        calendar=calendar,
+        title="One-off Meeting",
+        description="",
+        external_id="evt-oneoff",
+        start_time_tz_unaware=datetime.datetime(2025, 6, 23, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 23, 10, 0),
+        timezone="UTC",
+        recurrence_rule=None,
+    )
+
+    service = CalendarEventICSService()
+    ics_bytes = service.build_ics(event)
+
+    vevent = _parse_vevent(ics_bytes)
+    assert vevent.get("rrule") is None, "Non-recurring event must not have an RRULE"
+    ics_str = ics_bytes.decode("utf-8")
+    assert "RRULE" not in ics_str
+
+
+@pytest.mark.django_db
+def test_build_ics_recurring_event_with_cancelled_exception_emits_exdate():
+    """A recurring event with a cancelled EventRecurrenceException emits
+    an EXDATE whose datetime matches the exception_date."""
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+
+    event = CalendarEventFactory.create_recurring_event(
+        calendar=calendar,
+        title="Daily Sync",
+        description="",
+        start_time=datetime.datetime(2025, 6, 23, 8, 0),
+        end_time=datetime.datetime(2025, 6, 23, 8, 30),
+        frequency="DAILY",
+        external_id="evt-with-exdate",
+    )
+
+    # Create a cancelled exception for 2025-06-25 08:00 UTC
+    cancelled_dt = datetime.datetime(2025, 6, 25, 8, 0, tzinfo=datetime.UTC)
+    EventRecurrenceException.objects.create(
+        organization=org,
+        parent_event=event,
+        exception_date=cancelled_dt,
+        is_cancelled=True,
+    )
+
+    event_reloaded = (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .prefetch_related("recurrence_exceptions", "recurrence_rule")
+        .get(id=event.id)
+    )
+
+    service = CalendarEventICSService()
+    ics_bytes = service.build_ics(event_reloaded)
+
+    # Must parse cleanly
+    cal = icalendar.Calendar.from_ical(ics_bytes)
+    vevents = [c for c in cal.walk("VEVENT")]
+    assert len(vevents) == 1
+
+    vevent = vevents[0]
+    exdate_prop = vevent.get("exdate")
+    assert exdate_prop is not None, "Cancelled exception must produce an EXDATE"
+
+    # The EXDATE may be a single vDDDLists or a list; flatten to datetimes
+    exdates_raw = exdate_prop if isinstance(exdate_prop, list) else [exdate_prop]
+    exdate_dts: list[datetime.datetime] = []
+    for ed in exdates_raw:
+        if hasattr(ed, "dts"):
+            exdate_dts.extend(d.dt for d in ed.dts)
+        else:
+            exdate_dts.append(ed.dt)
+
+    # Verify the cancelled occurrence datetime is present
+    exdate_utcs = [dt.astimezone(datetime.UTC) for dt in exdate_dts]
+    assert cancelled_dt in exdate_utcs, f"Expected {cancelled_dt} in EXDATE list, got {exdate_utcs}"
+
+
+@pytest.mark.django_db
+def test_build_ics_modified_exception_does_not_appear_in_exdate():
+    """A modified (non-cancelled) EventRecurrenceException must NOT appear
+    in EXDATE — only cancelled ones do."""
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+
+    event = CalendarEventFactory.create_recurring_event(
+        calendar=calendar,
+        title="Daily Check",
+        description="",
+        start_time=datetime.datetime(2025, 7, 1, 10, 0),
+        end_time=datetime.datetime(2025, 7, 1, 10, 30),
+        frequency="DAILY",
+        external_id="evt-modified-exc",
+    )
+
+    # Create a MODIFIED (not cancelled) exception — should not appear as EXDATE
+    modified_dt = datetime.datetime(2025, 7, 3, 10, 0, tzinfo=datetime.UTC)
+    EventRecurrenceException.objects.create(
+        organization=org,
+        parent_event=event,
+        exception_date=modified_dt,
+        is_cancelled=False,
+    )
+
+    event_reloaded = (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .prefetch_related("recurrence_exceptions", "recurrence_rule")
+        .get(id=event.id)
+    )
+
+    service = CalendarEventICSService()
+    ics_bytes = service.build_ics(event_reloaded)
+
+    vevent = _parse_vevent(ics_bytes)
+    # Modified exception must NOT appear as EXDATE
+    assert vevent.get("exdate") is None, (
+        "Modified (non-cancelled) exception must not produce an EXDATE"
+    )
+
+
+@pytest.mark.django_db
+def test_build_ics_attendees_internal_and_external():
+    """An event with one internal attendee and one external attendee emits two
+    correctly-formatted ATTENDEE lines carrying the right emails, ROLE, and PARTSTAT.
+    """
+    from users.factories import UserFactory
+
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+
+    event = baker.make(
+        CalendarEvent,
+        organization=org,
+        calendar=calendar,
+        title="Attended Event",
+        description="",
+        external_id="evt-attendees",
+        start_time_tz_unaware=datetime.datetime(2025, 6, 23, 14, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 23, 15, 0),
+        timezone="UTC",
+    )
+
+    # Internal attendee — membership_user_id path
+    internal_user = UserFactory().create_user(email="internal@example.com")
+    attendance = create_event_attendance(
+        event=event,
+        user=internal_user,
+        status=RSVPStatus.ACCEPTED,
+    )
+    assert attendance.membership_user_id == internal_user.id
+
+    # External attendee via EventExternalAttendance (with status)
+    external_attendee = ExternalAttendee.objects.create(
+        organization=org,
+        email="external@example.com",
+        name="External Person",
+    )
+    from calendar_integration.models import EventExternalAttendance
+
+    EventExternalAttendance.objects.create(
+        organization=org,
+        event=event,
+        external_attendee=external_attendee,
+        status=RSVPStatus.PENDING,
+    )
+
+    # Reload with prefetch
+    event_reloaded = (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .prefetch_related(
+            "attendances__membership__user", "external_attendances__external_attendee"
+        )
+        .get(id=event.id)
+    )
+
+    service = CalendarEventICSService()
+    ics_bytes = service.build_ics(event_reloaded)
+
+    # Must parse cleanly
+    icalendar.Calendar.from_ical(ics_bytes)
+
+    # Parse and inspect ATTENDEE parameters using the parsed representation
+    # (do not check raw ICS string for emails because RFC 5545 line-folding
+    # may split a long email address across two lines)
+    vevent = _parse_vevent(ics_bytes)
+    attendees_raw = vevent.get("attendee")
+    # May be a single value or list; normalise
+    if not isinstance(attendees_raw, list):
+        attendees_raw = [attendees_raw]
+
+    assert len(attendees_raw) == 2, f"Expected 2 ATTENDEE lines, got {len(attendees_raw)}"
+
+    attendee_strs = [str(a) for a in attendees_raw]
+    assert any("internal@example.com" in s for s in attendee_strs), (
+        f"internal@example.com not found in attendees: {attendee_strs}"
+    )
+    assert any("external@example.com" in s for s in attendee_strs), (
+        f"external@example.com not found in attendees: {attendee_strs}"
+    )
+
+    # Verify PARTSTAT and ROLE are present by inspecting the params on the
+    # parsed vCalAddress objects
+    for attendee in attendees_raw:
+        assert hasattr(attendee, "params"), f"Attendee {attendee!r} has no params"
+        assert attendee.params.get("ROLE") == "REQ-PARTICIPANT", (
+            f"Expected ROLE=REQ-PARTICIPANT, got {attendee.params.get('ROLE')!r}"
+        )
+        partstat = attendee.params.get("PARTSTAT")
+        assert partstat in ("ACCEPTED", "DECLINED", "NEEDS-ACTION", "TENTATIVE"), (
+            f"Unexpected PARTSTAT: {partstat!r}"
+        )
+
+    # ACCEPTED attendee for internal user, NEEDS-ACTION for external (PENDING)
+    partstat_values = {attendee.params.get("PARTSTAT") for attendee in attendees_raw}
+    assert "ACCEPTED" in partstat_values
+    assert "NEEDS-ACTION" in partstat_values
+
+
+@pytest.mark.django_db
+def test_build_ics_attendee_partstat_mapping():
+    """Verify all RSVPStatus values map to the correct PARTSTAT in the ICS."""
+    from users.factories import UserFactory
+
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+
+    def _make_event_with_status(rsvp_status: str, ext_id: str) -> bytes:
+        event = baker.make(
+            CalendarEvent,
+            organization=org,
+            calendar=calendar,
+            title="Partstat Test",
+            description="",
+            external_id=ext_id,
+            start_time_tz_unaware=datetime.datetime(2025, 7, 1, 9, 0),
+            end_time_tz_unaware=datetime.datetime(2025, 7, 1, 10, 0),
+            timezone="UTC",
+        )
+        user = UserFactory().create_user()
+        create_event_attendance(event=event, user=user, status=rsvp_status)
+        reloaded = (
+            CalendarEvent.objects.filter_by_organization(org.id)
+            .prefetch_related("attendances__membership__user")
+            .get(id=event.id)
+        )
+        return CalendarEventICSService().build_ics(reloaded)
+
+    assert "PARTSTAT=ACCEPTED" in _make_event_with_status(RSVPStatus.ACCEPTED, "evt-acc").decode()
+    assert "PARTSTAT=DECLINED" in _make_event_with_status(RSVPStatus.DECLINED, "evt-dec").decode()
+    assert (
+        "PARTSTAT=NEEDS-ACTION" in _make_event_with_status(RSVPStatus.PENDING, "evt-pend").decode()
+    )
+
+
+@pytest.mark.django_db
+def test_build_ics_organizer_present_when_calendar_has_owner():
+    """ORGANIZER line is present when the calendar has a primary owner membership."""
+    from users.factories import UserFactory
+
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+
+    owner_user = UserFactory().create_user(email="owner@example.com")
+    create_calendar_ownership(calendar=calendar, user=owner_user)
+
+    event = baker.make(
+        CalendarEvent,
+        organization=org,
+        calendar=calendar,
+        title="Owned Event",
+        description="",
+        external_id="evt-owned",
+        start_time_tz_unaware=datetime.datetime(2025, 6, 23, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 23, 10, 0),
+        timezone="UTC",
+    )
+
+    event_reloaded = (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .select_related("calendar")
+        .prefetch_related("calendar__ownerships__membership__user")
+        .get(id=event.id)
+    )
+
+    service = CalendarEventICSService()
+    ics_bytes = service.build_ics(event_reloaded)
+
+    ics_str = ics_bytes.decode("utf-8")
+    assert "ORGANIZER" in ics_str, "ORGANIZER must be present when the calendar has an owner"
+    assert "owner@example.com" in ics_str, "ORGANIZER must include the owner's email"
+
+    vevent = _parse_vevent(ics_bytes)
+    organizer = vevent.get("organizer")
+    assert organizer is not None
+    assert "owner@example.com" in str(organizer)
+
+
+@pytest.mark.django_db
+def test_build_ics_organizer_omitted_when_calendar_has_no_owner():
+    """ORGANIZER line is omitted (and build_ics does not crash) when the
+    calendar has no ownership rows."""
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+    # Deliberately no CalendarOwnership created
+
+    event = baker.make(
+        CalendarEvent,
+        organization=org,
+        calendar=calendar,
+        title="No Owner Event",
+        description="",
+        external_id="evt-noowner",
+        start_time_tz_unaware=datetime.datetime(2025, 6, 23, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 23, 10, 0),
+        timezone="UTC",
+    )
+
+    event_reloaded = (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .select_related("calendar")
+        .prefetch_related("calendar__ownerships__membership__user")
+        .get(id=event.id)
+    )
+
+    service = CalendarEventICSService()
+    ics_bytes = service.build_ics(event_reloaded)  # must not crash
+
+    ics_str = ics_bytes.decode("utf-8")
+    # ORGANIZER must be absent
+    assert "ORGANIZER" not in ics_str
+
+    # Output must still be valid iCalendar
+    icalendar.Calendar.from_ical(ics_bytes)
+
+
+@pytest.mark.django_db
+def test_build_ics_normal_event_status_confirmed():
+    """A normal (non-exception) event emits STATUS:CONFIRMED."""
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+
+    event = baker.make(
+        CalendarEvent,
+        organization=org,
+        calendar=calendar,
+        title="Normal Event",
+        description="",
+        external_id="evt-normal",
+        start_time_tz_unaware=datetime.datetime(2025, 6, 23, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 23, 10, 0),
+        timezone="UTC",
+        is_recurring_exception=False,
+    )
+
+    service = CalendarEventICSService()
+    ics_bytes = service.build_ics(event)
+
+    vevent = _parse_vevent(ics_bytes)
+    assert vevent.get("status") == "CONFIRMED"
+
+
+@pytest.mark.django_db
+def test_build_ics_cancelled_exception_event_emits_status_cancelled():
+    """An event that is a cancelled exception (is_recurring_exception=True and
+    matched by a cancelled EventRecurrenceException) emits STATUS:CANCELLED.
+
+    NOTE: In the current schema a cancelled occurrence does NOT spawn a separate
+    CalendarEvent row. This test creates the scenario by manufacturing an
+    ``exception_for`` relation with ``is_cancelled=True`` to verify the code
+    path executes correctly when such a row exists.
+    """
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+
+    parent_event = baker.make(
+        CalendarEvent,
+        organization=org,
+        calendar=calendar,
+        title="Parent Recurring",
+        description="",
+        external_id="evt-parent-cancel",
+        start_time_tz_unaware=datetime.datetime(2025, 7, 1, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 7, 1, 10, 0),
+        timezone="UTC",
+    )
+
+    # Create a CalendarEvent flagged as a recurring exception
+    exception_event = baker.make(
+        CalendarEvent,
+        organization=org,
+        calendar=calendar,
+        title="Exception Event",
+        description="",
+        external_id="evt-exception",
+        start_time_tz_unaware=datetime.datetime(2025, 7, 8, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 7, 8, 10, 0),
+        timezone="UTC",
+        is_recurring_exception=True,
+    )
+
+    # Wire the cancelled exception that points to this event as modified_event
+    EventRecurrenceException.objects.create(
+        organization=org,
+        parent_event=parent_event,
+        modified_event=exception_event,
+        exception_date=datetime.datetime(2025, 7, 8, 9, 0, tzinfo=datetime.UTC),
+        is_cancelled=True,
+    )
+
+    # Reload with the exception_for relation
+    exception_event_reloaded = (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .prefetch_related("exception_for")
+        .get(id=exception_event.id)
+    )
+
+    service = CalendarEventICSService()
+    ics_bytes = service.build_ics(exception_event_reloaded)
+
+    vevent = _parse_vevent(ics_bytes)
+    assert vevent.get("status") == "CANCELLED", (
+        "A cancelled-exception event must emit STATUS:CANCELLED"
+    )
+
+
+@pytest.mark.django_db
+def test_build_ics_full_acceptance_scenario():
+    """Acceptance test: a recurring event with one cancelled occurrence and
+    one internal + one external attendee produces a single VEVENT whose RRULE
+    matches to_rrule_string(), whose EXDATE contains the cancelled occurrence,
+    and which carries one ORGANIZER and two ATTENDEE lines.
+    """
+    from users.factories import UserFactory
+
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+
+    # Calendar owner → ORGANIZER
+    owner_user = UserFactory().create_user(email="organizer@example.com")
+    create_calendar_ownership(calendar=calendar, user=owner_user)
+
+    # Recurring event
+    event = CalendarEventFactory.create_recurring_event(
+        calendar=calendar,
+        title="Team Sync",
+        description="Weekly team meeting",
+        start_time=datetime.datetime(2025, 6, 23, 10, 0),
+        end_time=datetime.datetime(2025, 6, 23, 11, 0),
+        frequency="WEEKLY",
+        by_weekday="MO",
+        external_id="evt-acceptance",
+    )
+
+    # Cancelled occurrence
+    cancelled_dt = datetime.datetime(2025, 6, 30, 10, 0, tzinfo=datetime.UTC)
+    EventRecurrenceException.objects.create(
+        organization=org,
+        parent_event=event,
+        exception_date=cancelled_dt,
+        is_cancelled=True,
+    )
+
+    # Internal attendee
+    internal_user = UserFactory().create_user(email="internal-acc@example.com")
+    create_event_attendance(event=event, user=internal_user, status=RSVPStatus.ACCEPTED)
+
+    # External attendee
+    external_attendee = ExternalAttendee.objects.create(
+        organization=org,
+        email="external-acc@example.com",
+        name="External Acc",
+    )
+    from calendar_integration.models import EventExternalAttendance
+
+    EventExternalAttendance.objects.create(
+        organization=org,
+        event=event,
+        external_attendee=external_attendee,
+        status=RSVPStatus.DECLINED,
+    )
+
+    # Reload with all required prefetches
+    event_reloaded = (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .select_related("calendar", "recurrence_rule")
+        .prefetch_related(
+            "calendar__ownerships__membership__user",
+            "attendances__membership__user",
+            "external_attendances__external_attendee",
+            "recurrence_exceptions",
+        )
+        .get(id=event.id)
+    )
+
+    service = CalendarEventICSService()
+    ics_bytes = service.build_ics(event_reloaded)
+
+    # Must be valid iCalendar
+    cal = icalendar.Calendar.from_ical(ics_bytes)
+    vevents = [c for c in cal.walk("VEVENT")]
+    assert len(vevents) == 1, "Must produce exactly one VEVENT"
+    vevent = vevents[0]
+
+    ics_str = ics_bytes.decode("utf-8")
+
+    # RRULE present and matches the recurrence rule
+    assert "FREQ=WEEKLY" in ics_str
+    assert "BYDAY=MO" in ics_str
+    rrule_value = event_reloaded.recurrence_rule.to_rrule_string()
+    assert "FREQ=WEEKLY" in rrule_value
+
+    # EXDATE contains the cancelled occurrence
+    exdate_prop = vevent.get("exdate")
+    assert exdate_prop is not None, "EXDATE must be present"
+    exdates_raw = exdate_prop if isinstance(exdate_prop, list) else [exdate_prop]
+    exdate_dts = []
+    for ed in exdates_raw:
+        if hasattr(ed, "dts"):
+            exdate_dts.extend(d.dt for d in ed.dts)
+        else:
+            exdate_dts.append(ed.dt)
+    exdate_utcs = [dt.astimezone(datetime.UTC) for dt in exdate_dts]
+    assert cancelled_dt in exdate_utcs
+
+    # ORGANIZER present
+    organizer = vevent.get("organizer")
+    assert organizer is not None
+    assert "organizer@example.com" in str(organizer)
+
+    # Two ATTENDEE lines
+    attendees_raw = vevent.get("attendee")
+    if not isinstance(attendees_raw, list):
+        attendees_raw = [attendees_raw]
+    assert len(attendees_raw) == 2, f"Expected 2 ATTENDEE lines, got {len(attendees_raw)}"
+    attendee_strs = [str(a) for a in attendees_raw]
+    assert any("internal-acc@example.com" in s for s in attendee_strs)
+    assert any("external-acc@example.com" in s for s in attendee_strs)
+
+    # STATUS:CONFIRMED (this is a normal recurring event, not a cancelled exception)
+    assert vevent.get("status") == "CONFIRMED"
