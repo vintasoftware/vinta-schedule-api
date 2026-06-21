@@ -49,6 +49,8 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from django.db import transaction
 
+from audit.constants import AuditAction, AuditActorType
+from audit.diff import compute_diff
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
     BlockedTime,
@@ -59,6 +61,9 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.calendar_service_utils import (
     convert_naive_utc_datetime_to_timezone as _convert_naive_utc_datetime_to_timezone,
+)
+from calendar_integration.services.calendar_service_utils import (
+    resolve_acting_single_use_token,
 )
 from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
@@ -138,6 +143,55 @@ class CalendarBundleService:
         # write-adapter / permission helpers are reached through the host (the facade).
         # See ``BundleServiceHost``.
         self._host = host
+
+    def _audit_bundle_write(
+        self,
+        action: str,
+        subject_instance: Calendar | CalendarEvent,
+        diff: dict | None = None,
+    ) -> None:
+        """Emit an audit record for a bundle-level business write.
+
+        Resolves the actor from the context's ``user_or_token`` auth state. A no-op
+        when no ``audit_service`` or ``organization`` is bound (e.g. a context built
+        directly in a test without DI), so instrumentation never breaks a write path.
+        """
+        audit_service = self._context.audit_service
+        organization = self._context.organization
+        if audit_service is None or organization is None:
+            return
+
+        label = (
+            subject_instance.name
+            if isinstance(subject_instance, Calendar)
+            else subject_instance.title
+        )
+        actor = audit_service.actor_from_user_or_token(
+            self._context.user_or_token,
+            organization.id,
+            single_use_token=resolve_acting_single_use_token(
+                self._context.user_or_token, self._context.calendar_permission_service
+            ),
+        )
+        # For bundle EVENTS, carry the affected memberships (internal attendees plus
+        # the acting member). Bundle CALENDARS have no attendees, so the set is empty.
+        affected: set[int] = set()
+        if isinstance(subject_instance, CalendarEvent):
+            affected = set(
+                subject_instance.attendances.filter(membership_user_id__isnull=False).values_list(
+                    "membership_user_id", flat=True
+                )
+            )
+            if actor.actor_type == AuditActorType.MEMBERSHIP and actor.actor_id is not None:
+                affected.add(actor.actor_id)
+        audit_service.record(
+            organization_id=organization.id,
+            action=action,
+            actor=actor,
+            subject=audit_service.subject_from_instance(subject_instance, label=label),
+            affected_membership_ids=sorted(affected),
+            diff=diff,
+        )
 
     # ------------------------------------------------------------------
     # Bundle calendar CRUD
@@ -226,6 +280,8 @@ class CalendarBundleService:
         # Grant permissions to calendar owners
         self._host._grant_calendar_owner_permissions(bundle_calendar)
 
+        self._audit_bundle_write(AuditAction.CREATE, bundle_calendar)
+
         return bundle_calendar
 
     @transaction.atomic()
@@ -311,6 +367,11 @@ class CalendarBundleService:
                 organization=context.organization,
                 child_calendar_fk_id=primary_calendar.id,
             ).update(is_primary=True)
+
+        # This method only reconciles child relationships; it never mutates scalar
+        # fields on the bundle Calendar, so the action + subject capture the change
+        # with no field-level diff.
+        self._audit_bundle_write(AuditAction.UPDATE, bundle_calendar, diff=None)
 
         return bundle_calendar
 
@@ -421,6 +482,8 @@ class CalendarBundleService:
                     bundle_primary_event=primary_event,
                 )
 
+        self._audit_bundle_write(AuditAction.CREATE, primary_event)
+
         return primary_event
 
     def update_bundle_event(
@@ -442,6 +505,25 @@ class CalendarBundleService:
             raise ValueError("Event must be a bundle primary event")
 
         bundle_calendar = bundle_event.bundle_calendar
+
+        # Capture the primary event's own scalar fields BEFORE the update so we can
+        # emit a cheap, in-memory diff. Only the plain-text scalars (title,
+        # description, timezone) are diffed here: ``start_time`` / ``end_time`` are
+        # db-persisted GeneratedFields whose stored representation (IANA-local, via
+        # ``convert_naive_utc_to_timezone``) is NOT directly comparable to the
+        # tz-aware UTC instants on ``event_data``, so comparing them would emit
+        # misleading "changes". The time change is still captured by the UPDATE
+        # action + subject; only the field-level time diff is intentionally omitted.
+        before_scalars = {
+            "title": bundle_event.title,
+            "description": bundle_event.description,
+            "timezone": bundle_event.timezone,
+        }
+        after_scalars = {
+            "title": event_data.title,
+            "description": event_data.description,
+            "timezone": event_data.timezone,
+        }
 
         # Update the primary event
         updated_primary = self._host.update_event(
@@ -488,6 +570,12 @@ class CalendarBundleService:
                 update_fields=["start_time_tz_unaware", "end_time_tz_unaware", "reason"]
             )
 
+        self._audit_bundle_write(
+            AuditAction.UPDATE,
+            updated_primary,
+            diff=compute_diff(before_scalars, after_scalars),
+        )
+
         return updated_primary
 
     def delete_bundle_event(self, bundle_event: CalendarEvent) -> None:
@@ -502,6 +590,13 @@ class CalendarBundleService:
 
         if not bundle_event.is_bundle_primary:
             raise ValueError("Event must be a bundle primary event")
+
+        # Emit the audit record BEFORE deleting the primary row, while the instance's
+        # pk and title are still authoritative (subject_from_instance reads the pk).
+        # record() itself only fires on transaction commit, so ordering relative to
+        # the deletes below is irrelevant to persistence — but building the subject
+        # here keeps the soft-reference correct regardless of in-memory pk lifecycle.
+        self._audit_bundle_write(AuditAction.DELETE, bundle_event)
 
         # Delete all representation events
         representation_events = CalendarEvent.objects.filter(

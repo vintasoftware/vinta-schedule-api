@@ -9,6 +9,8 @@ from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
 
+from audit.constants import AuditAction
+from audit.diff import compute_diff
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.exceptions import (
     CalendarGroupHasFutureEventsError,
@@ -32,6 +34,9 @@ from calendar_integration.services.calendar_permission_service import CalendarPe
 from calendar_integration.services.calendar_service_utils import (
     convert_naive_utc_datetime_to_timezone as _convert_naive_utc_datetime_to_timezone,
 )
+from calendar_integration.services.calendar_service_utils import (
+    resolve_acting_single_use_token,
+)
 from calendar_integration.services.dataclasses import (
     BookableSlotProposal,
     CalendarEventInputData,
@@ -50,6 +55,7 @@ from users.models import User
 
 
 if TYPE_CHECKING:
+    from audit.services import AuditService
     from calendar_integration.services.calendar_service import CalendarService
 
 
@@ -72,10 +78,41 @@ class CalendarGroupService:
         calendar_permission_service: Annotated[
             "CalendarPermissionService | None", Provide["calendar_permission_service"]
         ] = None,
+        audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
     ) -> None:
         self.organization = None
         self.calendar_service = calendar_service
         self.calendar_permission_service = calendar_permission_service
+        self.audit_service = audit_service
+
+    def _audit_group_write(
+        self,
+        action: str,
+        subject_instance: object,
+        diff: dict | None = None,
+    ) -> None:
+        """Emit an audit record for a calendar-group business write.
+
+        The acting principal is taken from the bound ``calendar_service``'s auth
+        context (the facade carries ``user_or_token``); when unavailable the actor
+        resolves to the system. No-op when no ``audit_service`` / ``organization`` is
+        bound, so instrumentation never breaks a write path.
+        """
+        if self.audit_service is None or self.organization is None:
+            return
+        user_or_token = getattr(self.calendar_service, "user_or_token", None)
+        permission_service = getattr(self.calendar_service, "calendar_permission_service", None)
+        self.audit_service.record(
+            organization_id=self.organization.id,
+            action=action,
+            actor=self.audit_service.actor_from_user_or_token(
+                user_or_token,
+                self.organization.id,
+                single_use_token=resolve_acting_single_use_token(user_or_token, permission_service),
+            ),
+            subject=self.audit_service.subject_from_instance(subject_instance),
+            diff=diff,
+        )
 
     def initialize(self, organization: Organization) -> None:
         """Initialize the service with the tenant organization.
@@ -196,6 +233,7 @@ class CalendarGroupService:
             accepts_public_scheduling=accepts_public_scheduling,
         )
         self._create_slots(group, slots_data)
+        self._audit_group_write(AuditAction.CREATE, group)
         return group
 
     @transaction.atomic()
@@ -209,6 +247,11 @@ class CalendarGroupService:
         group = self._get_group_by_id(group_id)
         slots_data, _ = self._validate_slots_input(data.slots)
 
+        before = {
+            "name": group.name,
+            "description": group.description,
+            "accepts_public_scheduling": group.accepts_public_scheduling,
+        }
         group.name = data.name
         group.description = data.description
         # Only update accepts_public_scheduling if it is provided (not None).
@@ -236,6 +279,13 @@ class CalendarGroupService:
             else:
                 self._create_slots(group, [slot_data])
 
+        after = {
+            "name": group.name,
+            "description": group.description,
+            "accepts_public_scheduling": group.accepts_public_scheduling,
+        }
+        self._audit_group_write(AuditAction.UPDATE, group, diff=compute_diff(before, after))
+
         return group
 
     @transaction.atomic()
@@ -254,6 +304,8 @@ class CalendarGroupService:
                 "Cannot delete CalendarGroup because it has bookings."
             )
 
+        # Build the audit subject before the row is deleted (pk is needed).
+        self._audit_group_write(AuditAction.DELETE, group)
         group.delete()
 
     def _create_slots(

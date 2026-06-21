@@ -203,6 +203,10 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
 
     def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None: ...
 
+    def _audit_calendar_write(
+        self, action: str, calendar: Calendar, diff: dict | None = None
+    ) -> None: ...
+
     def _grant_event_attendee_permissions(self, event: CalendarEvent) -> None: ...
 
     def request_calendar_sync(

@@ -776,7 +776,7 @@ class TestCreateInvitationMutation:
         its own UI.
 
         Asserts:
-        - transaction.on_commit is NOT called (no email scheduled).
+        - the invitation email is NOT scheduled (no notification created).
         - token and inviteUrl are non-null in the response.
         - inviteUrl contains the raw token.
         """
@@ -788,7 +788,9 @@ class TestCreateInvitationMutation:
 
         with (
             container.public_api_auth_service.override(auth_service),
-            patch("organizations.services.transaction.on_commit") as mock_on_commit,
+            patch(
+                "organizations.services.NotificationService.create_one_off_notification"
+            ) as mock_send_email,
         ):
             response = self.client.post(
                 "/graphql/",
@@ -818,8 +820,10 @@ class TestCreateInvitationMutation:
         # inviteUrl must embed the raw token
         assert returned_token in invite_url
 
-        # transaction.on_commit must NOT have been called — no email was scheduled
-        mock_on_commit.assert_not_called()
+        # The invitation email must NOT be scheduled when sendEmail=false. (Asserting
+        # on the notification directly rather than transaction.on_commit, since the
+        # audit trail now also schedules an on_commit to enqueue its record.)
+        mock_send_email.assert_not_called()
 
     def test_send_email_false_returned_token_validates_via_accept_invitation(self):
         """The raw token returned when sendEmail=false must be usable with accept_invitation.

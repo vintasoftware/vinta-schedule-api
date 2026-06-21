@@ -1007,10 +1007,12 @@ def test_create_application_calendar(
             # Task must NOT fire before commit.
             mock_task.assert_not_called()
 
-        assert len(captured_callbacks) == 1
-        # Simulate commit: invoke the callback inside the patch context so the
-        # delay mock is still active when the lambda calls sync_calendar_task.delay.
-        captured_callbacks[0]()
+        # The sync-task on_commit is registered first; the audit trail registers an
+        # additional on_commit (its enqueue is exception-isolated). Fire all callbacks
+        # to simulate commit; only the sync task targets this mock.
+        assert len(captured_callbacks) >= 1
+        for callback in captured_callbacks:
+            callback()
 
         # Verify task was called
         mock_task.assert_called_once()
@@ -8017,7 +8019,10 @@ def test_create_event_calls_side_effects(
         "calendar_integration.services.calendar_service.transaction.on_commit"
     ) as mock_on_commit:
         result = service.create_event(calendar.id, sample_event_input_data)
-        mock_on_commit.assert_called_once()
+        # The audit trail also schedules an on_commit (registered first), so an exact
+        # count is no longer asserted; the side-effect callback is the last one
+        # registered. That the side effect fires exactly once is asserted below.
+        assert mock_on_commit.called
         side_effects = mock_on_commit.call_args[0][0]
         side_effects()
 
@@ -8106,7 +8111,10 @@ def test_update_event_calls_side_effects(
         "calendar_integration.services.calendar_service.transaction.on_commit"
     ) as mock_on_commit:
         result = service.update_event(calendar.id, event.id, update_data)
-        mock_on_commit.assert_called_once()
+        # The audit trail also schedules an on_commit (registered first), so an exact
+        # count is no longer asserted; the side-effect callback is the last one
+        # registered. That the side effect fires exactly once is asserted below.
+        assert mock_on_commit.called
         side_effects = mock_on_commit.call_args[0][0]
         side_effects()
 
@@ -8171,7 +8179,10 @@ def test_delete_event_calls_side_effects(
         "calendar_integration.services.calendar_service.transaction.on_commit"
     ) as mock_on_commit:
         service.delete_event(calendar.id, event_id)
-        mock_on_commit.assert_called_once()
+        # The audit trail also schedules an on_commit (registered first), so an exact
+        # count is no longer asserted; the side-effect callback is the last one
+        # registered. That the side effect fires exactly once is asserted below.
+        assert mock_on_commit.called
         side_effects = mock_on_commit.call_args[0][0]
         side_effects()
 
