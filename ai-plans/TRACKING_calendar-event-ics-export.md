@@ -38,11 +38,33 @@
   missing-required-field validation tests) — all fixed. 2 NITs (DI deferral noted per plan; tautological
   assert removed).
 
+### Phase 2 — Add participants + recurrence to the builder ✅
+- **Status**: complete, reviewed (3-layer), outer gate green (2992 passed).
+- **Model**: claude-sonnet-4-6 (plan tier: Tier 3). Reviewer + fixer agents.
+- **Commits**:
+  - `25cb6c6` feat(calendar): add organizer + attendees to ICS builder
+  - `86ce23b` fix(calendar): correct EXDATE timezone and organizer selection in ICS builder
+- **Summary**: Extended `build_ics` with ORGANIZER (calendar default owner via
+  `CalendarOwnership.is_default`, deterministic fallback by `membership_user_id`, read from the
+  prefetch cache — no N+1), ATTENDEE lines (internal via `event.attendances → membership.user.email`;
+  external via `event.external_attendances → external_attendee.email`; PARTSTAT from `RSVPStatus`,
+  ROLE=REQ-PARTICIPANT), RRULE (`recurrence_rule.to_rrule_string()` → `icalendar.vRecur.from_ical`),
+  EXDATE (cancelled `EventRecurrenceException.exception_date`), STATUS:CANCELLED (defensive, documented
+  currently-unreachable guard). DTSTART/DTEND/EXDATE all localized to `event.timezone` so they share a
+  TZID (RFC 5545 §3.8.5.1 — fixes a latent bug where Google Calendar drops mismatched-TZID EXDATEs).
+  Required prefetch set documented in the service module docstring.
+- **Review findings**: 1 BLOCKER (EXDATE/DTSTART TZID mismatch — fixed by localizing DTSTART/DTEND +
+  EXDATE to the event tz), 2 SHOULD-FIX (nondeterministic + N+1-causing `ownerships.first()` → default-owner
+  from prefetch cache; unreachable STATUS:CANCELLED test labeled as a future-proofing guard), 2 NITs
+  (return type, docstring) — all addressed.
+- **Notes**: pre-existing `mypy .` baseline has 258 errors unrelated to this change (gate is
+  `check --deploy` + `pytest`, not mypy). A pre-existing `CalendarEventFactory.create_recurring_event`
+  double-`timezone` kwarg bug was worked around in-test (not fixed — out of scope).
+
 ## Current Phase
-Phase 2 — Add participants + recurrence to the builder (next).
+Phase 3 — REST ICS download action (next).
 
 ## Remaining Phases
-- Phase 2 — Add participants + recurrence to the builder (Tier 3).
 - Phase 3 — REST ICS download action (Tier 2).
 - Phase 4 — Public GraphQL `eventIcs` query (Tier 3).
 
