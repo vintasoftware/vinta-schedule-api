@@ -46,6 +46,7 @@ from calendar_integration.services.external_event_change_request_service import 
     ExternalEventChangeRequestService,
 )
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from users.models import Profile, User
 
 
 # ---------------------------------------------------------------------------
@@ -71,8 +72,6 @@ def calendar(organization: Organization) -> Calendar:
 @pytest.fixture
 def attendee_membership(organization: Organization) -> OrganizationMembership:
     """A regular (non-admin) member who attends the event."""
-    from users.models import Profile, User
-
     user = User.objects.create_user(email="attendee@example.com", password="pass")  # noqa: S106
     Profile.objects.create(user=user)
     membership, _ = OrganizationMembership.objects.get_or_create(
@@ -86,8 +85,6 @@ def attendee_membership(organization: Organization) -> OrganizationMembership:
 @pytest.fixture
 def admin_membership(organization: Organization) -> OrganizationMembership:
     """An admin member who is NOT an attendee of the event."""
-    from users.models import Profile, User
-
     user = User.objects.create_user(email="admin@example.com", password="pass")  # noqa: S106
     Profile.objects.create(user=user)
     membership, _ = OrganizationMembership.objects.get_or_create(
@@ -101,8 +98,6 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
 @pytest.fixture
 def ineligible_membership(organization: Organization) -> OrganizationMembership:
     """A regular (non-admin) member who is NOT an attendee of the event."""
-    from users.models import Profile, User
-
     user = User.objects.create_user(email="noone@example.com", password="pass")  # noqa: S106
     Profile.objects.create(user=user)
     membership, _ = OrganizationMembership.objects.get_or_create(
@@ -260,7 +255,9 @@ def test_attendee_approves_delete_request_removes_event_and_keeps_request(
     result = service.approve(change_request, membership=attendee_membership)
 
     # The local event must no longer exist.
-    assert not CalendarEvent.objects.filter(pk=event_id).exists()
+    assert not CalendarEvent.objects.filter(
+        pk=event_id, organization_id=event.organization_id
+    ).exists()
 
     # The request row must survive with status APPROVED and event NULL.
     # Multi-tenancy manager requires organization_id in the filter.
@@ -301,7 +298,9 @@ def test_admin_approves_delete_request(
 
     result = service.approve(change_request, membership=admin_membership)
 
-    assert not CalendarEvent.objects.filter(pk=event_id).exists()
+    assert not CalendarEvent.objects.filter(
+        pk=event_id, organization_id=event.organization_id
+    ).exists()
     assert result.status == ExternalEventChangeRequestStatus.APPROVED
     assert result.event_fk_id is None
 
@@ -444,8 +443,6 @@ def test_can_resolve_returns_false_for_different_org(
     event: CalendarEvent,
 ) -> None:
     """A membership from a different organization cannot resolve the request."""
-    from users.models import Profile, User
-
     other_org = Organization.objects.create(name="Other Org")
     user = User.objects.create_user(email="otherorg@example.com", password="pass")  # noqa: S106
     Profile.objects.create(user=user)
@@ -500,3 +497,77 @@ def test_approve_update_only_updates_present_fields(
     # original_start/end were stored as naive; the DB returns them tz-aware.
     assert event.start_time_tz_unaware == original_start.replace(tzinfo=datetime.UTC)
     assert event.end_time_tz_unaware == original_end.replace(tzinfo=datetime.UTC)
+
+
+# ---------------------------------------------------------------------------
+# Tests: cross-timezone datetime round-trip
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_approve_update_cross_timezone_stores_local_wall_clock(
+    service: ExternalEventChangeRequestService,
+    calendar: Calendar,
+    organization: Organization,
+    attendee_membership: OrganizationMembership,
+) -> None:
+    """Prove the datetime round-trip is correct for a NON-UTC event timezone.
+
+    The event lives in America/Sao_Paulo (UTC-3). The proposed_values carry
+    tz-aware ISO strings expressed in the event's OWN local timezone. After
+    approval the stored ``start_time_tz_unaware`` must equal the LOCAL
+    wall-clock digits (stripping tzinfo recovers them directly), matching
+    what the canonical ``models.py`` creation path stores via
+    ``parsed.astimezone(event_tz).replace(tzinfo=None)``.
+    """
+    # Create an event in the America/Sao_Paulo timezone.
+    # Local wall-clock start: 10:00 (stored as naive 10:00 in _tz_unaware).
+    sao_paulo_event = CalendarEvent.objects.create(
+        calendar=calendar,
+        title="Sao Paulo Event",
+        description="Cross-tz test",
+        start_time_tz_unaware=datetime.datetime(2025, 9, 1, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 9, 1, 11, 0),
+        timezone="America/Sao_Paulo",
+        organization=organization,
+    )
+
+    # Make the attendee a member of this event.
+    create_event_attendance(event=sao_paulo_event, user=attendee_membership.user)
+
+    # proposed_values: NEW local time 11:00 in America/Sao_Paulo (-03:00).
+    # The tz-aware ISO string carries the offset explicitly so the round-trip
+    # is unambiguous.
+    change_request = create_external_event_change_request(
+        event=sao_paulo_event,
+        kind=ExternalEventChangeKind.UPDATE,
+        status=ExternalEventChangeRequestStatus.PENDING,
+        proposed_values={
+            "start_time": "2025-09-01T11:00:00-03:00",
+            "end_time": "2025-09-01T12:00:00-03:00",
+        },
+        retained_values={
+            "start_time": "2025-09-01T10:00:00-03:00",
+            "end_time": "2025-09-01T11:00:00-03:00",
+        },
+    )
+
+    service.approve(change_request, membership=attendee_membership)
+
+    sao_paulo_event.refresh_from_db()
+
+    # The _tz_unaware columns must hold the LOCAL wall-clock digits (11:00 / 12:00).
+    # Django USE_TZ=True attaches UTC when reading DateTimeField back from the DB;
+    # compare as UTC-aware — the numeric digits are what matter, not the offset.
+    assert sao_paulo_event.start_time_tz_unaware == datetime.datetime(
+        2025, 9, 1, 11, 0, tzinfo=datetime.UTC
+    ), (
+        f"Expected local wall-clock 11:00 stored in start_time_tz_unaware, "
+        f"got {sao_paulo_event.start_time_tz_unaware!r}"
+    )
+    assert sao_paulo_event.end_time_tz_unaware == datetime.datetime(
+        2025, 9, 1, 12, 0, tzinfo=datetime.UTC
+    ), (
+        f"Expected local wall-clock 12:00 stored in end_time_tz_unaware, "
+        f"got {sao_paulo_event.end_time_tz_unaware!r}"
+    )

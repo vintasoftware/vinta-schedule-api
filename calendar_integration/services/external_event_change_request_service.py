@@ -354,9 +354,11 @@ class ExternalEventChangeRequestService:
                     update_fields.append("description")
                 if "start_time" in proposed_values and proposed_values["start_time"] is not None:
                     parsed_start = datetime.datetime.fromisoformat(proposed_values["start_time"])
-                    # CalendarEvent stores timezone-unaware local-clock values.
-                    # The values in proposed_values are UTC instants as ISO strings.
-                    # Strip tzinfo (store as tz-unaware per AGENTS.md CalendarEvent convention).
+                    # proposed_values carry tz-aware ISO strings expressed in the event's OWN
+                    # local timezone (the DB-generated start_time/end_time fields). Stripping
+                    # tzinfo recovers the local wall-clock digits, which is exactly what
+                    # start_time_tz_unaware stores (matching the canonical models.py creation
+                    # path: parsed.astimezone(event_tz).replace(tzinfo=None)).
                     event.start_time_tz_unaware = parsed_start.replace(tzinfo=None)
                     update_fields.append("start_time_tz_unaware")
                 if "end_time" in proposed_values and proposed_values["end_time"] is not None:
