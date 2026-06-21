@@ -23,6 +23,9 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarOwnership,
     ChildrenCalendarRelationship,
+    EventAttendance,
+    EventExternalAttendance,
+    ExternalAttendee,
 )
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
@@ -6262,6 +6265,32 @@ class TestEventIcsQuery:
             content_type="application/json",
         )
 
+    @staticmethod
+    def _add_attendees(organization, event, count):
+        """Attach `count` internal + `count` external attendees to `event`."""
+        for i in range(count):
+            member = baker.make(User, email=f"ics_attendee_{event.id}_{i}@example.com")
+            membership = baker.make(
+                OrganizationMembership, user=member, organization=organization, is_active=True
+            )
+            baker.make(
+                EventAttendance,
+                organization=organization,
+                event=event,
+                membership_user_id=membership.user_id,
+            )
+            external = baker.make(
+                ExternalAttendee,
+                organization=organization,
+                email=f"ics_external_{event.id}_{i}@example.com",
+            )
+            baker.make(
+                EventExternalAttendance,
+                organization=organization,
+                event=event,
+                external_attendee=external,
+            )
+
     # ------------------------------------------------------------------ #
     # Org-wide token — positive case                                       #
     # ------------------------------------------------------------------ #
@@ -6287,6 +6316,71 @@ class TestEventIcsQuery:
             "UID must match the event's external_id"
         )
         assert str(vevent.get("SUMMARY")) == owner_event.title
+
+    # ------------------------------------------------------------------ #
+    # N+1 guard — attendee fan-out                                         #
+    # ------------------------------------------------------------------ #
+
+    def test_event_ics_attendee_prefetch_no_n_plus_1(
+        self, mock_rate_limiter, organization, owner_calendar
+    ):
+        """Resolving eventIcs issues a constant number of queries regardless of attendees.
+
+        Two-point comparison: an event with 1 internal + 1 external attendee vs an event
+        with 3 internal + 3 external attendees. The prefetch set on the event_ics resolver
+        (attendances__membership__user, external_attendances__external_attendee) must keep
+        the query count from growing per attendee.
+        """
+        mock_rate_limiter.side_effect = lambda *a, **k: iter([None])
+        client, _ = _make_org_wide_client(organization)
+
+        # Point 1: event with 1 internal + 1 external attendee
+        event_1 = baker.make(
+            CalendarEvent,
+            organization=organization,
+            calendar=owner_calendar,
+            title="ICS N+1 Event 1",
+            external_id="ics-n1-event-1",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 3, 9, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 3, 10, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+        self._add_attendees(organization, event_1, count=1)
+
+        with CaptureQueriesContext(connection) as ctx_1:
+            response_1 = self._post_graphql(client, _EVENT_ICS_QUERY, {"eventId": event_1.id})
+        data_1 = assert_graphql_success(response_1)
+        assert data_1["eventIcs"] is not None
+        queries_n1 = len(ctx_1.captured_queries)
+
+        # Point 2: event with 3 internal + 3 external attendees
+        event_3 = baker.make(
+            CalendarEvent,
+            organization=organization,
+            calendar=owner_calendar,
+            title="ICS N+1 Event 3",
+            external_id="ics-n1-event-3",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 3, 11, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 3, 12, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+        self._add_attendees(organization, event_3, count=3)
+
+        with CaptureQueriesContext(connection) as ctx_2:
+            response_2 = self._post_graphql(client, _EVENT_ICS_QUERY, {"eventId": event_3.id})
+        data_2 = assert_graphql_success(response_2)
+        assert data_2["eventIcs"] is not None
+        queries_n2 = len(ctx_2.captured_queries)
+
+        # Query count must not grow per attendee added (equal-count fallback). The count
+        # reflects the documented prefetch set; allow a slack of 1 only for incidental
+        # auth/middleware jitter between the two requests.
+        assert abs(queries_n2 - queries_n1) <= 1, (
+            f"N+1 detected on eventIcs: 1 internal+external attendee used {queries_n1} queries, "
+            f"3 internal+external attendees used {queries_n2} queries. With the documented "
+            "prefetch (attendances__membership__user, external_attendances__external_attendee) "
+            "the count must not grow per attendee."
+        )
 
     # ------------------------------------------------------------------ #
     # Calendar-scoped token — positive case (own event)                   #
@@ -6362,6 +6456,10 @@ class TestEventIcsQuery:
             "access" in m.lower() or "permission" in m.lower() or "authenticated" in m.lower()
             for m in error_messages
         ), f"Expected a permission-related error, got: {error_messages}"
+        # No ICS payload may leak: a resolver that both errors AND returns data must fail here.
+        assert response_data.get("data", {}).get("eventIcs") is None, (
+            "Denied token must not receive any ICS payload"
+        )
 
     # ------------------------------------------------------------------ #
     # Unknown / out-of-org event id                                       #
