@@ -6,6 +6,7 @@ from unittest.mock import Mock
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
+import icalendar
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from model_bakery import baker
@@ -6080,8 +6081,6 @@ class TestCalendarEventDownloadICS:
         assert f'filename="event-{event.id}.ics"' in response["Content-Disposition"]
 
         # Verify the content is valid iCalendar
-        import icalendar
-
         cal = icalendar.Calendar.from_ical(response.content)
         assert cal is not None
         # Extract the VEVENT from the calendar
@@ -6133,6 +6132,41 @@ class TestCalendarEventDownloadICS:
 
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
+    def test_in_org_user_without_ownership_returns_403(self):
+        """In-org member without CalendarOwnership on the event's calendar gets 403.
+
+        The event IS found by the org-scoped get_queryset(), so get_object() raises
+        PermissionDenied (403) from has_object_permission's False branch rather than
+        Http404 — distinguishing an unauthorized member from a cross-org/unknown event.
+        """
+        from rest_framework.test import APIClient
+
+        organization = CalendarIntegrationTestFactory.create_organization()
+        member_user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=member_user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+        )
+
+        # Calendar owned by someone else — member_user has NO CalendarOwnership on it.
+        calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = start_time + datetime.timedelta(hours=1)
+        event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=member_user)
+        url = reverse("api:CalendarEvents-ics", kwargs={"pk": event.id})
+        response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
     def test_ics_with_recurring_event(self, auth_client, user):
         """Recurring events include RRULE in the ICS output."""
         organization = CalendarIntegrationTestFactory.create_organization()
@@ -6164,8 +6198,6 @@ class TestCalendarEventDownloadICS:
         assert_response_status_code(response, status.HTTP_200_OK)
 
         # Verify RRULE is present
-        import icalendar
-
         cal = icalendar.Calendar.from_ical(response.content)
         events = list(cal.walk("VEVENT"))
         assert len(events) == 1
@@ -6177,7 +6209,7 @@ class TestCalendarEventDownloadICS:
         assert rrule is not None
         assert rrule["freq"][0] == "WEEKLY"
 
-    def test_ics_with_attendees(self, auth_client, user):
+    def test_ics_with_attendees(self, auth_client, user, django_assert_num_queries):
         """Events with attendees include ATTENDEE lines in the ICS output."""
         organization = CalendarIntegrationTestFactory.create_organization()
         OrganizationMembership.objects.get_or_create(user=user, organization=organization)
@@ -6221,13 +6253,16 @@ class TestCalendarEventDownloadICS:
         )
 
         url = reverse("api:CalendarEvents-ics", kwargs={"pk": event.id})
-        response = auth_client.get(url)
+        # The view applies a documented prefetch set to avoid N+1 queries during ICS
+        # generation. Pin the query count so a regression to per-attendee queries (which
+        # would scale with attendee count) trips this assertion. N reflects the
+        # prefetched query set, not the number of attendees.
+        with django_assert_num_queries(22):
+            response = auth_client.get(url)
 
         assert_response_status_code(response, status.HTTP_200_OK)
 
         # Verify ATTENDEE lines are present
-        import icalendar
-
         cal = icalendar.Calendar.from_ical(response.content)
         events = list(cal.walk("VEVENT"))
         assert len(events) == 1
@@ -6238,3 +6273,8 @@ class TestCalendarEventDownloadICS:
         if not isinstance(attendees, list):
             attendees = [attendees]
         assert len(attendees) >= 2  # internal + external
+
+        # Assert the actual attendee emails appear in the ATTENDEE lines.
+        attendee_values = {str(att).lower() for att in attendees}
+        assert "mailto:attendee@example.com" in attendee_values
+        assert "mailto:external@example.com" in attendee_values
