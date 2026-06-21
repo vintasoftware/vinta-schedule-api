@@ -72,7 +72,7 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
     InitializedOrAuthenticatedCalendarService,
 )
 from calendar_integration.services.type_guards import is_authenticated_calendar_service
-from organizations.models import OrganizationMembership
+from organizations.models import ExternalEventUpdatePolicy, OrganizationMembership
 from users.models import User
 
 
@@ -83,6 +83,9 @@ if TYPE_CHECKING:
     from calendar_integration.services.dataclasses import (
         CalendarEventAdapterOutputData,
         CalendarResourceData,
+    )
+    from calendar_integration.services.external_event_change_request_service import (
+        ExternalEventChangeRequestService,
     )
 
 
@@ -152,12 +155,17 @@ class CalendarSyncService:
         context: CalendarServiceContext,
         calendar_cache: dict[tuple[int, str | int], Calendar],
         host: SyncServiceHost,
+        external_event_change_request_service: ExternalEventChangeRequestService | None = None,
     ) -> None:
         self._context = context
         self._calendar_cache = calendar_cache
         # Phase 5 seam: available-time pruning (Phase 4) and the shared owner-permission
         # helper are reached through the host (the facade). See ``SyncServiceHost``.
         self._host = host
+        # Phase 3 seam: inbound-update interception under CHANGE_REQUEST/FORBIDDEN policy.
+        # Optional so existing tests that build the service directly without DI remain valid;
+        # when None, the service falls back to ALLOW behavior (direct-apply).
+        self._external_event_change_request_service = external_event_change_request_service
 
     # ------------------------------------------------------------------
     # Organization-resource import
@@ -715,11 +723,59 @@ class CalendarSyncService:
             return
 
         if event.status == "cancelled":
+            # Phase 4 will intercept deletions under CHANGE_REQUEST/FORBIDDEN.
             changes.events_to_delete.append(existing_event.external_id)
             changes.matched_event_ids.add(existing_event.external_id)
             return
 
-        # Update existing event
+        # Determine the organization's inbound-update policy.
+        context = cast("InitializedOrAuthenticatedCalendarService", self._context)
+        organization = context.organization
+        policy = (
+            organization.external_event_update_policy
+            if organization is not None
+            else ExternalEventUpdatePolicy.ALLOW
+        )
+
+        # Under CHANGE_REQUEST: divert the edit into a change request and do NOT
+        # mutate the local event.  The external id is still added to
+        # ``matched_event_ids`` so the full-sync deletion pass does not treat the
+        # event as vanished (the sync token still advances normally at the sync
+        # level — this method only controls the diff-engine behavior).
+        if policy == ExternalEventUpdatePolicy.CHANGE_REQUEST and (
+            self._external_event_change_request_service is not None
+        ):
+            proposed_values = {
+                "title": event.title,
+                "description": event.description,
+                "start_time": event.start_time.isoformat() if event.start_time else None,
+                "end_time": event.end_time.isoformat() if event.end_time else None,
+            }
+            retained_values = {
+                "title": existing_event.title,
+                "description": existing_event.description,
+                "start_time": (
+                    existing_event.start_time.isoformat() if existing_event.start_time else None
+                ),
+                "end_time": (
+                    existing_event.end_time.isoformat() if existing_event.end_time else None
+                ),
+            }
+            self._external_event_change_request_service.create_or_supersede_update_request(
+                event=existing_event,
+                proposed_values=proposed_values,
+                retained_values=retained_values,
+                payload=event.original_payload or {},
+                provider=CalendarProvider.GOOGLE,
+            )
+            changes.matched_event_ids.add(existing_event.external_id)
+            return
+
+        # Phase 6 (FORBIDDEN) will go here — auto-undo the inbound change on the provider.
+        # For now, FORBIDDEN falls through to ALLOW behavior (direct-apply) as a safe default
+        # until Phase 6 implements the outbound undo machinery.
+
+        # ALLOW (default): apply the incoming changes directly to the local event.
         existing_event.title = event.title
         existing_event.description = event.description
         existing_event.start_time = event.start_time

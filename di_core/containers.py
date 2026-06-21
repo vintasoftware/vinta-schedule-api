@@ -16,6 +16,9 @@ from calendar_integration.services.calendar_group_service import CalendarGroupSe
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
+from calendar_integration.services.external_event_change_request_service import (
+    ExternalEventChangeRequestService,
+)
 from notifications.notification_adapters.django_in_app import DjangoInAppNotificationAdapter
 from notifications.notification_template_renderers.django_in_app_renderer import (
     DjangoTemplatedInAppRenderer,
@@ -115,11 +118,17 @@ class AppContainer(containers.DeclarativeContainer):
         audit_service=audit_service,
     )
 
+    external_event_change_request_service = providers.Factory(
+        ExternalEventChangeRequestService,
+        audit_service=audit_service,
+    )
+
     calendar_service = providers.Factory(
         CalendarService,
         calendar_side_effects_service=calendar_side_effects_service,
         calendar_permission_service=calendar_permission_service,
         audit_service=audit_service,
+        external_event_change_request_service=external_event_change_request_service,
     )
 
     calendar_group_service = providers.Factory(
