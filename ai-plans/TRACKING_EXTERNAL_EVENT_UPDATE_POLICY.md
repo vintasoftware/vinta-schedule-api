@@ -39,11 +39,17 @@
   - Review: 1 BLOCKER (silent None-service fallback → fail loud) + SHOULD-FIX (provider, typing) all applied; BLOCKER guard test added.
   - Verified: full `pytest -n auto` = 2987 passed; mypy 0 new errors; `makemigrations --check` clean.
 
+- **Phase 4 — Intercept inbound DELETIONS into change requests** ✅
+  - Model: sonnet (Tier 3), agent: implementer + reviewer + fixer (haiku)
+  - Commits: `feat(calendar): add create_or_supersede_delete_request…`, `feat(calendar): divert inbound external deletions to change requests…`, `test(calendar): add Phase 4 deletion-interception tests…`, `fix(calendar): polish delete-request audit diff + tests per review`
+  - `create_or_supersede_delete_request` (kind=DELETE, empty proposed_values, `retained_values` for Phase 5b re-create) + shared `_supersede_pending` helper. Cancelled-event branch mirrors the UPDATE branch: ALLOW=direct-delete, CHANGE_REQUEST=divert (fail-loud if service None)+`matched_event_ids`, FORBIDDEN→ALLOW (Phase 6 TODO). Updated pre-existing `test_process_existing_event_cancelled` to set ALLOW.
+  - Review: 0 BLOCKERs; SHOULD-FIX (audit-diff include all retained fields, stronger test assertions) + NITs (annotation parity, comment accuracy) applied.
+  - Verified: full `pytest -n auto` = 2993 passed (re-ran after fixer reported a transient "108 collection errors" — confirmed false; collect-only = 2993 clean); `makemigrations --check` clean.
+
 ## Current phase
-- **Phase 4 — Intercept inbound DELETIONS into change requests** (Tier 3 → sonnet, implementer) — next
+- **Phase 5a — Approve a change request** (Tier 3 → sonnet, implementer) — next
 
 ## Remaining phases
-- Phase 4 — Intercept inbound DELETIONS into change requests (Tier 3 → sonnet)
 - Phase 5a — Approve a change request (Tier 3 → sonnet)
 - Phase 5b — Reject a change request / outbound undo (Tier 4 → opus)
 - Phase 6 — FORBIDDEN mode auto-undo during sync (Tier 3 → sonnet)
