@@ -9,8 +9,6 @@ In later phases when participants and recurrence are added, the required
 prefetch set will be documented here.
 """
 
-from datetime import datetime
-
 import icalendar
 
 from calendar_integration.models import CalendarEvent
@@ -68,13 +66,7 @@ class CalendarEventICSService:
         vevent.add("dtend", event.end_time)
 
         # DTSTAMP: use a deterministic value from the event's modified timestamp
-        # If no modified field exists, use the created field or current time
-        if event.modified:
-            vevent.add("dtstamp", event.modified)
-        elif event.created:
-            vevent.add("dtstamp", event.created)
-        else:
-            vevent.add("dtstamp", datetime.utcnow())
+        vevent.add("dtstamp", event.modified or event.created)
 
         # Description
         if event.description:

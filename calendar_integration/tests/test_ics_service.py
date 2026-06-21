@@ -8,6 +8,8 @@ Tests verify that build_ics produces valid RFC 5545 iCalendar documents that:
 """
 
 import datetime
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import icalendar
 import pytest
@@ -96,7 +98,7 @@ def test_build_ics_with_special_chars_in_description():
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     # Description with commas, semicolons, and newlines
-    description = "Meeting agenda:\n1. Review items\n2. Q&A, decisions"
+    description = "Agenda; review items, decisions\nNext steps, follow-up"
 
     event = baker.make(
         CalendarEvent,
@@ -118,10 +120,15 @@ def test_build_ics_with_special_chars_in_description():
     events = [c for c in cal.walk("VEVENT")]
     vevent = events[0]
 
-    # The icalendar library handles unescaping on parse
+    # The raw ICS must escape the special characters per RFC 5545.
+    ics_str = ics_bytes.decode("utf-8")
+    assert "\\;" in ics_str
+    assert "\\," in ics_str
+    assert "\\n" in ics_str
+
+    # After unescaping on parse, the description must round-trip exactly.
     parsed_desc = str(vevent.get("description"))
-    assert "Meeting agenda" in parsed_desc
-    assert "Review items" in parsed_desc
+    assert parsed_desc == description
 
 
 @pytest.mark.django_db
@@ -192,6 +199,22 @@ def test_build_ics_timezone_aware_times():
     assert dtend is not None
     assert dtstart.dt < dtend.dt
 
+    # DTSTART must be timezone-aware (not a floating/naive datetime).
+    assert dtstart.dt.tzinfo is not None
+    assert dtend.dt.tzinfo is not None
+
+    # The serialized instant must equal the event's timezone-aware start_time.
+    # event.start_time is the America/Los_Angeles wall-clock; both refer to the
+    # same UTC instant, so comparing absolute instants proves the conversion.
+    expected_start = event.start_time
+    expected_end = event.end_time
+    assert dtstart.dt.astimezone(datetime.UTC) == expected_start.astimezone(datetime.UTC)
+    assert dtend.dt.astimezone(datetime.UTC) == expected_end.astimezone(datetime.UTC)
+
+    # The PST/PDT offset must be reflected: 2025-06-21 is during PDT (UTC-7).
+    la_start = expected_start.astimezone(ZoneInfo("America/Los_Angeles"))
+    assert la_start.utcoffset() == datetime.timedelta(hours=-7)
+
 
 @pytest.mark.django_db
 def test_build_ics_sequence_from_modified():
@@ -218,12 +241,10 @@ def test_build_ics_sequence_from_modified():
     events = [c for c in cal.walk("VEVENT")]
     vevent = events[0]
 
-    # Sequence should be an integer derived from modified timestamp
+    # Sequence should be the integer derived from the modified timestamp
     sequence = vevent.get("sequence")
     assert sequence is not None
-    # Should be a positive integer (int of timestamp)
-    assert isinstance(int(sequence), int)
-    assert int(sequence) >= 0
+    assert int(sequence) == int(event.modified.timestamp())
 
 
 @pytest.mark.django_db
@@ -336,6 +357,44 @@ def test_build_ics_missing_title_raises_value_error():
     service = CalendarEventICSService()
 
     with pytest.raises(ValueError, match="Event must have a title"):
+        service.build_ics(event)
+
+
+@pytest.mark.parametrize(
+    ("missing_field", "expected_message"),
+    [
+        ("title", "Event must have a title"),
+        ("start_time", "Event must have a start_time"),
+        ("end_time", "Event must have an end_time"),
+        ("timezone", "Event must have a timezone"),
+    ],
+)
+def test_build_ics_missing_required_field_raises_value_error(missing_field, expected_message):
+    """Each missing required field must raise a ValueError.
+
+    ``start_time``/``end_time`` are DB-computed GeneratedFields that are always
+    populated on a persisted CalendarEvent, so their falsy branches cannot be
+    exercised through a saved model instance. The builder is a pure, stateless
+    function that only reads attributes, so a lightweight stand-in object is used
+    to drive each required field to a falsy value independently.
+    """
+    attrs = {
+        "title": "Some Event",
+        "start_time": datetime.datetime(2025, 6, 21, 9, 0, tzinfo=datetime.UTC),
+        "end_time": datetime.datetime(2025, 6, 21, 10, 0, tzinfo=datetime.UTC),
+        "timezone": "UTC",
+        "external_id": "evt-validation",
+        "description": "",
+        "modified": datetime.datetime(2025, 6, 20, 9, 0, tzinfo=datetime.UTC),
+        "created": datetime.datetime(2025, 6, 19, 9, 0, tzinfo=datetime.UTC),
+        "id": 1,
+    }
+    attrs[missing_field] = None
+    event = SimpleNamespace(**attrs)
+
+    service = CalendarEventICSService()
+
+    with pytest.raises(ValueError, match=expected_message):
         service.build_ics(event)
 
 
