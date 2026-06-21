@@ -418,6 +418,7 @@ class TestExternalEventUpdatePolicy:
     def test_can_set_to_allow(self):
         """external_event_update_policy can be set to ALLOW."""
         org = baker.make(Organization, external_event_update_policy=ExternalEventUpdatePolicy.ALLOW)
+        org.refresh_from_db()
         assert org.external_event_update_policy == ExternalEventUpdatePolicy.ALLOW
 
     def test_can_set_to_forbidden(self):
@@ -425,4 +426,13 @@ class TestExternalEventUpdatePolicy:
         org = baker.make(
             Organization, external_event_update_policy=ExternalEventUpdatePolicy.FORBIDDEN
         )
+        org.refresh_from_db()
         assert org.external_event_update_policy == ExternalEventUpdatePolicy.FORBIDDEN
+
+    def test_can_set_to_change_request(self):
+        """external_event_update_policy can be set to CHANGE_REQUEST."""
+        org = baker.make(
+            Organization, external_event_update_policy=ExternalEventUpdatePolicy.CHANGE_REQUEST
+        )
+        org.refresh_from_db()
+        assert org.external_event_update_policy == ExternalEventUpdatePolicy.CHANGE_REQUEST

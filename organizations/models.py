@@ -111,6 +111,7 @@ class Organization(BaseModel):
         max_length=20,
         choices=ExternalEventUpdatePolicy,
         default=ExternalEventUpdatePolicy.CHANGE_REQUEST,
+        db_default=ExternalEventUpdatePolicy.CHANGE_REQUEST,
         help_text=(
             "Policy for handling inbound external provider edits and deletions to synced events. "
             "ALLOW: apply directly. CHANGE_REQUEST: route to approval. FORBIDDEN: auto-undo."
