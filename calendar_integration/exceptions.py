@@ -280,6 +280,33 @@ class WebhookProcessingFailedError(WebhookProcessingError):
     default_message = "Webhook event processing failed due to an internal error"
 
 
+# Change Request Errors
+
+
+class ChangeRequestError(CalendarIntegrationError):
+    """Base class for ExternalEventChangeRequest lifecycle errors."""
+
+    pass
+
+
+class ChangeRequestNotPendingError(ChangeRequestError):
+    """Raised when an action requires a PENDING request but the request is not PENDING.
+
+    The REST/GraphQL layer maps this to HTTP 409 Conflict.
+    """
+
+    default_message = "This change request is no longer pending and cannot be resolved."
+
+
+class ChangeRequestIneligibleError(ChangeRequestError, PermissionDenied):
+    """Raised when a membership is not eligible to resolve a change request.
+
+    The REST/GraphQL layer maps this to HTTP 403 Forbidden.
+    """
+
+    default_message = "You are not eligible to resolve this change request."
+
+
 # Calendar Group errors
 class CalendarGroupError(CalendarIntegrationError):
     """Base class for CalendarGroup-related errors."""
