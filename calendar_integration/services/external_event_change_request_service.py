@@ -51,7 +51,15 @@ from calendar_integration.exceptions import (
     ChangeRequestNotPendingError,
 )
 from calendar_integration.models import EventAttendance, ExternalEventChangeRequest
-from calendar_integration.services.dataclasses import CalendarEventAdapterInputData
+from calendar_integration.services.calendar_service_utils import (
+    serialize_event_external_attendee,
+    serialize_event_internal_attendee,
+)
+from calendar_integration.services.dataclasses import (
+    CalendarEventAdapterInputData,
+    EventAttendeeData,
+    ResourceData,
+)
 
 
 if TYPE_CHECKING:
@@ -85,6 +93,82 @@ class ExternalEventChangeRequestService:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _build_adapter_input(self, event: CalendarEvent) -> CalendarEventAdapterInputData:
+        """Build a full-fidelity ``CalendarEventAdapterInputData`` from a local event.
+
+        The Google adapter's ``create_event``/``update_event`` are full-replace PUTs,
+        so any field omitted here is *wiped* on the provider. This mirrors the
+        canonical hydration in ``CalendarEventService.create_event`` /
+        ``CalendarEventService.update_event`` (see those methods, ~L465 / ~L688): the
+        full set of internal member attendees, external attendees, resource
+        allocations, and the recurrence RRULE must be carried so the undo
+        re-converges the provider to the complete retained state rather than
+        clobbering attendees / recurrence.
+
+        Reuse of ``CalendarEventService``'s inline builder would require injecting /
+        importing that service here, which risks an import cycle (``CalendarSyncService``
+        already depends on this service); instead the field hydration is replicated
+        inline against the event's own relations, using the shared serialization utils
+        in ``calendar_service_utils``.
+        """
+        calendar = event.calendar
+        # The provider speaks in external ids, never the internal PKs.
+        calendar_external_id = calendar.external_id if calendar is not None else ""
+
+        attendees: list[EventAttendeeData] = []
+        # Internal (member) attendances — resolve membership identity to email/name.
+        for attendance in event.attendances.all():
+            serialized = serialize_event_internal_attendee(attendance)
+            if serialized is None:
+                # Orphan attendance (no membership-backed identity) — skip, matching
+                # the canonical serialization path.
+                continue
+            attendees.append(
+                EventAttendeeData(
+                    email=serialized.email,
+                    name=serialized.name or serialized.email,
+                    status=serialized.status,
+                )
+            )
+        # External attendees.
+        for external_attendance in event.external_attendances.all():
+            ext_serialized = serialize_event_external_attendee(external_attendance)
+            attendees.append(
+                EventAttendeeData(
+                    email=ext_serialized.email,
+                    name=ext_serialized.name or ext_serialized.email,
+                    status=ext_serialized.status,
+                )
+            )
+
+        resources: list[ResourceData] = [
+            ResourceData(
+                email=resource_allocation.calendar.email or "",
+                title=resource_allocation.calendar.name,
+                external_id=resource_allocation.calendar.external_id,
+                status="accepted",
+            )
+            for resource_allocation in event.resource_allocations.all()
+            if resource_allocation.calendar is not None
+        ]
+
+        recurrence_rule = (
+            event.recurrence_rule.to_rrule_string() if event.recurrence_rule is not None else None
+        )
+
+        return CalendarEventAdapterInputData(
+            calendar_external_id=calendar_external_id,
+            title=event.title,
+            description=event.description,
+            start_time=event.start_time,
+            end_time=event.end_time,
+            timezone=event.timezone,
+            attendees=attendees,
+            resources=resources,
+            external_id=event.external_id,
+            recurrence_rule=recurrence_rule,
+        )
 
     def _supersede_pending(self, event: CalendarEvent) -> None:
         """Mark any existing PENDING request for *event* as STALE.
@@ -430,7 +514,7 @@ class ExternalEventChangeRequestService:
         request: ExternalEventChangeRequest,
         *,
         write_adapter: CalendarAdapter,
-    ) -> None:
+    ) -> str | None:
         """Re-converge the external provider to the retained (approved) local state.
 
         This is the shared outbound-undo body reused by both ``reject`` (Phase 5b,
@@ -440,6 +524,12 @@ class ExternalEventChangeRequestService:
         service never resolves provider credentials itself (see module docstring for
         the rationale).
 
+        The provider re-convergence runs **outside** any surrounding DB transaction
+        (the caller arranges this) because the provider write is a non-transactional
+        side effect that cannot be rolled back. The adapter input is hydrated with the
+        event's full attendees / resources / recurrence via ``_build_adapter_input`` so
+        the full-replace PUT does not wipe them on the provider.
+
         Behavior per ``request.kind``:
 
         - **UPDATE**: the local event was never mutated (the interception in Phase 3
@@ -447,18 +537,18 @@ class ExternalEventChangeRequestService:
           retained state. We push them back to the provider via
           ``write_adapter.update_event(calendar_external_id, event_external_id, ...)``
           so the provider re-converges to match local. The event's ``external_id`` is
-          unchanged.
+          unchanged — this is an idempotent re-convergence to the retained state (no new
+          id), so a subsequent local status-flip failure is not catastrophic (no
+          provider duplicate is created) and no compensation is needed.
 
         - **DELETE**: the local event still exists (Phase 4 did not delete it); the
           provider deleted it. We re-create it on the provider via
           ``write_adapter.create_event(...)``. Re-creation yields a **new** provider
-          ``external_id`` — the old id is gone forever (external-id churn). We rebind
-          the local event's ``external_id`` to the newly returned id and save. The
-          adapter call is the commit boundary: the local ``external_id`` save runs
-          inside the surrounding ``reject``/auto-undo transaction *after* a successful
-          create, so a create that succeeds is always followed by the rebind (or the
-          whole transaction rolls back, never leaving the local event pointing at a
-          dead external id). A create that fails propagates before any local mutation.
+          ``external_id`` — the old id is gone forever (external-id churn). The local
+          ``external_id`` rebind is **not** done here; the caller performs it inside a
+          short DB transaction and compensates (deletes the just-created provider event)
+          if that local commit fails, so a successful create is never orphaned by a DB
+          rollback.
 
         Args:
             request: The ``ExternalEventChangeRequest`` whose change must be undone on
@@ -467,48 +557,38 @@ class ExternalEventChangeRequestService:
             write_adapter: An authenticated provider write adapter for the event's
                 calendar.
 
+        Returns:
+            For ``DELETE``: the new provider ``external_id`` the caller must rebind the
+            local event to. For ``UPDATE``: ``None``.
+
         Raises:
-            ChangeRequestNotPendingError: If the request's event has been deleted and
-                there is nothing to re-converge.
+            ChangeRequestIneligibleError: If the request has no associated event to undo
+                against (the event was deleted), so there is nothing to re-converge.
         """
         event = request.event
         if event is None:
-            # No live event to push back / re-create — should not happen for a PENDING
-            # request in either the update or delete flow.
-            raise ChangeRequestNotPendingError(
-                "Cannot undo a change request whose event no longer exists."
+            # No live event to push back / re-create — the request has no associated
+            # event to undo against (e.g. the event was deleted out from under it).
+            raise ChangeRequestIneligibleError(
+                "Cannot undo a change request that has no associated event to undo against."
             )
 
-        calendar = event.calendar
-        # The provider speaks in external ids, never the internal PKs.
-        calendar_external_id = calendar.external_id if calendar is not None else ""
-
-        adapter_input = CalendarEventAdapterInputData(
-            calendar_external_id=calendar_external_id,
-            title=event.title,
-            description=event.description,
-            start_time=event.start_time,
-            end_time=event.end_time,
-            timezone=event.timezone,
-            attendees=[],
-            external_id=event.external_id,
-        )
+        adapter_input = self._build_adapter_input(event)
 
         if request.kind == ExternalEventChangeKind.UPDATE:
             # Push the local (retained) values back so the provider re-converges to the
             # approved state. The external id is preserved.
             write_adapter.update_event(
-                calendar_external_id,
+                adapter_input.calendar_external_id,
                 event.external_id,
                 adapter_input,
             )
-            return
+            return None
 
         # DELETE: re-create the event on the provider. The external id churns — the
-        # provider returns a brand-new id we must rebind locally.
+        # provider returns a brand-new id the caller must rebind locally.
         created = write_adapter.create_event(adapter_input)
-        event.external_id = created.external_id
-        event.save(update_fields=["external_id"])
+        return created.external_id
 
     def reject(
         self,
@@ -532,11 +612,23 @@ class ExternalEventChangeRequestService:
         - **DELETE**: ``write_adapter.create_event`` re-creates the event on the provider
           and the local event's ``external_id`` is rebound to the newly returned id.
 
-        The provider re-convergence and the local status transition run in one
-        ``transaction.atomic()`` block: if the adapter call (the commit boundary) fails,
-        nothing is persisted; if it succeeds, the ``REJECTED`` transition and any
-        external-id rebind commit together. An
-        ``AuditAction.EXTERNAL_CHANGE_REJECTED`` entry is recorded with the rejecting
+        **Transaction boundary (de-orphaning the provider side effect).** The provider
+        write is a non-transactional side effect that cannot be rolled back, so it runs
+        **outside / before** the DB transaction that flips the request to ``REJECTED``.
+        Only after the provider call succeeds is a short ``transaction.atomic()`` opened
+        to persist the status transition (and, for DELETE, the external-id rebind).
+
+        For **DELETE** this matters: the re-created provider event has a brand-new id the
+        DB must reference. If the local commit fails *after* a successful create, we
+        **compensate** by deleting the just-created provider event so it cannot become a
+        duplicate on the next sync, then re-raise. (Best-effort: if the compensating
+        delete also fails, the original exception propagates — it is not swallowed.)
+
+        For **UPDATE** no compensation is needed: ``update_event`` is an idempotent
+        re-convergence to the retained state (no new id is created), so a status-flip
+        failure after a successful update leaves no provider duplicate.
+
+        An ``AuditAction.EXTERNAL_CHANGE_REJECTED`` entry is recorded with the rejecting
         membership as the actor.
 
         Args:
@@ -583,17 +675,52 @@ class ExternalEventChangeRequestService:
                 field: {"old": None, "new": retained_values.get(field)} for field in retained_values
             }
 
-        with transaction.atomic():
-            # Re-converge the provider first; the adapter call is the commit boundary.
-            # On success the local state transition (and any external-id rebind) commit
-            # together; on failure the whole transaction rolls back.
-            self._undo_on_provider(request, write_adapter=write_adapter)
+        event = request.event
+        if event is None:
+            # No live event to re-converge against (e.g. it was deleted out from under
+            # the request). _undo_on_provider raises the same error; check up front so
+            # the error surfaces before any provider call is attempted.
+            raise ChangeRequestIneligibleError(
+                "Cannot reject a change request that has no associated event to undo against."
+            )
 
-            resolved_at = timezone.now()
-            request.status = ExternalEventChangeRequestStatus.REJECTED
-            request.resolved_by_user_id = membership.user_id
-            request.resolved_at = resolved_at
-            request.save(update_fields=["status", "resolved_by_user_id", "resolved_at"])
+        # Perform the provider re-convergence OUTSIDE the DB transaction: it is a
+        # non-transactional side effect that a DB rollback cannot undo. For DELETE this
+        # returns the new provider external id we must rebind locally.
+        new_external_id = self._undo_on_provider(request, write_adapter=write_adapter)
+
+        try:
+            with transaction.atomic():
+                if kind == ExternalEventChangeKind.DELETE and new_external_id is not None:
+                    # Rebind the local event to the re-created provider event's new id.
+                    event.external_id = new_external_id
+                    event.save(update_fields=["external_id"])
+
+                resolved_at = timezone.now()
+                request.status = ExternalEventChangeRequestStatus.REJECTED
+                request.resolved_by_user_id = membership.user_id
+                request.resolved_at = resolved_at
+                request.save(update_fields=["status", "resolved_by_user_id", "resolved_at"])
+        except Exception:
+            # The local commit failed AFTER the provider re-convergence already
+            # succeeded. For DELETE, the re-created provider event would otherwise be
+            # orphaned (the DB does not reference its new id) and surface as a duplicate
+            # on the next sync — compensate by deleting it. Best-effort: if the
+            # compensating delete also fails, let the ORIGINAL exception propagate.
+            if kind == ExternalEventChangeKind.DELETE and new_external_id is not None:
+                try:
+                    write_adapter.delete_event(
+                        event.calendar.external_id if event.calendar is not None else "",
+                        new_external_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Compensating delete of orphaned provider event %s failed during "
+                        "reject rollback for change request %s.",
+                        new_external_id,
+                        request.pk,
+                    )
+            raise
 
         # Record audit after the atomic block so on_commit delivery fires after commit.
         if self.audit_service is not None:

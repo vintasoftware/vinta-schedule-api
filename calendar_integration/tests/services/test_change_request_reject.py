@@ -16,9 +16,10 @@ Test matrix:
 - Non-PENDING request → ChangeRequestNotPendingError; no outbound call.
 - Audit record is written with EXTERNAL_CHANGE_REJECTED and the rejecting membership as
   the actor.
-- Partial failure: a DELETE re-create succeeds but the local external-id save fails →
-  the surrounding transaction rolls back, so the request stays PENDING and the local
-  event keeps its old external id (no orphaned / half-applied state).
+- Partial failure: a DELETE re-create succeeds but the subsequent local commit fails →
+  the just-created provider event is COMPENSATED (deleted by its new id) so no provider
+  orphan/duplicate survives, the surrounding transaction rolls back (request stays
+  PENDING, event keeps its old external id), and the original exception propagates.
 """
 
 from __future__ import annotations
@@ -43,7 +44,13 @@ from calendar_integration.factories import (
     create_event_attendance,
     create_external_event_change_request,
 )
-from calendar_integration.models import Calendar, CalendarEvent
+from calendar_integration.models import (
+    Calendar,
+    CalendarEvent,
+    EventExternalAttendance,
+    ExternalAttendee,
+    RecurrenceRule,
+)
 from calendar_integration.services.dataclasses import CalendarEventAdapterOutputData
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
@@ -144,10 +151,12 @@ def service_with_audit() -> ExternalEventChangeRequestService:
     return container.external_event_change_request_service()
 
 
-def _adapter_output(external_id: str) -> CalendarEventAdapterOutputData:
+def _adapter_output(
+    external_id: str, calendar_external_id: str = "cal_external_001"
+) -> CalendarEventAdapterOutputData:
     """Build a minimal adapter output for a (re)created/updated provider event."""
     return CalendarEventAdapterOutputData(
-        calendar_external_id="cal_external_001",
+        calendar_external_id=calendar_external_id,
         external_id=external_id,
         title="Original Title",
         description="Original description",
@@ -166,6 +175,7 @@ def _adapter_output(external_id: str) -> CalendarEventAdapterOutputData:
 @pytest.mark.django_db
 def test_reject_update_pushes_retained_values_to_provider(
     service: ExternalEventChangeRequestService,
+    calendar: Calendar,
     event: CalendarEvent,
     attendee_membership: OrganizationMembership,
 ) -> None:
@@ -192,7 +202,9 @@ def test_reject_update_pushes_retained_values_to_provider(
     )
 
     write_adapter = MagicMock()
-    write_adapter.update_event.return_value = _adapter_output("event_external_001")
+    write_adapter.update_event.return_value = _adapter_output(
+        "event_external_001", calendar.external_id
+    )
 
     result = service.reject(
         change_request, membership=attendee_membership, write_adapter=write_adapter
@@ -202,12 +214,12 @@ def test_reject_update_pushes_retained_values_to_provider(
     write_adapter.update_event.assert_called_once()
     write_adapter.create_event.assert_not_called()
     call_args = write_adapter.update_event.call_args
-    assert call_args.args[0] == "cal_external_001"  # calendar external id (positional)
+    assert call_args.args[0] == calendar.external_id  # calendar external id (positional)
     assert call_args.args[1] == "event_external_001"  # event external id (positional)
 
     adapter_input = call_args.args[2]
     # Input carries the retained (current local) values + external ids.
-    assert adapter_input.calendar_external_id == "cal_external_001"
+    assert adapter_input.calendar_external_id == calendar.external_id
     assert adapter_input.external_id == "event_external_001"
     assert adapter_input.title == "Original Title"
     assert adapter_input.description == "Original description"
@@ -253,6 +265,75 @@ def test_admin_can_reject_update_request(
     assert result.resolved_by_user_id == admin_membership.user_id
 
 
+@pytest.mark.django_db
+def test_reject_update_preserves_attendees_and_recurrence(
+    service: ExternalEventChangeRequestService,
+    calendar: Calendar,
+    organization: Organization,
+    attendee_membership: OrganizationMembership,
+) -> None:
+    """Rejecting an UPDATE for an event that has attendees + a recurrence rule must
+    carry the full attendees (internal + external) and the RRULE into the adapter
+    input, NOT an empty list / missing recurrence (the Google adapter does a
+    full-replace PUT, so omitted fields would be wiped)."""
+    recurrence_rule = RecurrenceRule.objects.create(
+        organization=organization,
+        frequency="WEEKLY",
+        interval=1,
+    )
+    event = CalendarEvent.objects.create(
+        calendar=calendar,
+        title="Original Title",
+        description="Original description",
+        start_time_tz_unaware=datetime.datetime(2025, 9, 1, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 9, 1, 10, 0),
+        timezone="UTC",
+        external_id="event_external_001",
+        organization=organization,
+        recurrence_rule_fk=recurrence_rule,
+    )
+    # Internal member attendee.
+    create_event_attendance(event=event, user=attendee_membership.user, status="accepted")
+    # External (non-member) attendee.
+    external_attendee = ExternalAttendee.objects.create(
+        organization=organization,
+        email="guest@example.com",
+        name="Guest Person",
+    )
+    EventExternalAttendance.objects.create(
+        organization=organization,
+        event=event,
+        external_attendee=external_attendee,
+        status="pending",
+    )
+
+    change_request = create_external_event_change_request(
+        event=event,
+        kind=ExternalEventChangeKind.UPDATE,
+        status=ExternalEventChangeRequestStatus.PENDING,
+        proposed_values={"title": "Inbound Edited Title"},
+        retained_values={"title": "Original Title"},
+    )
+
+    write_adapter = MagicMock()
+    write_adapter.update_event.return_value = _adapter_output(
+        "event_external_001", calendar.external_id
+    )
+
+    service.reject(change_request, membership=attendee_membership, write_adapter=write_adapter)
+
+    adapter_input = write_adapter.update_event.call_args.args[2]
+
+    # Attendees survive (NOT wiped to []): both the internal member and external guest.
+    attendee_emails = {a.email for a in adapter_input.attendees}
+    assert attendee_emails == {attendee_membership.user.email, "guest@example.com"}
+    assert len(adapter_input.attendees) == 2
+
+    # Recurrence survives.
+    assert adapter_input.recurrence_rule is not None
+    assert "FREQ=WEEKLY" in adapter_input.recurrence_rule
+
+
 # ---------------------------------------------------------------------------
 # Tests: DELETE kind — outbound create_event re-creates + external_id rebind
 # ---------------------------------------------------------------------------
@@ -261,6 +342,7 @@ def test_admin_can_reject_update_request(
 @pytest.mark.django_db
 def test_reject_delete_recreates_and_rebinds_external_id(
     service: ExternalEventChangeRequestService,
+    calendar: Calendar,
     event: CalendarEvent,
     attendee_membership: OrganizationMembership,
 ) -> None:
@@ -285,7 +367,9 @@ def test_reject_delete_recreates_and_rebinds_external_id(
     )
 
     write_adapter = MagicMock()
-    write_adapter.create_event.return_value = _adapter_output("event_external_NEW_999")
+    write_adapter.create_event.return_value = _adapter_output(
+        "event_external_NEW_999", calendar.external_id
+    )
 
     result = service.reject(
         change_request, membership=attendee_membership, write_adapter=write_adapter
@@ -295,7 +379,7 @@ def test_reject_delete_recreates_and_rebinds_external_id(
     write_adapter.create_event.assert_called_once()
     write_adapter.update_event.assert_not_called()
     adapter_input = write_adapter.create_event.call_args.args[0]
-    assert adapter_input.calendar_external_id == "cal_external_001"
+    assert adapter_input.calendar_external_id == calendar.external_id
     assert adapter_input.title == "Original Title"
     assert adapter_input.description == "Original description"
     assert adapter_input.timezone == "UTC"
@@ -458,14 +542,17 @@ def test_reject_records_external_change_rejected_audit_entry(
 
 
 @pytest.mark.django_db
-def test_reject_delete_partial_failure_rolls_back(
+def test_reject_delete_partial_failure_compensates(
     service: ExternalEventChangeRequestService,
+    calendar: Calendar,
     event: CalendarEvent,
     attendee_membership: OrganizationMembership,
 ) -> None:
-    """If the provider re-create succeeds but the subsequent local external-id save
-    raises, the surrounding transaction rolls back: the request stays PENDING and the
-    local event keeps its old external id (no half-applied / orphaned state)."""
+    """If the provider re-create succeeds but the subsequent local commit (rebind +
+    status flip) raises, the just-created provider event must be COMPENSATED: a
+    ``delete_event`` is called with the new provider id so no provider orphan/duplicate
+    survives, the surrounding transaction rolls back (request stays PENDING, event keeps
+    its old external id), and the original exception propagates."""
     create_event_attendance(event=event, user=attendee_membership.user)
     old_external_id = event.external_id
 
@@ -478,10 +565,12 @@ def test_reject_delete_partial_failure_rolls_back(
     )
 
     write_adapter = MagicMock()
-    write_adapter.create_event.return_value = _adapter_output("event_external_NEW_999")
+    write_adapter.create_event.return_value = _adapter_output(
+        "event_external_NEW_999", calendar.external_id
+    )
 
-    # Force the local external-id save (inside _undo_on_provider, inside the atomic
-    # block) to fail AFTER the successful provider create.
+    # Force the local external-id rebind save (inside the post-create atomic block) to
+    # fail AFTER the successful provider create — exercising the compensation path.
     class _SaveError(RuntimeError):
         pass
 
@@ -491,13 +580,50 @@ def test_reject_delete_partial_failure_rolls_back(
                 change_request, membership=attendee_membership, write_adapter=write_adapter
             )
 
-    # Provider create was attempted (the commit boundary).
+    # Provider create was attempted (outside the transaction), then COMPENSATED: the
+    # just-created provider event is deleted by its new id so it is never orphaned.
     write_adapter.create_event.assert_called_once()
+    write_adapter.delete_event.assert_called_once_with(
+        calendar.external_id, "event_external_NEW_999"
+    )
 
-    # Nothing was committed: request stays PENDING, event keeps its old external id.
+    # The local commit rolled back: request stays PENDING, event keeps its old id.
     change_request.refresh_from_db()
     assert change_request.status == ExternalEventChangeRequestStatus.PENDING
     assert change_request.resolved_by_user_id is None
 
     event.refresh_from_db()
     assert event.external_id == old_external_id
+
+
+@pytest.mark.django_db
+def test_reject_raises_when_event_is_none(
+    service: ExternalEventChangeRequestService,
+    event: CalendarEvent,
+    admin_membership: OrganizationMembership,
+) -> None:
+    """A PENDING request whose associated event has been deleted (event is None) cannot
+    be undone — reject raises ChangeRequestIneligibleError and makes no provider call."""
+    change_request = create_external_event_change_request(
+        event=event,
+        kind=ExternalEventChangeKind.UPDATE,
+        status=ExternalEventChangeRequestStatus.PENDING,
+        proposed_values={"title": "Inbound"},
+        retained_values={"title": "Original Title"},
+    )
+    # Sever the event association to simulate an event deleted out from under the
+    # request (SET_NULL cascade) while it is still PENDING.
+    change_request.event_fk = None
+    change_request.save(update_fields=["event_fk"])
+    change_request.refresh_from_db()
+
+    write_adapter = MagicMock()
+
+    with pytest.raises(ChangeRequestIneligibleError):
+        service.reject(change_request, membership=admin_membership, write_adapter=write_adapter)
+
+    write_adapter.update_event.assert_not_called()
+    write_adapter.create_event.assert_not_called()
+
+    change_request.refresh_from_db()
+    assert change_request.status == ExternalEventChangeRequestStatus.PENDING
