@@ -69,11 +69,17 @@
   - Review: 0→1 BLOCKER fixed — auto-undo atomicity: row creation + supersede were in a SEPARATE txn from the rebind/status (dangling AUTO_UNDONE + destroyed PENDING on provider failure). Fixed via `prepare_fn` closure run INSIDE the single atomic block AFTER the provider call; provider-failure now commits nothing. SHOULD-FIX (dead-code elif/else removed; 2 tests added: supersede→STALE, provider-raises→no row) applied. Reject's 10 tests pass unchanged.
   - Verified: full `pytest -n auto` = 3029 passed; no new mypy; no import cycle; `makemigrations --check` clean; no trailers.
 
+- **Phase 7 — Notify eligible approvers on request creation** ✅
+  - Model: sonnet (Tier 2), agent: implementer + reviewer + fixer (haiku)
+  - Commits: `feat(calendar): notify eligible approvers in-app on change-request creation`, `fix(calendar): scope approver notifications to active members + avoid extra query`
+  - `_notify_eligible_approvers(request, event)` dispatches in-app (`NotificationService.create_notification`, `NotificationTypes.IN_APP`) to ACTIVE member-attendees ∪ active org admins (set-dedup), wrapped in `transaction.on_commit`. Called from both `create_or_supersede_*`; NOT from `auto_undo_inbound_change` (FORBIDDEN). New `notification_contexts.py` + template + `apps.py ready()` + DI (`notification_service`). `notification_service` Optional (graceful skip if None — observability, not safety).
+  - Review: 0 BLOCKERs; SHOULD-FIX (attendee query + `can_resolve` now require active membership; pass `event` to avoid extra query; inactive-admin test) + NITs applied.
+  - Verified: full `pytest -n auto` = 3041 passed; `makemigrations --check` clean; no trailers.
+
 ## Current phase
-- **Phase 7 — Notify eligible approvers on request creation** (Tier 2 → sonnet, implementer) — next
+- **Phase 8a — REST endpoints** (Tier 3 → sonnet, implementer) — next
 
 ## Remaining phases
-- Phase 7 — Notify eligible approvers on request creation (Tier 2 → sonnet)
 - Phase 8a — REST endpoints (Tier 3 → sonnet)
 - Phase 8b — Public GraphQL query + mutations (Tier 3 → sonnet)
 
