@@ -77,6 +77,22 @@ query ListExternalEventChangeRequests(
 }
 """
 
+_QUERY_EXTERNAL_CHANGE_REQUESTS_WITH_RESOLVED_BY = """
+query ListExternalEventChangeRequestsWithResolvedBy(
+    $status: String
+) {
+    externalEventChangeRequests(status: $status) {
+        id
+        status
+        resolvedBy {
+            userId
+            organizationId
+            role
+        }
+    }
+}
+"""
+
 _APPROVE_MUTATION = """
 mutation ApproveExternalEventChangeRequest($id: Int!) {
     approveExternalEventChangeRequest(id: $id) {
@@ -161,7 +177,11 @@ def _make_ownership(membership: OrganizationMembership, calendar: Calendar) -> C
 def _make_social_account(
     membership: OrganizationMembership, provider: str = CalendarProvider.GOOGLE
 ) -> SocialAccount:
-    social_account = SocialAccount.objects.create(user=membership.user, provider=provider)
+    social_account = SocialAccount.objects.create(
+        user=membership.user,
+        provider=provider,
+        uid=f"{provider}-{uuid.uuid4().hex}",
+    )
     SocialToken.objects.create(
         account=social_account,
         token="fake-token",
@@ -434,6 +454,138 @@ class TestExternalEventChangeRequestsQuery:
         # Strawberry returns permission errors in the "errors" list.
         assert "errors" in data and len(data["errors"]) > 0
 
+    def test_resolved_by_field_returns_membership_for_approved_request(self):
+        """resolvedBy field resolves the resolver membership for an APPROVED request."""
+        org, admin = _make_org_with_member(is_admin=True)
+        cal = _make_calendar(org)
+        event = _make_event(cal)
+
+        cr = create_external_event_change_request(
+            event=event,
+            kind=ExternalEventChangeKind.UPDATE,
+            status=ExternalEventChangeRequestStatus.APPROVED,
+        )
+        # Set resolved_by on the change request to the admin membership.
+        cr.resolved_by_user_id = admin.user_id
+        cr.save(update_fields=["resolved_by_user_id"])
+
+        system_user, token, auth_service = _make_org_wide_system_user(
+            org, [PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST]
+        )
+
+        from di_core.containers import container
+
+        assert container is not None
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": _QUERY_EXTERNAL_CHANGE_REQUESTS_WITH_RESOLVED_BY,
+                    "variables": {"status": ExternalEventChangeRequestStatus.APPROVED},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data, data.get("errors")
+        results = data["data"]["externalEventChangeRequests"]
+        assert len(results) == 1
+        resolved_by = results[0]["resolvedBy"]
+        assert resolved_by is not None
+        assert resolved_by["userId"] == admin.user_id
+        assert resolved_by["organizationId"] == org.id
+
+    def test_resolved_by_field_returns_null_for_pending_request(self):
+        """resolvedBy field returns null for a PENDING (unresolved) change request."""
+        org, _admin = _make_org_with_member(is_admin=True)
+        cal = _make_calendar(org)
+        event = _make_event(cal)
+
+        create_external_event_change_request(
+            event=event,
+            kind=ExternalEventChangeKind.UPDATE,
+            status=ExternalEventChangeRequestStatus.PENDING,
+        )
+
+        system_user, token, auth_service = _make_org_wide_system_user(
+            org, [PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST]
+        )
+
+        from di_core.containers import container
+
+        assert container is not None
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": _QUERY_EXTERNAL_CHANGE_REQUESTS_WITH_RESOLVED_BY,
+                    "variables": {},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data, data.get("errors")
+        results = data["data"]["externalEventChangeRequests"]
+        assert len(results) == 1
+        assert results[0]["resolvedBy"] is None
+
+    def test_invalid_negative_offset_raises_error(self):
+        """offset < 0 returns a GraphQL error."""
+        org, _admin = _make_org_with_member(is_admin=True)
+        system_user, token, auth_service = _make_org_wide_system_user(
+            org, [PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST]
+        )
+
+        response = self._post(system_user, token, auth_service, {"offset": -1})
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert any("non-negative" in str(e.get("message", "")) for e in data["errors"])
+
+    def test_invalid_limit_zero_raises_error(self):
+        """limit=0 returns a GraphQL error."""
+        org, _admin = _make_org_with_member(is_admin=True)
+        system_user, token, auth_service = _make_org_wide_system_user(
+            org, [PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST]
+        )
+
+        response = self._post(system_user, token, auth_service, {"limit": 0})
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert any("between 1 and 100" in str(e.get("message", "")) for e in data["errors"])
+
+    def test_invalid_limit_over_100_raises_error(self):
+        """limit=101 returns a GraphQL error."""
+        org, _admin = _make_org_with_member(is_admin=True)
+        system_user, token, auth_service = _make_org_wide_system_user(
+            org, [PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST]
+        )
+
+        response = self._post(system_user, token, auth_service, {"limit": 101})
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert any("between 1 and 100" in str(e.get("message", "")) for e in data["errors"])
+
+    def test_invalid_status_raises_error(self):
+        """An unrecognised status value returns a GraphQL error."""
+        org, _admin = _make_org_with_member(is_admin=True)
+        system_user, token, auth_service = _make_org_wide_system_user(
+            org, [PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST]
+        )
+
+        response = self._post(system_user, token, auth_service, {"status": "invalid_status"})
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert any("Invalid status" in str(e.get("message", "")) for e in data["errors"])
+
 
 # ---------------------------------------------------------------------------
 # Approve mutation tests
@@ -610,6 +762,40 @@ class TestApproveExternalEventChangeRequestMutation:
         assert "errors" in data and len(data["errors"]) > 0, data
         cr.refresh_from_db()
         assert cr.status == ExternalEventChangeRequestStatus.PENDING
+
+    def test_cross_org_isolation(self):
+        """An org-B scoped token cannot approve a change request from org-A."""
+        org_a, _admin_a = _make_org_with_member(is_admin=True)
+        org_b, admin_b = _make_org_with_member(is_admin=True)
+
+        cal_a = _make_calendar(org_a)
+        event_a = _make_event(cal_a)
+        cr_a = create_external_event_change_request(
+            event=event_a,
+            kind=ExternalEventChangeKind.UPDATE,
+            status=ExternalEventChangeRequestStatus.PENDING,
+            proposed_values={"title": "New title"},
+            retained_values={"title": "Old title"},
+        )
+
+        # Authenticate as org-B scoped admin, try to approve org-A's request.
+        system_user_b, token_b, auth_service_b = _make_scoped_system_user(
+            org_b, admin_b, [PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST]
+        )
+
+        response = self._post(system_user_b, token_b, auth_service_b, cr_a.id)
+
+        assert response.status_code == 200
+        data = response.json()
+        # The mutation returns success=False / not-found because the filter
+        # scopes to org-B and the request belongs to org-A.
+        result = data["data"]["approveExternalEventChangeRequest"]
+        assert result["success"] is False
+        assert result["changeRequest"] is None
+
+        # The original request is unchanged.
+        cr_a.refresh_from_db()
+        assert cr_a.status == ExternalEventChangeRequestStatus.PENDING
 
 
 # ---------------------------------------------------------------------------
@@ -900,3 +1086,50 @@ class TestRejectExternalEventChangeRequestMutation:
         assert "errors" in data and len(data["errors"]) > 0, data
         cr.refresh_from_db()
         assert cr.status == ExternalEventChangeRequestStatus.PENDING
+
+    def test_cross_org_isolation(self):
+        """An org-B scoped token cannot reject a change request from org-A."""
+        from di_core.containers import container
+
+        org_a, admin_a = _make_org_with_member(is_admin=True)
+        org_b, admin_b = _make_org_with_member(is_admin=True)
+
+        cal_a = _make_calendar(org_a, provider=CalendarProvider.GOOGLE)
+        event_a = _make_event(cal_a)
+        _make_ownership(admin_a, cal_a)
+        _make_social_account(admin_a, CalendarProvider.GOOGLE)
+
+        cr_a = create_external_event_change_request(
+            event=event_a,
+            kind=ExternalEventChangeKind.UPDATE,
+            status=ExternalEventChangeRequestStatus.PENDING,
+            proposed_values={"title": "New title"},
+            retained_values={"title": "Old title"},
+        )
+
+        # Ensure org-B has its own calendar/ownership for its admin.
+        cal_b = _make_calendar(org_b, provider=CalendarProvider.GOOGLE)
+        _make_ownership(admin_b, cal_b)
+        _make_social_account(admin_b, CalendarProvider.GOOGLE)
+
+        # Authenticate as org-B scoped admin, try to reject org-A's request.
+        system_user_b, token_b, auth_service_b = _make_scoped_system_user(
+            org_b, admin_b, [PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST]
+        )
+
+        mock_calendar_service, _mock_write_adapter = self._mock_calendar_service()
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = self._post(system_user_b, token_b, auth_service_b, cr_a.id)
+
+        assert response.status_code == 200
+        data = response.json()
+        # The mutation returns success=False / not-found because the filter
+        # scopes to org-B and the request belongs to org-A.
+        result = data["data"]["rejectExternalEventChangeRequest"]
+        assert result["success"] is False
+        assert result["changeRequest"] is None
+
+        # The original request is unchanged.
+        cr_a.refresh_from_db()
+        assert cr_a.status == ExternalEventChangeRequestStatus.PENDING

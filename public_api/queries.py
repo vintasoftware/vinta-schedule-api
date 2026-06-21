@@ -956,22 +956,30 @@ class Query:
         offset: int = 0,
         limit: int = 100,
     ) -> list[ExternalEventChangeRequestGraphQLType]:
-        """List external event change requests the caller is eligible to resolve.
+        """List external event change requests visible to the caller.
 
         Eligibility scoping:
-        - **Scoped token** (provider-scoped, ``scoped_to_membership`` set): the
-          token's acting membership is used to evaluate eligibility — the member
-          sees only requests for events they attend, unless that member is an admin.
+        - **Scoped token** (``scoped_to_membership`` set): the token's acting
+          membership is used to evaluate eligibility — the member sees only
+          requests for events they attend, unless that member is an admin.
         - **Org-wide token** (``scoped_to_membership`` is ``None``): the token
-          represents the organization as a whole; only requests for events the
-          token-holder's scoped membership attends are returned, or all requests
-          when the token is org-wide (treated as admin).
+          acts as an organization-wide admin and sees all requests in the org.
 
         Default: returns only ``PENDING`` requests when no ``status`` is passed.
         Pass ``status`` to retrieve historical/resolved requests.
 
         Pagination is required; maximum 100 results per page.
         """
+        if offset < 0:
+            raise GraphQLError("Offset must be non-negative")
+        if limit < 1 or limit > 100:
+            raise GraphQLError("Limit must be between 1 and 100")
+        if status is not None and status not in ExternalEventChangeRequestStatus.values:
+            raise GraphQLError(
+                f"Invalid status '{status}'. "
+                f"Valid values: {', '.join(ExternalEventChangeRequestStatus.values)}"
+            )
+
         org = _get_org(info)
         request: PublicApiHttpRequest = info.context.request
         system_user = request.public_api_system_user

@@ -2249,7 +2249,7 @@ class ExternalEventChangeRequestMutations:
         # Authenticate the CalendarService and resolve the write adapter.
         deps.calendar_service.authenticate(
             account=owner_social_account,
-            organization=acting_membership.organization,
+            organization=org,
         )
         write_adapter = deps.calendar_service._get_write_adapter_for_calendar(calendar)
         if write_adapter is None:

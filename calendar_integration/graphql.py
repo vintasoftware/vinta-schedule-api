@@ -876,7 +876,9 @@ class ExternalEventChangeRequestGraphQLType:
     @strawberry_django.field
     def resolved_by(self) -> ResolvedByMembershipGraphQLType | None:
         """Resolve the resolver membership identity."""
-        membership = self.resolved_by  # type: ignore[attr-defined]
+        if self.resolved_by_user_id is None:  # type: ignore[attr-defined]
+            return None
+        membership = object.__getattribute__(self, "resolved_by")  # type: ignore[attr-defined]
         if membership is None:
             return None
         return ResolvedByMembershipGraphQLType(
