@@ -121,6 +121,7 @@ class AppContainer(containers.DeclarativeContainer):
     external_event_change_request_service = providers.Factory(
         ExternalEventChangeRequestService,
         audit_service=audit_service,
+        notification_service=notification_service,
     )
 
     calendar_service = providers.Factory(

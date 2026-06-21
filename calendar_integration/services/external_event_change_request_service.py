@@ -39,12 +39,15 @@ from __future__ import annotations
 
 import datetime
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Annotated, Any
 
 from django.db import transaction
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
+from vintasend.constants import NotificationTypes
+from vintasend.services.notification_service import NotificationContextDict
 
 from audit.constants import AuditAction, AuditActorType
 from audit.types import ActorSnapshot
@@ -67,13 +70,15 @@ from calendar_integration.services.dataclasses import (
     EventAttendeeData,
     ResourceData,
 )
+from organizations.models import OrganizationMembership, OrganizationRole
 
 
 if TYPE_CHECKING:
+    from vintasend.services.notification_service import NotificationService
+
     from audit.services import AuditService
     from calendar_integration.models import CalendarEvent
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
-    from organizations.models import OrganizationMembership
 
 
 logger = logging.getLogger(__name__)
@@ -88,14 +93,20 @@ class ExternalEventChangeRequestService:
 
     Constructor arguments are DI-injected:
     - ``audit_service``: emits audit trail entries for each state transition.
+    - ``notification_service``: dispatches in-app notifications to eligible
+      approvers when a new ``PENDING`` request is created.
     """
 
     @inject
     def __init__(
         self,
         audit_service: Annotated[AuditService | None, Provide["audit_service"]] = None,
+        notification_service: Annotated[
+            NotificationService | None, Provide["notification_service"]
+        ] = None,
     ) -> None:
         self.audit_service = audit_service
+        self.notification_service = notification_service
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -191,6 +202,102 @@ class ExternalEventChangeRequestService:
             status=ExternalEventChangeRequestStatus.PENDING,
         ).update(status=ExternalEventChangeRequestStatus.STALE)
 
+    def _notify_eligible_approvers(self, request: ExternalEventChangeRequest) -> None:
+        """Dispatch in-app notifications to each eligible approver for *request*.
+
+        Eligible approvers are (deduplication by user id):
+        - Member-attendees of the event (``EventAttendance`` rows with a non-NULL
+          ``membership_user_id`` for the same event).
+        - Organization admins (``OrganizationMembership`` rows with
+          ``role=ADMIN`` in the same organization).
+
+        Each notification is wrapped in ``transaction.on_commit`` so it only
+        fires after the ``PENDING`` request row commits to the database.  This
+        method is a no-op when ``notification_service`` is not injected (i.e.
+        when the service is built without DI in tests).
+
+        The event title is captured at call time (before any possible deletion
+        via an approve/reject later) so the notification body remains meaningful.
+
+        Args:
+            request: The newly created ``PENDING`` ``ExternalEventChangeRequest``.
+        """
+        if self.notification_service is None:
+            return
+
+        event = request.event
+        if event is None:
+            # Guard: the event was deleted between request creation and this call.
+            # No approvers can be identified — skip silently.
+            return
+
+        organization_id = request.organization_id
+        event_title: str = event.title
+        change_kind: str = request.kind
+        change_request_id: int = request.pk
+
+        # Collect eligible approver user ids, deduplicated.
+        approver_user_ids: set[int] = set()
+
+        # Member-attendees: EventAttendance rows for this event with a non-NULL membership.
+        attendee_user_ids = (
+            EventAttendance.objects.filter(
+                organization_id=organization_id,
+                event_fk_id=request.event_fk_id,
+                membership_user_id__isnull=False,
+            )
+            .values_list("membership_user_id", flat=True)
+            .distinct()
+        )
+        approver_user_ids.update(attendee_user_ids)
+
+        # Organization admins (all active admins in the organization).
+        admin_user_ids = (
+            OrganizationMembership.objects.filter(
+                organization_id=organization_id,
+                role=OrganizationRole.ADMIN,
+                is_active=True,
+            )
+            .values_list("user_id", flat=True)
+            .distinct()
+        )
+        approver_user_ids.update(admin_user_ids)
+
+        # Dispatch one in-app notification per approver, wrapped in on_commit so
+        # the notification only fires after the PENDING row is visible in the DB.
+        # ``self.notification_service`` was already guarded non-None above (early return).
+        # Bind to a local with a narrowed type annotation so mypy does not see
+        # ``Optional[NotificationService]`` inside the nested _send closure.
+        notification_service: NotificationService = self.notification_service  # type: ignore[assignment]
+        for user_id in approver_user_ids:
+            # Use a factory function to capture the loop variable correctly — a
+            # default-arg lambda would also work, but an explicit closure is clearer
+            # and mypy can infer the return type (None) without ambiguity.
+            def _make_callback(uid: int) -> Callable[[], None]:
+                def _send() -> None:
+                    notification_service.create_notification(
+                        user_id=uid,
+                        notification_type=NotificationTypes.IN_APP.value,
+                        title="Pending external calendar change requires your approval",
+                        body_template=(
+                            "calendar_integration/in_app/"
+                            "external_event_change_request_approver.body.txt"
+                        ),
+                        context_name="external_event_change_request_approver_context",
+                        context_kwargs=NotificationContextDict(
+                            {
+                                "change_request_id": change_request_id,
+                                "event_title": event_title,
+                                "change_kind": change_kind,
+                                "organization_id": organization_id,
+                            }
+                        ),
+                    )
+
+                return _send
+
+            transaction.on_commit(_make_callback(user_id))
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -262,6 +369,9 @@ class ExternalEventChangeRequestService:
                 subject=subject,
                 diff=diff or None,
             )
+
+        # Notify each eligible approver in-app via on_commit (fires after the PENDING row commits).
+        self._notify_eligible_approvers(change_request)
 
         return change_request
 
@@ -337,6 +447,9 @@ class ExternalEventChangeRequestService:
                 subject=subject,
                 diff=diff or None,
             )
+
+        # Notify each eligible approver in-app via on_commit (fires after the PENDING row commits).
+        self._notify_eligible_approvers(change_request)
 
         return change_request
 

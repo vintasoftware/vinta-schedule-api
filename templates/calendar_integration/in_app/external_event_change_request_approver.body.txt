@@ -1,0 +1,1 @@
+A {{ change_kind }} change request has been submitted for "{{ event_title }}" and is awaiting your approval.
