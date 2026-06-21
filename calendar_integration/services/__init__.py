@@ -17,12 +17,14 @@ from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.calendar_sync_service import CalendarSyncService
 from calendar_integration.services.calendar_webhook_service import CalendarWebhookService
+from calendar_integration.services.ics_service import CalendarEventICSService
 from calendar_integration.services.recurrence_manager import RecurrenceManager
 
 
 __all__ = [
     "AvailabilityService",
     "CalendarBundleService",
+    "CalendarEventICSService",
     "CalendarEventService",
     "CalendarService",
     "CalendarServiceContext",
