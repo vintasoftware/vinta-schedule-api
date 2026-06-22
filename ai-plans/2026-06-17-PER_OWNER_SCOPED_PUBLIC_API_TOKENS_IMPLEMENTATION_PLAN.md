@@ -371,3 +371,21 @@ Acceptance: the adversarial sweep passes (no read leak, no cross-owner write, in
   Affected phases: 0 (model + helper), 2 + 3 (mint resolves membership), 4c (service ownership check
   hops membership→user), 1 + 4a + 4b + 5 (test factories). Branches force-pushed: phase-0, phase-1,
   phase-2, phase-3, phase-4a, phase-4b, phase-4c, phase-5.
+
+- **2026-06-18** — Phase 0 merged to `main` (PR #104). Rebased the stack onto the new `main`, which had
+  since absorbed the **public-graphql-service-wrappers** feature. Resolved conflicts and landed
+  **phases 1–3** (read scoping, `createScopedSystemUser` mint, REST scoped create): reconstructed the
+  `test_queries.py` / `test_mutations.py` append conflicts, and fixed a real integration regression —
+  `main` made `SystemUser` an `OrganizationModel`, so the scoped tests' `SystemUser.objects.get/count(...)`
+  now raise `ImproperlyConfigured`; switched those unscoped reads to `SystemUser.original_manager`
+  (matching `main`'s own convention). Validated: phase-1 `test_queries` 111 passed, phase-2
+  `test_mutations` 141 passed, phase-3 full `public_api` suite 503 passed. Branches force-pushed:
+  phase-1, phase-2, phase-3.
+- **2026-06-18 — Phases 4–5 PAUSED pending re-plan.** `main`'s public-graphql-service-wrappers feature
+  already shipped a suite of **org-wide** public-API write mutations, including a `createBlockedTime`
+  that **collides** (same GraphQL field name, different permission/scope/args/return) with phase-4b's
+  owner-scoped `createBlockedTime`. Phase-4a (`createAvailableTime`) and phase-4c (`scheduleEvent`)
+  have no `main` counterpart; phase-4a also conflicts with `main`'s relocation of the query helpers.
+  Decision (user): land 1–3 now, **re-spec phases 4–5** (owner-scoped writes) against the new `main`
+  rather than reconcile in place. The original phase-4a/4b/4c/5 branches (PRs #108–#111) are left
+  intact at their pre-rebase tips for audit; they are NOT mergeable as-is and await the re-plan.
