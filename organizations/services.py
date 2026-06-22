@@ -66,18 +66,27 @@ class OrganizationService:
         self.audit_service = audit_service
 
     def create_organization(
-        self, creator: User, name: str, should_sync_rooms: bool = False
+        self,
+        creator: User,
+        name: str,
+        should_sync_rooms: bool = False,
+        external_event_update_policy: str | None = None,
     ) -> Organization:
         """
         Create a new calendar organization.
         :param name: Name of the calendar organization.
         :param should_sync_rooms: Whether to sync rooms for this organization.
+        :param external_event_update_policy: Policy for inbound external provider
+            edits/deletions. When ``None`` the model's default is used.
         :return: Created Organization instance.
         """
-        self.organization = Organization.objects.create(
-            name=name,
-            should_sync_rooms=should_sync_rooms,
-        )
+        create_kwargs: dict = {
+            "name": name,
+            "should_sync_rooms": should_sync_rooms,
+        }
+        if external_event_update_policy is not None:
+            create_kwargs["external_event_update_policy"] = external_event_update_policy
+        self.organization = Organization.objects.create(**create_kwargs)
         # The creator of the organization is its first admin — every org must
         # have at least one admin, and no one else exists yet to promote them.
         admin_membership = OrganizationMembership.objects.create(

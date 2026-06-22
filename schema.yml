@@ -12494,6 +12494,16 @@ components:
         * `rejected` - Rejected
         * `stale` - Stale
         * `auto_undone` - Auto-undone
+    ExternalEventUpdatePolicyEnum:
+      enum:
+      - allow
+      - change_request
+      - forbidden
+      type: string
+      description: |-
+        * `allow` - Allow direct updates
+        * `change_request` - Updates create change requests
+        * `forbidden` - Updates are forbidden
     FrequencyEnum:
       enum:
       - DAILY
@@ -12624,6 +12634,15 @@ components:
         should_sync_rooms:
           type: boolean
           description: Whether to sync rooms for this organization.
+        external_event_update_policy:
+          allOf:
+          - $ref: '#/components/schemas/ExternalEventUpdatePolicyEnum'
+          description: |-
+            Policy for handling inbound external provider edits and deletions to synced events. ALLOW: apply directly. CHANGE_REQUEST: route to approval. FORBIDDEN: auto-undo.
+
+            * `allow` - Allow direct updates
+            * `change_request` - Updates create change requests
+            * `forbidden` - Updates are forbidden
         google_service_account:
           type: object
           additionalProperties: {}
@@ -13538,6 +13557,15 @@ components:
         should_sync_rooms:
           type: boolean
           description: Whether to sync rooms for this organization.
+        external_event_update_policy:
+          allOf:
+          - $ref: '#/components/schemas/ExternalEventUpdatePolicyEnum'
+          description: |-
+            Policy for handling inbound external provider edits and deletions to synced events. ALLOW: apply directly. CHANGE_REQUEST: route to approval. FORBIDDEN: auto-undo.
+
+            * `allow` - Allow direct updates
+            * `change_request` - Updates create change requests
+            * `forbidden` - Updates are forbidden
         google_service_account:
           type: object
           additionalProperties: {}

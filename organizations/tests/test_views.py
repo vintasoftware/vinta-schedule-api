@@ -14,6 +14,7 @@ from calendar_integration.models import GoogleCalendarServiceAccount
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.exceptions import InvalidInvitationTokenError
 from organizations.models import (
+    ExternalEventUpdatePolicy,
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
@@ -180,6 +181,7 @@ class TestOrganizationViewSet:
             creator=user,
             name="New Organization",
             should_sync_rooms=False,
+            external_event_update_policy=None,
         )
 
     def test_create_organization_via_jwt_bearer_creates_membership(self, user):
@@ -235,6 +237,7 @@ class TestOrganizationViewSet:
             creator=user,
             name="Sync Organization",
             should_sync_rooms=True,
+            external_event_update_policy=None,
         )
 
     def test_create_organization_authenticated_with_existing_membership(
@@ -334,6 +337,56 @@ class TestOrganizationViewSet:
 
         assert_response_status_code(response, status.HTTP_200_OK)
         assert response.json()["name"] == "Admin Updated Name"
+
+    def test_update_organization_external_event_update_policy(self, user):
+        """Admin can PATCH external_event_update_policy alongside should_sync_rooms."""
+        organization = OrganizationTestFactory.create_organization(name="Policy Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=user)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = admin_client.patch(
+            url,
+            {"external_event_update_policy": ExternalEventUpdatePolicy.FORBIDDEN.value},
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert (
+            response.json()["external_event_update_policy"]
+            == ExternalEventUpdatePolicy.FORBIDDEN.value
+        )
+        organization.refresh_from_db()
+        assert (
+            organization.external_event_update_policy == ExternalEventUpdatePolicy.FORBIDDEN.value
+        )
+
+    def test_update_organization_external_event_update_policy_invalid_choice(self, user):
+        """An out-of-range policy value is rejected with 400."""
+        organization = OrganizationTestFactory.create_organization(name="Policy Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=user)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = admin_client.patch(
+            url, {"external_event_update_policy": "not_a_policy"}, format="json"
+        )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
     def test_update_organization_admin_cross_org_returns_404(self, user):
         """Admin cannot PATCH an organization they don't belong to — 404."""
