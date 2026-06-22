@@ -21,6 +21,7 @@ from calendar_integration.models import (
     EventExternalAttendance,
     EventRecurrenceException,
     ExternalAttendee,
+    ExternalEventChangeRequest,
     RecurrenceRule,
     ResourceAllocation,
 )
@@ -824,3 +825,82 @@ class CodeEventResult:
     error_code: BookingCodeErrorCode | None = None
     error_message: str | None = None
     event: CalendarEventGraphQLType | None = None
+
+
+# ---------------------------------------------------------------------------
+# ExternalEventChangeRequest types
+# ---------------------------------------------------------------------------
+
+
+@strawberry.type
+class ResolvedByMembershipGraphQLType:
+    """Membership identity for the member who resolved a change request.
+
+    A membership has no scalar id (it is identified by the ``(user_id,
+    organization_id)`` pair), so the external representation exposes that pair.
+    """
+
+    user_id: int
+    organization_id: int
+    role: str
+
+
+@strawberry_django.type(ExternalEventChangeRequest)
+class ExternalEventChangeRequestGraphQLType:
+    """GraphQL type for an ExternalEventChangeRequest.
+
+    Exposes the change request's kind, status, provider, proposed and retained
+    value snapshots, and resolution metadata. The ``event`` back-pointer is
+    exposed as an id only (not a full CalendarEventGraphQLType traversal) to
+    keep the type lightweight and avoid N+1 concerns on list queries.
+
+    Fields intentionally omitted: ``proposed_payload`` (raw provider data, not
+    safe for general exposure) and cross-tenant traversal fields.
+    """
+
+    id: strawberry.auto  # noqa: A003
+    kind: strawberry.auto
+    status: strawberry.auto
+    provider: strawberry.auto
+    proposed_values: strawberry.auto
+    retained_values: strawberry.auto
+    resolved_at: strawberry.auto
+    created: datetime.datetime
+    modified: datetime.datetime
+
+    @strawberry.field
+    def event_id(self) -> int | None:
+        """Return the id of the target CalendarEvent (null when the event was deleted)."""
+        return self.event_fk_id  # type: ignore[attr-defined]
+
+    @strawberry_django.field
+    def resolved_by(self) -> ResolvedByMembershipGraphQLType | None:
+        """Resolve the resolver membership identity."""
+        if self.resolved_by_user_id is None:  # type: ignore[attr-defined]
+            return None
+        membership = object.__getattribute__(self, "resolved_by")  # type: ignore[attr-defined]
+        if membership is None:
+            return None
+        return ResolvedByMembershipGraphQLType(
+            user_id=membership.user_id,
+            organization_id=membership.organization_id,
+            role=membership.role,
+        )
+
+
+@strawberry.type
+class ApproveExternalEventChangeRequestResult:
+    """Result of the approveExternalEventChangeRequest mutation."""
+
+    success: bool
+    change_request: ExternalEventChangeRequestGraphQLType | None = None
+    error_message: str | None = None
+
+
+@strawberry.type
+class RejectExternalEventChangeRequestResult:
+    """Result of the rejectExternalEventChangeRequest mutation."""
+
+    success: bool
+    change_request: ExternalEventChangeRequestGraphQLType | None = None
+    error_message: str | None = None

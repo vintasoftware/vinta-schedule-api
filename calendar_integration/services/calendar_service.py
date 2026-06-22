@@ -138,6 +138,9 @@ from users.models import User
 
 if TYPE_CHECKING:
     from audit.services import AuditService
+    from calendar_integration.services.external_event_change_request_service import (
+        ExternalEventChangeRequestService,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -177,6 +180,10 @@ class CalendarService(BaseCalendarService):
             "CalendarPermissionService | None", Provide["calendar_permission_service"]
         ] = None,
         audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
+        external_event_change_request_service: Annotated[
+            "ExternalEventChangeRequestService | None",
+            Provide["external_event_change_request_service"],
+        ] = None,
     ) -> None:
         """Initialize a CalendarService instance. Call authenticate() before using calendar operations."""
         self.organization = None
@@ -186,6 +193,7 @@ class CalendarService(BaseCalendarService):
         self.calendar_side_effects_service = calendar_side_effects_service
         self.calendar_permission_service = calendar_permission_service
         self.audit_service = audit_service
+        self.external_event_change_request_service = external_event_change_request_service
         # Per-instance calendar lookup cache: keyed on (organization_id, id_or_external_id).
         # This replaces the @lru_cache approach which was keyed only on id/external_id and
         # could return a cached Calendar from a different organization when the service
@@ -522,6 +530,7 @@ class CalendarService(BaseCalendarService):
             context=self._build_context_snapshot(),
             calendar_cache=self._calendar_cache,
             host=self,
+            external_event_change_request_service=self.external_event_change_request_service,
         )
 
     def _get_webhook_service(self) -> CalendarWebhookService:

@@ -55,6 +55,10 @@ class PublicAPIResources(TextChoices):
     UPDATE_CALENDAR_BUNDLE = "update_calendar_bundle", "Update Calendar Bundle"
     DISABLE_CALENDAR_BUNDLE = "disable_calendar_bundle", "Disable Calendar Bundle"
     WEBHOOK_CONFIGURATION = "webhook_configuration", "Webhook Configuration"
+    EXTERNAL_EVENT_CHANGE_REQUEST = (
+        "external_event_change_request",
+        "External Event Change Request",
+    )
 
 
 PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(

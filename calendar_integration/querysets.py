@@ -5,7 +5,12 @@ from typing import TYPE_CHECKING
 from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q, Subquery
 from django.utils import timezone
 
-from calendar_integration.constants import CalendarSyncStatus, CalendarType, CalendarVisibility
+from calendar_integration.constants import (
+    CalendarSyncStatus,
+    CalendarType,
+    CalendarVisibility,
+    ExternalEventChangeRequestStatus,
+)
 from calendar_integration.database_functions import (
     GetAvailableTimeOccurrencesJSON,
     GetAvailableTimeOccurrencesWithBulkModificationsJSON,
@@ -18,7 +23,9 @@ from organizations.querysets import BaseOrganizationModelQuerySet
 
 
 if TYPE_CHECKING:
+    from calendar_integration.models import CalendarEvent as CalendarEventType
     from calendar_integration.models import CalendarSync as CalendarSyncType
+    from organizations.models import OrganizationMembership as OrganizationMembershipType
 
 
 class CalendarManagementTokenQuerySet(BaseOrganizationModelQuerySet):
@@ -547,3 +554,57 @@ class AvailableTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
                 "id", start, end, max_occurrences
             )
         )
+
+
+class ExternalEventChangeRequestQuerySet(BaseOrganizationModelQuerySet):
+    """QuerySet for ExternalEventChangeRequest."""
+
+    def pending(self) -> "ExternalEventChangeRequestQuerySet":
+        """Return only PENDING requests."""
+        return self.filter(status=ExternalEventChangeRequestStatus.PENDING)
+
+    def for_event(self, event: "CalendarEventType") -> "ExternalEventChangeRequestQuerySet":
+        """Return requests targeting a specific CalendarEvent instance.
+
+        Filters through the ``event`` ForeignObject so the organization scope is
+        automatically included in the join condition.
+        """
+        return self.filter(event=event)
+
+    def resolvable_by(
+        self, membership: "OrganizationMembershipType"
+    ) -> "ExternalEventChangeRequestQuerySet":
+        """Return requests the given membership is eligible to resolve.
+
+        Eligibility rules (mirroring ``ExternalEventChangeRequestService.can_resolve``):
+
+        - **Admin** (``membership.is_admin``): sees all change requests in the
+          organization.
+        - **Member-attendee**: sees only requests whose target event has an
+          ``EventAttendance`` row for this membership (matched by ``membership_user_id``
+          so the ForeignObject join is honoured).
+
+        The result is always scoped to the membership's organization — the base
+        manager enforces ``filter_by_organization`` before this queryset is built.
+
+        Args:
+            membership: The ``OrganizationMembership`` whose eligibility to
+                evaluate.
+
+        Returns:
+            A filtered ``ExternalEventChangeRequestQuerySet`` containing only the
+            change requests the membership can resolve.
+        """
+        from calendar_integration.models import EventAttendance  # noqa: PLC0415
+
+        if membership.is_admin:
+            return self
+
+        # Non-admins: restrict to requests whose event they attend.
+        attendee_event_ids = EventAttendance.objects.filter(
+            organization_id=membership.organization_id,
+            membership_user_id=membership.user_id,
+            membership__is_active=True,
+        ).values("event_fk_id")
+
+        return self.filter(event_fk_id__in=attendee_event_ids)

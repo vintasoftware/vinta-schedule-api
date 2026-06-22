@@ -1,12 +1,17 @@
 from django_filters import rest_framework as filters
 
-from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarType,
+    ExternalEventChangeRequestStatus,
+)
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    ExternalEventChangeRequest,
 )
 from organizations.models import get_active_organization_membership
 
@@ -212,3 +217,26 @@ class AvailableTimeFilterSet(filters.FilterSet):
                 else Calendar.original_manager.none()
             ),
         )
+
+
+class ExternalEventChangeRequestFilterSet(filters.FilterSet):
+    """FilterSet for ``ExternalEventChangeRequest``.
+
+    Lets callers narrow the eligibility-scoped list by status and/or event.
+    Defaults to ``PENDING`` when no ``status`` filter is provided; the viewset
+    applies the default via ``get_queryset()`` before the filterset runs.
+    """
+
+    status = filters.ChoiceFilter(
+        field_name="status",
+        choices=ExternalEventChangeRequestStatus.choices,
+        label="Filter by request status (default: pending)",
+    )
+    event = filters.NumberFilter(
+        field_name="event_fk_id",
+        label="Filter by CalendarEvent ID",
+    )
+
+    class Meta:
+        model = ExternalEventChangeRequest
+        fields = ("status", "event")

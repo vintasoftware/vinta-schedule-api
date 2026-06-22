@@ -37,6 +37,7 @@ import datetime
 import logging
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
+from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.db.models import Q
 
@@ -49,6 +50,7 @@ from calendar_integration.constants import (
     CalendarSyncTriggerSource,
     CalendarType,
     CalendarVisibility,
+    ExternalEventChangeKind,
 )
 from calendar_integration.models import (
     BlockedTime,
@@ -72,7 +74,7 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
     InitializedOrAuthenticatedCalendarService,
 )
 from calendar_integration.services.type_guards import is_authenticated_calendar_service
-from organizations.models import OrganizationMembership
+from organizations.models import ExternalEventUpdatePolicy, OrganizationMembership
 from users.models import User
 
 
@@ -83,6 +85,9 @@ if TYPE_CHECKING:
     from calendar_integration.services.dataclasses import (
         CalendarEventAdapterOutputData,
         CalendarResourceData,
+    )
+    from calendar_integration.services.external_event_change_request_service import (
+        ExternalEventChangeRequestService,
     )
 
 
@@ -152,12 +157,18 @@ class CalendarSyncService:
         context: CalendarServiceContext,
         calendar_cache: dict[tuple[int, str | int], Calendar],
         host: SyncServiceHost,
+        external_event_change_request_service: ExternalEventChangeRequestService | None = None,
     ) -> None:
         self._context = context
         self._calendar_cache = calendar_cache
         # Phase 5 seam: available-time pruning (Phase 4) and the shared owner-permission
         # helper are reached through the host (the facade). See ``SyncServiceHost``.
         self._host = host
+        # Phase 3 seam: inbound-update interception under CHANGE_REQUEST/FORBIDDEN policy.
+        # Optional so existing tests that build the service under ALLOW policy (without DI)
+        # remain valid. None is only tolerated when the organization policy is ALLOW;
+        # CHANGE_REQUEST and FORBIDDEN require the service to be injected.
+        self._external_event_change_request_service = external_event_change_request_service
 
     # ------------------------------------------------------------------
     # Organization-resource import
@@ -715,11 +726,205 @@ class CalendarSyncService:
             return
 
         if event.status == "cancelled":
+            # Determine the organization's inbound-update policy for deletions.
+            context = cast("InitializedOrAuthenticatedCalendarService", self._context)
+            organization = context.organization
+            policy = (
+                organization.external_event_update_policy
+                if organization is not None
+                else ExternalEventUpdatePolicy.ALLOW
+            )
+
+            if policy == ExternalEventUpdatePolicy.CHANGE_REQUEST:
+                # Under CHANGE_REQUEST: divert the deletion into a delete-kind
+                # change request and do NOT delete the local event.  The external id
+                # is still added to ``matched_event_ids`` so the full-sync deletion
+                # pass does not treat the event as vanished.
+                if self._external_event_change_request_service is None:
+                    raise ImproperlyConfigured(
+                        "ExternalEventChangeRequestService must be injected when an "
+                        "organization's external_event_update_policy is CHANGE_REQUEST "
+                        "(check di_core/containers.py wiring)."
+                    )
+                retained_values = {
+                    "title": existing_event.title,
+                    "description": existing_event.description,
+                    "start_time": (
+                        existing_event.start_time.isoformat() if existing_event.start_time else None
+                    ),
+                    "end_time": (
+                        existing_event.end_time.isoformat() if existing_event.end_time else None
+                    ),
+                }
+                # Derive the provider from the sync adapter when available.
+                if context.calendar_adapter is not None:
+                    provider = context.calendar_adapter.provider
+                elif existing_event.calendar is not None:
+                    provider = existing_event.calendar.provider
+                else:
+                    raise ImproperlyConfigured(
+                        "CalendarEvent.calendar must be set when processing an existing event"
+                    )
+                self._external_event_change_request_service.create_or_supersede_delete_request(
+                    event=existing_event,
+                    retained_values=retained_values,
+                    payload=event.original_payload or {},
+                    provider=provider,
+                )
+                changes.matched_event_ids.add(existing_event.external_id)
+                return
+
+            if policy == ExternalEventUpdatePolicy.FORBIDDEN:
+                # Under FORBIDDEN: immediately undo the inbound deletion on the provider
+                # (re-create the event externally and rebind the local external_id).
+                # Do NOT delete the local event; add the external id to matched_event_ids
+                # so the full-sync deletion pass does not treat the event as vanished.
+                if self._external_event_change_request_service is None:
+                    raise ImproperlyConfigured(
+                        "ExternalEventChangeRequestService must be injected when an "
+                        "organization's external_event_update_policy is FORBIDDEN "
+                        "(check di_core/containers.py wiring)."
+                    )
+                if context.calendar_adapter is None:
+                    raise ImproperlyConfigured(
+                        "An authenticated CalendarAdapter must be present to auto-undo "
+                        "inbound changes under FORBIDDEN policy. The sync context has no "
+                        "write adapter (calendar_adapter is None)."
+                    )
+                retained_values = {
+                    "title": existing_event.title,
+                    "description": existing_event.description,
+                    "start_time": (
+                        existing_event.start_time.isoformat() if existing_event.start_time else None
+                    ),
+                    "end_time": (
+                        existing_event.end_time.isoformat() if existing_event.end_time else None
+                    ),
+                }
+                # The None-guard above guarantees calendar_adapter is non-None here.
+                provider = context.calendar_adapter.provider
+                self._external_event_change_request_service.auto_undo_inbound_change(
+                    event=existing_event,
+                    kind=ExternalEventChangeKind.DELETE,
+                    proposed_values={},
+                    retained_values=retained_values,
+                    payload=event.original_payload or {},
+                    provider=provider,
+                    write_adapter=context.calendar_adapter,
+                )
+                changes.matched_event_ids.add(existing_event.external_id)
+                return
+
+            # ALLOW: delete the local event as today.
             changes.events_to_delete.append(existing_event.external_id)
             changes.matched_event_ids.add(existing_event.external_id)
             return
 
-        # Update existing event
+        # Determine the organization's inbound-update policy.
+        context = cast("InitializedOrAuthenticatedCalendarService", self._context)
+        organization = context.organization
+        policy = (
+            organization.external_event_update_policy
+            if organization is not None
+            else ExternalEventUpdatePolicy.ALLOW
+        )
+
+        # Under CHANGE_REQUEST: divert the edit into a change request and do NOT
+        # mutate the local event.  The external id is still added to
+        # ``matched_event_ids`` so the full-sync deletion pass does not treat the
+        # event as vanished (the sync token still advances normally at the sync
+        # level — this method only controls the diff-engine behavior).
+        if policy == ExternalEventUpdatePolicy.CHANGE_REQUEST:
+            if self._external_event_change_request_service is None:
+                raise ImproperlyConfigured(
+                    "ExternalEventChangeRequestService must be injected when an organization's "
+                    "external_event_update_policy is CHANGE_REQUEST (check di_core/containers.py wiring)."
+                )
+            proposed_values = {
+                "title": event.title,
+                "description": event.description,
+                "start_time": event.start_time.isoformat() if event.start_time else None,
+                "end_time": event.end_time.isoformat() if event.end_time else None,
+            }
+            retained_values = {
+                "title": existing_event.title,
+                "description": existing_event.description,
+                "start_time": (
+                    existing_event.start_time.isoformat() if existing_event.start_time else None
+                ),
+                "end_time": (
+                    existing_event.end_time.isoformat() if existing_event.end_time else None
+                ),
+            }
+            # Derive the provider from the sync adapter when available; fall back to
+            # the local event's calendar provider so non-Google adapters are recorded
+            # correctly when wired in the future.
+            if context.calendar_adapter is not None:
+                provider = context.calendar_adapter.provider
+            elif existing_event.calendar is not None:
+                provider = existing_event.calendar.provider
+            else:
+                # Should not be reachable: calendar is always set when syncing events.
+                raise ImproperlyConfigured(
+                    "CalendarEvent.calendar must be set when processing an existing event"
+                )
+            self._external_event_change_request_service.create_or_supersede_update_request(
+                event=existing_event,
+                proposed_values=proposed_values,
+                retained_values=retained_values,
+                payload=event.original_payload or {},
+                provider=provider,
+            )
+            changes.matched_event_ids.add(existing_event.external_id)
+            return
+
+        if policy == ExternalEventUpdatePolicy.FORBIDDEN:
+            # Under FORBIDDEN: immediately undo the inbound edit on the provider by pushing
+            # the retained (local) values back via update_event.  Do NOT mutate the local
+            # event and do NOT add it to events_to_update; add external id to
+            # matched_event_ids so the full-sync deletion pass does not treat it as vanished.
+            if self._external_event_change_request_service is None:
+                raise ImproperlyConfigured(
+                    "ExternalEventChangeRequestService must be injected when an organization's "
+                    "external_event_update_policy is FORBIDDEN (check di_core/containers.py wiring)."
+                )
+            if context.calendar_adapter is None:
+                raise ImproperlyConfigured(
+                    "An authenticated CalendarAdapter must be present to auto-undo "
+                    "inbound changes under FORBIDDEN policy. The sync context has no "
+                    "write adapter (calendar_adapter is None)."
+                )
+            proposed_values = {
+                "title": event.title,
+                "description": event.description,
+                "start_time": event.start_time.isoformat() if event.start_time else None,
+                "end_time": event.end_time.isoformat() if event.end_time else None,
+            }
+            retained_values = {
+                "title": existing_event.title,
+                "description": existing_event.description,
+                "start_time": (
+                    existing_event.start_time.isoformat() if existing_event.start_time else None
+                ),
+                "end_time": (
+                    existing_event.end_time.isoformat() if existing_event.end_time else None
+                ),
+            }
+            # The None-guard above guarantees calendar_adapter is non-None here.
+            provider = context.calendar_adapter.provider
+            self._external_event_change_request_service.auto_undo_inbound_change(
+                event=existing_event,
+                kind=ExternalEventChangeKind.UPDATE,
+                proposed_values=proposed_values,
+                retained_values=retained_values,
+                payload=event.original_payload or {},
+                provider=provider,
+                write_adapter=context.calendar_adapter,
+            )
+            changes.matched_event_ids.add(existing_event.external_id)
+            return
+
+        # ALLOW (default): apply the incoming changes directly to the local event.
         existing_event.title = event.title
         existing_event.description = event.description
         existing_event.start_time = event.start_time

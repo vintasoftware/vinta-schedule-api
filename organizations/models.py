@@ -66,6 +66,21 @@ def get_active_organization_membership(
     return user.organization_memberships.filter(is_active=True).order_by("created").first()  # type: ignore[union-attr]
 
 
+class ExternalEventUpdatePolicy(models.TextChoices):
+    """Policy for handling inbound external provider edits and deletions.
+
+    Controls how the app responds to edits/deletions of synced events
+    coming from external providers (e.g., Google Calendar):
+    - ALLOW: apply inbound edits directly (today's behavior).
+    - CHANGE_REQUEST: route edits/deletions into an approval workflow.
+    - FORBIDDEN: auto-undo inbound edits/deletions on the external provider.
+    """
+
+    ALLOW = "allow", "Allow direct updates"
+    CHANGE_REQUEST = "change_request", "Updates create change requests"
+    FORBIDDEN = "forbidden", "Updates are forbidden"
+
+
 class OrganizationTier(BaseModel):
     """
     Represents a tier for a calendar organization.
@@ -91,6 +106,16 @@ class Organization(BaseModel):
     )
     should_sync_rooms = models.BooleanField(
         default=False, help_text="Whether to sync rooms for this organization."
+    )
+    external_event_update_policy = models.CharField(
+        max_length=20,
+        choices=ExternalEventUpdatePolicy,
+        default=ExternalEventUpdatePolicy.CHANGE_REQUEST,
+        db_default=ExternalEventUpdatePolicy.CHANGE_REQUEST,
+        help_text=(
+            "Policy for handling inbound external provider edits and deletions to synced events. "
+            "ALLOW: apply directly. CHANGE_REQUEST: route to approval. FORBIDDEN: auto-undo."
+        ),
     )
     parent = models.ForeignKey(
         "self",

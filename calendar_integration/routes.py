@@ -6,6 +6,7 @@ from .views import (
     CalendarEventViewSet,
     CalendarGroupViewSet,
     CalendarViewSet,
+    ExternalEventChangeRequestViewSet,
 )
 
 
@@ -34,5 +35,10 @@ routes: list[RouteDict] = [
         "regex": r"available-times",
         "viewset": AvailableTimeViewSet,
         "basename": "AvailableTimes",
+    },
+    {
+        "regex": r"change-requests",
+        "viewset": ExternalEventChangeRequestViewSet,
+        "basename": "ChangeRequests",
     },
 ]

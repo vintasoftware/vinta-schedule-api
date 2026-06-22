@@ -32,6 +32,7 @@ from calendar_integration.models import (
     EventExternalAttendance,
     EventRecurrenceException,
     ExternalAttendee,
+    ExternalEventChangeRequest,
     GoogleCalendarServiceAccount,
     RecurrenceRule,
     ResourceAllocation,
@@ -64,6 +65,7 @@ from calendar_integration.virtual_models import (
     EventExternalAttendanceVirtualModel,
     EventRecurrenceExceptionVirtualModel,
     ExternalAttendeeVirtualModel,
+    ExternalEventChangeRequestVirtualModel,
     RecurrenceRuleVirtualModel,
     ResourceAllocationVirtualModel,
 )
@@ -2772,3 +2774,37 @@ class CalendarGroupAvailabilityQuerySerializer(serializers.Serializer):
 class BookableSlotProposalSerializer(serializers.Serializer):
     start_time = serializers.DateTimeField()
     end_time = serializers.DateTimeField()
+
+
+class ExternalEventChangeRequestSerializer(VirtualModelSerializer):
+    """Read-only serializer for ``ExternalEventChangeRequest``.
+
+    Exposes the fields needed by the first-party frontend to list, approve,
+    and reject change requests.  The ``resolved_by`` field surfaces only the
+    user id and display name — never raw membership / organization ids — to
+    avoid leaking cross-tenant identity data.
+    """
+
+    event_id = serializers.IntegerField(source="event_fk_id", read_only=True)
+    resolved_by_user_id = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ExternalEventChangeRequest
+        fields = (
+            "id",
+            "event_id",
+            "kind",
+            "status",
+            "provider",
+            "proposed_values",
+            "retained_values",
+            "resolved_by_user_id",
+            "resolved_at",
+            "created",
+        )
+        read_only_fields = fields
+        virtual_model = ExternalEventChangeRequestVirtualModel
+
+    def get_resolved_by_user_id(self, obj: ExternalEventChangeRequest) -> int | None:
+        """Return the resolver's user id, or ``None`` when unresolved."""
+        return obj.resolved_by_user_id  # type: ignore[attr-defined]

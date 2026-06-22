@@ -20,6 +20,7 @@ from calendar_integration.querysets import (
     CalendarManagementTokenQuerySet,
     CalendarQuerySet,
     CalendarSyncQuerySet,
+    ExternalEventChangeRequestQuerySet,
     RecurringQuerySetMixin,
 )
 from organizations.managers import BaseOrganizationModelManager
@@ -27,6 +28,7 @@ from organizations.managers import BaseOrganizationModelManager
 
 if TYPE_CHECKING:
     from calendar_integration.models import CalendarManagementToken
+    from organizations.models import OrganizationMembership as OrganizationMembershipType
 
 
 class RecurringManagerMixin:
@@ -319,3 +321,19 @@ class CalendarManagementTokenManager(BaseOrganizationModelManager):
         if token.expires_at is not None and token.expires_at <= timezone.now():
             return "EXPIRED"
         return None
+
+
+class ExternalEventChangeRequestManager(BaseOrganizationModelManager):
+    """Manager for ExternalEventChangeRequest with domain-specific query methods."""
+
+    def get_queryset(self) -> ExternalEventChangeRequestQuerySet:
+        return ExternalEventChangeRequestQuerySet(self.model, using=self._db)
+
+    def resolvable_by(
+        self, membership: "OrganizationMembershipType"
+    ) -> ExternalEventChangeRequestQuerySet:
+        """Delegate to the queryset's ``resolvable_by`` method.
+
+        Returns change requests the given membership is eligible to resolve.
+        """
+        return self.get_queryset().resolvable_by(membership)

@@ -13,7 +13,7 @@ from dependency_injector.wiring import Provide, inject
 from django_virtual_models import QuerySet
 from graphql import GraphQLError
 
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import CalendarType, ExternalEventChangeRequestStatus
 from calendar_integration.exceptions import (
     InvalidTokenError,
     TokenAlreadyUsedError,
@@ -33,6 +33,7 @@ from calendar_integration.graphql import (
     CalendarGroupSlotAvailabilityGraphQLType,
     CalendarWebhookEventGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
+    ExternalEventChangeRequestGraphQLType,
     UnavailableTimeWindowGraphQLType,
     WebhookSubscriptionStatusGraphQLType,
 )
@@ -43,6 +44,7 @@ from calendar_integration.models import (
     CalendarEvent,
     CalendarGroup,
     CalendarManagementToken,
+    ExternalEventChangeRequest,
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
 from organizations.models import Organization, OrganizationMembership, resolve_branding
@@ -984,6 +986,82 @@ class Query:
         qs = WebhookEvent.objects.filter_by_organization(org.id).order_by("-pk")
         return cast(
             list[WebhookEventGraphQLType],
+            list(_slice_qs(qs, offset, limit)),
+        )
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def external_event_change_requests(
+        self,
+        info: strawberry.Info,
+        status: str | None = None,
+        event_id: int | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[ExternalEventChangeRequestGraphQLType]:
+        """List external event change requests visible to the caller.
+
+        Eligibility scoping:
+        - **Scoped token** (``scoped_to_membership`` set): the token's acting
+          membership is used to evaluate eligibility — the member sees only
+          requests for events they attend, unless that member is an admin.
+        - **Org-wide token** (``scoped_to_membership`` is ``None``): the token
+          acts as an organization-wide admin and sees all requests in the org.
+
+        Default: returns only ``PENDING`` requests when no ``status`` is passed.
+        Pass ``status`` to retrieve historical/resolved requests.
+
+        Pagination is required; maximum 100 results per page.
+        """
+        if offset < 0:
+            raise GraphQLError("Offset must be non-negative")
+        if limit < 1 or limit > 100:
+            raise GraphQLError("Limit must be between 1 and 100")
+        if status is not None and status not in ExternalEventChangeRequestStatus.values:
+            raise GraphQLError(
+                f"Invalid status '{status}'. "
+                f"Valid values: {', '.join(ExternalEventChangeRequestStatus.values)}"
+            )
+
+        org = _get_org(info)
+        request: PublicApiHttpRequest = info.context.request
+        system_user = request.public_api_system_user
+
+        # Resolve the acting membership from the token's scoped_to_membership.
+        # Org-wide tokens (scoped_to_membership_user_id=None) are treated as
+        # admins — they can see all requests in the organization.
+        acting_membership: OrganizationMembership | None = None
+        scoped_user_id = getattr(system_user, "scoped_to_membership_user_id", None)
+        if system_user is not None and scoped_user_id is not None:
+            try:
+                acting_membership = OrganizationMembership.objects.get(
+                    organization_id=org.id,
+                    user_id=scoped_user_id,
+                    is_active=True,
+                )
+            except OrganizationMembership.DoesNotExist:
+                # Membership was revoked or deactivated; return empty.
+                return cast(list[ExternalEventChangeRequestGraphQLType], [])
+
+        qs = ExternalEventChangeRequest.objects.filter_by_organization(org.id)
+
+        # Eligibility scoping: if acting_membership is set, filter to requests
+        # the membership is eligible to resolve. If no membership (org-wide token),
+        # the token acts as an organization-wide admin and sees all requests.
+        if acting_membership is not None:
+            qs = qs.resolvable_by(acting_membership)
+
+        # Default to PENDING when no status filter is provided.
+        if status is None:
+            qs = qs.filter(status=ExternalEventChangeRequestStatus.PENDING)
+        else:
+            qs = qs.filter(status=status)
+
+        if event_id is not None:
+            qs = qs.filter(event_fk_id=event_id)
+
+        qs = qs.select_related("resolved_by").order_by("-pk")
+        return cast(
+            list[ExternalEventChangeRequestGraphQLType],
             list(_slice_qs(qs, offset, limit)),
         )
 

@@ -1,7 +1,13 @@
 import datetime
 
-from .constants import RecurrenceFrequency
-from .models import CalendarEvent, CalendarOwnership, EventAttendance, RecurrenceRule
+from .constants import CalendarProvider, ExternalEventChangeKind, RecurrenceFrequency
+from .models import (
+    CalendarEvent,
+    CalendarOwnership,
+    EventAttendance,
+    ExternalEventChangeRequest,
+    RecurrenceRule,
+)
 
 
 def create_calendar_ownership(
@@ -287,3 +293,42 @@ class CalendarEventFactory:
         # Sort by start time
         events.sort(key=lambda x: x.start_time)
         return events
+
+
+def create_external_event_change_request(
+    *,
+    event: CalendarEvent,
+    kind: str = ExternalEventChangeKind.UPDATE,
+    status: str = "pending",
+    provider: str = CalendarProvider.GOOGLE,
+    proposed_values: dict | None = None,
+    proposed_payload: dict | None = None,
+    retained_values: dict | None = None,
+    organization=None,
+    **kwargs,
+) -> ExternalEventChangeRequest:
+    """Create an ``ExternalEventChangeRequest`` linked to *event*.
+
+    Defaults to a ``PENDING`` / ``update`` / ``google`` request with empty JSON
+    fields.  Override any field via keyword arguments.
+
+    The request is scoped to the same organization as *event*. If an explicit
+    ``organization`` is passed it must match ``event.organization``; a mismatch
+    raises ``ValueError`` to prevent silent cross-tenant data creation.
+    """
+    effective_org = event.organization
+    if organization is not None and organization != effective_org:
+        raise ValueError(
+            f"organization mismatch: passed {organization!r} but event belongs to {effective_org!r}"
+        )
+    return ExternalEventChangeRequest.objects.create(
+        organization=effective_org,
+        event=event,
+        kind=kind,
+        status=status,
+        provider=provider,
+        proposed_values=proposed_values if proposed_values is not None else {},
+        proposed_payload=proposed_payload if proposed_payload is not None else {},
+        retained_values=retained_values if retained_values is not None else {},
+        **kwargs,
+    )

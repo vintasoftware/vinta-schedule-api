@@ -6,6 +6,23 @@ from calendar_integration.services.calendar_permission_service import CalendarPe
 from organizations.models import get_active_organization_membership
 
 
+class ExternalEventChangeRequestPermission(BasePermission):
+    """Permission for ``ExternalEventChangeRequestViewSet``.
+
+    Requires an authenticated user with an active organization membership.
+    The eligibility scoping (member-attendee vs. admin) is applied in
+    ``get_queryset()`` and the individual approve/reject actions — not here.
+    This class is the first gate: unauthenticated users are refused outright
+    and membership-less (gated) users see an empty queryset rather than a 403.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        """Allow access only to authenticated users with an active membership."""
+        if not request.user.is_authenticated:
+            return False
+        return get_active_organization_membership(request.user) is not None
+
+
 class CalendarEventPermission(BasePermission):
     """
     Custom permission for CalendarEvent operations.

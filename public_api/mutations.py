@@ -28,7 +28,10 @@ from calendar_integration.graphql import (
     CalendarGraphQLType,
 )
 from calendar_integration.models import Calendar
-from calendar_integration.mutations import CalendarGroupMutations
+from calendar_integration.mutations import (
+    CalendarGroupMutations,
+    ExternalEventChangeRequestMutations,
+)
 from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
     EventAttendanceInputData,
@@ -622,7 +625,7 @@ class ScheduleEventInput:
 
 
 @strawberry.type
-class Mutation(CalendarGroupMutations):
+class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
     @strawberry.mutation
     def check_token(
         self,

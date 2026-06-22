@@ -14,6 +14,7 @@ from calendar_integration.models import (
     EventExternalAttendance,
     EventRecurrenceException,
     ExternalAttendee,
+    ExternalEventChangeRequest,
     RecurrenceRule,
     ResourceAllocation,
 )
@@ -149,3 +150,14 @@ class AvailableTimeVirtualModel(v.VirtualModel):
 
     class Meta:
         model = AvailableTime
+
+
+class ExternalEventChangeRequestVirtualModel(v.VirtualModel):
+    """Virtual model for ``ExternalEventChangeRequest`` serialization.
+
+    The serializer only reads direct columns (``event_fk_id``,
+    ``resolved_by_user_id``) so no nested prefetches are required.
+    """
+
+    class Meta:
+        model = ExternalEventChangeRequest
