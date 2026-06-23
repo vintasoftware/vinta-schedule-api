@@ -11317,6 +11317,7 @@ components:
       - calendar_booking_code
       - create_resource_calendar
       - disable_resource_calendar
+      - update_resource_calendar
       - import_resource_calendars
       - create_availability_window
       - update_availability_window
@@ -11360,6 +11361,7 @@ components:
         * `calendar_booking_code` - Calendar Booking Code
         * `create_resource_calendar` - Create Resource Calendar
         * `disable_resource_calendar` - Disable Resource Calendar
+        * `update_resource_calendar` - Update Resource Calendar
         * `import_resource_calendars` - Import Resource Calendars
         * `create_availability_window` - Create Availability Window
         * `update_availability_window` - Update Availability Window
