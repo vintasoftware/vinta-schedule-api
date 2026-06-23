@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=./node_modules/vinta-ai-workflows/schemas/vinta-ai-workflows-config.v1.schema.json
 
 schema_version: 1
-vinta_ai_workflows_version: "0.2.0-alpha1"
-last_synced_at: "2026-06-13T00:00:00Z"
+vinta_ai_workflows_version: "0.2.0-alpha3"
+last_synced_at: "2026-06-23T00:00:00Z"
 
 project:
   name: vinta_schedule_api
@@ -45,7 +45,7 @@ vendors:
 foundation_skills:
   plan-feature: enabled
   create-spec: enabled
-  create-qa-use-cases: enabled
+  create-qa-use-cases: disabled
   implement-plan: enabled
   amend-plan: enabled
   open-pr-from-context: enabled

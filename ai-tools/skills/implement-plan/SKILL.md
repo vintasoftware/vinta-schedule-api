@@ -17,7 +17,7 @@ Execution counterpart to [plan-feature](../plan-feature/SKILL.md). Plan = contra
 - Type / build gate: `docker compose run --rm api uv run python manage.py check --deploy` plus full mypy via `docker compose run --rm api uv run mypy .`.
 - Unit / integration tests: `docker compose run --rm api uv run pytest -n auto` (everything); per-app via `docker compose run --rm api uv run pytest <app>/tests/ -n auto`.
 
-- Migrations: `docker compose run --rm api uv run python manage.py makemigrations --check` (gate) + `docker compose run --rm api uv run python manage.py migrate` (apply). Raw-SQL DB code (functions, views, materialized views, triggers, procedures) routes through `common/raw_sql_migration_managers.py` — see [add-migration](../add-migration/SKILL.md).
+- Migrations: `docker compose run --rm api uv run python manage.py makemigrations --check` (gate) + `docker compose run --rm api uv run python manage.py migrate` (apply). Raw-SQL DB code (functions, views, materialized views, triggers, procedures) routes through `common/raw_sql_migration_managers.py` — see [add-migration](../add-migration/SKILL.md). Deploy target: Render — long-running migrations run via the Render dashboard's job runner; Celery workers + beat are separate services on Render and must be restarted alongside web after a deploy.
 - Code host: **GitHub**. PR creation policy: **agents create PRs** — every phase opens a PR via the bundled prs-context file + [open-pr.sh](../open-pr-from-context/scripts/open-pr.sh).
 - Co-author trailer policy: **forbidden**. Commits must not include `Co-Authored-By:` AI trailers.
 
@@ -66,10 +66,11 @@ When true, invoke [prepare-worktree](../prepare-worktree/SKILL.md) **once**, bef
    - `worktree_path` — absolute path the phase subagents will `cd` into.
    - `worktree_branch` — the base branch prepare-worktree created; phase branches stack off this.
    - `worktree_summary` — `.vinta-ai-workflows/worktrees/<name>.yaml` (read by teardown).
-4. **Persist to tracking.** Write `run_options.worktree_path`, `run_options.worktree_branch`, `run_options.worktree_summary` into `ai-plans/TRACKING_{plan-id}.md` (Step 1g schema gains these three fields). All later phases read them — never re-provision mid-plan.
+   - `sandbox_tier` — `enforced` (the [Filesystem sandbox](../prepare-worktree/SKILL.md#step-55--filesystem-sandbox-os-level-write-guard) step found `sandbox-exec` / `bwrap` and will OS-block main-checkout writes) or `none` (no sandbox tool — prevention degrades to the Layer 1 backstop). Drives the [Spawn subagent](#1c-spawn-subagent) wrapping + Layer 1 below.
+4. **Persist to tracking.** Write `run_options.worktree_path`, `run_options.worktree_branch`, `run_options.worktree_summary`, `run_options.sandbox_tier` into `ai-plans/TRACKING_{plan-id}.md` (Step 1g schema gains these fields). All later phases read them — never re-provision mid-plan.
 5. **Report to user.** Quote the prepare-worktree summary back: which dirs symlinked vs copied vs forked; which DB(s) forked + their names; compose project name; teardown command. Hold here until the user confirms (`AskUserQuestion`: `Looks good — start phase 1`, `Stop — let me adjust`).
 
-**Worktree topology rule.** When `use_worktree = true`, every phase branches off the previous phase **inside the worktree**, not off `main` in the main checkout. The first phase branches off `<worktree_branch>` (which prepare-worktree based on `origin/main`); subsequent phases stack as usual. All `git` calls in the **Branch + push** step use `git -C <worktree_path>` (or `cd` into the worktree first). All inner / outer test commands in the [Prepare agent prompt](#1a-prepare-agent-prompt-token-efficient) step's working-instructions block run inside the worktree so they hit the forked DB / env / compose stack.
+**Worktree topology rule.** When `use_worktree = true`, every phase branches off the previous phase **inside the worktree**, not off `main` in the main checkout. The first phase branches off `<worktree_branch>` (which prepare-worktree based on `origin/main`); subsequent phases stack as usual. All `git` calls in the **Push branch** step use `git -C <worktree_path>` (or `cd` into the worktree first). All inner / outer test commands in the [Prepare agent prompt](#1a-prepare-agent-prompt-token-efficient) step's working-instructions block run inside the worktree so they hit the forked DB / env / compose stack.
 
 Failure modes:
 - **prepare-worktree returns an error** (disk full, branch exists, DB clone failed) → surface to the user; do NOT fall back to "just run in the main checkout" silently — that defeats the opt-in. Ask: `Retry`, `Run in main checkout instead (flip use_worktree to false)`, `Stop`.
@@ -102,6 +103,9 @@ vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (
   env, and compose stack are intentionally separated. See
   `<run_options.worktree_path>/WORKTREE.md` for what's forked vs shared (deps, dev DB,
   test DB, compose project name, env file).
+  {If run_options.sandbox_tier = enforced:} Writes to the main checkout are
+  OS-blocked — if you see `Operation not permitted` / `EROFS` on a write, you
+  used a main-checkout path by mistake; redo it against this worktree path.
   Branch base for this phase: `<phase-specific base>` — orchestrator already
   created your phase branch there; commit straight to it.
 
@@ -174,7 +178,7 @@ Transitive deps follow the same rule, but checking every transitive license at i
 
 7. **Plan commit units before staging.** List the logical units this phase produces (e.g. `3 services + 1 use case update + 1 init export`). Each unit = **one** commit. Tests for that unit travel **in the same commit** as the code they test — never a separate commit.
 8. For each unit, in order:
-   a. Stage exactly that unit's files: `git add <explicit paths>` (NEVER `git add -A` — the repo root holds untracked `.env`, `.env.docker`, generated `schema.yml` / `schema-auth.yml`, `.coverage`, `mailpit-data/` that `-A` will sweep in). Tests for the unit go in the same `git add`.
+   a. Stage exactly that unit's files: `git add <explicit paths>` (NEVER `git add -A` — repo root holds untracked .env / .env.docker, generated schema.yml / schema-auth.yml, .coverage, mailpit-data — `git add -A` will sweep them in). Tests for the unit go in the same `git add`.
    b. Commit with the repo's commit_style — see the **Commit Boundaries** + **Commit Message Format** tables below.
    c. Don't bundle two units in one commit. If the commit message needs the word "and" to cover the diff, **split** — see **Red Flags** below.
 9. Do **not** add `Co-Authored-By: Claude` (or any other AI) trailer to commits — the project forbids them.
@@ -254,7 +258,7 @@ Implement full record copy feature   ← too broad, should be split
 
 **Else (`run_options.commit_strategy_resolved = "stacked-branches"`):**
 
-7. Stage right files (NEVER `git add -A` — the repo root holds untracked `.env`, `.env.docker`, generated `schema.yml` / `schema-auth.yml`, `.coverage`, `mailpit-data/` that `-A` will sweep in). Stage explicitly: `git add <app>/... vinta_schedule_api/... ai-plans/... tests/... — explicit per-path`.
+7. Stage right files (NEVER `git add -A` — repo root holds untracked .env / .env.docker, generated schema.yml / schema-auth.yml, .coverage, mailpit-data — `git add -A` will sweep them in). Stage explicitly: `git add <explicit paths>`.
 8. Commit with the repo's style — look at `git log -10 --oneline` first. Conventional Commits format: `type(scope): subject` — e.g. `feat(calendar): add bundle availability filter`, `fix(public_api): correct organization scope on bookings query`.
 9. Do **not** add `Co-Authored-By: Claude` (or any other AI) trailer to commits — the project forbids them.
 10. Stop after the commit. Orchestrator owns the branch, the push, and the PR.
@@ -296,6 +300,21 @@ Use whatever agent-spawning primitive the runtime exposes. Pass:
 - Phase prompt from the [Prepare agent prompt](#1a-prepare-agent-prompt-token-efficient) step.
 - The right **agent type**.
 
+**Sandbox the spawn (only when `run_options.use_worktree = true`).** The prompt tells the subagent to stay in the worktree, but that's cooperative — a smaller model can resolve a path back to the main checkout and silently write there (the failure Layer 1 below catches reactively). When the runtime spawns subagents as **subprocesses** (it shells out to an agent CLI — e.g. `codex exec …`, a `claude -p …` child, a custom runner), wrap that launch command in the worktree's bundled guard so the OS blocks main-checkout writes regardless of harness:
+
+```bash
+ai-tools/skills/prepare-worktree/scripts/sandbox-run.sh \
+  --deny  <main-checkout-root> \
+  --allow <run_options.worktree_path> \
+  --allow <main-checkout-root>/.vinta-ai-workflows \
+  -- <the agent spawn command>
+```
+
+`<main-checkout-root>` is the repo root the skill was invoked from (never `worktree_path`). A stray write then fails with `Operation not permitted` / `EROFS`; the subagent retries against the worktree.
+
+- **In-process subagent runtimes** (the orchestrator and subagent share one OS process — e.g. claude-code's Task tool) can't wrap a single spawn. Two options: (a) install a runtime pre-write guard hook scoped to the worktree, or (b) run the **entire** implement-plan invocation under `sandbox-run.sh` with the same `--deny` / `--allow` set (the deny-main model leaves `.vinta-ai-workflows` writable for the orchestrator's own tracking / prs-context writes). Pick whichever the runtime supports.
+- **`run_options.sandbox_tier = none`** (no sandbox tool on the machine) → skip wrapping; prevention falls back entirely to the Layer 1 stray-write check below. Surface this once to the user so the weaker guarantee is explicit.
+
 **Agent type per phase.** Project agents in [`ai-tools/agents/`](ai-tools/agents/) (exposed to claude-code via `.claude/agents` symlink):
 
 | Phase shape | Agent type |
@@ -320,13 +339,13 @@ Three layers, all required, in order. The orchestrator never edits — every iss
 3. **Verify the outer gate** ran + green. Look in the report for explicit confirmation that `docker compose run --rm api uv run python manage.py check --deploy` AND `docker compose run --rm api uv run pytest -n auto` were executed + passed. Vague confirmation → **re-run yourself**.
 4. **Scope creep**: file touched outside expected surface area? Unrelated formatting churn? Surface it.
 5. **No-secrets scan**: `git diff` for `password|secret|token|api_key|AKIA|BEGIN [A-Z]+ KEY`.
-6. **Dependency license scan**: `git diff package.json pyproject.toml ...` (project-relevant manifests) — for every added dep look up its SPDX license (`npm view <pkg> license`, PyPI metadata, repo `LICENSE`). A license in `policies.dependency_licenses.forbidden_spdx` and not in `allowed_overrides` is a BLOCKER (when `block`) or a SHOULD-FIX (when `warn`). A missing / `UNKNOWN` / undeclared license is **always a BLOCKER** regardless of enforcement mode — there is no override to silently bless undisclosed terms.
-7. **No AI co-author trailer**: `git log -<n>..HEAD --format=%B | grep -i 'Co-Authored-By'` — any AI trailer is a BLOCKER.
-8. **Stray main-checkout writes (only when `run_options.use_worktree = true`)**: a subagent is told to work inside the worktree, but a buggy agent can resolve an absolute path back to the **main checkout** and silently edit files there (worktrees have independent working trees, so those edits never reach the phase commit — they sit as uncommitted thrash in the main checkout, and the "missing" edits read as a silent fixer/implementer failure). After **every** implementer **and** fixer subagent returns, run `git -C <main-checkout-path> status --short | grep -vE '^\?\?'` (tracked modifications only). Any output is a BLOCKER for this phase:
-   - Diff the stray files (`git -C <main> diff -- <path>`) to recover intent.
+6. **Stray main-checkout writes (only when `run_options.use_worktree = true`)**: a subagent is told to work inside the worktree, but a buggy agent (often a smaller model) can resolve an absolute path back to the **main checkout** and silently edit files there (worktrees have independent working trees, so those edits never reach the phase commit — they sit as uncommitted thrash in the main checkout, and the "missing" edits read as a silent fixer/implementer failure). **When `run_options.sandbox_tier = enforced` the OS sandbox from the [Spawn subagent](#1c-spawn-subagent) step already blocks these writes — this check becomes a cheap backstop (a clean `git status` is the expected result; non-empty output means the sandbox was bypassed or a path slipped through, still a BLOCKER).** When `sandbox_tier = none` it's the *only* line of defense — run it religiously. Either way, after **every** implementer **and** fixer subagent returns, run `git -C <main-checkout-path> status --short | grep -vE '^\?\?'` (tracked modifications only). Any output is a BLOCKER for this phase:
+   - Diff the stray files (`git -C <main-checkout-path> diff -- <path>`) to recover intent.
    - If the edit belongs in the worktree, re-dispatch the fixer/implementer with an explicit instruction to write to the worktree path (the change is missing from the phase commit until it does).
-   - Once recovered (or confirmed superseded by the correctly-committed worktree version), discard the stray edits with `git -C <main> restore -- <path>` so the main checkout returns clean. Never leave the main checkout dirty between phases — a later phase's Layer 1 can't tell new thrash from old.
-   `<main-checkout-path>` is the repo root the skill was invoked from (NOT `run_options.worktree_path`).
+   - Once recovered (or confirmed superseded by the correctly-committed worktree version), discard the stray edits with `git -C <main-checkout-path> restore -- <path>` so the main checkout returns clean. Never leave the main checkout dirty between phases — a later phase's Layer 1 can't tell new thrash from old.
+   `<main-checkout-path>` is the repo root the skill was invoked from (NOT `run_options.worktree_path`). Skip this check entirely when `run_options.use_worktree = false`.
+7. **Dependency license scan**: `git diff package.json pyproject.toml ...` (project-relevant manifests) — for every added dep look up its SPDX license (`npm view <pkg> license`, PyPI metadata, repo `LICENSE`). A license in `policies.dependency_licenses.forbidden_spdx` and not in `allowed_overrides` is a BLOCKER (when `block`) or a SHOULD-FIX (when `warn`). A missing / `UNKNOWN` / undeclared license is **always a BLOCKER** regardless of enforcement mode — there is no override to silently bless undisclosed terms.
+8. **No AI co-author trailer**: `git log -<n>..HEAD --format=%B | grep -i 'Co-Authored-By'` — any AI trailer is a BLOCKER.
 
 #### Layer 2 — Plan compliance walkthrough
 
@@ -346,7 +365,7 @@ Open phase body alongside diff and walk:
 After Layers 1–2 pass, spawn a **separate** subagent (different session, no implementation context) using the project's `reviewer` agent type ([ai-tools/agents/reviewer.md](ai-tools/agents/reviewer.md)). Read-only by design.
 
 Reviewer prompt template — see the reviewer agent's body for the standard form. Triage findings:
-- **BLOCKER**: must fix before the **Branch + push** step below.
+- **BLOCKER**: must fix before the **Push branch** step below.
 - **SHOULD-FIX**: fix in-phase if cheap; else follow-up issue + tracking note.
 - **NIT**: ignore unless trivially cheap.
 
@@ -359,7 +378,7 @@ Reviewer finds nothing on a >300-LoC multi-file phase → suspicious. Read once 
 3. After fixer returns, redo Layer 1 in full + the affected portion of Layer 2.
 4. Loop until Layers 1, 2, 3 are clean.
 
-### 1e. Branch + push
+### 1e. Push branch
 
 **Worktree path rule (applies to whichever commit strategy the block below renders).** When `run_options.use_worktree = false`, every `git` command runs in the main checkout exactly as written. When `true`, run every `git` command below inside the worktree — prefix with `git -C <run_options.worktree_path>` (or `cd` into it first), and the first executed phase branches off `<run_options.worktree_branch>` instead of `main`. Branches / commits stack inside the worktree; nothing touches the main checkout's working tree.
 
@@ -477,7 +496,7 @@ Two project-level signals decide the actual behavior:
 
 Tracking lives at `ai-plans/TRACKING_{plan-id}.md`. Commit on the **current** phase's branch — deletion in Step 3.
 
-Schema: feature-name, plan path, started/last-updated dates, optional feature-flag info, **run options** (`pause_between_phases`, `generate_inline_comments`, `use_worktree`, `worktree_path`, `worktree_branch`, `worktree_summary` — last three only when `use_worktree = true`), **If `run_options.commit_strategy_resolved = "modular-commits"`:** top-level `plan_branch:` field **Else (`stacked-branches`):** (per-phase branch lives under the per-phase fields), completed-phases (with status, model**If `run_options.commit_strategy_resolved = "stacked-branches"`:** `, branch, base` **Else:** (no per-phase branch under modular), e2e+screenshots if any, 5–15 line summary), current phase, remaining phases, deferred phases.
+Schema: feature-name, plan path, started/last-updated dates, optional feature-flag info, **run options** (`pause_between_phases`, `generate_inline_comments`, `use_worktree`, `worktree_path`, `worktree_branch`, `worktree_summary`, `sandbox_tier` — last four only when `use_worktree = true`), **If `run_options.commit_strategy_resolved = "modular-commits"`:** top-level `plan_branch:` field **Else (`stacked-branches`):** (per-phase branch lives under the per-phase fields), completed-phases (with status, model**If `run_options.commit_strategy_resolved = "stacked-branches"`:** `, branch, base` **Else:** (no per-phase branch under modular), 5–15 line summary), current phase, remaining phases, deferred phases.
 
 The orchestrator writes this from the git diff + the agent's summary — not from the agent's narration.
 
@@ -522,6 +541,7 @@ User invokes the skill against a partially-done plan:
 2. **Worktree resume.** When `run_options.use_worktree = true`:
    - Confirm the worktree still exists (`git worktree list | grep <worktree_path>`). Missing → ask user: `Reprovision (run prepare-worktree again with the same name)`, `Switch to main checkout (flip use_worktree to false for the rest of the run)`, `Stop`.
    - Confirm the worktree summary file still parses; if not, regenerate from the existing worktree state.
+   - **Re-probe `sandbox_tier`** (`command -v sandbox-exec || command -v bwrap`) — a resume may run on a different machine than the original provisioning. Update `run_options.sandbox_tier` in tracking before spawning; the [Spawn subagent](#1c-spawn-subagent) wrapping follows the re-probed value.
    - All resumed phases use the existing worktree — do not provision a second one.
 3. `git -C <path> branch -a | grep plan/{plan-id-kebab}` to detect already-pushed phase branches (`<path>` = main checkout or worktree per `run_options.use_worktree`).
 4. Cross-reference with the plan's phase list.
@@ -532,9 +552,9 @@ User invokes the skill against a partially-done plan:
 After all executable phases complete:
 
 1. **Delete `TRACKING_{plan-id}.md`** on the last phase's branch. Commit. The plan file stays.
-2. Send the user a final summary: **If `run_options.commit_strategy_resolved = "modular-commits"`:** single plan branch `plan/{plan-id-kebab}` with commit log organized by phase **Else (`stacked-branches`):** branches pushed (with bases, in stack order); for UI-flow phases — list of `pr-screenshots/` files (if applicable); deferred phases (cross-repo + flag-removal); next steps for the human. When `run_options.use_worktree = true`: include the worktree path + branch + summary file path + the teardown command (`git worktree remove <path>` + the per-engine drop-db / `docker compose -p <project> down -v` lines from `<worktree_summary>`). Do NOT auto-run teardown — the user may still want the worktree to debug review feedback or land follow-ups.
+2. Send the user a final summary: **If `run_options.commit_strategy_resolved = "modular-commits"`:** single plan branch `plan/{plan-id-kebab}` with commit log organized by phase **Else (`stacked-branches`):** branches pushed (with bases, in stack order); deferred phases (cross-repo + flag-removal); next steps for the human. When `run_options.use_worktree = true`: include the worktree path + branch + summary file path + the teardown command (`git worktree remove <path>` + the per-engine drop-db / `docker compose -p <project> down -v` lines from `<worktree_summary>`). Do NOT auto-run teardown — the user may still want the worktree to debug review feedback or land follow-ups.
 3. PR URLs for each phase, in stack order.
-3. Flag-removal phase deferred → end with `/schedule` offer for the dedicated flag-removal skill.
+4. Flag-removal phase deferred → end with `/schedule` offer for the dedicated flag-removal skill.
 
 ## Important rules
 
@@ -555,6 +575,7 @@ After all executable phases complete:
 - **Honor opt-in flags.** `run_options.pause_between_phases` controls the [Per-phase pause gate](#1i-per-phase-pause-gate-opt-in); `run_options.generate_inline_comments` controls whether the [Open PR via context file](#1f-open-pr-via-context-file) step drafts inline comments (always writes the file when that step runs at all — empty comments when off); `run_options.use_worktree` controls whether the [Provision worktree](#step-05--provision-worktree-when-run_optionsuse_worktree--true) step runs and whether every later `git` / lint / test / build / migrate call uses the worktree path.
 - **One worktree per plan run.** When `use_worktree = true`, provision once in the [Provision worktree](#step-05--provision-worktree-when-run_optionsuse_worktree--true) step and reuse for every phase. Never spawn a second worktree mid-plan; never silently fall back to the main checkout on prepare-worktree failure (ask the user).
 - **Don't auto-tear-down the worktree.** Step 2 surfaces the teardown command; the user runs it when they're ready (after reviewer feedback is addressed, after the PR merges, etc.).
+- **Prevent stray main-checkout writes at the OS layer when you can; catch them always.** When `use_worktree = true` and a sandbox tool exists (`sandbox_tier = enforced`), wrap every subprocess subagent spawn in `prepare-worktree`'s `sandbox-run.sh` (deny main checkout, allow worktree + `.vinta-ai-workflows`) so main-checkout writes are blocked by the kernel regardless of harness — see [Spawn subagent](#1c-spawn-subagent). This is *prevention*; the prompt instruction alone is not. Regardless of tier, Layer 1 runs `git -C <main-checkout-path> status --short` after every implementer and fixer as the backstop; any tracked modification is a BLOCKER — recover the intent, re-dispatch to the worktree, then restore the main checkout clean. `<main-checkout-path>` is the repo root the skill was invoked from, never `run_options.worktree_path`.
 - **PR-context file + `open-pr.sh` is the only PR-creation path.** No raw `gh pr create` / `glab mr create` calls outside the bundled script. The file is durable; the script is the publisher.
 - **License check before any new dep.** Refuse `npm add` / `pnpm add` / `pip install` / `poetry add` / `uv add` / `cargo add` / `go get` when the package's SPDX license is in the forbidden list — see AGENTS.md **Dependency licenses**. User can grant a one-off override after acknowledging the violation; record the override in `policies.dependency_licenses.allowed_overrides` before re-running.
 - **[Open PR via context file](#1f-open-pr-via-context-file) gating** = combination of project PR policy (PR creation policy: **agents create PRs** — every phase opens a PR via the bundled prs-context file + [open-pr.sh](../open-pr-from-context/scripts/open-pr.sh).) and `generate_inline_comments`. See the matrix in that step. Skip it entirely only when policy = branches only AND comments = off.
@@ -564,14 +585,14 @@ After all executable phases complete:
 
 - [ ] Plan parsed; structured fields cached.
 - [ ] Cross-repo + flag-removal phases identified + deferred.
-- [ ] `run_options.use_worktree` resolved; [Provision worktree](#step-05--provision-worktree-when-run_optionsuse_worktree--true) ran when `true` (worktree provisioned + summary captured + user confirmed); skipped when `false`.
+- [ ] `run_options.use_worktree` resolved; [Provision worktree](#step-05--provision-worktree-when-run_optionsuse_worktree--true) ran when `true` (worktree provisioned + summary captured + `sandbox_tier` probed + user confirmed); skipped when `false`.
 - [ ] Current phase: prompt composed with **Goals + Non-goals** + **Guiding Decisions** + relevant **Data Model Changes** subsection + tracking summaries + this phase's body (plus the worktree block when `use_worktree = true`).
 - [ ] Model picked from `**Suggested AI model**:` line (cheapest available); plan tier recorded.
-- [ ] Subagent spawned, report received.
+- [ ] Subagent spawned, report received. When `use_worktree = true` AND `sandbox_tier = enforced`: subprocess spawn wrapped in `sandbox-run.sh` (deny main, allow worktree + `.vinta-ai-workflows`), or the whole run sandboxed for in-process runtimes.
 - [ ] Inner loop green: scoped lint + new tests individually + scoped suite.
 - [ ] **Outer gate green:** `docker compose run --rm api uv run python manage.py check --deploy` AND `docker compose run --rm api uv run pytest -n auto` both passed.
-- [ ] Layer 1 review: full diff read; no scope creep; no secrets; outer gate confirmed; no AI co-author trailer; **when `use_worktree = true`: main checkout has no stray tracked modifications** (`git -C <main> status --short | grep -vE '^\?\?'` empty) after every implementer AND fixer subagent.
-- [ ] Layer 2 review: every "Changes" ticked; every "Tests" materialized; acceptance line satisfiable; conventions, reusable skills, e2e + screenshot compliance (if applicable), flag wiring all checked.
+- [ ] Layer 1 review: full diff read; no scope creep; no secrets; outer gate confirmed; no AI co-author trailer; when `use_worktree = true`, `git -C <main-checkout-path> status --short` clean (no stray main-checkout writes) after the implementer and after every fixer.
+- [ ] Layer 2 review: every "Changes" ticked; every "Tests" materialized; acceptance line satisfiable; conventions, reusable skills, flag wiring all checked.
 - [ ] Layer 3 review: adversarial review run; BLOCKERs fixed; SHOULD-FIX either fixed or noted.
 - [ ] After any fix-up: Layers 1 + 2 + outer gate re-run.
 - [ ] **If `run_options.commit_strategy_resolved = "modular-commits"`:** Plan branch updated with phase commits; pushed. **Else (`stacked-branches`):** Stacked branch created; pushed.
