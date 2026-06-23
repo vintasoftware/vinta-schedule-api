@@ -334,6 +334,33 @@ class CalendarEventService:
             .exists()
         )
 
+    def _public_token_may_write(self, system_user: SystemUser, calendar: Calendar) -> bool:
+        """Check whether a public-API ``SystemUser`` is permitted to update/delete ``calendar``'s events.
+
+        Unlike ``create_event`` (which blocks org-wide tokens), reschedule and cancel allow
+        both token types:
+        - **Org-wide** tokens (``scoped_to_membership_user_id is None``) → always allowed for
+          any calendar in their organization.
+        - **Owner-scoped** tokens → allowed only when the token's owner independently owns the
+          target calendar (verified via ``_scoped_system_user_owns_calendar``, which re-derives
+          the ``CalendarOwnership`` relation from the DB — NOT trusted from the caller).
+
+        This is the single choke-point for the update/delete public-token allowance. Gating
+        a future feature flag here covers both ``update_event`` and ``delete_event``.
+
+        Args:
+            system_user: The token (``SystemUser``) attempting the write.
+            calendar: The target calendar whose event the caller wants to update/delete.
+
+        Returns:
+            ``True`` when the token may proceed; ``False`` when it must be denied.
+        """
+        if system_user.scoped_to_membership_user_id is None:
+            # Org-wide token — permitted for any event in the org.
+            return True
+        # Owner-scoped token — only when the token's owner independently owns the calendar.
+        return self._scoped_system_user_owns_calendar(system_user, calendar)
+
     def _serialize_event(self, event: CalendarEvent) -> CalendarEventData:
         """Build webhook payload for calendar event."""
         return _serialize_event_util(event)
@@ -639,6 +666,11 @@ class CalendarEventService:
             organization_id=context.organization.id,
         )
 
+        # When True, authorization is granted by the public-token write allowance
+        # (org-wide or owner-scoped) and the subsequent permission-service check is
+        # bypassed (the service has no CalendarManagementToken initialized for it).
+        is_public_token_write = False
+
         if isinstance(context.user_or_token, User):
             context.calendar_permission_service.initialize_with_user(
                 context.user_or_token,
@@ -646,10 +678,26 @@ class CalendarEventService:
                 event_id=event_id,
             )
         elif isinstance(context.user_or_token, SystemUser):
-            raise PermissionDenied("Events cannot be created through the Public API.")
+            system_user = context.user_or_token
+            if not self._public_token_may_write(system_user, event.calendar):
+                # Surface a not-found-parity message so a cross-owner caller cannot
+                # distinguish a forbidden calendar from a genuinely missing one.
+                raise PermissionDenied("Calendar matching query does not exist.")
+            # Bundle calendars are rejected for scoped (owner) tokens: the bundle
+            # fan-out spans multiple providers and can produce confusing partial
+            # failures. Org-wide tokens follow the existing service rules (bundle
+            # primary events reach _update_bundle_event below, which handles them).
+            if (
+                system_user.scoped_to_membership_user_id is not None
+                and event.calendar.calendar_type == CalendarType.BUNDLE
+            ):
+                raise PermissionDenied(
+                    "Events cannot be updated on a bundle calendar through the Public API."
+                )
+            is_public_token_write = True
 
         serialized_old_event = self._serialize_event(event)
-        if not context.calendar_permission_service.can_perform_update(
+        if not is_public_token_write and not context.calendar_permission_service.can_perform_update(
             old_event=serialized_old_event,
             new_event=self._serialize_event_data_input(event, event_data),
         ):
@@ -1461,6 +1509,11 @@ class CalendarEventService:
             id=event_id,
             organization_id=context.organization.id,
         )
+        # When True, authorization is granted by the public-token write allowance
+        # (org-wide or owner-scoped) and the subsequent permission-service check is
+        # bypassed (the service has no CalendarManagementToken initialized for it).
+        is_public_token_write = False
+
         if isinstance(context.user_or_token, User):
             context.calendar_permission_service.initialize_with_user(
                 context.user_or_token,
@@ -1468,10 +1521,26 @@ class CalendarEventService:
                 event_id=event_id,
             )
         elif isinstance(context.user_or_token, SystemUser):
-            raise PermissionDenied("Events cannot be created through the Public API.")
+            system_user = context.user_or_token
+            if not self._public_token_may_write(system_user, event.calendar):
+                # Surface a not-found-parity message so a cross-owner caller cannot
+                # distinguish a forbidden calendar from a genuinely missing one.
+                raise PermissionDenied("Calendar matching query does not exist.")
+            # Bundle calendars are rejected for scoped (owner) tokens: the bundle
+            # fan-out spans multiple providers and can produce confusing partial
+            # failures. Org-wide tokens follow the existing service rules (bundle
+            # primary events reach _delete_bundle_event below, which handles them).
+            if (
+                system_user.scoped_to_membership_user_id is not None
+                and event.calendar.calendar_type == CalendarType.BUNDLE
+            ):
+                raise PermissionDenied(
+                    "Events cannot be deleted on a bundle calendar through the Public API."
+                )
+            is_public_token_write = True
 
         serialized_old_event = self._serialize_event(event)
-        if not context.calendar_permission_service.can_perform_update(
+        if not is_public_token_write and not context.calendar_permission_service.can_perform_update(
             old_event=serialized_old_event,
             new_event=None,
         ):

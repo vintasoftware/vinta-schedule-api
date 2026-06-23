@@ -542,3 +542,452 @@ def test_create_event_owner_scoped_audit_actor_is_system_user(scoped_event_setup
     if side_effects is not None:
         assert recorded, "on_create_event side effect did not fire"
         assert recorded[0] == system_user
+
+
+# ----------------------------------------------------------------------------------------
+# Public-token update/delete write allowance (Phase 0a)
+#
+# ``update_event`` and ``delete_event`` now accept:
+#   - Owner-scoped tokens whose owner owns the target calendar.
+#   - Org-wide tokens for any calendar in their organization.
+# Cross-owner scoped tokens and bundle calendars (for scoped tokens) are rejected.
+# The regression test asserts that ``create_event`` for an org-wide token STAYS blocked.
+# ----------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def write_allowance_setup(db):
+    """Minimal org + two providers + two calendars for write-allowance tests.
+
+    Returns a dict with:
+    - ``organization`` — the shared org.
+    - ``owner_a`` / ``membership_a`` / ``calendar_a`` — first provider (owns calendar_a).
+    - ``owner_b`` / ``membership_b`` / ``calendar_b`` — second provider (owns calendar_b).
+    - ``bundle_calendar`` — a BUNDLE-type calendar owned by ``owner_a``.
+
+    No external-provider credentials are set; the calendar provider is left as None
+    so no write adapter fires (pure-DB path), which is sufficient for authorization tests.
+    """
+    from calendar_integration.constants import CalendarType
+    from calendar_integration.models import CalendarOwnership
+
+    org = Organization.objects.create(name="Write Allowance Org", should_sync_rooms=False)
+
+    owner_a = User.objects.create_user(email="write-owner-a@example.com", password="pw")
+    Profile.objects.create(user=owner_a)
+    membership_a = OrganizationMembership.objects.create(
+        user=owner_a, organization=org, is_active=True
+    )
+    calendar_a = Calendar.objects.create(
+        name="Calendar A",
+        external_id="write_cal_a",
+        organization=org,
+    )
+    CalendarOwnership.objects.create(
+        calendar=calendar_a, membership_user_id=owner_a.id, organization=org
+    )
+
+    owner_b = User.objects.create_user(email="write-owner-b@example.com", password="pw")
+    Profile.objects.create(user=owner_b)
+    membership_b = OrganizationMembership.objects.create(
+        user=owner_b, organization=org, is_active=True
+    )
+    calendar_b = Calendar.objects.create(
+        name="Calendar B",
+        external_id="write_cal_b",
+        organization=org,
+    )
+    CalendarOwnership.objects.create(
+        calendar=calendar_b, membership_user_id=owner_b.id, organization=org
+    )
+
+    bundle_calendar = Calendar.objects.create(
+        name="Bundle Calendar",
+        external_id="write_bundle_cal",
+        organization=org,
+        calendar_type=CalendarType.BUNDLE,
+    )
+    CalendarOwnership.objects.create(
+        calendar=bundle_calendar, membership_user_id=owner_a.id, organization=org
+    )
+
+    return {
+        "organization": org,
+        "owner_a": owner_a,
+        "membership_a": membership_a,
+        "calendar_a": calendar_a,
+        "owner_b": owner_b,
+        "membership_b": membership_b,
+        "calendar_b": calendar_b,
+        "bundle_calendar": bundle_calendar,
+    }
+
+
+def _make_event_for_write_tests(organization, calendar) -> CalendarEvent:
+    """Create a CalendarEvent directly in the DB (no adapter needed for auth tests)."""
+    return CalendarEvent.objects.create(
+        title="Test Event",
+        description="A test event",
+        start_time_tz_unaware=datetime.datetime(2026, 7, 10, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2026, 7, 10, 11, 0),
+        timezone="UTC",
+        external_id=f"write-evt-{calendar.id}",
+        calendar=calendar,
+        organization=organization,
+    )
+
+
+def _updated_event_input():
+    return CalendarEventInputData(
+        title="Updated Event",
+        description="Updated",
+        start_time=datetime.datetime(2026, 7, 10, 12, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2026, 7, 10, 13, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendances=[],
+        external_attendances=[],
+        resource_allocations=[],
+    )
+
+
+# ------------------------------------------------------------------
+# Owner-scoped token on OWNED calendar — update and delete succeed
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_update_event_allows_owner_scoped_system_user_on_owned_calendar(write_allowance_setup):
+    """An owner-scoped token whose owner owns the calendar may update its event."""
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_a"]
+    membership = setup["membership_a"]
+
+    event = _make_event_for_write_tests(org, calendar)
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="write_allow_update_scoped_owned",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    updated = facade.update_event(calendar.id, event.id, _updated_event_input())
+
+    assert updated.id == event.id
+    assert updated.title == "Updated Event"
+
+
+@pytest.mark.django_db
+def test_delete_event_allows_owner_scoped_system_user_on_owned_calendar(write_allowance_setup):
+    """An owner-scoped token whose owner owns the calendar may delete its event."""
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_a"]
+    membership = setup["membership_a"]
+
+    event = _make_event_for_write_tests(org, calendar)
+    event_id = event.id
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="write_allow_delete_scoped_owned",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    facade.delete_event(calendar.id, event_id)
+
+    assert not CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+
+
+# ------------------------------------------------------------------
+# Owner-scoped token on FOREIGN (cross-owner) calendar — rejected
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_update_event_blocks_owner_scoped_system_user_on_foreign_calendar(write_allowance_setup):
+    """An owner-scoped token is denied on a calendar its owner does not own.
+
+    The not-found-parity message ``'Calendar matching query does not exist.'``
+    is returned so the caller cannot distinguish a forbidden calendar from a
+    genuinely missing one.
+    """
+    from django.core.exceptions import PermissionDenied
+
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    # calendar_b is owned by owner_b; the scoped token is for owner_a's membership.
+    calendar_b = setup["calendar_b"]
+    membership_a = setup["membership_a"]
+
+    event = _make_event_for_write_tests(org, calendar_b)
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="write_deny_update_scoped_foreign",
+        organization=org,
+        scoped_to_membership=membership_a,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    with pytest.raises(PermissionDenied, match=r"Calendar matching query does not exist\."):
+        facade.update_event(calendar_b.id, event.id, _updated_event_input())
+
+    # The event must be unchanged.
+    assert CalendarEvent.objects.filter(id=event.id, organization_id=org.id).exists()
+
+
+@pytest.mark.django_db
+def test_delete_event_blocks_owner_scoped_system_user_on_foreign_calendar(write_allowance_setup):
+    """An owner-scoped token is denied when deleting on a cross-owner calendar.
+
+    The not-found-parity message is returned; the event row survives.
+    """
+    from django.core.exceptions import PermissionDenied
+
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar_b = setup["calendar_b"]
+    membership_a = setup["membership_a"]
+
+    event = _make_event_for_write_tests(org, calendar_b)
+    event_id = event.id
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="write_deny_delete_scoped_foreign",
+        organization=org,
+        scoped_to_membership=membership_a,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    with pytest.raises(PermissionDenied, match=r"Calendar matching query does not exist\."):
+        facade.delete_event(calendar_b.id, event_id)
+
+    assert CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+
+
+# ------------------------------------------------------------------
+# Org-wide token — update and delete succeed on any org calendar
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_update_event_allows_org_wide_system_user(write_allowance_setup):
+    """An org-wide token may update any event in the organization."""
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    # Use calendar_b (not owned by any membership associated with the token).
+    calendar = setup["calendar_b"]
+
+    event = _make_event_for_write_tests(org, calendar)
+
+    # Org-wide token: no scoped_to_membership.
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="write_allow_update_org_wide",
+        organization=org,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    updated = facade.update_event(calendar.id, event.id, _updated_event_input())
+
+    assert updated.id == event.id
+    assert updated.title == "Updated Event"
+
+
+@pytest.mark.django_db
+def test_delete_event_allows_org_wide_system_user(write_allowance_setup):
+    """An org-wide token may delete any event in the organization."""
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_b"]
+
+    event = _make_event_for_write_tests(org, calendar)
+    event_id = event.id
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="write_allow_delete_org_wide",
+        organization=org,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    facade.delete_event(calendar.id, event_id)
+
+    assert not CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+
+
+# ------------------------------------------------------------------
+# Regression: create_event for an org-wide token STAYS blocked
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_create_event_org_wide_system_user_stays_blocked(write_allowance_setup):
+    """Regression: org-wide tokens are still forbidden from creating events.
+
+    ``update_event``/``delete_event`` now allow org-wide tokens, but ``create_event``
+    must remain blocked — this is an explicit divergence captured here so it
+    does not regress silently.
+    """
+    from django.core.exceptions import PermissionDenied
+
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_a"]
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="write_regression_create_org_wide",
+        organization=org,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    with pytest.raises(PermissionDenied, match="Events cannot be created through the Public API"):
+        facade.create_event(calendar.id, _scoped_event_input())
+
+    assert not CalendarEvent.objects.filter(
+        calendar_fk_id=calendar.id, organization_id=org.id
+    ).exists()
+
+
+# ------------------------------------------------------------------
+# Scoped token writing to a BUNDLE calendar — rejected
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_update_event_blocks_scoped_token_on_bundle_calendar(write_allowance_setup):
+    """A scoped token cannot update events on a bundle calendar.
+
+    Bundle fan-out spans multiple providers and can produce confusing partial
+    failures; scoped tokens are rejected up front with a clear error.
+    """
+    from django.core.exceptions import PermissionDenied
+
+    from calendar_integration.constants import CalendarType
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    bundle = setup["bundle_calendar"]
+    membership_a = setup["membership_a"]
+
+    # Create an event directly on the bundle calendar (bypassing service-layer
+    # fan-out) to set up the target for the authorization test.
+    event = CalendarEvent.objects.create(
+        title="Bundle Event",
+        description="On the bundle calendar",
+        start_time_tz_unaware=datetime.datetime(2026, 7, 10, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2026, 7, 10, 11, 0),
+        timezone="UTC",
+        external_id="bundle-evt-update",
+        calendar=bundle,
+        organization=org,
+    )
+    assert bundle.calendar_type == CalendarType.BUNDLE
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="write_deny_update_bundle",
+        organization=org,
+        scoped_to_membership=membership_a,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    with pytest.raises(PermissionDenied, match="bundle calendar"):
+        facade.update_event(bundle.id, event.id, _updated_event_input())
+
+
+@pytest.mark.django_db
+def test_delete_event_blocks_scoped_token_on_bundle_calendar(write_allowance_setup):
+    """A scoped token cannot delete events on a bundle calendar."""
+    from django.core.exceptions import PermissionDenied
+
+    from calendar_integration.constants import CalendarType
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    bundle = setup["bundle_calendar"]
+    membership_a = setup["membership_a"]
+
+    event = CalendarEvent.objects.create(
+        title="Bundle Event",
+        description="On the bundle calendar",
+        start_time_tz_unaware=datetime.datetime(2026, 7, 10, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2026, 7, 10, 11, 0),
+        timezone="UTC",
+        external_id="bundle-evt-delete",
+        calendar=bundle,
+        organization=org,
+    )
+    assert bundle.calendar_type == CalendarType.BUNDLE
+    event_id = event.id
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="write_deny_delete_bundle",
+        organization=org,
+        scoped_to_membership=membership_a,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    with pytest.raises(PermissionDenied, match="bundle calendar"):
+        facade.delete_event(bundle.id, event_id)
+
+    # The event must survive.
+    assert CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+
+
+# ------------------------------------------------------------------
+# Django User path — behavior unchanged (regression)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_update_event_django_user_path_still_uses_permission_token(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    sample_event_input_data,
+    social_account,
+):
+    """The Django User principal still uses the permission-token flow for update.
+
+    The new ``is_public_token_write`` branch must NOT fire for a ``User`` principal.
+    This test mirrors the existing ``test_update_event`` to confirm regression-safety.
+    """
+    mock_google_adapter.create_event.return_value = _adapter_output("user_path_event")
+    mock_google_adapter.update_event.return_value = _adapter_output("user_path_event")
+
+    created = event_service.create_event(calendar.id, sample_event_input_data)
+    _grant_event_owner_token(created, social_account.user, calendar.organization)
+
+    updated_input = CalendarEventInputData(
+        title="User-Path Update",
+        description="Updated via User principal",
+        start_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendances=[],
+        external_attendances=[],
+        resource_allocations=[],
+    )
+
+    result = event_service.update_event(calendar.id, created.id, updated_input)
+
+    assert result.id == created.id
+    assert result.title == "User-Path Update"
+    mock_google_adapter.update_event.assert_called_once()
