@@ -1,9 +1,13 @@
-"""Integration tests for createCalendar and updateCalendar mutations (Phase 6).
+"""Integration tests for createCalendar, updateCalendar, and updateResourceCalendar mutations.
 
 Covers:
 - createCalendar: default is_private, explicit is_private=False, explicit is_private=True.
 - updateCalendar: toggle is_private both directions, partial update (name/description only),
   omit is_private leaves privacy unchanged (both seeded directions).
+- updateResourceCalendar: happy path, capacity three states (omit/null/int), name/description/
+  is_private/manage_available_windows/visibility edits, synced calendar rejected, wrong-type
+  rejected, cross-org denied, input.organization_id ignored (token org wins), unauthenticated
+  denied, token without grant denied.
 - Authorization: token without the relevant write resource is denied; token with it succeeds.
   A token holding only CALENDAR (read) is denied createCalendar/updateCalendar (escalation
   prevention). A provider-scoped token cannot be granted CREATE_CALENDAR/UPDATE_CALENDAR
@@ -15,7 +19,7 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import Calendar
 from organizations.models import Organization
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
@@ -685,3 +689,478 @@ class TestUpdateCalendarMutation:
 
         cal.refresh_from_db()
         assert cal.accepts_public_scheduling is False
+
+
+# ---------------------------------------------------------------------------
+# updateResourceCalendar tests
+# ---------------------------------------------------------------------------
+
+UPDATE_RESOURCE_CALENDAR_MUTATION = """
+mutation UpdateResourceCalendar($input: UpdateResourceCalendarInput!) {
+    updateResourceCalendar(input: $input) {
+        success
+        errorMessage
+        calendar {
+            id
+            name
+            description
+            calendarType
+            isPrivate
+            capacity
+        }
+    }
+}
+"""
+
+
+def _make_resource_calendar(
+    org: Organization,
+    name: str = "Resource Calendar",
+    capacity: int | None = None,
+    manage_available_windows: bool = False,
+    accepts_public_scheduling: bool = False,
+    provider: str = CalendarProvider.INTERNAL,
+    calendar_type: str = CalendarType.RESOURCE,
+) -> Calendar:
+    """Create a resource calendar for tests."""
+    return baker.make(
+        Calendar,
+        organization=org,
+        name=name,
+        calendar_type=calendar_type,
+        provider=provider,
+        capacity=capacity,
+        manage_available_windows=manage_available_windows,
+        accepts_public_scheduling=accepts_public_scheduling,
+    )
+
+
+@pytest.mark.django_db
+class TestUpdateResourceCalendarMutation:
+    """Integration tests for the updateResourceCalendar mutation."""
+
+    def _setup(self) -> tuple[Organization, object, str, PublicAPIAuthService]:
+        return _setup_org_and_token(resources=[PublicAPIResources.UPDATE_RESOURCE_CALENDAR])
+
+    # --- happy path ---
+
+    def test_happy_path_edits_name(self):
+        """Token with UPDATE_RESOURCE_CALENDAR can update name of an INTERNAL RESOURCE calendar."""
+        org, system_user, token, auth_service = self._setup()
+        cal = _make_resource_calendar(org, name="Original Name")
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": cal.id,
+                    "name": "Updated Name",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is True
+        assert result["errorMessage"] is None
+        assert result["calendar"]["name"] == "Updated Name"
+        assert result["calendar"]["calendarType"] == CalendarType.RESOURCE
+
+        cal.refresh_from_db()
+        assert cal.name == "Updated Name"
+
+    def test_happy_path_edits_capacity_to_integer(self):
+        """Providing an integer capacity sets it on the DB row."""
+        org, system_user, token, auth_service = self._setup()
+        cal = _make_resource_calendar(org, capacity=None)
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": cal.id,
+                    "capacity": 10,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is True
+        assert result["calendar"]["capacity"] == 10
+
+        cal.refresh_from_db()
+        assert cal.capacity == 10
+
+    def test_capacity_explicit_null_clears_it(self):
+        """Providing explicit null clears the capacity (sets to unlimited)."""
+        org, system_user, token, auth_service = self._setup()
+        cal = _make_resource_calendar(org, capacity=5)
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": cal.id,
+                    "capacity": None,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is True
+        assert result["calendar"]["capacity"] is None
+
+        cal.refresh_from_db()
+        assert cal.capacity is None
+
+    def test_capacity_omitted_leaves_unchanged(self):
+        """Omitting capacity entirely leaves the existing value unchanged."""
+        org, system_user, token, auth_service = self._setup()
+        cal = _make_resource_calendar(org, capacity=7)
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": cal.id,
+                    "name": "Name Only",
+                    # capacity omitted — must leave 7 intact
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is True
+        assert result["calendar"]["capacity"] == 7
+
+        cal.refresh_from_db()
+        assert cal.capacity == 7
+
+    def test_edits_description(self):
+        """Providing a description updates it on the calendar."""
+        org, system_user, token, auth_service = self._setup()
+        cal = _make_resource_calendar(org)
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": cal.id,
+                    "description": "New description",
+                }
+            },
+        )
+
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is True
+        assert result["calendar"]["description"] == "New description"
+
+        cal.refresh_from_db()
+        assert cal.description == "New description"
+
+    def test_edits_is_private_to_false(self):
+        """is_private=False sets accepts_public_scheduling=True."""
+        org, system_user, token, auth_service = self._setup()
+        cal = _make_resource_calendar(org, accepts_public_scheduling=False)
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": cal.id,
+                    "isPrivate": False,
+                }
+            },
+        )
+
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is True
+        assert result["calendar"]["isPrivate"] is False
+
+        cal.refresh_from_db()
+        assert cal.accepts_public_scheduling is True
+
+    def test_edits_is_private_to_true(self):
+        """is_private=True sets accepts_public_scheduling=False."""
+        org, system_user, token, auth_service = self._setup()
+        cal = _make_resource_calendar(org, accepts_public_scheduling=True)
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": cal.id,
+                    "isPrivate": True,
+                }
+            },
+        )
+
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is True
+        assert result["calendar"]["isPrivate"] is True
+
+        cal.refresh_from_db()
+        assert cal.accepts_public_scheduling is False
+
+    def test_edits_manage_available_windows(self):
+        """manage_available_windows=True is persisted."""
+        org, system_user, token, auth_service = self._setup()
+        cal = _make_resource_calendar(org, manage_available_windows=False)
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": cal.id,
+                    "manageAvailableWindows": True,
+                }
+            },
+        )
+
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is True
+
+        cal.refresh_from_db()
+        assert cal.manage_available_windows is True
+
+    def test_edits_visibility(self):
+        """Providing a visibility string updates it."""
+        org, system_user, token, auth_service = self._setup()
+        cal = _make_resource_calendar(org)
+        original_visibility = cal.visibility
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": cal.id,
+                    "visibility": "INACTIVE",
+                }
+            },
+        )
+
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is True
+
+        cal.refresh_from_db()
+        assert cal.visibility != original_visibility
+        assert cal.visibility == "INACTIVE"
+
+    # --- guard: synced calendar rejected ---
+
+    def test_synced_calendar_rejected(self):
+        """A calendar synced from Google (provider=GOOGLE) returns success=False."""
+        org, system_user, token, auth_service = self._setup()
+        cal = _make_resource_calendar(org, provider=CalendarProvider.GOOGLE)
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": cal.id,
+                    "name": "Should Fail",
+                }
+            },
+        )
+
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        # The error must mention the external provider
+        assert "provider" in result["errorMessage"].lower()
+
+        # DB row is unchanged
+        cal.refresh_from_db()
+        assert cal.name == "Resource Calendar"
+
+    # --- guard: wrong type rejected ---
+
+    def test_wrong_type_personal_calendar_rejected(self):
+        """A PERSONAL calendar returns success=False."""
+        org, system_user, token, auth_service = self._setup()
+        personal_cal = baker.make(
+            Calendar,
+            organization=org,
+            name="Personal Cal",
+            calendar_type=CalendarType.PERSONAL,
+        )
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": personal_cal.id,
+                    "name": "Should Fail",
+                }
+            },
+        )
+
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+
+    # --- org scoping ---
+
+    def test_cross_org_returns_not_found(self):
+        """A calendar in another org returns success=False + 'Calendar not found.'."""
+        _org_a, system_user, token, auth_service = self._setup()
+        org_b = baker.make(Organization, name="Org B")
+        cal_in_b = _make_resource_calendar(org_b, name="Org B Resource")
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org_b.id,  # points at org B
+                    "calendarId": cal_in_b.id,
+                    "name": "Cross-org attack",
+                }
+            },
+        )
+
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "not found" in result["errorMessage"].lower()
+
+        # DB row is untouched
+        cal_in_b.refresh_from_db()
+        assert cal_in_b.name == "Org B Resource"
+
+    def test_input_organization_id_is_ignored_token_org_wins(self):
+        """input.organization_id pointing at another org is ignored; token org wins."""
+        org, system_user, token, auth_service = self._setup()
+        other_org = baker.make(Organization, name="Other Org")
+        cal = _make_resource_calendar(org, name="Real Cal")
+
+        # Pass other_org.id as organizationId — the calendar belongs to `org`
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": other_org.id,  # deliberately wrong
+                    "calendarId": cal.id,
+                    "name": "Token Org Update",
+                }
+            },
+        )
+
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        # The server always uses the token's org; org == token org, so this succeeds
+        assert result["success"] is True
+        cal.refresh_from_db()
+        assert cal.name == "Token Org Update"
+
+    # --- authorization ---
+
+    def test_token_without_grant_denied(self):
+        """A token without UPDATE_RESOURCE_CALENDAR is denied at the permission class."""
+        org, system_user, token, auth_service = _setup_org_and_token(
+            resources=[PublicAPIResources.CALENDAR]  # read-only, not the write grant
+        )
+        cal = _make_resource_calendar(org)
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": cal.id,
+                    "name": "Should Fail",
+                }
+            },
+        )
+
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_unauthenticated_denied(self):
+        """An unauthenticated call is denied."""
+        client = APIClient()
+        response = client.post(
+            "/graphql/",
+            data={
+                "query": UPDATE_RESOURCE_CALENDAR_MUTATION,
+                "variables": {"input": {"organizationId": 1, "calendarId": 1}},
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+
+    def test_grant_not_in_provider_scoped_resources(self):
+        """UPDATE_RESOURCE_CALENDAR is NOT in PROVIDER_SCOPED_RESOURCES (org-wide token only)."""
+        assert PublicAPIResources.UPDATE_RESOURCE_CALENDAR not in PROVIDER_SCOPED_RESOURCES
