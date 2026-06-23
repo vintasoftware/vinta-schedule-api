@@ -991,3 +991,98 @@ def test_update_event_django_user_path_still_uses_permission_token(
     assert result.id == created.id
     assert result.title == "User-Path Update"
     mock_google_adapter.update_event.assert_called_once()
+
+
+# ------------------------------------------------------------------
+# Cross-tenant: org-wide token in org A cannot write to org B's events
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_update_event_org_wide_token_denied_across_tenants(db):
+    """An org-wide token in org A is denied when targeting org B's calendar/event.
+
+    The defense-in-depth guard in _public_token_may_write compares
+    system_user.organization_id to calendar.organization_id directly, so a
+    cross-tenant write is blocked even if the caller supplies org A as context.
+    """
+    from django.core.exceptions import PermissionDenied
+
+    from public_api.services import PublicAPIAuthService
+
+    org_a = Organization.objects.create(name="Cross Tenant Org A", should_sync_rooms=False)
+    org_b = Organization.objects.create(name="Cross Tenant Org B", should_sync_rooms=False)
+
+    calendar_b = Calendar.objects.create(
+        name="Org B Calendar",
+        external_id="cross_tenant_cal_b_update",
+        organization=org_b,
+    )
+    event_b = CalendarEvent.objects.create(
+        title="Org B Event",
+        description="",
+        start_time_tz_unaware=datetime.datetime(2026, 8, 1, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2026, 8, 1, 11, 0),
+        timezone="UTC",
+        external_id="cross-tenant-evt-update",
+        calendar=calendar_b,
+        organization=org_b,
+    )
+
+    # Org-wide token minted for org A.
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="cross_tenant_org_wide_update",
+        organization=org_a,
+    )
+
+    # Initialize the facade with org A as context but target org B's calendar/event.
+    facade = _facade_for_system_user(system_user, org_a)
+    with pytest.raises((PermissionDenied, CalendarEvent.DoesNotExist)):
+        facade.update_event(calendar_b.id, event_b.id, _updated_event_input())
+
+    # The event must survive.
+    assert CalendarEvent.objects.filter(id=event_b.id, organization_id=org_b.id).exists()
+
+
+@pytest.mark.django_db
+def test_delete_event_org_wide_token_denied_across_tenants(db):
+    """An org-wide token in org A is denied when deleting org B's event.
+
+    Mirrors the update cross-tenant test; pins the tenant boundary for delete.
+    """
+    from django.core.exceptions import PermissionDenied
+
+    from public_api.services import PublicAPIAuthService
+
+    org_a = Organization.objects.create(name="Cross Tenant Del Org A", should_sync_rooms=False)
+    org_b = Organization.objects.create(name="Cross Tenant Del Org B", should_sync_rooms=False)
+
+    calendar_b = Calendar.objects.create(
+        name="Org B Calendar",
+        external_id="cross_tenant_cal_b_delete",
+        organization=org_b,
+    )
+    event_b = CalendarEvent.objects.create(
+        title="Org B Event",
+        description="",
+        start_time_tz_unaware=datetime.datetime(2026, 8, 1, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2026, 8, 1, 11, 0),
+        timezone="UTC",
+        external_id="cross-tenant-evt-delete",
+        calendar=calendar_b,
+        organization=org_b,
+    )
+    event_id = event_b.id
+
+    # Org-wide token minted for org A.
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="cross_tenant_org_wide_delete",
+        organization=org_a,
+    )
+
+    facade = _facade_for_system_user(system_user, org_a)
+    with pytest.raises((PermissionDenied, CalendarEvent.DoesNotExist)):
+        facade.delete_event(calendar_b.id, event_id)
+
+    # The event must survive.
+    assert CalendarEvent.objects.filter(id=event_id, organization_id=org_b.id).exists()

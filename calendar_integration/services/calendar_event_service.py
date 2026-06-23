@@ -356,8 +356,10 @@ class CalendarEventService:
             ``True`` when the token may proceed; ``False`` when it must be denied.
         """
         if system_user.scoped_to_membership_user_id is None:
-            # Org-wide token — permitted for any event in the org.
-            return True
+            # Org-wide token — permitted for any event in its OWN organization. Re-derive the
+            # tenant boundary from the loaded objects (defense in depth) rather than trusting
+            # the caller-supplied context.organization, mirroring the scoped path.
+            return system_user.organization_id == calendar.organization_id
         # Owner-scoped token — only when the token's owner independently owns the calendar.
         return self._scoped_system_user_owns_calendar(system_user, calendar)
 
@@ -687,6 +689,9 @@ class CalendarEventService:
             # fan-out spans multiple providers and can produce confusing partial
             # failures. Org-wide tokens follow the existing service rules (bundle
             # primary events reach _update_bundle_event below, which handles them).
+            # This guard targets bundle PRIMARY events on the BUNDLE calendar only;
+            # bundle representation/child events (on PERSONAL/RESOURCE calendars with
+            # bundle_primary_event set) are caught by the is_bundle_event ValueError below.
             if (
                 system_user.scoped_to_membership_user_id is not None
                 and event.calendar.calendar_type == CalendarType.BUNDLE
@@ -1530,6 +1535,9 @@ class CalendarEventService:
             # fan-out spans multiple providers and can produce confusing partial
             # failures. Org-wide tokens follow the existing service rules (bundle
             # primary events reach _delete_bundle_event below, which handles them).
+            # This guard targets bundle PRIMARY events on the BUNDLE calendar only;
+            # bundle representation/child events (on PERSONAL/RESOURCE calendars with
+            # bundle_primary_event set) are caught by the is_bundle_event ValueError below.
             if (
                 system_user.scoped_to_membership_user_id is not None
                 and event.calendar.calendar_type == CalendarType.BUNDLE
