@@ -1030,6 +1030,10 @@ class CalendarService(BaseCalendarService):
             calendar.accepts_public_scheduling = accepts_public_scheduling
             update_fields.append("accepts_public_scheduling")
         if visibility is not None:
+            if visibility not in CalendarVisibility.values:
+                raise ValueError(
+                    f"Invalid visibility {visibility!r}; must be one of {CalendarVisibility.values}."
+                )
             calendar.visibility = visibility
             update_fields.append("visibility")
 

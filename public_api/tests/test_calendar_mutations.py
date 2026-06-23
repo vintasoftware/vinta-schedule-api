@@ -19,7 +19,7 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.constants import CalendarProvider, CalendarType, CalendarVisibility
 from calendar_integration.models import Calendar
 from organizations.models import Organization
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
@@ -968,7 +968,7 @@ class TestUpdateResourceCalendarMutation:
         assert cal.manage_available_windows is True
 
     def test_edits_visibility(self):
-        """Providing a visibility string updates it."""
+        """Providing a valid lowercase visibility value updates it."""
         org, system_user, token, auth_service = self._setup()
         cal = _make_resource_calendar(org)
         original_visibility = cal.visibility
@@ -982,7 +982,7 @@ class TestUpdateResourceCalendarMutation:
                 "input": {
                     "organizationId": org.id,
                     "calendarId": cal.id,
-                    "visibility": "INACTIVE",
+                    "visibility": CalendarVisibility.INACTIVE.value,
                 }
             },
         )
@@ -993,7 +993,36 @@ class TestUpdateResourceCalendarMutation:
 
         cal.refresh_from_db()
         assert cal.visibility != original_visibility
-        assert cal.visibility == "INACTIVE"
+        assert cal.visibility == CalendarVisibility.INACTIVE
+
+    def test_invalid_visibility_rejected(self):
+        """An invalid visibility value returns success=False without mutating the calendar."""
+        org, system_user, token, auth_service = self._setup()
+        cal = _make_resource_calendar(org)
+        original_visibility = cal.visibility
+
+        response = _post_mutation(
+            UPDATE_RESOURCE_CALENDAR_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": cal.id,
+                    "visibility": "not-a-real-value",
+                }
+            },
+        )
+
+        data = response.json()
+        result = data["data"]["updateResourceCalendar"]
+        assert result["success"] is False
+        assert result["errorMessage"] is not None
+        assert "visibility" in result["errorMessage"].lower()
+
+        cal.refresh_from_db()
+        assert cal.visibility == original_visibility
 
     # --- guard: synced calendar rejected ---
 
