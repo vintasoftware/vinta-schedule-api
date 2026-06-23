@@ -2109,9 +2109,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         2. **Whole event / series** (``input.recurrence_id`` is None): builds a
            ``CalendarEventInputData`` that preserves the existing event's non-time fields
            (title, description, attendances, external attendances, resource allocations) while
-           overriding start/end/timezone and the recurrence rule.  **Rule preservation:** if
-           ``input.rrule_string`` is omitted, the master's existing rule string is re-passed so
-           ``update_event`` does not silently strip the series.
+           overriding start/end/timezone and the recurrence rule.
+
+           - **Series-preserving sub-case** (``input.rrule_string`` is None): the master's
+             existing rule string is re-passed so ``update_event`` does not silently strip the
+             series.
+           - **Explicit-new-rule sub-case** (``input.rrule_string`` provided): the new rule
+             replaces the existing one.
 
         Authorization:
         - Owner-scoped token: ``assert_calendar_in_owner_scope`` restricts to calendars owned

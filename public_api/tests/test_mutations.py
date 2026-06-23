@@ -9873,3 +9873,188 @@ class TestScopedTokenRescheduleCalendarEvent:
         data = response.json()
         assert "errors" in data and len(data["errors"]) > 0
         assert "don't have access" in str(data["errors"]).lower()
+
+    # ------------------------------------------------------------------
+    # Field-preservation: attendances, external attendances, resources, description
+    # ------------------------------------------------------------------
+
+    def test_reschedule_whole_event_preserves_attendances_resources_description(self):
+        """Whole-event reschedule keeps internal attendances, external attendances,
+        resource allocations, and description — only times change."""
+        from calendar_integration.models import (
+            EventAttendance,
+            EventExternalAttendance,
+            ExternalAttendee,
+            ResourceAllocation,
+        )
+        from users.models import Profile
+
+        org = baker.make(Organization, name="Resched Preserve Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+
+        # Create a second org member who will be an internal attendee on the event.
+        # A Profile row is required because update_event serializes attendee names.
+        user_model = get_user_model()
+        attendee_user = baker.make(
+            user_model, email=f"attendee_preserve_{uuid.uuid4().hex[:8]}@example.com"
+        )
+        baker.make(Profile, user=attendee_user, first_name="Attendee", last_name="Person")
+        baker.make(OrganizationMembership, user=attendee_user, organization=org, is_active=True)
+
+        # Create a resource (room/equipment) calendar to allocate.
+        resource_calendar = baker.make(
+            Calendar,
+            organization=org,
+            name=f"Resource Room {uuid.uuid4().hex[:8]}",
+            external_id=f"room-{uuid.uuid4().hex[:8]}",
+        )
+
+        # Create the event with a description.
+        event = _make_event_on_calendar(
+            org, calendar, title="Preservation Test", description="Keep this description"
+        )
+
+        # Attach one internal attendance (membership_user_id denormalized column).
+        baker.make(
+            EventAttendance,
+            event=event,
+            organization=org,
+            membership_user_id=attendee_user.id,
+        )
+
+        # Attach one external attendance.
+        external_attendee = baker.make(
+            ExternalAttendee,
+            organization=org,
+            email="external_preserve@example.com",
+            name="External Person",
+        )
+        baker.make(
+            EventExternalAttendance,
+            event=event,
+            organization=org,
+            external_attendee=external_attendee,
+        )
+
+        # Attach one resource allocation.
+        baker.make(
+            ResourceAllocation,
+            event=event,
+            organization=org,
+            calendar=resource_calendar,
+        )
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        new_start = datetime.datetime(2026, 11, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 11, 1, 10, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _RESCHEDULE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._reschedule_input(
+                    org,
+                    calendar,
+                    event,
+                    startTime=new_start.isoformat(),
+                    endTime=new_end.isoformat(),
+                    # No recurrenceId → whole-event path; no rruleString → preserve rule.
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["rescheduleCalendarEvent"]
+        assert result is not None
+
+        event_id = int(result["id"])
+
+        # Times changed.
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+        updated = _CalendarEvent.objects.filter_by_organization(org.id).get(id=event_id)
+        assert updated.start_time_tz_unaware.replace(tzinfo=None) == new_start.replace(tzinfo=None)
+        assert updated.end_time_tz_unaware.replace(tzinfo=None) == new_end.replace(tzinfo=None)
+
+        # Description survived.
+        assert updated.description == "Keep this description"
+
+        # Internal attendance (membership_user_id) survived — count + id.
+        surviving_internal = list(
+            EventAttendance.objects.filter_by_organization(org.id).filter(event_fk_id=event_id)
+        )
+        assert len(surviving_internal) == 1
+        assert surviving_internal[0].membership_user_id == attendee_user.id
+
+        # External attendance survived — count + ExternalAttendee FK.
+        surviving_external = list(
+            EventExternalAttendance.objects.filter_by_organization(org.id).filter(
+                event_fk_id=event_id
+            )
+        )
+        assert len(surviving_external) == 1
+        assert surviving_external[0].external_attendee_fk_id == external_attendee.id
+
+        # Resource allocation survived — count + resource calendar FK.
+        surviving_resources = list(
+            ResourceAllocation.objects.filter_by_organization(org.id).filter(event_fk_id=event_id)
+        )
+        assert len(surviving_resources) == 1
+        assert surviving_resources[0].calendar_fk_id == resource_calendar.id
+
+    # ------------------------------------------------------------------
+    # Non-recurring event with recurrenceId → clean GraphQL error
+    # ------------------------------------------------------------------
+
+    def test_reschedule_non_recurring_event_with_recurrence_id_clean_error(self):
+        """Passing recurrenceId on a non-recurring event raises a clean GraphQL error.
+
+        The service raises ValueError which is mapped to GraphQLError — no 500, no
+        unhandled exception.  The event must be unchanged after the attempt.
+        """
+        org = baker.make(Organization, name="Resched NonRecurring Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        event = _make_event_on_calendar(org, calendar, title="Non-Recurring Event")
+        original_start = event.start_time_tz_unaware
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        # Pass an arbitrary recurrenceId on a non-recurring event.
+        fake_recurrence_id = datetime.datetime(2026, 10, 1, 10, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _RESCHEDULE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._reschedule_input(
+                    org,
+                    calendar,
+                    event,
+                    recurrenceId=fake_recurrence_id.isoformat(),
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # Must be a clean GraphQL error, not a 500.
+        assert "errors" in data and len(data["errors"]) > 0
+        error_message = data["errors"][0]["message"]
+        assert "non-recurring" in error_message.lower()
+
+        # Event must be unchanged.
+        event.refresh_from_db()
+        assert event.start_time_tz_unaware.replace(tzinfo=None) == original_start.replace(
+            tzinfo=None
+        )
