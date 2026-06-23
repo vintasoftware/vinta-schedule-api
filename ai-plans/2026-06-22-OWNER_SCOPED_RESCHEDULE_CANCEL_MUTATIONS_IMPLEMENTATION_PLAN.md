@@ -404,6 +404,7 @@ attempts return the uniform not-found error with no deletion.
 | Should grouped events ever support `recurrenceId` (per-occurrence) ops? | **No** for v1 — group bookings are single appointments; defer until a recurring-group use-case appears. | Product |
 | Should `cancelEvent` reject a recurring **master** id with `deleteSeries=false` (instead of deleting the master) to remove the footgun entirely? | Allow it (documented) for parity with the service, but add a test pinning the behavior; revisit if integrators trip on it. | Eng |
 | Should reschedule re-check non-primary calendar availability for group events? | **No** for v1 — mirror the existing `reschedule_grouped_event` limitation; note it in API docs. | Eng |
+| **(Surfaced during implementation, Phase 3)** Deleting a recurring **master** with `delete_series=False` orphans its `RecurrenceRule` row — `delete_event` cascade-deletes child instances/exceptions but not the master→rule OneToOne. Pre-existing service behavior affecting all delete callers (REST destroy, token destroy, `cancelEventWithCode`); `cancelEvent` now exposes this path routinely. | Follow-up: in `delete_event`'s recurring-master fall-through, delete `event.recurrence_rule` (mirror the `delete_series=True` rule cleanup) + add a service regression test. Deferred from this plan to avoid a late shared-service change in a GraphQL phase. | Eng |
 
 ## 8. Touch List
 

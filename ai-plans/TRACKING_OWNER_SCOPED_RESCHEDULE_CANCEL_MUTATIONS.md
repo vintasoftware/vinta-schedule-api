@@ -24,7 +24,7 @@
 | 0b | Single-occurrence exception service methods | 4 | ✅ done |
 | 1 | `rescheduleCalendarEvent` mutation | 3 | ✅ done |
 | 2 | `rescheduleCalendarGroupEvent` mutation | 3 | ✅ done |
-| 3 | `cancelEvent` mutation | 3 | ⏳ next |
+| 3 | `cancelEvent` mutation | 3 | ✅ done |
 
 Deferred: none (no cross-repo phases, no flag-removal phase).
 
@@ -68,8 +68,17 @@ Deferred: none (no cross-repo phases, no flag-removal phase).
 - **Outer gate:** serial 6 passed; full `pytest -n auto` → **3177 passed**.
 - **DI note for Phase 3:** `get_calendar_mutation_dependencies()` returns FRESH `Factory` instances; wire the initialized `calendar_service` into the group service before `initialize(org)` (mirror the `*WithCode` group wiring). `cancel_grouped_event(event_id, delete_series=…)` is the group cancel path.
 
-## Current Phase
-**Phase 3** — `cancelEvent` Public GraphQL mutation (single + grouped, deleteSeries + recurrenceId).
+### Phase 3 — `cancelEvent` Public GraphQL mutation ✅
+- **Model used:** sonnet (plan tier 3). **Branch:** `plan/owner-scoped-reschedule-cancel-mutations/phase-3` (stacked on phase-2).
+- **Commits:** `4ae6041` (feat mutation), `04a4bde` (test: strengthen recurring + scope coverage).
+- **What shipped:** `cancelEvent` mutation + `CancelEventResult{success}` + `CancelEventInput{organization_id, calendar_id, event_id, delete_series=False, recurrence_id?}`. Calendar-addressed; owner-scope guard on `calendar_id` (cross-owner → `"Calendar not found."`, leak-safe — correct for a calendar-addressed input). Event load by `(event_id, calendar_fk_id=calendar_id)` → `"Event not found."`. Three-way branch: `recurrence_id` → `cancel_event_occurrence` (Phase 0b); grouped (`calendar_group_fk_id`) → `cancel_grouped_event(event_id, delete_series)` (wired group service, deletes primary + linked BlockedTimes); else → `delete_event(calendar_id, event_id, delete_series)`. Returns `CancelEventResult(success=True)`. `FIELD_TO_RESOURCE_MAPPING["cancelEvent"] = CALENDAR_EVENT`.
+- **Recurring footgun (documented + pinned):** recurring master + `deleteSeries=false` + no `recurrenceId` deletes the master row (not a series wipe, not a no-op). Test pins it.
+- **Tests:** `TestScopedTokenCancelEvent` (10) — single-event success, series delete (with materialized instance + exception, all gone + rule gone), single-occurrence cancel (exception created AND occurrence omitted from `get_occurrences_in_range`), grouped cancel (primary + BlockedTimes gone), cross-owner not-found (no deletion), org-wide acts org-wide, recurring-master footgun, event-not-found, event-on-different-owned-calendar → "Event not found.", missing-grant denied.
+- **Review:** Layer 1/2/3. No BLOCKERs; existence-leak verdict clean (calendar-addressed). Reviewer caught that the original single-occurrence test cancelled a non-existent occurrence date (master on a Friday vs `BYDAY=TH`); strengthened to a real occurrence.
+- **Outer gate:** serial 10 passed; full `pytest -n auto` → **3187 passed**.
 
-## Remaining Phases
-3 (next, final).
+## DEFERRED FOLLOW-UP (out of this plan's scope)
+- **Orphaned `RecurrenceRule` on master delete with `delete_series=False`.** In `CalendarEventService.delete_event`, deleting a recurring MASTER with `delete_series=False` (the documented footgun path `cancelEvent` now exposes) cascade-deletes child instances + exceptions but NOT the `RecurrenceRule` (the OneToOne points master→rule, so it doesn't cascade) — leaving a dangling rule row. This is **pre-existing** service behavior affecting all delete callers (REST destroy, token destroy, `cancelEventWithCode`), not introduced by this plan. Deliberately NOT fixed here to avoid late shared-service changes in a GraphQL phase. Recommended follow-up: in `delete_event`'s recurring-master fall-through, delete `event.recurrence_rule` (mirror the `delete_series=True` branch's rule cleanup), with a service-level regression test. Small + strictly-better (no orphans).
+
+## Status: ALL PHASES COMPLETE
+0a ✅ · 0b ✅ · 1 ✅ · 2 ✅ · 3 ✅. No cross-repo phases, no flag-removal phase (no feature flag).
