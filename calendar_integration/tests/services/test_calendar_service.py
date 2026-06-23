@@ -10,6 +10,7 @@ from django.utils import timezone
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 
+from audit.constants import AuditAction
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncStatus,
@@ -10590,3 +10591,59 @@ class TestUpdateResourceCalendarService:
         resource_calendar.refresh_from_db()
         assert resource_calendar.name == "Room Name"
         assert resource_calendar.capacity == 10
+
+    @pytest.mark.django_db
+    def test_capacity_update_with_audit(self, organization):
+        """Capacity update triggers audit write with correct diff shape."""
+        resource_calendar = Calendar.objects.create(
+            name="Conference Room",
+            external_id="room-audit-update-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            capacity=10,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        # Patch the audit hook to verify it is called with correct diff
+        with patch.object(service, "_audit_calendar_write") as mock_audit:
+            updated_calendar = service.update_resource_calendar(
+                calendar_id=resource_calendar.id,
+                capacity=20,
+            )
+
+            # Verify the audit hook was called once with UPDATE action and correct diff
+            mock_audit.assert_called_once()
+            call_args = mock_audit.call_args
+            assert call_args[0][0] == AuditAction.UPDATE  # action
+            assert call_args[0][1] == updated_calendar  # calendar
+            # Verify the diff has the expected shape: {"capacity": {"old": 10, "new": 20}}
+            diff = call_args[1]["diff"]
+            assert diff is not None
+            assert "capacity" in diff
+            assert diff["capacity"]["old"] == 10
+            assert diff["capacity"]["new"] == 20
+
+    @pytest.mark.django_db
+    def test_no_change_no_audit_write(self, organization):
+        """When no fields change, audit write hook is not called."""
+        resource_calendar = Calendar.objects.create(
+            name="Conference Room",
+            external_id="room-no-audit-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            capacity=10,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        # Patch the audit hook to verify it is NOT called when no changes occur
+        with patch.object(service, "_audit_calendar_write") as mock_audit:
+            service.update_resource_calendar(calendar_id=resource_calendar.id)
+
+            # Verify the audit hook was NOT called
+            mock_audit.assert_not_called()

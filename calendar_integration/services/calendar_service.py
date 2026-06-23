@@ -957,7 +957,7 @@ class CalendarService(BaseCalendarService):
         *,
         name: str | None = None,
         description: str | None = None,
-        capacity: int | None | object = _UNCHANGED,
+        capacity: int | None = _UNCHANGED,  # type: ignore[assignment]
         manage_available_windows: bool | None = None,
         accepts_public_scheduling: bool | None = None,
         visibility: str | None = None,
