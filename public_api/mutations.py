@@ -656,6 +656,27 @@ class RescheduleCalendarEventInput:
     recurrence_id: datetime.datetime | None = None
 
 
+@strawberry.input
+class RescheduleCalendarGroupEventInput:
+    """Input for rescheduling a grouped calendar event via a public-API token.
+
+    Grouped events consist of a primary ``CalendarEvent`` on the primary calendar plus
+    linked non-primary ``BlockedTime`` rows on each additional calendar in the group.
+    All of them move together when this mutation succeeds.
+
+    Whole-event only — group events are not recurring in v1 (no ``recurrenceId``).
+
+    An owner-scoped token may only reschedule grouped events whose primary calendar is
+    owned by the token's owner; an org-wide token acts org-wide.
+    """
+
+    organization_id: int
+    event_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+
+
 @strawberry.type
 class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
     @strawberry.mutation
@@ -2224,6 +2245,91 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError(
                 str(exc) or "You do not have permission to reschedule this event."
             ) from exc
+        except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
+            raise GraphQLError(str(exc)) from exc
+
+        return event  # type: ignore[return-value]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def reschedule_calendar_group_event(
+        self,
+        info: strawberry.Info,
+        input: RescheduleCalendarGroupEventInput,  # noqa: A002
+    ) -> CalendarEventGraphQLType:
+        """Reschedule a grouped event's times while preserving all other details.
+
+        Moves the primary ``CalendarEvent`` on the primary calendar AND the linked
+        non-primary ``BlockedTime`` rows (identified by the
+        ``group-event-{event_id}-cal-{cid}`` external_id convention) to the new
+        start/end/timezone simultaneously.
+
+        Whole-event only — group events are not recurring in v1 (no ``recurrenceId``).
+
+        Authorization:
+        - Owner-scoped token: restricted to grouped events whose primary calendar is
+          owned by the token's owner; cross-owner → ``"Calendar not found."`` (same
+          as missing — no existence leak).
+        - Org-wide token: acts org-wide.
+        - The service independently re-verifies ownership as defense-in-depth.
+
+        Returns the updated primary ``CalendarEvent``.
+        """
+        from calendar_integration.exceptions import CalendarGroupValidationError
+
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
+
+        # Load the grouped event scoped to the organization to derive the primary
+        # calendar and validate that it is actually a grouped event.
+        try:
+            grouped_event = (
+                CalendarEvent.objects.filter_by_organization(org.id)
+                .select_related("calendar")
+                .get(id=input.event_id)
+            )
+        except CalendarEvent.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+
+        if grouped_event.calendar_group_fk_id is None:
+            # Non-grouped event — uniform not-found, no existence leak.
+            raise GraphQLError("Event not found.")
+
+        primary_calendar_id: int = grouped_event.calendar_fk_id  # type: ignore[assignment]
+
+        # Owner-scope guard on the PRIMARY calendar: a scoped token may only target
+        # grouped events whose primary calendar its owner owns. Cross-owner and missing
+        # calendars return the identical error — no existence leak.
+        try:
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, primary_calendar_id)
+            Calendar.objects.filter_by_organization(org.id).get(id=primary_calendar_id)
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Calendar not found.") from exc
+
+        # Wire the group service: inject the already-initialized calendar_service so
+        # that the public-token auth context flows into reschedule_grouped_event →
+        # update_event. This mirrors exactly how rescheduleCalendarGroupEventWithCode
+        # wires its deps (deps.calendar_group_service.calendar_service = deps.calendar_service).
+        group_deps = get_calendar_mutation_dependencies()
+        group_deps.calendar_group_service.calendar_service = calendar_service
+        group_deps.calendar_group_service.initialize(organization=org)
+
+        try:
+            event = group_deps.calendar_group_service.reschedule_grouped_event(
+                event_id=input.event_id,
+                start_time=input.start_time,
+                end_time=input.end_time,
+                tz=input.timezone,
+            )
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Calendar not found.") from exc
+        except CalendarEvent.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+        except PermissionDenied as exc:
+            raise GraphQLError(
+                str(exc) or "You do not have permission to reschedule this event."
+            ) from exc
+        except CalendarGroupValidationError as exc:
+            raise GraphQLError(str(exc)) from exc
         except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
             raise GraphQLError(str(exc)) from exc
 

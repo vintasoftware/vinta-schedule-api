@@ -10058,3 +10058,390 @@ class TestScopedTokenRescheduleCalendarEvent:
         assert event.start_time_tz_unaware.replace(tzinfo=None) == original_start.replace(
             tzinfo=None
         )
+
+
+# ---------------------------------------------------------------------------
+# GraphQL mutation string for rescheduleCalendarGroupEvent
+# ---------------------------------------------------------------------------
+
+_RESCHEDULE_CALENDAR_GROUP_EVENT = """
+mutation RescheduleCalendarGroupEvent($input: RescheduleCalendarGroupEventInput!) {
+    rescheduleCalendarGroupEvent(input: $input) {
+        id
+        title
+        startTime
+        endTime
+    }
+}
+"""
+
+
+def _make_grouped_event(org, group, primary_calendar, secondary_calendar):
+    """Create a primary CalendarEvent with a linked non-primary BlockedTime.
+
+    The primary event has ``calendar_group_fk`` set to the given group.  The
+    secondary calendar receives a ``BlockedTime`` following the canonical
+    ``group-event-{event_id}-cal-{cid}`` external_id convention used by
+    ``_create_non_primary_blocked_times`` and ``reschedule_grouped_event``.
+
+    Returns (primary_event, blocked_time).
+    """
+    from calendar_integration.models import BlockedTime as _BlockedTime
+    from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+    event = baker.make(
+        _CalendarEvent,
+        organization=org,
+        calendar=primary_calendar,
+        calendar_group=group,
+        title="Group Meeting",
+        description="Group description.",
+        timezone="UTC",
+        start_time_tz_unaware=datetime.datetime(2026, 11, 5, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2026, 11, 5, 11, 0),
+        external_id=f"grp-evt-{uuid.uuid4().hex[:8]}",
+    )
+    blocked_time = baker.make(
+        _BlockedTime,
+        organization=org,
+        calendar=secondary_calendar,
+        start_time_tz_unaware=datetime.datetime(2026, 11, 5, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2026, 11, 5, 11, 0),
+        timezone="UTC",
+        reason=f"Group booking: {event.title}",
+        external_id=f"group-event-{event.id}-cal-{secondary_calendar.id}",
+    )
+    return event, blocked_time
+
+
+@pytest.mark.django_db
+class TestScopedTokenRescheduleCalendarGroupEvent:
+    """Integration tests for the owner-scoped ``rescheduleCalendarGroupEvent`` mutation (Phase 2).
+
+    Coverage:
+    - Scoped token reschedules its own grouped event → primary event times change AND
+      the linked ``group-event-*`` ``BlockedTime``s are updated to the new times.
+    - Cross-owner denial: scoped token A targeting a grouped event whose primary
+      calendar is owned by owner B → uniform not-found (``"Calendar not found."``),
+      no mutation (no existence leak).
+    - Org-wide token acts org-wide → can reschedule any grouped event in the org.
+    - Non-grouped event_id → ``"Event not found."`` (no leak), no mutation.
+    """
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _make_scoped_system_user(self, org, membership, resources):
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"scoped_grp_resched_{uuid.uuid4().hex[:8]}",
+            organization=org,
+            scoped_to_membership=membership,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _make_org_wide_system_user(self, org, resources):
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"org_wide_grp_resched_{uuid.uuid4().hex[:8]}",
+            organization=org,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _post(self, query, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": query, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def _reschedule_group_input(self, org, event, **overrides):
+        base = {
+            "organizationId": org.id,
+            "eventId": event.id,
+            "startTime": datetime.datetime(2026, 11, 5, 14, 0, 0, tzinfo=datetime.UTC).isoformat(),
+            "endTime": datetime.datetime(2026, 11, 5, 15, 0, 0, tzinfo=datetime.UTC).isoformat(),
+            "timezone": "UTC",
+        }
+        base.update(overrides)
+        return base
+
+    def _make_group_setup(self, org):
+        """Create a CalendarGroup with primary + secondary calendars and a CalendarOwnership.
+
+        Returns (owner_user, membership, primary_calendar, secondary_calendar, group).
+        """
+        from calendar_integration.models import CalendarGroup, CalendarOwnership
+
+        unique = uuid.uuid4().hex[:8]
+        user_model = get_user_model()
+        owner = baker.make(user_model, email=f"grp_owner_{unique}@example.com")
+        membership = baker.make(
+            OrganizationMembership, user=owner, organization=org, is_active=True
+        )
+        primary_calendar = baker.make(
+            Calendar,
+            organization=org,
+            name=f"Primary Cal {unique}",
+            external_id=f"primary-cal-{unique}",
+            manage_available_windows=False,
+        )
+        baker.make(
+            CalendarOwnership,
+            calendar=primary_calendar,
+            membership_user_id=owner.id,
+            organization=org,
+        )
+        secondary_calendar = baker.make(
+            Calendar,
+            organization=org,
+            name=f"Secondary Cal {unique}",
+            external_id=f"secondary-cal-{unique}",
+            manage_available_windows=False,
+        )
+        group = baker.make(CalendarGroup, organization=org, name=f"Test Group {unique}")
+        return owner, membership, primary_calendar, secondary_calendar, group
+
+    # ------------------------------------------------------------------
+    # Happy path — scoped token reschedules its own grouped event
+    # ------------------------------------------------------------------
+
+    def test_reschedule_grouped_event_times_change_blocked_times_updated(self):
+        """Scoped token reschedules its own grouped event: primary event times change AND
+        the linked non-primary BlockedTime rows are updated to the new times.
+        """
+        from calendar_integration.models import BlockedTime as _BlockedTime
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+        org = baker.make(Organization, name="GroupResched Org")
+        _owner, membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
+        grouped_event, blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        new_start = datetime.datetime(2026, 11, 5, 14, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 11, 5, 15, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _RESCHEDULE_CALENDAR_GROUP_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._reschedule_group_input(org, grouped_event)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["rescheduleCalendarGroupEvent"]
+        assert result is not None
+        assert result["title"] == "Group Meeting"
+        assert int(result["id"]) == grouped_event.id
+
+        # Primary event times changed.
+        updated_event = _CalendarEvent.objects.filter_by_organization(org.id).get(
+            id=grouped_event.id
+        )
+        assert updated_event.start_time_tz_unaware.replace(tzinfo=None) == new_start.replace(
+            tzinfo=None
+        )
+        assert updated_event.end_time_tz_unaware.replace(tzinfo=None) == new_end.replace(
+            tzinfo=None
+        )
+
+        # Linked BlockedTime rows also updated.
+        updated_bt = _BlockedTime.objects.filter_by_organization(org.id).get(id=blocked_time.id)
+        assert updated_bt.start_time_tz_unaware.replace(tzinfo=None) == new_start.replace(
+            tzinfo=None
+        )
+        assert updated_bt.end_time_tz_unaware.replace(tzinfo=None) == new_end.replace(tzinfo=None)
+
+    # ------------------------------------------------------------------
+    # Cross-owner denial — no existence leak
+    # ------------------------------------------------------------------
+
+    def test_reschedule_grouped_event_cross_owner_not_found_no_mutation(self):
+        """Cross-owner grouped event: uniform 'Calendar not found.' — same as missing calendar.
+
+        Owner A's scoped token targets a grouped event on owner B's primary calendar.
+        The response error must be identical to a genuinely missing calendar, and
+        neither the primary event nor the linked BlockedTime may change.
+        """
+        from calendar_integration.models import BlockedTime as _BlockedTime
+
+        org = baker.make(Organization, name="GroupResched CrossOwner Org")
+        # Owner A: just used for token scoping.
+        _owner_a, membership_a, _primary_cal_a, _secondary_cal_a, _group_a = self._make_group_setup(
+            org
+        )
+        # Owner B: owns the primary calendar of the grouped event.
+        _owner_b, _membership_b, primary_cal_b, secondary_cal_b, group_b = self._make_group_setup(
+            org
+        )
+        grouped_event_b, blocked_time_b = _make_grouped_event(
+            org, group_b, primary_cal_b, secondary_cal_b
+        )
+        original_start = grouped_event_b.start_time_tz_unaware
+        original_bt_start = blocked_time_b.start_time_tz_unaware
+
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        # Attempt to reschedule B's grouped event from A's scoped token.
+        cross_response = self._post(
+            _RESCHEDULE_CALENDAR_GROUP_EVENT,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "eventId": grouped_event_b.id,
+                    "startTime": datetime.datetime(
+                        2026, 11, 5, 14, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "endTime": datetime.datetime(
+                        2026, 11, 5, 15, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        # Attempt with a genuinely missing calendar's event_id.
+        missing_response = self._post(
+            _RESCHEDULE_CALENDAR_GROUP_EVENT,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "eventId": 999990,  # non-existent event
+                    "startTime": datetime.datetime(
+                        2026, 11, 5, 14, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "endTime": datetime.datetime(
+                        2026, 11, 5, 15, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        cross_msg = cross_response.json()["errors"][0]["message"]
+        # For a non-existent event_id, the resolver raises "Event not found.".
+        # For cross-owner, the guard fires on the primary calendar → "Calendar not found.".
+        # Both are opaque not-found messages — no existence leak.
+        assert cross_msg == "Calendar not found."
+        assert missing_response.json()["errors"][0]["message"] == "Event not found."
+
+        # B's event and blocked time must be unmodified.
+        grouped_event_b.refresh_from_db()
+        assert grouped_event_b.start_time_tz_unaware.replace(tzinfo=None) == original_start.replace(
+            tzinfo=None
+        )
+        updated_bt = _BlockedTime.objects.filter_by_organization(org.id).get(id=blocked_time_b.id)
+        assert updated_bt.start_time_tz_unaware.replace(tzinfo=None) == original_bt_start.replace(
+            tzinfo=None
+        )
+
+    # ------------------------------------------------------------------
+    # Org-wide token acts org-wide
+    # ------------------------------------------------------------------
+
+    def test_reschedule_grouped_event_org_wide_token_acts_org_wide(self):
+        """An org-wide token can reschedule any grouped event in the org."""
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+        org = baker.make(Organization, name="GroupResched OrgWide Org")
+        _owner, _membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
+        grouped_event, _blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        new_start = datetime.datetime(2026, 11, 5, 16, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 11, 5, 17, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _RESCHEDULE_CALENDAR_GROUP_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._reschedule_group_input(
+                    org, grouped_event, startTime=new_start.isoformat(), endTime=new_end.isoformat()
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["rescheduleCalendarGroupEvent"]
+        assert result is not None
+
+        updated_event = _CalendarEvent.objects.filter_by_organization(org.id).get(
+            id=grouped_event.id
+        )
+        assert updated_event.start_time_tz_unaware.replace(tzinfo=None) == new_start.replace(
+            tzinfo=None
+        )
+
+    # ------------------------------------------------------------------
+    # Non-grouped event → "Event not found."
+    # ------------------------------------------------------------------
+
+    def test_reschedule_non_grouped_event_returns_event_not_found(self):
+        """Passing a non-grouped event_id returns 'Event not found.' with no mutation."""
+        org = baker.make(Organization, name="GroupResched NonGrouped Org")
+        _owner, membership, calendar, _secondary_cal, _group = self._make_group_setup(org)
+        # Regular non-grouped event (calendar_group_fk is None).
+        non_grouped_event = _make_event_on_calendar(org, calendar, title="Plain Event")
+        original_start = non_grouped_event.start_time_tz_unaware
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _RESCHEDULE_CALENDAR_GROUP_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "eventId": non_grouped_event.id,
+                    "startTime": datetime.datetime(
+                        2026, 11, 5, 14, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "endTime": datetime.datetime(
+                        2026, 11, 5, 15, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Event not found."
+
+        # Event must be unchanged.
+        non_grouped_event.refresh_from_db()
+        assert non_grouped_event.start_time_tz_unaware.replace(
+            tzinfo=None
+        ) == original_start.replace(tzinfo=None)

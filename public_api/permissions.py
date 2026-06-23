@@ -72,6 +72,7 @@ class OrganizationResourceAccess(BasePermission):
         "deleteBlockedTime": PublicAPIResources.DELETE_BLOCKED_TIME,
         "scheduleEvent": PublicAPIResources.CALENDAR_EVENT,
         "rescheduleCalendarEvent": PublicAPIResources.CALENDAR_EVENT,
+        "rescheduleCalendarGroupEvent": PublicAPIResources.CALENDAR_EVENT,
         "calendarBundles": PublicAPIResources.CALENDAR_BUNDLE,
         "createCalendarBundle": PublicAPIResources.CREATE_CALENDAR_BUNDLE,
         "updateCalendarBundle": PublicAPIResources.UPDATE_CALENDAR_BUNDLE,
