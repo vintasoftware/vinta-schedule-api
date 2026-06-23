@@ -1141,6 +1141,44 @@ class CalendarService(BaseCalendarService):
         """
         return self._get_event_service().update_event(calendar_id, event_id, event_data)
 
+    def reschedule_event_occurrence(
+        self,
+        calendar_id: int,
+        master_event_id: int,
+        recurrence_id: datetime.datetime,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+    ) -> CalendarEvent:
+        """Reschedule a single occurrence of a recurring series to a new time.
+
+        See ``CalendarEventService.reschedule_event_occurrence`` for full semantics.
+        """
+        return self._get_event_service().reschedule_event_occurrence(
+            calendar_id=calendar_id,
+            master_event_id=master_event_id,
+            recurrence_id=recurrence_id,
+            start_time=start_time,
+            end_time=end_time,
+            timezone=timezone,
+        )
+
+    def cancel_event_occurrence(
+        self,
+        calendar_id: int,
+        master_event_id: int,
+        recurrence_id: datetime.datetime,
+    ) -> None:
+        """Cancel a single occurrence of a recurring series.
+
+        See ``CalendarEventService.cancel_event_occurrence`` for full semantics.
+        """
+        return self._get_event_service().cancel_event_occurrence(
+            calendar_id=calendar_id,
+            master_event_id=master_event_id,
+            recurrence_id=recurrence_id,
+        )
+
     def create_recurring_event(
         self,
         calendar_id: int,

@@ -1209,3 +1209,404 @@ def test_delete_event_owner_scoped_audit_actor_is_system_user(write_allowance_se
     if side_effects is not None:
         assert recorded, "on_delete_event side effect did not fire"
         assert recorded[0] == system_user
+
+
+# ----------------------------------------------------------------------------------------
+# Single-occurrence reschedule / cancel service methods (Phase 0b)
+#
+# ``reschedule_event_occurrence`` and ``cancel_event_occurrence`` address ONE occurrence of
+# a recurring series by ``(calendar_id, master_event_id, recurrence_id)`` and link it via an
+# ``EventRecurrenceException`` — without mutating the master or its recurrence rule. They
+# authorize through the same ``_public_token_may_write`` seam (org-wide AND owner-scoped).
+# ----------------------------------------------------------------------------------------
+
+
+_RECURRENCE_ID = datetime.datetime(2026, 7, 17, 10, 0, tzinfo=datetime.UTC)
+
+
+def _make_recurring_master_for_write_tests(organization, calendar) -> CalendarEvent:
+    """Create a recurring master CalendarEvent (weekly) directly in the DB."""
+    from calendar_integration.models import RecurrenceRule
+
+    rule = RecurrenceRule.from_rrule_string("FREQ=WEEKLY;COUNT=10", organization)
+    rule.save()
+    master = CalendarEvent.objects.create(
+        title="Weekly Standup",
+        description="Recurring standup",
+        start_time_tz_unaware=datetime.datetime(2026, 7, 10, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2026, 7, 10, 11, 0),
+        timezone="UTC",
+        external_id=f"recurring-master-{calendar.id}",
+        calendar=calendar,
+        organization=organization,
+    )
+    master.recurrence_rule = rule
+    master.save()
+    return master
+
+
+@pytest.mark.django_db
+def test_reschedule_event_occurrence_creates_modified_exception(write_allowance_setup):
+    """An owner-scoped token reschedules one occurrence → modified exception created.
+
+    The exception carries ``is_cancelled=False`` and a ``modified_event`` at the new
+    time; the master event and its recurrence rule are left untouched.
+    """
+    from calendar_integration.models import EventRecurrenceException
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_a"]
+    membership = setup["membership_a"]
+
+    master = _make_recurring_master_for_write_tests(org, calendar)
+    master_rule_id = master.recurrence_rule.id
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="reschedule_occurrence_scoped",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    new_start = datetime.datetime(2026, 7, 17, 14, 0, tzinfo=datetime.UTC)
+    new_end = datetime.datetime(2026, 7, 17, 15, 0, tzinfo=datetime.UTC)
+
+    modified = facade.reschedule_event_occurrence(
+        calendar_id=calendar.id,
+        master_event_id=master.id,
+        recurrence_id=_RECURRENCE_ID,
+        start_time=new_start,
+        end_time=new_end,
+        timezone="UTC",
+    )
+
+    # Returned modified-occurrence event.
+    assert modified.is_recurring_exception is True
+    assert modified.parent_recurring_object_fk_id == master.id
+    assert modified.recurrence_id == _RECURRENCE_ID
+    assert modified.start_time == new_start
+    assert modified.end_time == new_end
+
+    # Exactly one exception, modified (not cancelled), pointing at the new event.
+    exceptions = EventRecurrenceException.objects.filter(
+        parent_event_fk=master, organization_id=org.id
+    )
+    assert exceptions.count() == 1
+    exception = exceptions.get()
+    assert exception.is_cancelled is False
+    assert exception.modified_event_fk_id == modified.id
+    assert exception.exception_date == _RECURRENCE_ID
+
+    # The master + its rule are untouched.
+    master.refresh_from_db()
+    assert master.recurrence_rule_fk_id == master_rule_id
+    assert master.title == "Weekly Standup"
+    assert master.is_recurring is True
+    # The master's own time was NOT moved (only the occurrence's modified event was).
+    assert master.start_time == datetime.datetime(2026, 7, 10, 10, 0, tzinfo=datetime.UTC)
+
+
+@pytest.mark.django_db
+def test_reschedule_event_occurrence_is_idempotent(write_allowance_setup):
+    """Rescheduling the same occurrence twice updates in place (one exception row)."""
+    from calendar_integration.models import EventRecurrenceException
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_a"]
+    membership = setup["membership_a"]
+
+    master = _make_recurring_master_for_write_tests(org, calendar)
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="reschedule_occurrence_idempotent",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+
+    facade.reschedule_event_occurrence(
+        calendar_id=calendar.id,
+        master_event_id=master.id,
+        recurrence_id=_RECURRENCE_ID,
+        start_time=datetime.datetime(2026, 7, 17, 14, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2026, 7, 17, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+    )
+    second = facade.reschedule_event_occurrence(
+        calendar_id=calendar.id,
+        master_event_id=master.id,
+        recurrence_id=_RECURRENCE_ID,
+        start_time=datetime.datetime(2026, 7, 17, 16, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2026, 7, 17, 17, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+    )
+
+    exceptions = EventRecurrenceException.objects.filter(
+        parent_event_fk=master, organization_id=org.id
+    )
+    assert exceptions.count() == 1
+    exception = exceptions.get()
+    # The single exception now points at the most recently created modified event.
+    assert exception.modified_event_fk_id == second.id
+    assert exception.is_cancelled is False
+    assert second.start_time == datetime.datetime(2026, 7, 17, 16, 0, tzinfo=datetime.UTC)
+
+
+@pytest.mark.django_db
+def test_cancel_event_occurrence_creates_cancellation_exception(write_allowance_setup):
+    """An owner-scoped token cancels one occurrence → cancellation exception created.
+
+    The exception carries ``is_cancelled=True`` and no ``modified_event``; the master
+    is untouched.
+    """
+    from calendar_integration.models import EventRecurrenceException
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_a"]
+    membership = setup["membership_a"]
+
+    master = _make_recurring_master_for_write_tests(org, calendar)
+    master_rule_id = master.recurrence_rule.id
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="cancel_occurrence_scoped",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    result = facade.cancel_event_occurrence(
+        calendar_id=calendar.id,
+        master_event_id=master.id,
+        recurrence_id=_RECURRENCE_ID,
+    )
+    assert result is None
+
+    exceptions = EventRecurrenceException.objects.filter(
+        parent_event_fk=master, organization_id=org.id
+    )
+    assert exceptions.count() == 1
+    exception = exceptions.get()
+    assert exception.is_cancelled is True
+    assert exception.modified_event_fk_id is None
+    assert exception.exception_date == _RECURRENCE_ID
+
+    # Master + rule untouched.
+    master.refresh_from_db()
+    assert master.recurrence_rule_fk_id == master_rule_id
+    assert master.is_recurring is True
+
+
+@pytest.mark.django_db
+def test_cancel_event_occurrence_is_idempotent(write_allowance_setup):
+    """Cancelling the same occurrence twice keeps a single exception row."""
+    from calendar_integration.models import EventRecurrenceException
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_a"]
+    membership = setup["membership_a"]
+
+    master = _make_recurring_master_for_write_tests(org, calendar)
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="cancel_occurrence_idempotent",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    facade.cancel_event_occurrence(
+        calendar_id=calendar.id, master_event_id=master.id, recurrence_id=_RECURRENCE_ID
+    )
+    facade.cancel_event_occurrence(
+        calendar_id=calendar.id, master_event_id=master.id, recurrence_id=_RECURRENCE_ID
+    )
+
+    assert (
+        EventRecurrenceException.objects.filter(
+            parent_event_fk=master, organization_id=org.id
+        ).count()
+        == 1
+    )
+
+
+@pytest.mark.django_db
+def test_occurrence_methods_allow_org_wide_token(write_allowance_setup):
+    """An org-wide token may reschedule AND cancel an occurrence (acts org-wide).
+
+    Uses calendar_b, which no token-associated membership owns — proving org-wide
+    reach (owner-scoped ownership is NOT required for org-wide tokens).
+    """
+    from calendar_integration.models import EventRecurrenceException
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_b"]
+
+    master = _make_recurring_master_for_write_tests(org, calendar)
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="occurrence_org_wide",
+        organization=org,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+
+    modified = facade.reschedule_event_occurrence(
+        calendar_id=calendar.id,
+        master_event_id=master.id,
+        recurrence_id=_RECURRENCE_ID,
+        start_time=datetime.datetime(2026, 7, 17, 14, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2026, 7, 17, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+    )
+    assert modified.parent_recurring_object_fk_id == master.id
+
+    other_recurrence_id = datetime.datetime(2026, 7, 24, 10, 0, tzinfo=datetime.UTC)
+    facade.cancel_event_occurrence(
+        calendar_id=calendar.id,
+        master_event_id=master.id,
+        recurrence_id=other_recurrence_id,
+    )
+
+    assert (
+        EventRecurrenceException.objects.filter(
+            parent_event_fk=master, organization_id=org.id
+        ).count()
+        == 2
+    )
+
+
+@pytest.mark.django_db
+def test_occurrence_methods_block_owner_scoped_on_foreign_master(write_allowance_setup):
+    """An owner-scoped token cannot reschedule/cancel a cross-owner master.
+
+    The not-found-parity message is raised and NO exception row is created.
+    """
+    from django.core.exceptions import PermissionDenied
+
+    from calendar_integration.models import EventRecurrenceException
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    # calendar_b is owned by owner_b; the token is scoped to owner_a's membership.
+    calendar_b = setup["calendar_b"]
+    membership_a = setup["membership_a"]
+
+    master = _make_recurring_master_for_write_tests(org, calendar_b)
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="occurrence_deny_foreign",
+        organization=org,
+        scoped_to_membership=membership_a,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+
+    with pytest.raises(PermissionDenied, match=r"Calendar matching query does not exist\."):
+        facade.reschedule_event_occurrence(
+            calendar_id=calendar_b.id,
+            master_event_id=master.id,
+            recurrence_id=_RECURRENCE_ID,
+            start_time=datetime.datetime(2026, 7, 17, 14, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2026, 7, 17, 15, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+    with pytest.raises(PermissionDenied, match=r"Calendar matching query does not exist\."):
+        facade.cancel_event_occurrence(
+            calendar_id=calendar_b.id,
+            master_event_id=master.id,
+            recurrence_id=_RECURRENCE_ID,
+        )
+
+    assert not EventRecurrenceException.objects.filter(
+        parent_event_fk=master, organization_id=org.id
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_occurrence_methods_cross_tenant_master_denied():
+    """A token in org A cannot address a recurring master in org B.
+
+    Either the org-scoped load misses (``CalendarEvent.DoesNotExist``) or the
+    public-token guard denies (``PermissionDenied``); no exception row is created.
+    """
+    from django.core.exceptions import PermissionDenied
+
+    from calendar_integration.models import EventRecurrenceException
+    from public_api.services import PublicAPIAuthService
+
+    org_a = Organization.objects.create(name="Occ Cross Tenant A", should_sync_rooms=False)
+    org_b = Organization.objects.create(name="Occ Cross Tenant B", should_sync_rooms=False)
+
+    calendar_b = Calendar.objects.create(
+        name="Org B Calendar",
+        external_id="occ_cross_tenant_cal_b",
+        organization=org_b,
+    )
+    master = _make_recurring_master_for_write_tests(org_b, calendar_b)
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="occ_cross_tenant_org_wide",
+        organization=org_a,
+    )
+
+    facade = _facade_for_system_user(system_user, org_a)
+    with pytest.raises((PermissionDenied, CalendarEvent.DoesNotExist)):
+        facade.cancel_event_occurrence(
+            calendar_id=calendar_b.id,
+            master_event_id=master.id,
+            recurrence_id=_RECURRENCE_ID,
+        )
+
+    assert not EventRecurrenceException.objects.filter(
+        parent_event_fk=master, organization_id=org_b.id
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_occurrence_methods_reject_non_recurring_master(write_allowance_setup):
+    """A non-recurring master cannot be addressed by a single-occurrence op → ValueError."""
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_a"]
+    membership = setup["membership_a"]
+
+    # A plain (non-recurring) event.
+    master = _make_event_for_write_tests(org, calendar)
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="occurrence_non_recurring",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+    with pytest.raises(ValueError, match="non-recurring"):
+        facade.reschedule_event_occurrence(
+            calendar_id=calendar.id,
+            master_event_id=master.id,
+            recurrence_id=_RECURRENCE_ID,
+            start_time=datetime.datetime(2026, 7, 17, 14, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2026, 7, 17, 15, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+    with pytest.raises(ValueError, match="non-recurring"):
+        facade.cancel_event_occurrence(
+            calendar_id=calendar.id,
+            master_event_id=master.id,
+            recurrence_id=_RECURRENCE_ID,
+        )

@@ -1229,6 +1229,190 @@ class CalendarEventService:
         )
         return cast(CalendarEvent, result) if result else None
 
+    def _load_recurring_master_for_occurrence(
+        self, calendar_id: int, master_event_id: int
+    ) -> CalendarEvent:
+        """Load and authorize the recurring master event for a single-occurrence op.
+
+        Shared scaffolding for ``reschedule_event_occurrence`` and
+        ``cancel_event_occurrence``. The master is loaded org-scoped through the model
+        manager (never bypassing the multi-tenancy guard); a miss raises
+        ``CalendarEvent.DoesNotExist`` which callers map to a not-found.
+
+        Authorization reuses the ``_public_token_may_write`` seam (Phase 0a) so BOTH
+        org-wide and owner-scoped public tokens are honored — this is deliberately NOT
+        ``create_event``'s allowance (which blocks org-wide tokens). A cross-owner /
+        cross-tenant token is denied with the not-found-parity message so it cannot
+        distinguish a forbidden calendar from a missing one. A Django ``User`` principal
+        keeps the existing (non-public) semantics and is not subjected to the
+        public-token check.
+
+        Finally, the master must actually be recurring (have a ``recurrence_rule``);
+        otherwise a ``ValueError`` is raised — single-occurrence addressing is
+        meaningless for a non-recurring event.
+        """
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
+
+        master = (
+            CalendarEvent.objects.filter_by_organization(context.organization.id)
+            .select_related("calendar")
+            .get(id=master_event_id, calendar_fk_id=calendar_id)
+        )
+
+        if isinstance(context.user_or_token, SystemUser):
+            if not self._public_token_may_write(context.user_or_token, master.calendar):
+                # Not-found parity: a cross-owner caller cannot distinguish a forbidden
+                # calendar from a genuinely missing one (no existence leak).
+                raise PermissionDenied("Calendar matching query does not exist.")
+
+        if not master.is_recurring:
+            raise ValueError(
+                "Cannot reschedule or cancel a single occurrence of a non-recurring event."
+            )
+
+        return master
+
+    @transaction.atomic()
+    def reschedule_event_occurrence(
+        self,
+        calendar_id: int,
+        master_event_id: int,
+        recurrence_id: datetime.datetime,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+    ) -> CalendarEvent:
+        """Reschedule a SINGLE occurrence of a recurring series to a new time.
+
+        The occurrence is addressed by ``(calendar_id, master_event_id, recurrence_id)``
+        where ``recurrence_id`` is the occurrence's ORIGINAL start datetime
+        (== ``CalendarEvent.recurrence_id``). Un-materialized occurrences have no row of
+        their own; this creates a modified-occurrence ``CalendarEvent`` and links it to
+        the master through an ``EventRecurrenceException``.
+
+        The modified-occurrence event is built DIRECTLY here (not through
+        ``create_event``) so the org-wide public-token block in ``create_event`` is not
+        re-applied — authorization already happened in
+        ``_load_recurring_master_for_occurrence`` via ``_public_token_may_write``, which
+        intentionally permits org-wide tokens.
+
+        Idempotent: ``create_exception`` upserts on ``(organization, exception_date)``, so
+        rescheduling the same ``recurrence_id`` twice updates the existing exception (and
+        re-points its modified event) rather than creating a second exception row.
+
+        Args:
+            calendar_id: Internal ID of the calendar holding the master event.
+            master_event_id: Internal ID of the recurring master event.
+            recurrence_id: The occurrence's original start datetime.
+            start_time: New start time for the occurrence.
+            end_time: New end time for the occurrence.
+            timezone: IANA timezone for the new times.
+
+        Returns:
+            The modified-occurrence ``CalendarEvent``.
+        """
+        context = cast("BaseCalendarService", self._context)
+        master = self._load_recurring_master_for_occurrence(calendar_id, master_event_id)
+
+        # Idempotency: if a prior reschedule already materialized a modified-occurrence
+        # event for this recurrence_id, drop it before creating the replacement. The
+        # exception row itself is upserted by create_exception below; removing the stale
+        # modified event keeps exactly one occurrence event per recurrence_id (and avoids
+        # orphaned events colliding on the unique-empty external_id in the no-adapter path).
+        existing_exception = master.recurrence_exceptions.filter(
+            organization_id=context.organization.id,
+            exception_date=recurrence_id,
+        ).first()
+        if existing_exception is not None and existing_exception.modified_event_fk_id is not None:
+            stale_modified_event = existing_exception.modified_event
+            # Detach from the exception first so create_exception's re-point is clean,
+            # then delete the stale modified-occurrence event.
+            existing_exception.modified_object = None
+            existing_exception.save(update_fields=["modified_event_fk"])
+            stale_modified_event.delete()
+
+        # Mirror create_event's external-sync behavior for an exception event: on
+        # PERSONAL/RESOURCE calendars with a write adapter, create_event syncs the
+        # modified occurrence as a recurring-instance event in the external provider.
+        external_id = ""
+        original_payload: dict[str, Any] = {}
+        if master.calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE] and (
+            write_adapter := self._host._get_write_adapter_for_calendar(master.calendar)
+        ):
+            created_external = write_adapter.create_event(
+                CalendarEventAdapterInputData(
+                    calendar_external_id=master.calendar.external_id,
+                    title=master.title,
+                    description=master.description,
+                    start_time=start_time,
+                    end_time=end_time,
+                    timezone=timezone,
+                    attendees=[],
+                    resources=[],
+                    recurrence_rule=None,
+                    is_recurring_instance=True,
+                )
+            )
+            external_id = created_external.external_id
+            original_payload = created_external.original_payload or {}
+
+        # Build the modified-occurrence event directly (mirroring create_event's field
+        # construction for the parent_event/is_recurring_exception path) so we never
+        # recurse through create_event's org-wide public-token block.
+        modified_event = CalendarEvent(
+            calendar_fk=master.calendar,
+            organization=context.organization,
+            title=master.title,
+            description=master.description or "",
+            start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(start_time, timezone),
+            end_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(end_time, timezone),
+            timezone=timezone,
+            external_id=external_id,
+            meta={"latest_original_payload": original_payload} if context.calendar_adapter else {},
+            parent_recurring_object_fk=master,
+            is_recurring_exception=True,
+            recurrence_id=recurrence_id,
+        )
+        modified_event.save()
+
+        # Link via the master's exception primitive (upserts on (org, exception_date) →
+        # idempotent for a repeated recurrence_id).
+        master.create_exception(
+            exception_date=recurrence_id,
+            is_cancelled=False,
+            modified_object=modified_event,
+        )
+
+        return modified_event
+
+    @transaction.atomic()
+    def cancel_event_occurrence(
+        self,
+        calendar_id: int,
+        master_event_id: int,
+        recurrence_id: datetime.datetime,
+    ) -> None:
+        """Cancel a SINGLE occurrence of a recurring series.
+
+        The occurrence is addressed by ``(calendar_id, master_event_id, recurrence_id)``
+        (the occurrence's original start). This creates a cancellation
+        ``EventRecurrenceException`` (``is_cancelled=True``, no ``modified_event``) without
+        mutating the master or its recurrence rule.
+
+        Idempotent: ``create_exception`` upserts on ``(organization, exception_date)``, so
+        cancelling the same ``recurrence_id`` twice updates the existing exception in
+        place rather than creating a second row.
+
+        Args:
+            calendar_id: Internal ID of the calendar holding the master event.
+            master_event_id: Internal ID of the recurring master event.
+            recurrence_id: The occurrence's original start datetime.
+        """
+        master = self._load_recurring_master_for_occurrence(calendar_id, master_event_id)
+        master.create_exception(exception_date=recurrence_id, is_cancelled=True)
+
     def get_recurring_event_instances(
         self,
         recurring_event: CalendarEvent,
