@@ -22,8 +22,8 @@
 |---|---|---|---|
 | 0a | Service write-allowance for public tokens | 3 | ✅ done |
 | 0b | Single-occurrence exception service methods | 4 | ✅ done |
-| 1 | `rescheduleCalendarEvent` mutation | 3 | ⏳ next |
-| 2 | `rescheduleCalendarGroupEvent` mutation | 3 | ⬜ pending |
+| 1 | `rescheduleCalendarEvent` mutation | 3 | ✅ done |
+| 2 | `rescheduleCalendarGroupEvent` mutation | 3 | ⏳ next |
 | 3 | `cancelEvent` mutation | 3 | ⬜ pending |
 
 Deferred: none (no cross-repo phases, no flag-removal phase).
@@ -49,8 +49,17 @@ Deferred: none (no cross-repo phases, no flag-removal phase).
 - **Outer gate:** serial scoped module 35 passed; clean full `pytest -n auto` → **3161 passed**. NOTE: shared compose `db` is contended by concurrent worktree suites — full-suite `EEEE` clusters at teardown are ENVIRONMENTAL; verify suspects via serial `-p no:randomly`.
 - **For later phases:** Phase 1 wraps `reschedule_event_occurrence` (when `recurrenceId` given) + `update_event` (whole/series) for `rescheduleCalendarEvent`. Phase 3 wraps `cancel_event_occurrence` (`recurrenceId`) + `delete_event` (`deleteSeries`) for `cancelEvent`. Facade methods: `calendar_service.reschedule_event_occurrence(...)`, `calendar_service.cancel_event_occurrence(...)`.
 
+### Phase 1 — `rescheduleCalendarEvent` Public GraphQL mutation ✅
+- **Model used:** sonnet (plan tier 3). **Branch:** `plan/owner-scoped-reschedule-cancel-mutations/phase-1` (stacked on phase-0b).
+- **Commits:** `e9b9167` (feat mutation), `3ccb67d` (test: preservation + non-recurring guard, docstring).
+- **What shipped:** `rescheduleCalendarEvent` mutation on the `Mutation` class in `public_api/mutations.py` + `RescheduleCalendarEventInput` (organization_id, calendar_id, event_id, start/end/timezone, optional rrule_string, optional recurrence_id). Decorated `[IsAuthenticated, OrganizationResourceAccess]`, returns `CalendarEventGraphQLType`, raises `GraphQLError`. Owner-scope guard mirrors `schedule_event` (`assert_calendar_in_owner_scope` + Calendar load → `"Calendar not found."` parity). Event load → `"Event not found."`. `recurrence_id` set → `reschedule_event_occurrence` (Phase 0b); else whole/series via `update_event` preserving title/description/attendances/external/resources, with **rrule preservation** (`input.rrule_string` → existing `recurrence_rule.to_rrule_string()` → None). `FIELD_TO_RESOURCE_MAPPING["rescheduleCalendarEvent"] = CALENDAR_EVENT` (already provider-scoped).
+- **Tests:** `public_api/tests/test_mutations.py::TestScopedTokenRescheduleCalendarEvent` (10) — whole-event success, field/attendee/resource/description preservation, series rule preserved (no rrule) + replaced (explicit rrule), single-occurrence creates exception/master untouched, non-recurring+recurrenceId clean error, cross-owner not-found parity (no mutation), org-wide acts org-wide, missing-event.
+- **Review:** Layer 1/2/3 clean. No BLOCKERs; reviewer verified `to_rrule_string`/`from_rrule_string` symmetry + `update_event` preserves rule id (no series strip). SHOULD-FIX (preservation asserted title-only; non-recurring guard untested) applied; NITs (naive-dt factory, redundant prefetch) skipped as pre-existing/harmless.
+- **Outer gate:** serial scoped + Phase 1 tests green; full `pytest -n auto` → **3171 passed**.
+- **Env note:** main checkout's `package.json`/`package-lock.json` show a `vinta-ai-workflows ^0.2.0-alpha1 → alpha3` tooling bump that appeared mid-session (unrelated to this feature; NOT a worktree stray write — worktree tree is clean). Excluded from stray-write checks for remaining phases.
+
 ## Current Phase
-**Phase 1** — `rescheduleCalendarEvent` Public GraphQL mutation.
+**Phase 2** — `rescheduleCalendarGroupEvent` Public GraphQL mutation.
 
 ## Remaining Phases
-1 (next), 2, 3.
+2 (next), 3.
