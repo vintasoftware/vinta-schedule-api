@@ -1266,6 +1266,15 @@ class CalendarEventService:
                 # Not-found parity: a cross-owner caller cannot distinguish a forbidden
                 # calendar from a genuinely missing one (no existence leak).
                 raise PermissionDenied("Calendar matching query does not exist.")
+            # Bundle calendars are rejected for scoped tokens (mirrors update_event /
+            # delete_event). Org-wide tokens follow the existing service rules.
+            if (
+                context.user_or_token.scoped_to_membership_user_id is not None
+                and master.calendar.calendar_type == CalendarType.BUNDLE
+            ):
+                raise PermissionDenied(
+                    "Events cannot be rescheduled or cancelled on a bundle calendar through the Public API."
+                )
 
         if not master.is_recurring:
             raise ValueError(
@@ -1317,21 +1326,57 @@ class CalendarEventService:
         master = self._load_recurring_master_for_occurrence(calendar_id, master_event_id)
 
         # Idempotency: if a prior reschedule already materialized a modified-occurrence
-        # event for this recurrence_id, drop it before creating the replacement. The
-        # exception row itself is upserted by create_exception below; removing the stale
-        # modified event keeps exactly one occurrence event per recurrence_id (and avoids
-        # orphaned events colliding on the unique-empty external_id in the no-adapter path).
+        # event for this recurrence_id, update it in place rather than delete+recreate.
+        # Deleting and recreating would orphan the external provider event (the old
+        # external_id is abandoned while a new one is created). Updating in place keeps
+        # the existing external_id intact and issues an update call to the adapter, so
+        # no external event is ever orphaned on repeated reschedules of the same
+        # recurrence_id.
         existing_exception = master.recurrence_exceptions.filter(
             organization_id=context.organization.id,
             exception_date=recurrence_id,
         ).first()
         if existing_exception is not None and existing_exception.modified_event_fk_id is not None:
-            stale_modified_event = existing_exception.modified_event
-            # Detach from the exception first so create_exception's re-point is clean,
-            # then delete the stale modified-occurrence event.
-            existing_exception.modified_object = None
-            existing_exception.save(update_fields=["modified_event_fk"])
-            stale_modified_event.delete()
+            existing_modified = existing_exception.modified_event
+            existing_modified.start_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+                start_time, timezone
+            )
+            existing_modified.end_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+                end_time, timezone
+            )
+            existing_modified.timezone = timezone
+
+            # Sync the updated times to the external provider when an adapter is available,
+            # reusing the existing external_id so no orphan is left behind.
+            if (
+                master.calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE]
+                and existing_modified.external_id
+                and (write_adapter := self._host._get_write_adapter_for_calendar(master.calendar))
+            ):
+                updated_external = write_adapter.update_event(
+                    master.calendar.external_id,
+                    existing_modified.external_id,
+                    CalendarEventAdapterInputData(
+                        calendar_external_id=master.calendar.external_id,
+                        title=master.title,
+                        description=master.description,
+                        start_time=start_time,
+                        end_time=end_time,
+                        timezone=timezone,
+                        attendees=[],
+                        resources=[],
+                        recurrence_rule=None,
+                        is_recurring_instance=True,
+                    ),
+                )
+                if context.calendar_adapter:
+                    existing_modified.meta = {
+                        "latest_original_payload": updated_external.original_payload or {}
+                    }
+
+            existing_modified.save()
+            # The exception row already points at existing_modified; no re-link needed.
+            return existing_modified
 
         # Mirror create_event's external-sync behavior for an exception event: on
         # PERSONAL/RESOURCE calendars with a write adapter, create_event syncs the
@@ -1373,6 +1418,11 @@ class CalendarEventService:
             meta={"latest_original_payload": original_payload} if context.calendar_adapter else {},
             parent_recurring_object_fk=master,
             is_recurring_exception=True,
+            # Deliberately set to the ORIGINAL occurrence start (recurrence_id), not
+            # the new start_time. The EventRecurrenceException is matched by
+            # exception_date == original start, so original-start is the consistent
+            # key across all references to this exception; this intentionally diverges
+            # from create_event's recurrence_id=event_data.start_time path.
             recurrence_id=recurrence_id,
         )
         modified_event.save()

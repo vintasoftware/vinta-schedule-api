@@ -1610,3 +1610,223 @@ def test_occurrence_methods_reject_non_recurring_master(write_allowance_setup):
             master_event_id=master.id,
             recurrence_id=_RECURRENCE_ID,
         )
+
+
+@pytest.mark.django_db
+def test_occurrence_methods_bundle_calendar_blocked_for_scoped_token(write_allowance_setup):
+    """A scoped token cannot reschedule or cancel an occurrence on a bundle calendar.
+
+    Mirrors the update/delete bundle guard; scoped tokens are rejected up front.
+    Org-wide tokens are not tested here (they follow existing service rules).
+    """
+    from django.core.exceptions import PermissionDenied
+
+    from calendar_integration.models import EventRecurrenceException, RecurrenceRule
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    bundle = setup["bundle_calendar"]
+    membership_a = setup["membership_a"]
+
+    # Create a recurring master directly on the bundle calendar.
+    rule = RecurrenceRule.from_rrule_string("FREQ=WEEKLY;COUNT=4", org)
+    rule.save()
+    master = CalendarEvent.objects.create(
+        title="Bundle Recurring",
+        description="",
+        start_time_tz_unaware=datetime.datetime(2026, 7, 10, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2026, 7, 10, 11, 0),
+        timezone="UTC",
+        external_id="bundle-recurring-master",
+        calendar=bundle,
+        organization=org,
+    )
+    master.recurrence_rule = rule
+    master.save()
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="occurrence_deny_bundle",
+        organization=org,
+        scoped_to_membership=membership_a,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+
+    with pytest.raises(PermissionDenied, match="bundle calendar"):
+        facade.reschedule_event_occurrence(
+            calendar_id=bundle.id,
+            master_event_id=master.id,
+            recurrence_id=_RECURRENCE_ID,
+            start_time=datetime.datetime(2026, 7, 17, 14, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2026, 7, 17, 15, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+    with pytest.raises(PermissionDenied, match="bundle calendar"):
+        facade.cancel_event_occurrence(
+            calendar_id=bundle.id,
+            master_event_id=master.id,
+            recurrence_id=_RECURRENCE_ID,
+        )
+
+    # No exception row created.
+    assert not EventRecurrenceException.objects.filter(
+        parent_event_fk=master, organization_id=org.id
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_reschedule_event_occurrence_calls_adapter_create_on_personal_calendar(
+    write_allowance_setup,
+):
+    """On a PERSONAL calendar with a write adapter, reschedule calls create_event on the
+    adapter with is_recurring_instance=True and captures the returned external_id.
+    """
+    from unittest.mock import Mock, patch
+
+    from calendar_integration.services.dataclasses import CalendarEventAdapterOutputData
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar_a = setup["calendar_a"]
+    membership_a = setup["membership_a"]
+
+    master = _make_recurring_master_for_write_tests(org, calendar_a)
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="occurrence_adapter_create",
+        organization=org,
+        scoped_to_membership=membership_a,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+
+    mock_adapter = Mock()
+    mock_adapter.create_event.return_value = CalendarEventAdapterOutputData(
+        calendar_external_id=calendar_a.external_id,
+        external_id="occ-ext-123",
+        title=master.title,
+        description=master.description or "",
+        start_time=datetime.datetime(2026, 7, 17, 14, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2026, 7, 17, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule=None,
+    )
+
+    with patch.object(facade, "_get_write_adapter_for_calendar", return_value=mock_adapter):
+        modified = facade.reschedule_event_occurrence(
+            calendar_id=calendar_a.id,
+            master_event_id=master.id,
+            recurrence_id=_RECURRENCE_ID,
+            start_time=datetime.datetime(2026, 7, 17, 14, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2026, 7, 17, 15, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+    # create_event called once with is_recurring_instance=True.
+    mock_adapter.create_event.assert_called_once()
+    call_data = mock_adapter.create_event.call_args[0][0]
+    assert call_data.is_recurring_instance is True
+
+    # external_id captured from adapter response.
+    assert modified.external_id == "occ-ext-123"
+
+    # Repeated reschedule of the same recurrence_id → update_event (not create_event again).
+    mock_adapter.update_event.return_value = CalendarEventAdapterOutputData(
+        calendar_external_id=calendar_a.external_id,
+        external_id="occ-ext-123",
+        title=master.title,
+        description=master.description or "",
+        start_time=datetime.datetime(2026, 7, 17, 16, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2026, 7, 17, 17, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendees=[],
+        resources=[],
+        original_payload={},
+        recurrence_rule=None,
+    )
+
+    with patch.object(facade, "_get_write_adapter_for_calendar", return_value=mock_adapter):
+        modified2 = facade.reschedule_event_occurrence(
+            calendar_id=calendar_a.id,
+            master_event_id=master.id,
+            recurrence_id=_RECURRENCE_ID,
+            start_time=datetime.datetime(2026, 7, 17, 16, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2026, 7, 17, 17, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+    # Second reschedule updates in place → update_event called once, no second create.
+    mock_adapter.update_event.assert_called_once()
+    assert mock_adapter.create_event.call_count == 1  # still exactly 1 (no second create)
+    # Same modified event updated in place (same id).
+    assert modified2.id == modified.id
+    assert modified2.external_id == "occ-ext-123"  # external_id preserved, no orphan
+
+
+@pytest.mark.django_db
+def test_reschedule_and_cancel_occurrence_expansion(write_allowance_setup):
+    """After reschedule/cancel, get_occurrences_in_range reflects the change.
+
+    Acceptance pin: the expansion correctly picks up the modified or cancelled
+    occurrence so callers see the right timeline.
+    """
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_a"]
+    membership = setup["membership_a"]
+
+    # Master starts 2026-07-10 (Friday), repeats weekly for 4 occurrences:
+    # Jul 10, Jul 17, Jul 24, Jul 31.
+    master = _make_recurring_master_for_write_tests(org, calendar)
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="occurrence_expansion",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+
+    # --- Reschedule the Jul-17 occurrence to 16:00 ---
+    new_start = datetime.datetime(2026, 7, 17, 16, 0, tzinfo=datetime.UTC)
+    new_end = datetime.datetime(2026, 7, 17, 17, 0, tzinfo=datetime.UTC)
+    facade.reschedule_event_occurrence(
+        calendar_id=calendar.id,
+        master_event_id=master.id,
+        recurrence_id=_RECURRENCE_ID,  # 2026-07-17 10:00 UTC
+        start_time=new_start,
+        end_time=new_end,
+        timezone="UTC",
+    )
+
+    window_start = datetime.datetime(2026, 7, 1, 0, 0, tzinfo=datetime.UTC)
+    window_end = datetime.datetime(2026, 8, 1, 0, 0, tzinfo=datetime.UTC)
+    occurrences = master.get_occurrences_in_range(window_start, window_end)
+
+    # The Jul-17 occurrence must appear at the NEW time, not the original 10:00.
+    jul17_occurrences = [o for o in occurrences if o.start_time.date().day == 17]
+    assert len(jul17_occurrences) == 1
+    assert jul17_occurrences[0].start_time == new_start
+
+    # --- Cancel the Jul-24 occurrence ---
+    jul24_recurrence_id = datetime.datetime(2026, 7, 24, 10, 0, tzinfo=datetime.UTC)
+    facade.cancel_event_occurrence(
+        calendar_id=calendar.id,
+        master_event_id=master.id,
+        recurrence_id=jul24_recurrence_id,
+    )
+
+    occurrences_after_cancel = master.get_occurrences_in_range(window_start, window_end)
+
+    # Jul-24 must be absent; Jul-10, Jul-17 (rescheduled), Jul-31 remain.
+    days_present = {o.start_time.date().day for o in occurrences_after_cancel}
+    assert 24 not in days_present
+    assert 10 in days_present
+    assert 31 in days_present
