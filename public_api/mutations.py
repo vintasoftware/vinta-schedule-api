@@ -2267,8 +2267,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
 
         Authorization:
         - Owner-scoped token: restricted to grouped events whose primary calendar is
-          owned by the token's owner; cross-owner → ``"Calendar not found."`` (same
-          as missing — no existence leak).
+          owned by the token's owner; cross-owner → ``"Event not found."`` (same
+          as missing event — no existence leak).
         - Org-wide token: acts org-wide.
         - The service independently re-verifies ownership as defense-in-depth.
 
@@ -2276,8 +2276,16 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         """
         from calendar_integration.exceptions import CalendarGroupValidationError
 
+        # Sentinel emitted by CalendarEventService.update_event when a SystemUser's
+        # scoped calendar can't be found (racing cross-owner path). Map it to the
+        # uniform not-found message to prevent a discriminating oracle.
+        calendar_not_found_sentinel = "Calendar matching query does not exist."
+
         calendar_service, org = _get_org_and_init_calendar_service(info)
         request: PublicApiHttpRequest = info.context.request
+
+        # input.organization_id is intentionally ignored: org is derived from the
+        # authenticated request context, not from caller-supplied input.
 
         # Load the grouped event scoped to the organization to derive the primary
         # calendar and validate that it is actually a grouped event.
@@ -2297,13 +2305,15 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         primary_calendar_id: int = grouped_event.calendar_fk_id  # type: ignore[assignment]
 
         # Owner-scope guard on the PRIMARY calendar: a scoped token may only target
-        # grouped events whose primary calendar its owner owns. Cross-owner and missing
-        # calendars return the identical error — no existence leak.
+        # grouped events whose primary calendar its owner owns. The grouped event was
+        # already loaded org-scoped with select_related("calendar"), so the derived
+        # primary calendar provably exists — only the ownership check can fail here.
+        # Map Calendar.DoesNotExist (cross-owner) to "Event not found." — uniform
+        # not-found, no existence leak.
         try:
             assert_calendar_in_owner_scope(request.public_api_system_user, org, primary_calendar_id)
-            Calendar.objects.filter_by_organization(org.id).get(id=primary_calendar_id)
         except Calendar.DoesNotExist as exc:
-            raise GraphQLError("Calendar not found.") from exc
+            raise GraphQLError("Event not found.") from exc
 
         # Wire the group service: inject the already-initialized calendar_service so
         # that the public-token auth context flows into reschedule_grouped_event →
@@ -2321,10 +2331,16 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 tz=input.timezone,
             )
         except Calendar.DoesNotExist as exc:
-            raise GraphQLError("Calendar not found.") from exc
+            # Derived-calendar miss must not leak existence either (caller addresses by event).
+            raise GraphQLError("Event not found.") from exc
         except CalendarEvent.DoesNotExist as exc:
             raise GraphQLError("Event not found.") from exc
         except PermissionDenied as exc:
+            # Defense-in-depth: update_event raises PermissionDenied with the sentinel
+            # message when a racing cross-owner SystemUser calendar lookup fails.
+            # Surface it as the uniform not-found rather than the distinct sentinel.
+            if str(exc) == calendar_not_found_sentinel:
+                raise GraphQLError("Event not found.") from exc
             raise GraphQLError(
                 str(exc) or "You do not have permission to reschedule this event."
             ) from exc

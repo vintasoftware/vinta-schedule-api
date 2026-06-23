@@ -10270,10 +10270,10 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
     # ------------------------------------------------------------------
 
     def test_reschedule_grouped_event_cross_owner_not_found_no_mutation(self):
-        """Cross-owner grouped event: uniform 'Calendar not found.' — same as missing calendar.
+        """Cross-owner grouped event: uniform 'Event not found.' — same as missing event.
 
         Owner A's scoped token targets a grouped event on owner B's primary calendar.
-        The response error must be identical to a genuinely missing calendar, and
+        The response error must be identical to a genuinely missing event, and
         neither the primary event nor the linked BlockedTime may change.
         """
         from calendar_integration.models import BlockedTime as _BlockedTime
@@ -10340,11 +10340,13 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         )
 
         cross_msg = cross_response.json()["errors"][0]["message"]
-        # For a non-existent event_id, the resolver raises "Event not found.".
-        # For cross-owner, the guard fires on the primary calendar → "Calendar not found.".
-        # Both are opaque not-found messages — no existence leak.
-        assert cross_msg == "Calendar not found."
-        assert missing_response.json()["errors"][0]["message"] == "Event not found."
+        missing_msg = missing_response.json()["errors"][0]["message"]
+        # Both cross-owner and missing-event cases must return the identical message —
+        # no existence leak (a cross-owner grouped event must be indistinguishable from
+        # a genuinely missing event_id).
+        assert cross_msg == "Event not found."
+        assert missing_msg == "Event not found."
+        assert cross_msg == missing_msg
 
         # B's event and blocked time must be unmodified.
         grouped_event_b.refresh_from_db()
@@ -10445,3 +10447,93 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         assert non_grouped_event.start_time_tz_unaware.replace(
             tzinfo=None
         ) == original_start.replace(tzinfo=None)
+
+    # ------------------------------------------------------------------
+    # SHOULD-FIX: PermissionDenied sentinel mapping (defense-in-depth)
+    # ------------------------------------------------------------------
+
+    def test_permission_denied_calendar_sentinel_maps_to_event_not_found(self):
+        """PermissionDenied('Calendar matching query does not exist.') from the service
+        layer maps to 'Event not found.' — not the distinct sentinel string.
+
+        This guards against a future regression in the resolver guard that might silently
+        reopen the third-string existence leak (the sentinel emitted by
+        CalendarEventService.update_event for a racing cross-owner SystemUser).
+
+        Approach: monkeypatch ``reschedule_grouped_event`` to raise the sentinel
+        PermissionDenied and assert the resolver returns the uniform not-found message.
+        """
+        from unittest.mock import patch
+
+        from django.core.exceptions import PermissionDenied as _PermissionDenied
+
+        org = baker.make(Organization, name="GroupResched Sentinel Org")
+        _owner, membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
+        grouped_event, _blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        sentinel = "Calendar matching query does not exist."
+
+        with patch(
+            "calendar_integration.services.calendar_group_service.CalendarGroupService"
+            ".reschedule_grouped_event",
+            side_effect=_PermissionDenied(sentinel),
+        ):
+            response = self._post(
+                _RESCHEDULE_CALENDAR_GROUP_EVENT,
+                system_user,
+                token,
+                auth_service,
+                {"input": self._reschedule_group_input(org, grouped_event)},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        msg = data["errors"][0]["message"]
+        # Must be the uniform not-found — not the raw sentinel.
+        assert msg == "Event not found."
+        assert msg != sentinel
+
+    # ------------------------------------------------------------------
+    # SHOULD-FIX: error-mapping branch coverage (no 500 on service error)
+    # ------------------------------------------------------------------
+
+    def test_service_validation_error_returns_clean_graphql_error(self):
+        """A CalendarGroupValidationError from the service layer returns a clean
+        GraphQL error (not a 500) with the service message.
+
+        Monkeypatches ``reschedule_grouped_event`` to raise the validation error.
+        """
+        from unittest.mock import patch
+
+        from calendar_integration.exceptions import CalendarGroupValidationError
+
+        org = baker.make(Organization, name="GroupResched ValidationErr Org")
+        _owner, membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
+        grouped_event, _blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        service_message = "New time conflicts with an existing group event."
+
+        with patch(
+            "calendar_integration.services.calendar_group_service.CalendarGroupService"
+            ".reschedule_grouped_event",
+            side_effect=CalendarGroupValidationError(service_message),
+        ):
+            response = self._post(
+                _RESCHEDULE_CALENDAR_GROUP_EVENT,
+                system_user,
+                token,
+                auth_service,
+                {"input": self._reschedule_group_input(org, grouped_event)},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == service_message
