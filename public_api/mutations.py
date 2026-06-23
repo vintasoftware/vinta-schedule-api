@@ -32,6 +32,7 @@ from calendar_integration.mutations import (
     CalendarGroupMutations,
     ExternalEventChangeRequestMutations,
 )
+from calendar_integration.services.calendar_service import _UNCHANGED
 from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
     EventAttendanceInputData,
@@ -271,6 +272,43 @@ class DisableResourceCalendarResult:
 
     success: bool
     error_message: str | None = None
+
+
+@strawberry.input
+class UpdateResourceCalendarInput:
+    """Input for partially updating a resource calendar.
+
+    Only provided (non-None) fields are updated; omitted fields leave the calendar unchanged.
+    The target calendar must be of type RESOURCE and must have provider INTERNAL (not synced
+    from an external provider).
+
+    is_private: If provided (non-None), updates the calendar's privacy.
+        True  -> accepts_public_scheduling=False (private, codeless booking disallowed).
+        False -> accepts_public_scheduling=True  (public, codeless booking allowed).
+        Omit (None) to leave accepts_public_scheduling unchanged.
+
+    capacity: If provided as an integer, sets the capacity to that value. If provided as
+        null (None), clears the capacity to unlimited. If omitted entirely (UNSET), the
+        existing capacity is left unchanged.
+    """
+
+    organization_id: int
+    calendar_id: int
+    name: str | None = None
+    description: str | None = None
+    capacity: int | None = strawberry.UNSET  # type: ignore[assignment]
+    manage_available_windows: bool | None = None
+    is_private: bool | None = None
+    visibility: str | None = None
+
+
+@strawberry.type
+class UpdateResourceCalendarResult:
+    """Result of the updateResourceCalendar mutation."""
+
+    success: bool
+    error_message: str | None = None
+    calendar: CalendarGraphQLType | None = None
 
 
 @strawberry.input
@@ -1345,6 +1383,62 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             return DisableResourceCalendarResult(success=False, error_message=str(e))
 
         return DisableResourceCalendarResult(success=True)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def update_resource_calendar(
+        self,
+        info: strawberry.Info,
+        input: UpdateResourceCalendarInput,  # noqa: A002
+    ) -> UpdateResourceCalendarResult:
+        """Partially update a resource calendar (org-scoped).
+
+        The mutation:
+        1. Resolves the organization and initializes the calendar service via the system-user token.
+        2. Delegates to CalendarService.update_resource_calendar with the supplied parameters.
+           Only provided (non-None, non-UNSET) fields are written; omitted fields leave the
+           calendar unchanged.
+           is_private (when provided) is translated to accepts_public_scheduling = not is_private.
+           capacity uses three states: omit (UNSET → _UNCHANGED sentinel, left unchanged),
+           explicit null (None → clears capacity to unlimited), or integer (sets capacity).
+        3. Returns the updated CalendarGraphQLType on success, or success=False + errorMessage
+           on failure.
+
+        The target calendar must be of type RESOURCE and have provider INTERNAL; synced
+        calendars and non-RESOURCE types raise ValueError → success=False with the reason.
+        Cross-org / missing calendar surfaces as "Calendar not found." (no existence leak).
+
+        The token's OrganizationResourceAccess must include the UPDATE_RESOURCE_CALENDAR resource.
+        """
+        calendar_service, _org = _get_org_and_init_calendar_service(info)
+
+        accepts_public_scheduling: bool | None = None
+        if input.is_private is not None:
+            accepts_public_scheduling = not input.is_private
+
+        # Translate UNSET → the _UNCHANGED sentinel so the service knows to leave capacity alone.
+        # An explicit None clears the capacity; an integer sets it.
+        # mypy: _UNCHANGED is object() but CalendarService.update_resource_calendar accepts it as
+        # the sentinel "int | None"; suppress the mismatch, matching the service's own annotation.
+        capacity: int | None = (  # type: ignore[assignment]
+            _UNCHANGED if input.capacity is strawberry.UNSET else input.capacity  # type: ignore[assignment]
+        )
+
+        try:
+            calendar = calendar_service.update_resource_calendar(
+                calendar_id=input.calendar_id,
+                name=input.name,
+                description=input.description,
+                capacity=capacity,
+                manage_available_windows=input.manage_available_windows,
+                accepts_public_scheduling=accepts_public_scheduling,
+                visibility=input.visibility,
+            )
+        except Calendar.DoesNotExist:
+            return UpdateResourceCalendarResult(success=False, error_message="Calendar not found.")
+        except (ValueError, DjangoValidationError, IntegrityError) as e:
+            return UpdateResourceCalendarResult(success=False, error_message=str(e))
+
+        return UpdateResourceCalendarResult(success=True, calendar=calendar)  # type: ignore[arg-type]
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def import_resource_calendars(

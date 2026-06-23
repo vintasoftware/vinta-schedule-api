@@ -10,6 +10,7 @@ from django.utils import timezone
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 
+from audit.constants import AuditAction
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncStatus,
@@ -10271,3 +10272,378 @@ class TestDisableBundleCalendarService:
 
         with pytest.raises(ValueError, match="not a bundle calendar"):
             service.disable_bundle_calendar(bundle_id=resource_calendar.id)
+
+
+class TestUpdateResourceCalendarService:
+    """Unit tests for CalendarService.update_resource_calendar."""
+
+    @pytest.mark.django_db
+    def test_capacity_set_to_int(self, organization):
+        """Setting capacity to an int updates it."""
+        resource_calendar = Calendar.objects.create(
+            name="Conference Room",
+            external_id="room-capacity-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            capacity=10,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+        updated_calendar = service.update_resource_calendar(
+            calendar_id=resource_calendar.id,
+            capacity=20,
+        )
+
+        assert updated_calendar.capacity == 20
+        resource_calendar.refresh_from_db()
+        assert resource_calendar.capacity == 20
+
+    @pytest.mark.django_db
+    def test_capacity_explicit_none_clears_it(self, organization):
+        """Setting capacity to None clears it to unlimited (null)."""
+        resource_calendar = Calendar.objects.create(
+            name="Conference Room",
+            external_id="room-capacity-clear-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            capacity=10,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+        updated_calendar = service.update_resource_calendar(
+            calendar_id=resource_calendar.id,
+            capacity=None,
+        )
+
+        assert updated_calendar.capacity is None
+        resource_calendar.refresh_from_db()
+        assert resource_calendar.capacity is None
+
+    @pytest.mark.django_db
+    def test_capacity_omitted_unchanged(self, organization):
+        """Capacity omitted (default _UNCHANGED) leaves existing value untouched."""
+        resource_calendar = Calendar.objects.create(
+            name="Conference Room",
+            external_id="room-capacity-unchanged-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            capacity=10,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+        updated_calendar = service.update_resource_calendar(
+            calendar_id=resource_calendar.id,
+            name="Updated Room",
+        )
+
+        # capacity should not change
+        assert updated_calendar.capacity == 10
+        assert updated_calendar.name == "Updated Room"
+        resource_calendar.refresh_from_db()
+        assert resource_calendar.capacity == 10
+
+    @pytest.mark.django_db
+    def test_name_partial_update(self, organization):
+        """name parameter updates name field."""
+        resource_calendar = Calendar.objects.create(
+            name="Old Name",
+            external_id="room-name-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+        updated_calendar = service.update_resource_calendar(
+            calendar_id=resource_calendar.id,
+            name="New Name",
+        )
+
+        assert updated_calendar.name == "New Name"
+        resource_calendar.refresh_from_db()
+        assert resource_calendar.name == "New Name"
+
+    @pytest.mark.django_db
+    def test_description_partial_update(self, organization):
+        """description parameter updates description field."""
+        resource_calendar = Calendar.objects.create(
+            name="Room",
+            external_id="room-desc-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            description="Old desc",
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+        updated_calendar = service.update_resource_calendar(
+            calendar_id=resource_calendar.id,
+            description="New desc",
+        )
+
+        assert updated_calendar.description == "New desc"
+        resource_calendar.refresh_from_db()
+        assert resource_calendar.description == "New desc"
+
+    @pytest.mark.django_db
+    def test_manage_available_windows_partial_update(self, organization):
+        """manage_available_windows parameter updates the field."""
+        resource_calendar = Calendar.objects.create(
+            name="Room",
+            external_id="room-windows-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            manage_available_windows=False,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+        updated_calendar = service.update_resource_calendar(
+            calendar_id=resource_calendar.id,
+            manage_available_windows=True,
+        )
+
+        assert updated_calendar.manage_available_windows is True
+        resource_calendar.refresh_from_db()
+        assert resource_calendar.manage_available_windows is True
+
+    @pytest.mark.django_db
+    def test_accepts_public_scheduling_partial_update(self, organization):
+        """accepts_public_scheduling parameter updates the field."""
+        resource_calendar = Calendar.objects.create(
+            name="Room",
+            external_id="room-public-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            accepts_public_scheduling=False,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+        updated_calendar = service.update_resource_calendar(
+            calendar_id=resource_calendar.id,
+            accepts_public_scheduling=True,
+        )
+
+        assert updated_calendar.accepts_public_scheduling is True
+        resource_calendar.refresh_from_db()
+        assert resource_calendar.accepts_public_scheduling is True
+
+    @pytest.mark.django_db
+    def test_visibility_partial_update(self, organization):
+        """visibility parameter updates the field."""
+        resource_calendar = Calendar.objects.create(
+            name="Room",
+            external_id="room-visibility-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            visibility=CalendarVisibility.ACTIVE,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+        updated_calendar = service.update_resource_calendar(
+            calendar_id=resource_calendar.id,
+            visibility=CalendarVisibility.INACTIVE,
+        )
+
+        assert updated_calendar.visibility == CalendarVisibility.INACTIVE
+        resource_calendar.refresh_from_db()
+        assert resource_calendar.visibility == CalendarVisibility.INACTIVE
+
+    @pytest.mark.django_db
+    def test_multiple_fields_update(self, organization):
+        """Multiple fields can be updated in one call."""
+        resource_calendar = Calendar.objects.create(
+            name="Old Name",
+            description="Old desc",
+            capacity=10,
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+        updated_calendar = service.update_resource_calendar(
+            calendar_id=resource_calendar.id,
+            name="New Name",
+            description="New desc",
+            capacity=20,
+        )
+
+        assert updated_calendar.name == "New Name"
+        assert updated_calendar.description == "New desc"
+        assert updated_calendar.capacity == 20
+        resource_calendar.refresh_from_db()
+        assert resource_calendar.name == "New Name"
+        assert resource_calendar.description == "New desc"
+        assert resource_calendar.capacity == 20
+
+    @pytest.mark.django_db
+    def test_synced_calendar_raises_value_error(self, organization):
+        """A synced (non-INTERNAL) calendar raises ValueError."""
+        google_calendar = Calendar.objects.create(
+            name="Google Room",
+            external_id="room-google-1",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.RESOURCE,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(
+            ValueError,
+            match="synced from an external provider",
+        ):
+            service.update_resource_calendar(
+                calendar_id=google_calendar.id,
+                name="New Name",
+            )
+
+    @pytest.mark.django_db
+    def test_non_resource_calendar_raises_value_error(self, organization):
+        """A non-RESOURCE calendar raises ValueError."""
+        personal_calendar = Calendar.objects.create(
+            name="Personal Calendar",
+            external_id="personal-update-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(ValueError, match="not a resource calendar"):
+            service.update_resource_calendar(
+                calendar_id=personal_calendar.id,
+                name="New Name",
+            )
+
+    @pytest.mark.django_db
+    def test_cross_org_raises_does_not_exist(self, organization):
+        """Calendar belonging to another org raises Calendar.DoesNotExist."""
+        other_org = Organization.objects.create(name="Other Org for update test")
+        other_calendar = Calendar.objects.create(
+            name="Other Room",
+            external_id="room-other-org-update-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            organization=other_org,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(Calendar.DoesNotExist):
+            service.update_resource_calendar(
+                calendar_id=other_calendar.id,
+                name="New Name",
+            )
+
+    @pytest.mark.django_db
+    def test_missing_id_raises_does_not_exist(self, organization):
+        """A completely non-existent calendar id raises Calendar.DoesNotExist."""
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(Calendar.DoesNotExist):
+            service.update_resource_calendar(
+                calendar_id=999999,
+                name="New Name",
+            )
+
+    @pytest.mark.django_db
+    def test_no_changes_does_not_update(self, organization):
+        """When no fields change, the calendar remains unchanged."""
+        resource_calendar = Calendar.objects.create(
+            name="Room Name",
+            external_id="room-no-change-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            capacity=10,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        # Call with no changes
+        returned_calendar = service.update_resource_calendar(calendar_id=resource_calendar.id)
+
+        # Verify calendar is unchanged
+        assert returned_calendar.name == "Room Name"
+        assert returned_calendar.capacity == 10
+        resource_calendar.refresh_from_db()
+        assert resource_calendar.name == "Room Name"
+        assert resource_calendar.capacity == 10
+
+    @pytest.mark.django_db
+    def test_capacity_update_with_audit(self, organization):
+        """Capacity update triggers audit write with correct diff shape."""
+        resource_calendar = Calendar.objects.create(
+            name="Conference Room",
+            external_id="room-audit-update-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            capacity=10,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        # Patch the audit hook to verify it is called with correct diff
+        with patch.object(service, "_audit_calendar_write") as mock_audit:
+            updated_calendar = service.update_resource_calendar(
+                calendar_id=resource_calendar.id,
+                capacity=20,
+            )
+
+            # Verify the audit hook was called once with UPDATE action and correct diff
+            mock_audit.assert_called_once()
+            call_args = mock_audit.call_args
+            assert call_args[0][0] == AuditAction.UPDATE  # action
+            assert call_args[0][1] == updated_calendar  # calendar
+            # Verify the diff has the expected shape: {"capacity": {"old": 10, "new": 20}}
+            diff = call_args[1]["diff"]
+            assert diff is not None
+            assert "capacity" in diff
+            assert diff["capacity"]["old"] == 10
+            assert diff["capacity"]["new"] == 20
+
+    @pytest.mark.django_db
+    def test_no_change_no_audit_write(self, organization):
+        """When no fields change, audit write hook is not called."""
+        resource_calendar = Calendar.objects.create(
+            name="Conference Room",
+            external_id="room-no-audit-1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            capacity=10,
+            organization=organization,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        # Patch the audit hook to verify it is NOT called when no changes occur
+        with patch.object(service, "_audit_calendar_write") as mock_audit:
+            service.update_resource_calendar(calendar_id=resource_calendar.id)
+
+            # Verify the audit hook was NOT called
+            mock_audit.assert_not_called()
