@@ -9341,3 +9341,535 @@ class TestScopedTokenScheduleEvent:
             .filter(calendar_fk_id=calendar.id)
             .exists()
         )
+
+
+# ---------------------------------------------------------------------------
+# rescheduleCalendarEvent mutation tests
+# ---------------------------------------------------------------------------
+
+
+_RESCHEDULE_CALENDAR_EVENT = """
+mutation RescheduleCalendarEvent($input: RescheduleCalendarEventInput!) {
+    rescheduleCalendarEvent(input: $input) {
+        id
+        title
+        description
+        startTime
+        endTime
+    }
+}
+"""
+
+_RESCHEDULE_CALENDAR_EVENT_WITH_RRULE = """
+mutation RescheduleCalendarEvent($input: RescheduleCalendarEventInput!) {
+    rescheduleCalendarEvent(input: $input) {
+        id
+        title
+        recurrenceRule {
+            id
+            rruleString
+        }
+        startTime
+        endTime
+    }
+}
+"""
+
+
+def _make_calendar_with_ownership(org) -> tuple:
+    """Create a provider user, membership, and a plain (no availability) calendar.
+
+    Returns (owner_user, membership, calendar).
+    """
+    from calendar_integration.models import CalendarOwnership
+
+    unique = uuid.uuid4().hex[:8]
+    user_model = get_user_model()
+    owner = baker.make(user_model, email=f"resched_owner_{unique}@example.com")
+    membership = baker.make(OrganizationMembership, user=owner, organization=org, is_active=True)
+    calendar = baker.make(
+        Calendar,
+        organization=org,
+        name=f"Provider Resched Calendar {unique}",
+        external_id=f"resched-cal-{unique}",
+        manage_available_windows=False,
+    )
+    baker.make(
+        CalendarOwnership,
+        calendar=calendar,
+        membership_user_id=owner.id,
+        organization=org,
+    )
+    return owner, membership, calendar
+
+
+def _make_event_on_calendar(org, calendar, *, title="Meeting", **extra):
+    """Create a minimal CalendarEvent on the given calendar via baker."""
+    from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+    return baker.make(
+        _CalendarEvent,
+        organization=org,
+        calendar=calendar,
+        title=title,
+        external_id=f"evt-{uuid.uuid4().hex[:10]}",
+        start_time_tz_unaware=datetime.datetime(2026, 10, 1, 10, 0, 0),
+        end_time_tz_unaware=datetime.datetime(2026, 10, 1, 11, 0, 0),
+        timezone="UTC",
+        **extra,
+    )
+
+
+def _make_recurring_event_on_calendar(org, calendar) -> tuple:
+    """Create a recurring master CalendarEvent (weekly, 4 occurrences) directly in DB.
+
+    Returns (master_event, recurrence_rule).
+    """
+    from calendar_integration.models import CalendarEvent as _CalendarEvent
+    from calendar_integration.models import RecurrenceRule
+
+    rule = RecurrenceRule.from_rrule_string("FREQ=WEEKLY;COUNT=4;BYDAY=TH", organization=org)
+    rule.save()
+    master = _CalendarEvent.objects.create(
+        title="Weekly Standup",
+        description="Recurring meeting",
+        start_time_tz_unaware=datetime.datetime(2026, 10, 2, 10, 0, 0),
+        end_time_tz_unaware=datetime.datetime(2026, 10, 2, 11, 0, 0),
+        timezone="UTC",
+        external_id=f"recurring-{uuid.uuid4().hex[:8]}",
+        calendar=calendar,
+        organization=org,
+    )
+    master.recurrence_rule = rule
+    master.save()
+    return master, rule
+
+
+@pytest.mark.django_db
+class TestScopedTokenRescheduleCalendarEvent:
+    """Integration tests for the owner-scoped ``rescheduleCalendarEvent`` mutation (Phase 1).
+
+    Coverage:
+    - Scoped token reschedules its own event (whole event) → times change, title preserved.
+    - Recurring master rescheduled WITHOUT rruleString → recurrence rule is preserved (id
+      unchanged, only times move).
+    - Recurring master rescheduled WITH explicit rruleString → rule is updated.
+    - Single occurrence (recurrenceId set) → modified EventRecurrenceException created, master
+      and its rule untouched.
+    - Cross-owner denial → identical ``"Calendar not found."`` as a genuinely missing calendar
+      + no mutation occurs (no existence leak).
+    - Org-wide token acts org-wide → can reschedule any event in the org.
+    - Wrong event_id (valid owned calendar, non-existent event) → ``"Event not found."``.
+    - Missing CALENDAR_EVENT grant → denied by permission class.
+    """
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _make_scoped_system_user(self, org, membership, resources):
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"scoped_resched_{uuid.uuid4().hex[:8]}",
+            organization=org,
+            scoped_to_membership=membership,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _make_org_wide_system_user(self, org, resources):
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"org_wide_resched_{uuid.uuid4().hex[:8]}",
+            organization=org,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _post(self, query, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": query, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def _reschedule_input(self, org, calendar, event, **overrides):
+        base = {
+            "organizationId": org.id,
+            "calendarId": calendar.id,
+            "eventId": event.id,
+            "startTime": datetime.datetime(2026, 10, 5, 10, 0, 0, tzinfo=datetime.UTC).isoformat(),
+            "endTime": datetime.datetime(2026, 10, 5, 11, 0, 0, tzinfo=datetime.UTC).isoformat(),
+            "timezone": "UTC",
+        }
+        base.update(overrides)
+        return base
+
+    # ------------------------------------------------------------------
+    # Happy path — whole event
+    # ------------------------------------------------------------------
+
+    def test_reschedule_whole_event_times_change_title_preserved(self):
+        """Scoped token reschedules its own event: times update, non-time fields preserved."""
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+        org = baker.make(Organization, name="Resched Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        event = _make_event_on_calendar(org, calendar, title="Original Title")
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        new_start = datetime.datetime(2026, 10, 5, 14, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 5, 15, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _RESCHEDULE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._reschedule_input(
+                    org,
+                    calendar,
+                    event,
+                    startTime=new_start.isoformat(),
+                    endTime=new_end.isoformat(),
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["rescheduleCalendarEvent"]
+        assert result is not None
+        assert result["title"] == "Original Title"
+        # Confirm the DB row was updated: compare naive values (Django may return the field
+        # as UTC-aware under USE_TZ=True, so strip tzinfo from both sides before comparing).
+        updated = _CalendarEvent.objects.filter_by_organization(org.id).get(id=int(result["id"]))
+        assert updated.start_time_tz_unaware.replace(tzinfo=None) == new_start.replace(tzinfo=None)
+        assert updated.end_time_tz_unaware.replace(tzinfo=None) == new_end.replace(tzinfo=None)
+
+    # ------------------------------------------------------------------
+    # Recurrence rule preservation
+    # ------------------------------------------------------------------
+
+    def test_reschedule_recurring_without_rrule_string_preserves_rule(self):
+        """Rescheduling a recurring master WITHOUT rruleString preserves the recurrence rule.
+
+        The rule id must be unchanged and only the times move — no silent series strip.
+        """
+        org = baker.make(Organization, name="Resched Rrule Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        master, rule = _make_recurring_event_on_calendar(org, calendar)
+        original_rule_id = rule.id
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _RESCHEDULE_CALENDAR_EVENT_WITH_RRULE,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._reschedule_input(
+                    org,
+                    calendar,
+                    master,
+                    startTime=datetime.datetime(
+                        2026, 10, 9, 10, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    endTime=datetime.datetime(
+                        2026, 10, 9, 11, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    # rruleString is deliberately omitted → rule must be preserved
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["rescheduleCalendarEvent"]
+        assert result["recurrenceRule"] is not None
+        # Rule id must be unchanged (no strip, no new rule object created)
+        master.refresh_from_db()
+        assert master.recurrence_rule_fk_id == original_rule_id
+
+    def test_reschedule_recurring_with_explicit_rrule_string_updates_rule(self):
+        """Rescheduling a recurring master WITH an explicit rruleString updates the rule."""
+        org = baker.make(Organization, name="Resched Rrule Update Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        master, _rule = _make_recurring_event_on_calendar(org, calendar)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _RESCHEDULE_CALENDAR_EVENT_WITH_RRULE,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._reschedule_input(
+                    org,
+                    calendar,
+                    master,
+                    startTime=datetime.datetime(
+                        2026, 10, 9, 10, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    endTime=datetime.datetime(
+                        2026, 10, 9, 11, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    rruleString="RRULE:FREQ=DAILY;COUNT=3",
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["rescheduleCalendarEvent"]
+        assert result["recurrenceRule"] is not None
+        # The rrule string must reflect the new rule, not the original WEEKLY one
+        assert "DAILY" in result["recurrenceRule"]["rruleString"]
+
+    # ------------------------------------------------------------------
+    # Single-occurrence reschedule
+    # ------------------------------------------------------------------
+
+    def test_reschedule_single_occurrence_creates_exception_master_untouched(self):
+        """Rescheduling with recurrenceId creates a modified EventRecurrenceException.
+
+        The master event and its series rule must remain unchanged.
+        """
+        from calendar_integration.models import EventRecurrenceException
+
+        org = baker.make(Organization, name="Resched Occurrence Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        master, rule = _make_recurring_event_on_calendar(org, calendar)
+        original_rule_id = rule.id
+        # recurrence_id is the original start of the occurrence we want to reschedule
+        recurrence_id = datetime.datetime(2026, 10, 2, 10, 0, 0, tzinfo=datetime.UTC)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        new_start = datetime.datetime(2026, 10, 3, 14, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 3, 15, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _RESCHEDULE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._reschedule_input(
+                    org,
+                    calendar,
+                    master,
+                    startTime=new_start.isoformat(),
+                    endTime=new_end.isoformat(),
+                    recurrenceId=recurrence_id.isoformat(),
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["rescheduleCalendarEvent"]
+        assert result is not None
+
+        # An EventRecurrenceException for this occurrence must now exist
+        exc = EventRecurrenceException.objects.filter_by_organization(org.id).get(
+            parent_event_fk_id=master.id,
+        )
+        assert exc.is_cancelled is False
+        assert exc.modified_event is not None
+
+        # Master and series rule are untouched
+        master.refresh_from_db()
+        assert master.recurrence_rule_fk_id == original_rule_id
+
+    # ------------------------------------------------------------------
+    # Cross-owner denial (no existence leak)
+    # ------------------------------------------------------------------
+
+    def test_reschedule_cross_owner_not_found_same_as_missing_calendar(self):
+        """Cross-owner calendar yields identical 'Calendar not found.' as a missing calendar.
+
+        No event is modified; the attacker learns nothing about the target's existence.
+        """
+        org = baker.make(Organization, name="Resched CrossOwner Org")
+        _owner_a, membership_a, _calendar_a = _make_calendar_with_ownership(org)
+        _owner_b, _membership_b, calendar_b = _make_calendar_with_ownership(org)
+        event_b = _make_event_on_calendar(org, calendar_b, title="B's Event")
+        original_start = event_b.start_time_tz_unaware
+
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        # Attempt to reschedule B's event from A's scoped token
+        cross_response = self._post(
+            _RESCHEDULE_CALENDAR_EVENT,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_b.id,
+                    "eventId": event_b.id,
+                    "startTime": datetime.datetime(
+                        2026, 10, 5, 14, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "endTime": datetime.datetime(
+                        2026, 10, 5, 15, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        # Attempt to reschedule a genuinely missing calendar
+        missing_response = self._post(
+            _RESCHEDULE_CALENDAR_EVENT,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": 999996,
+                    "eventId": event_b.id,
+                    "startTime": datetime.datetime(
+                        2026, 10, 5, 14, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "endTime": datetime.datetime(
+                        2026, 10, 5, 15, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        cross_msg = cross_response.json()["errors"][0]["message"]
+        missing_msg = missing_response.json()["errors"][0]["message"]
+        assert cross_msg == missing_msg == "Calendar not found."
+
+        # B's event must be unmodified — compare naive values (Django USE_TZ may add UTC info)
+        event_b.refresh_from_db()
+        assert event_b.start_time_tz_unaware.replace(tzinfo=None) == original_start.replace(
+            tzinfo=None
+        )
+
+    # ------------------------------------------------------------------
+    # Org-wide token
+    # ------------------------------------------------------------------
+
+    def test_reschedule_org_wide_token_acts_org_wide(self):
+        """An org-wide token can reschedule any event in the org."""
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+        org = baker.make(Organization, name="Resched OrgWide Org")
+        _owner, _membership, calendar = _make_calendar_with_ownership(org)
+        event = _make_event_on_calendar(org, calendar)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        new_start = datetime.datetime(2026, 10, 5, 14, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 10, 5, 15, 0, 0, tzinfo=datetime.UTC)
+
+        response = self._post(
+            _RESCHEDULE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._reschedule_input(
+                    org,
+                    calendar,
+                    event,
+                    startTime=new_start.isoformat(),
+                    endTime=new_end.isoformat(),
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["rescheduleCalendarEvent"]
+        assert result is not None
+        updated = _CalendarEvent.objects.filter_by_organization(org.id).get(id=int(result["id"]))
+        assert updated.start_time_tz_unaware.replace(tzinfo=None) == new_start.replace(tzinfo=None)
+
+    # ------------------------------------------------------------------
+    # Negative paths
+    # ------------------------------------------------------------------
+
+    def test_reschedule_event_not_found_clean_error(self):
+        """Valid owned calendar but non-existent event_id → clean 'Event not found.' error."""
+        org = baker.make(Organization, name="Resched EventNotFound Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _RESCHEDULE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "eventId": 999995,
+                    "startTime": datetime.datetime(
+                        2026, 10, 5, 14, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "endTime": datetime.datetime(
+                        2026, 10, 5, 15, 0, 0, tzinfo=datetime.UTC
+                    ).isoformat(),
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Event not found."
+
+    def test_reschedule_missing_calendar_event_grant_denied(self):
+        """A token without the CALENDAR_EVENT grant is denied by the permission class."""
+        org = baker.make(Organization, name="Resched NoGrant Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        event = _make_event_on_calendar(org, calendar)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CREATE_BLOCKED_TIME]
+        )
+
+        response = self._post(
+            _RESCHEDULE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._reschedule_input(org, calendar, event)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
