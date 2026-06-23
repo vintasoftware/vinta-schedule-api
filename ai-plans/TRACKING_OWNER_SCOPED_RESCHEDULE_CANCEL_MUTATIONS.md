@@ -23,8 +23,8 @@
 | 0a | Service write-allowance for public tokens | 3 | ✅ done |
 | 0b | Single-occurrence exception service methods | 4 | ✅ done |
 | 1 | `rescheduleCalendarEvent` mutation | 3 | ✅ done |
-| 2 | `rescheduleCalendarGroupEvent` mutation | 3 | ⏳ next |
-| 3 | `cancelEvent` mutation | 3 | ⬜ pending |
+| 2 | `rescheduleCalendarGroupEvent` mutation | 3 | ✅ done |
+| 3 | `cancelEvent` mutation | 3 | ⏳ next |
 
 Deferred: none (no cross-repo phases, no flag-removal phase).
 
@@ -58,8 +58,18 @@ Deferred: none (no cross-repo phases, no flag-removal phase).
 - **Outer gate:** serial scoped + Phase 1 tests green; full `pytest -n auto` → **3171 passed**.
 - **Env note:** main checkout's `package.json`/`package-lock.json` show a `vinta-ai-workflows ^0.2.0-alpha1 → alpha3` tooling bump that appeared mid-session (unrelated to this feature; NOT a worktree stray write — worktree tree is clean). Excluded from stray-write checks for remaining phases.
 
+### Phase 2 — `rescheduleCalendarGroupEvent` Public GraphQL mutation ✅
+- **Model used:** sonnet (plan tier 3). **Branch:** `plan/owner-scoped-reschedule-cancel-mutations/phase-2` (stacked on phase-1).
+- **Commits:** `38cc93b` (feat mutation), `274a760` (fix: close existence leak — uniform not-found).
+- **What shipped:** `rescheduleCalendarGroupEvent` mutation + `RescheduleCalendarGroupEventInput` (organization_id, event_id, start/end/timezone). Loads the grouped event org-scoped, derives the primary calendar, owner-scope-checks it, wires `group_deps.calendar_group_service.calendar_service = <initialized calendar_service>` + `initialize(org)`, delegates to `reschedule_grouped_event` (moves primary event + linked `group-event-*` BlockedTimes). Whole-event only (group events not recurring in v1). `FIELD_TO_RESOURCE_MAPPING["rescheduleCalendarGroupEvent"] = CALENDAR_EVENT`.
+- **SECURITY (BLOCKER fixed):** Because the input is **event-addressed** (no calendar_id), the original two-message split (cross-owner → "Calendar not found.", missing → "Event not found.") was an existence-leak oracle: a scoped token could distinguish "a grouped event I don't own exists" from "doesn't exist". **Fixed to uniform `"Event not found."`** across ALL of: missing event, non-grouped event, cross-owner owner-scope-guard failure, AND the service-layer race (`PermissionDenied("Calendar matching query does not exist.")` sentinel → "Event not found."). NOTE: the **plan body's** API Design for this phase prescribed "Calendar not found." for the calendar-scope failure — that prescription was written for Phase 1's calendar-addressed shape and is SUPERSEDED here by the no-existence-leak invariant in Guiding Decisions. (Phase 1's `"Calendar not found."` stays correct — Phase 1 takes calendar_id as the addressing key.)
+- **Tests:** `TestScopedTokenRescheduleCalendarGroupEvent` (6) — success (primary event + linked BlockedTimes move), cross-owner uniform not-found (== missing message, no mutation), org-wide acts org-wide, non-grouped → "Event not found.", PermissionDenied-sentinel → "Event not found." (defense-in-depth), service `CalendarGroupValidationError` → clean GraphQLError (no 500).
+- **Review:** Layer 1/2/3. Reviewer flagged the existence leak as BLOCKER (confirmed); fixed. NITs (redundant Calendar.get dropped; organization_id-ignored comment) applied.
+- **Outer gate:** serial 6 passed; full `pytest -n auto` → **3177 passed**.
+- **DI note for Phase 3:** `get_calendar_mutation_dependencies()` returns FRESH `Factory` instances; wire the initialized `calendar_service` into the group service before `initialize(org)` (mirror the `*WithCode` group wiring). `cancel_grouped_event(event_id, delete_series=…)` is the group cancel path.
+
 ## Current Phase
-**Phase 2** — `rescheduleCalendarGroupEvent` Public GraphQL mutation.
+**Phase 3** — `cancelEvent` Public GraphQL mutation (single + grouped, deleteSeries + recurrenceId).
 
 ## Remaining Phases
-2 (next), 3.
+3 (next, final).
