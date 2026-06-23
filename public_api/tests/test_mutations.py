@@ -10696,15 +10696,47 @@ class TestScopedTokenCancelEvent:
     # ------------------------------------------------------------------
 
     def test_cancel_recurring_series_deletes_master_and_rule(self):
-        """deleteSeries=True on a recurring master → master + rule are deleted."""
+        """deleteSeries=True on a recurring master → master + rule + instances + exceptions deleted.
+
+        Materialises a child instance and an exception row before the mutation so that
+        delete_event's instance/exception teardown is actually exercised.
+        """
         from calendar_integration.models import CalendarEvent as _CalendarEvent
-        from calendar_integration.models import RecurrenceRule
+        from calendar_integration.models import EventRecurrenceException, RecurrenceRule
 
         org = baker.make(Organization, name="Cancel Series Org")
         _owner, membership, calendar = _make_calendar_with_ownership(org)
         master, rule = _make_recurring_event_on_calendar(org, calendar)
         master_id = master.id
         rule_id = rule.id
+
+        # Materialise a child instance (a saved occurrence) so the instance-teardown
+        # path inside delete_event is exercised.
+        child_instance = baker.make(
+            _CalendarEvent,
+            organization=org,
+            calendar=calendar,
+            title="Weekly Standup (instance)",
+            external_id=f"recurring-inst-{uuid.uuid4().hex[:8]}",
+            start_time_tz_unaware=datetime.datetime(2026, 10, 9, 10, 0, 0),
+            end_time_tz_unaware=datetime.datetime(2026, 10, 9, 11, 0, 0),
+            timezone="UTC",
+            parent_recurring_object=master,
+            recurrence_id=datetime.datetime(2026, 10, 9, 10, 0, 0, tzinfo=datetime.UTC),
+            is_recurring_exception=False,
+        )
+        child_instance_id = child_instance.id
+
+        # Materialise a cancellation exception (Oct 16 cancelled).
+        exc_row = baker.make(
+            EventRecurrenceException,
+            organization=org,
+            parent_event=master,
+            exception_date=datetime.datetime(2026, 10, 16, 10, 0, 0, tzinfo=datetime.UTC),
+            is_cancelled=True,
+        )
+        exc_row_id = exc_row.id
+
         system_user, token, auth_service = self._make_scoped_system_user(
             org, membership, [PublicAPIResources.CALENDAR_EVENT]
         )
@@ -10726,6 +10758,18 @@ class TestScopedTokenCancelEvent:
         assert (
             not _CalendarEvent.objects.filter_by_organization(org.id).filter(id=master_id).exists()
         )
+        # Child instance gone (CASCADE or explicit teardown).
+        assert (
+            not _CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(id=child_instance_id)
+            .exists()
+        )
+        # Exception row gone.
+        assert (
+            not EventRecurrenceException.objects.filter_by_organization(org.id)
+            .filter(id=exc_row_id)
+            .exists()
+        )
         # Recurrence rule gone (CASCADE or explicit deletion by delete_event).
         assert not RecurrenceRule.objects.filter(id=rule_id).exists()
 
@@ -10734,7 +10778,11 @@ class TestScopedTokenCancelEvent:
     # ------------------------------------------------------------------
 
     def test_cancel_single_occurrence_creates_exception_master_intact(self):
-        """recurrenceId set → cancellation EventRecurrenceException created; master + rule intact."""
+        """recurrenceId set → cancellation EventRecurrenceException created; master + rule intact.
+
+        Also asserts that the cancelled occurrence is ABSENT from get_occurrences_in_range
+        and that other occurrences remain present.
+        """
         from calendar_integration.models import CalendarEvent as _CalendarEvent
         from calendar_integration.models import EventRecurrenceException, RecurrenceRule
 
@@ -10743,9 +10791,18 @@ class TestScopedTokenCancelEvent:
         master, rule = _make_recurring_event_on_calendar(org, calendar)
         master_id = master.id
         rule_id = rule.id
-        # recurrence_id is the original start of the first occurrence.
-        recurrence_id = master.start_time_tz_unaware  # naive datetime
-        recurrence_id_iso = recurrence_id.replace(tzinfo=datetime.UTC).isoformat()
+        # Determine the first actual occurrence by expanding the series.
+        # master starts 2026-10-02, RRULE BYDAY=TH/COUNT=4 → Thursdays:
+        # Oct 8, 15, 22, 29 2026 (Oct 2 is a Friday, so the first Thursday is Oct 8).
+        window_start = datetime.datetime(2026, 10, 1, 0, 0, tzinfo=datetime.UTC)
+        window_end = datetime.datetime(2026, 11, 1, 0, 0, tzinfo=datetime.UTC)
+        all_occurrences = master.get_occurrences_in_range(window_start, window_end)
+        assert len(all_occurrences) == 4, (
+            f"Expected 4 occurrences, got {len(all_occurrences)}: {all_occurrences}"
+        )
+        first_occurrence = all_occurrences[0]
+        recurrence_id = first_occurrence.start_time  # timezone-aware datetime
+        recurrence_id_iso = recurrence_id.isoformat()
         system_user, token, auth_service = self._make_scoped_system_user(
             org, membership, [PublicAPIResources.CALENDAR_EVENT]
         )
@@ -10777,7 +10834,23 @@ class TestScopedTokenCancelEvent:
             .first()
         )
         assert exception is not None
-        assert exception.exception_date.replace(tzinfo=None) == recurrence_id.replace(tzinfo=None)
+        assert exception.exception_date == recurrence_id
+
+        # The cancelled occurrence must be ABSENT from expansion.
+        # Window covers all 4 occurrences (Oct 8-29 2026 for the BYDAY=TH rule).
+        master.refresh_from_db()
+        occurrences_after = master.get_occurrences_in_range(window_start, window_end)
+        occurrence_starts = {o.start_time for o in occurrences_after}
+
+        assert recurrence_id not in occurrence_starts, (
+            f"Cancelled occurrence {recurrence_id} should not appear in expansion"
+        )
+        # The remaining three occurrences must still appear.
+        remaining = [o for o in all_occurrences[1:]]
+        for occ in remaining:
+            assert occ.start_time in occurrence_starts, (
+                f"Occurrence {occ.start_time} should still be present after cancelling only the first"
+            )
 
     # ------------------------------------------------------------------
     # Grouped event cancel
@@ -11003,3 +11076,103 @@ class TestScopedTokenCancelEvent:
         data = response.json()
         assert "errors" in data and len(data["errors"]) > 0
         assert data["errors"][0]["message"] == "Event not found."
+
+    # ------------------------------------------------------------------
+    # NIT: event on a different owned calendar → "Event not found."
+    # ------------------------------------------------------------------
+
+    def test_cancel_event_on_different_owned_calendar_not_found(self):
+        """Token owns both calendar X and calendar Y; event lives on Y but calendarId=X.
+
+        Pins the ``calendar_fk_id=calendar_id`` filter in the resolver: even though the
+        token legitimately owns calendar X, the event lives on Y, so the lookup must
+        return "Event not found." and the event must NOT be deleted.
+        """
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+        from calendar_integration.models import CalendarOwnership
+
+        org = baker.make(Organization, name="Cancel DiffCal Org")
+        # Create two calendars for the same owner / membership.
+        owner, membership, calendar_x = _make_calendar_with_ownership(org)
+        # Second calendar: same owner, attach ownership to the existing membership user.
+        unique = uuid.uuid4().hex[:8]
+        calendar_y = baker.make(
+            Calendar,
+            organization=org,
+            name=f"Calendar Y {unique}",
+            external_id=f"cal-y-{unique}",
+            manage_available_windows=False,
+        )
+        baker.make(
+            CalendarOwnership,
+            calendar=calendar_y,
+            membership_user_id=owner.id,
+            organization=org,
+        )
+
+        # Event lives on calendar Y.
+        event_on_y = _make_event_on_calendar(org, calendar_y, title="Event on Y")
+        event_on_y_id = event_on_y.id
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        # Pass calendarId=X but eventId belongs to Y.
+        response = self._post(
+            _CANCEL_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_x.id,  # deliberately wrong calendar
+                    "eventId": event_on_y_id,
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Event not found."
+
+        # The event on calendar Y must be untouched.
+        assert (
+            _CalendarEvent.objects.filter_by_organization(org.id).filter(id=event_on_y_id).exists()
+        )
+
+    # ------------------------------------------------------------------
+    # NIT: missing CALENDAR_EVENT grant → permission denied
+    # ------------------------------------------------------------------
+
+    def test_cancel_event_missing_calendar_event_grant_denied(self):
+        """A scoped token without the CALENDAR_EVENT grant is denied by the permission class."""
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+        org = baker.make(Organization, name="Cancel NoGrant Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        event = _make_event_on_calendar(org, calendar, title="Should Not Be Cancelled")
+        event_id = event.id
+
+        # Token has a different resource grant (CREATE_BLOCKED_TIME) but NOT CALENDAR_EVENT.
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CREATE_BLOCKED_TIME]
+        )
+
+        response = self._post(
+            _CANCEL_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._cancel_input(org, calendar, event)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+        # The event must be untouched — no deletion occurred.
+        assert _CalendarEvent.objects.filter_by_organization(org.id).filter(id=event_id).exists()
