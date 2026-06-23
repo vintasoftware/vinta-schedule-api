@@ -678,6 +678,56 @@ class RescheduleCalendarGroupEventInput:
 
 
 @strawberry.type
+class CancelEventResult:
+    """Result of a ``cancelEvent`` mutation.
+
+    ``success`` is ``True`` when the event (or the targeted occurrence / series)
+    was cancelled successfully.
+    """
+
+    success: bool
+
+
+@strawberry.input
+class CancelEventInput:
+    """Input for cancelling a single-calendar or grouped calendar event via a public-API token.
+
+    Supports three cancellation modes:
+
+    - **Single occurrence** (``recurrence_id`` set): cancels exactly the occurrence
+      whose original start equals ``recurrence_id`` by creating a cancellation
+      ``EventRecurrenceException`` (``is_cancelled=True``).  The master event and
+      series rule remain intact.  Use this to omit one occurrence without touching
+      the rest of the series.
+
+    - **Whole event / series** (``recurrence_id`` omitted, ``delete_series=False``):
+      deletes the event row (the master for recurring events).
+
+      .. warning::
+          For a recurring master, passing ``delete_series=False`` without providing
+          a ``recurrence_id`` deletes the **master event row** outright — this is
+          intentional but may not be what you want.  To cancel a single occurrence,
+          supply ``recurrence_id`` instead.  To delete the entire series including
+          all instances and the rule, set ``delete_series=True``.
+
+    - **Whole series delete** (``delete_series=True``): deletes the master event
+      together with all generated instances, exceptions, and the recurrence rule.
+
+    An owner-scoped token may only cancel events on calendars its owner owns;
+    an org-wide token acts org-wide.
+    """
+
+    organization_id: int
+    calendar_id: int
+    event_id: int
+    # When True, deletes the entire series (master + instances + exceptions + rule).
+    delete_series: bool = False
+    # When set, cancels ONLY this occurrence of a recurring series addressed by its
+    # original start time (== CalendarEvent.recurrence_id).
+    recurrence_id: datetime.datetime | None = None
+
+
+@strawberry.type
 class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
     @strawberry.mutation
     def check_token(
@@ -2350,3 +2400,109 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError(str(exc)) from exc
 
         return event  # type: ignore[return-value]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def cancel_event(
+        self,
+        info: strawberry.Info,
+        input: CancelEventInput,  # noqa: A002
+    ) -> CancelEventResult:
+        """Cancel a single-calendar or grouped event, an entire series, or one occurrence.
+
+        Three distinct execution paths share a single resolver:
+
+        1. **Single-occurrence** (``input.recurrence_id`` is set): delegates to
+           ``CalendarService.cancel_event_occurrence``, which creates a cancellation
+           ``EventRecurrenceException`` (``is_cancelled=True``) for that occurrence without
+           touching the master event or the series rule.
+
+        2. **Grouped event** (``event.calendar_group_fk_id is not None``, no ``recurrence_id``):
+           delegates to ``CalendarGroupService.cancel_grouped_event``, which deletes the
+           primary ``CalendarEvent`` AND the linked non-primary ``BlockedTime`` rows
+           identified by the ``group-event-{event_id}-cal-{cid}`` external_id convention.
+           ``input.delete_series`` is forwarded to the group service.
+
+        3. **Single-calendar event** (no ``recurrence_id``, not grouped): delegates to
+           ``CalendarService.delete_event`` with ``delete_series=input.delete_series``.
+
+           .. warning::
+               For a recurring master, passing ``delete_series=False`` (default) deletes
+               the master event row outright — not a silent no-op, but also not an entire
+               series wipe.  To cancel one occurrence use ``recurrence_id``; to delete the
+               whole series set ``delete_series=True``.
+
+        Authorization:
+        - Owner-scoped token: ``assert_calendar_in_owner_scope`` restricts to calendars
+          owned by the token's owner; cross-owner → ``"Calendar not found."`` (same as
+          missing — no existence leak).  This is correct here because the input is
+          calendar-addressed (``calendar_id`` is explicit), so "Calendar not found." for
+          a cross-owner calendar_id is the intended uniform response.
+        - Org-wide token: ``assert_calendar_in_owner_scope`` is a no-op → acts org-wide.
+        - The service independently re-verifies ownership as defense-in-depth.
+        """
+        from calendar_integration.exceptions import CalendarGroupValidationError
+
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
+
+        # Owner-scope guard (calendar-addressed input): a scoped token may only target
+        # its owner's calendars.  Cross-owner and genuinely missing calendars return the
+        # identical error — no existence leak.
+        try:
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, input.calendar_id)
+            Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Calendar not found.") from exc
+
+        # Load the event — needed to detect grouped-ness before branching.
+        try:
+            event = (
+                CalendarEvent.objects.filter_by_organization(org.id)
+                .select_related("calendar")
+                .get(id=input.event_id, calendar_fk_id=input.calendar_id)
+            )
+        except CalendarEvent.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+
+        try:
+            if input.recurrence_id is not None:
+                # Single-occurrence path: create / update a cancellation exception for
+                # exactly this occurrence; master and series rule are left intact.
+                calendar_service.cancel_event_occurrence(
+                    calendar_id=input.calendar_id,
+                    master_event_id=input.event_id,
+                    recurrence_id=input.recurrence_id,
+                )
+            elif event.calendar_group_fk_id is not None:
+                # Grouped-event path: wire the group service with the already-initialized
+                # calendar_service so that the public-token auth context flows through
+                # cancel_grouped_event → delete_event.  Mirrors how cancel_event_with_code
+                # and reschedule_calendar_group_event wire their deps.
+                group_deps = get_calendar_mutation_dependencies()
+                group_deps.calendar_group_service.calendar_service = calendar_service
+                group_deps.calendar_group_service.initialize(organization=org)
+                group_deps.calendar_group_service.cancel_grouped_event(
+                    event_id=input.event_id,
+                    delete_series=input.delete_series,
+                )
+            else:
+                # Single-calendar path.
+                calendar_service.delete_event(
+                    calendar_id=input.calendar_id,
+                    event_id=input.event_id,
+                    delete_series=input.delete_series,
+                )
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Calendar not found.") from exc
+        except CalendarEvent.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+        except PermissionDenied as exc:
+            raise GraphQLError(
+                str(exc) or "You do not have permission to cancel this event."
+            ) from exc
+        except CalendarGroupValidationError as exc:
+            raise GraphQLError(str(exc)) from exc
+        except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
+            raise GraphQLError(str(exc)) from exc
+
+        return CancelEventResult(success=True)

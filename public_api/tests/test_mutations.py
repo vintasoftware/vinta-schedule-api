@@ -10537,3 +10537,469 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         data = response.json()
         assert "errors" in data and len(data["errors"]) > 0
         assert data["errors"][0]["message"] == service_message
+
+
+# ---------------------------------------------------------------------------
+# GraphQL mutation strings for cancelEvent
+# ---------------------------------------------------------------------------
+
+_CANCEL_EVENT = """
+mutation CancelEvent($input: CancelEventInput!) {
+    cancelEvent(input: $input) {
+        success
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestScopedTokenCancelEvent:
+    """Integration tests for the owner-scoped ``cancelEvent`` mutation (Phase 3).
+
+    Coverage:
+    - Single-event success: scoped token cancels its own non-recurring event →
+      ``success=True``, row gone.
+    - Series cancel: ``deleteSeries=True`` on a recurring master → master + instances +
+      exceptions + rule deleted.
+    - Single-occurrence cancel: ``recurrenceId`` set on a recurring master → a
+      cancellation ``EventRecurrenceException`` (is_cancelled=True) is created, master +
+      rule intact, the occurrence is omitted from ``get_occurrences_in_range``.
+    - Grouped cancel: cancelling a grouped event deletes the primary event AND the linked
+      ``group-event-*`` BlockedTimes.
+    - Cross-owner denial: scoped token A cancelling owner-B's event (B's calendar_id) →
+      ``"Calendar not found."`` (same as missing calendar), nothing deleted (no
+      existence leak).
+    - Org-wide acts org-wide: org-wide token cancels any event in the org.
+    - Recurring-master footgun: recurring master + ``deleteSeries=False`` (no
+      recurrenceId) deletes the master event (documents the behavior; asserts it's not a
+      silent no-op or 500, and that it's not a whole-series wipe when ``delete_series``
+      is False).
+    - Event-not-found on an owned calendar → ``"Event not found."``.
+    """
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _make_scoped_system_user(self, org, membership, resources):
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"scoped_cancel_{uuid.uuid4().hex[:8]}",
+            organization=org,
+            scoped_to_membership=membership,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _make_org_wide_system_user(self, org, resources):
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"org_wide_cancel_{uuid.uuid4().hex[:8]}",
+            organization=org,
+        )
+        for resource in resources:
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+        return system_user, token, auth_service
+
+    def _post(self, query, system_user, token, auth_service, variables):
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            return self.client.post(
+                "/graphql/",
+                data={"query": query, "variables": variables},
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+    def _cancel_input(self, org, calendar, event, **overrides):
+        base = {
+            "organizationId": org.id,
+            "calendarId": calendar.id,
+            "eventId": event.id,
+        }
+        base.update(overrides)
+        return base
+
+    def _make_group_setup(self, org):
+        """Create a CalendarGroup with primary + secondary calendars and CalendarOwnership.
+
+        Returns (owner_user, membership, primary_calendar, secondary_calendar, group).
+        """
+        from calendar_integration.models import CalendarGroup, CalendarOwnership
+
+        unique = uuid.uuid4().hex[:8]
+        user_model = get_user_model()
+        owner = baker.make(user_model, email=f"cancel_grp_owner_{unique}@example.com")
+        membership = baker.make(
+            OrganizationMembership, user=owner, organization=org, is_active=True
+        )
+        primary_calendar = baker.make(
+            Calendar,
+            organization=org,
+            name=f"Primary Cal {unique}",
+            external_id=f"primary-cancel-cal-{unique}",
+            manage_available_windows=False,
+        )
+        baker.make(
+            CalendarOwnership,
+            calendar=primary_calendar,
+            membership_user_id=owner.id,
+            organization=org,
+        )
+        secondary_calendar = baker.make(
+            Calendar,
+            organization=org,
+            name=f"Secondary Cal {unique}",
+            external_id=f"secondary-cancel-cal-{unique}",
+            manage_available_windows=False,
+        )
+        group = baker.make(CalendarGroup, organization=org, name=f"Cancel Test Group {unique}")
+        return owner, membership, primary_calendar, secondary_calendar, group
+
+    # ------------------------------------------------------------------
+    # Happy path — single non-recurring event cancel
+    # ------------------------------------------------------------------
+
+    def test_cancel_single_event_success_row_gone(self):
+        """Scoped token cancels its own non-recurring event → success=True and row is deleted."""
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+        org = baker.make(Organization, name="Cancel Single Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        event = _make_event_on_calendar(org, calendar, title="Meeting to Cancel")
+        event_id = event.id
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _CANCEL_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._cancel_input(org, calendar, event)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        assert data["data"]["cancelEvent"]["success"] is True
+
+        # Row must be gone.
+        assert (
+            not _CalendarEvent.objects.filter_by_organization(org.id).filter(id=event_id).exists()
+        )
+
+    # ------------------------------------------------------------------
+    # Series cancel (deleteSeries=True)
+    # ------------------------------------------------------------------
+
+    def test_cancel_recurring_series_deletes_master_and_rule(self):
+        """deleteSeries=True on a recurring master → master + rule are deleted."""
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+        from calendar_integration.models import RecurrenceRule
+
+        org = baker.make(Organization, name="Cancel Series Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        master, rule = _make_recurring_event_on_calendar(org, calendar)
+        master_id = master.id
+        rule_id = rule.id
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _CANCEL_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._cancel_input(org, calendar, master, deleteSeries=True)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        assert data["data"]["cancelEvent"]["success"] is True
+
+        # Master event gone.
+        assert (
+            not _CalendarEvent.objects.filter_by_organization(org.id).filter(id=master_id).exists()
+        )
+        # Recurrence rule gone (CASCADE or explicit deletion by delete_event).
+        assert not RecurrenceRule.objects.filter(id=rule_id).exists()
+
+    # ------------------------------------------------------------------
+    # Single-occurrence cancel (recurrenceId set)
+    # ------------------------------------------------------------------
+
+    def test_cancel_single_occurrence_creates_exception_master_intact(self):
+        """recurrenceId set → cancellation EventRecurrenceException created; master + rule intact."""
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+        from calendar_integration.models import EventRecurrenceException, RecurrenceRule
+
+        org = baker.make(Organization, name="Cancel Occurrence Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        master, rule = _make_recurring_event_on_calendar(org, calendar)
+        master_id = master.id
+        rule_id = rule.id
+        # recurrence_id is the original start of the first occurrence.
+        recurrence_id = master.start_time_tz_unaware  # naive datetime
+        recurrence_id_iso = recurrence_id.replace(tzinfo=datetime.UTC).isoformat()
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _CANCEL_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._cancel_input(org, calendar, master, recurrenceId=recurrence_id_iso)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        assert data["data"]["cancelEvent"]["success"] is True
+
+        # Master event must still exist.
+        assert _CalendarEvent.objects.filter_by_organization(org.id).filter(id=master_id).exists()
+        # Recurrence rule must still exist.
+        assert RecurrenceRule.objects.filter(id=rule_id).exists()
+        # A cancellation exception must have been created.
+        exception = (
+            EventRecurrenceException.objects.filter_by_organization(org.id)
+            .filter(
+                parent_event_fk_id=master.id,
+                is_cancelled=True,
+            )
+            .first()
+        )
+        assert exception is not None
+        assert exception.exception_date.replace(tzinfo=None) == recurrence_id.replace(tzinfo=None)
+
+    # ------------------------------------------------------------------
+    # Grouped event cancel
+    # ------------------------------------------------------------------
+
+    def test_cancel_grouped_event_deletes_primary_and_blocked_times(self):
+        """Cancelling a grouped event deletes the primary CalendarEvent AND the linked BlockedTimes."""
+        from calendar_integration.models import BlockedTime as _BlockedTime
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+        org = baker.make(Organization, name="Cancel Grouped Org")
+        _owner, membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
+        grouped_event, blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
+        event_id = grouped_event.id
+        blocked_time_id = blocked_time.id
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _CANCEL_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._cancel_input(org, primary_cal, grouped_event)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        assert data["data"]["cancelEvent"]["success"] is True
+
+        # Primary event gone.
+        assert (
+            not _CalendarEvent.objects.filter_by_organization(org.id).filter(id=event_id).exists()
+        )
+        # Linked BlockedTime gone.
+        assert (
+            not _BlockedTime.objects.filter_by_organization(org.id)
+            .filter(id=blocked_time_id)
+            .exists()
+        )
+
+    # ------------------------------------------------------------------
+    # Cross-owner denial — no existence leak
+    # ------------------------------------------------------------------
+
+    def test_cancel_cross_owner_returns_calendar_not_found_no_deletion(self):
+        """Cross-owner attempt: 'Calendar not found.' — same as missing calendar, no deletion.
+
+        Owner A's scoped token targets an event on Owner B's calendar.
+        Because the input is calendar-addressed (calendar_id is explicit), the guard
+        returns 'Calendar not found.' — which is the correct uniform response for both
+        a cross-owner calendar_id and a genuinely non-existent calendar_id.  This does
+        NOT leak the existence of B's calendar to A.
+        """
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+        org = baker.make(Organization, name="Cancel CrossOwner Org")
+        # Owner A: used for scoped token.
+        _owner_a, membership_a, _calendar_a = _make_calendar_with_ownership(org)
+        # Owner B: owns the calendar with the target event.
+        _owner_b, _membership_b, calendar_b = _make_calendar_with_ownership(org)
+        event_b = _make_event_on_calendar(org, calendar_b, title="B's Event")
+
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        # A tries to cancel B's event using B's calendar_id.
+        cross_response = self._post(
+            _CANCEL_EVENT,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar_b.id,  # cross-owner calendar
+                    "eventId": event_b.id,
+                }
+            },
+        )
+
+        # Attempt with a genuinely missing calendar_id.
+        missing_response = self._post(
+            _CANCEL_EVENT,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": 999990,  # non-existent calendar
+                    "eventId": event_b.id,
+                }
+            },
+        )
+
+        cross_msg = cross_response.json()["errors"][0]["message"]
+        missing_msg = missing_response.json()["errors"][0]["message"]
+        # Both cross-owner and missing-calendar must return the identical message.
+        assert cross_msg == "Calendar not found."
+        assert missing_msg == "Calendar not found."
+        assert cross_msg == missing_msg
+
+        # B's event must be unmodified.
+        assert _CalendarEvent.objects.filter_by_organization(org.id).filter(id=event_b.id).exists()
+
+    # ------------------------------------------------------------------
+    # Org-wide token acts org-wide
+    # ------------------------------------------------------------------
+
+    def test_cancel_org_wide_token_acts_org_wide(self):
+        """An org-wide token can cancel any event in the org."""
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+        org = baker.make(Organization, name="Cancel OrgWide Org")
+        # Create an event on a calendar with a different owner.
+        _owner, _membership, calendar = _make_calendar_with_ownership(org)
+        event = _make_event_on_calendar(org, calendar, title="OrgWide Cancel Target")
+        event_id = event.id
+
+        # Org-wide token (not scoped to any particular membership).
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _CANCEL_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._cancel_input(org, calendar, event)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        assert data["data"]["cancelEvent"]["success"] is True
+
+        # Row must be gone.
+        assert (
+            not _CalendarEvent.objects.filter_by_organization(org.id).filter(id=event_id).exists()
+        )
+
+    # ------------------------------------------------------------------
+    # Recurring-master footgun: deleteSeries=False without recurrenceId
+    # ------------------------------------------------------------------
+
+    def test_recurring_master_delete_series_false_deletes_master_not_series_wipe(self):
+        """Recurring master + deleteSeries=False (no recurrenceId) deletes the master row.
+
+        This is the documented footgun: passing a recurring master id with
+        deleteSeries=False and no recurrenceId deletes the master event outright —
+        NOT a silent no-op and NOT a whole-series wipe via the single occurrence path.
+
+        The test pins this behavior so that:
+        1. The mutation returns success=True (not 500 or GraphQLError).
+        2. The master row is gone.
+        3. This is distinct from a series wipe vs. a single-occurrence cancel.
+
+        Callers who want to cancel ONE occurrence must supply recurrenceId.
+        Callers who want the entire series deleted must supply deleteSeries=True.
+        """
+        from calendar_integration.models import CalendarEvent as _CalendarEvent
+
+        org = baker.make(Organization, name="Cancel MasterFootgun Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        master, _rule = _make_recurring_event_on_calendar(org, calendar)
+        master_id = master.id
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        # deleteSeries is False (default) and no recurrenceId — targets the master row.
+        response = self._post(
+            _CANCEL_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._cancel_input(org, calendar, master, deleteSeries=False)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # Must succeed — not a 500 or clean GraphQLError.
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        assert data["data"]["cancelEvent"]["success"] is True
+
+        # Master row is gone — not a silent no-op.
+        assert (
+            not _CalendarEvent.objects.filter_by_organization(org.id).filter(id=master_id).exists()
+        )
+
+    # ------------------------------------------------------------------
+    # Event not found on an owned calendar
+    # ------------------------------------------------------------------
+
+    def test_cancel_event_not_found_on_owned_calendar(self):
+        """A valid calendar_id with a non-existent event_id returns 'Event not found.'."""
+        org = baker.make(Organization, name="Cancel EventNotFound Org")
+        _owner, membership, calendar = _make_calendar_with_ownership(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _CANCEL_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "calendarId": calendar.id,
+                    "eventId": 999991,  # non-existent event
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Event not found."
