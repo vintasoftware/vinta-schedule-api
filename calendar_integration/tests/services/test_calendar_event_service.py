@@ -1086,3 +1086,111 @@ def test_delete_event_org_wide_token_denied_across_tenants(db):
 
     # The event must survive.
     assert CalendarEvent.objects.filter(id=event_id, organization_id=org_b.id).exists()
+
+
+# ------------------------------------------------------------------
+# Audit actor: owner-scoped / org-wide token → actor is the SystemUser
+# ------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_update_event_owner_scoped_audit_actor_is_system_user(write_allowance_setup):
+    """The on_update_event side-effect actor is the SystemUser, not None.
+
+    The owner-scoped path (SystemUser principal) never populates a permission
+    token on the permission service.  The previous code did an unconditional
+    ``context.calendar_permission_service.token`` access that would raise
+    AttributeError.  After the fix the code falls back to ``context.user_or_token``
+    (the SystemUser).  Patching ``transaction.on_commit`` to fire inline lets us
+    capture the actor that reaches ``on_update_event``.
+    """
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_a"]
+    membership = setup["membership_a"]
+
+    event = _make_event_for_write_tests(org, calendar)
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="audit_actor_update_scoped",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+
+    recorded: list = []
+    side_effects = facade.calendar_side_effects_service
+    if side_effects is not None:
+        original = side_effects.on_update_event
+
+        def _spy(actor, event, organization):
+            recorded.append(actor)
+            return original(actor, event, organization)
+
+        side_effects.on_update_event = _spy  # type: ignore[method-assign]
+
+    try:
+        with patch("django.db.transaction.on_commit", side_effect=lambda func: func()):
+            facade.update_event(calendar.id, event.id, _updated_event_input())
+    finally:
+        if side_effects is not None:
+            side_effects.on_update_event = original  # type: ignore[method-assign]
+
+    if side_effects is not None:
+        assert recorded, "on_update_event side effect did not fire"
+        assert recorded[0] == system_user
+
+
+@pytest.mark.django_db
+def test_delete_event_owner_scoped_audit_actor_is_system_user(write_allowance_setup):
+    """The on_delete_event side-effect actor is the SystemUser, not None.
+
+    Mirrors ``test_update_event_owner_scoped_audit_actor_is_system_user`` for
+    the delete path.  The actor is captured before ``event.delete()`` and closed
+    over into the on_commit lambda; patching on_commit to fire inline lets the spy
+    observe the actor.
+    """
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_a"]
+    membership = setup["membership_a"]
+
+    event = _make_event_for_write_tests(org, calendar)
+    event_id = event.id
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="audit_actor_delete_scoped",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+
+    facade = _facade_for_system_user(system_user, org)
+
+    recorded: list = []
+    side_effects = facade.calendar_side_effects_service
+    if side_effects is not None:
+        original = side_effects.on_delete_event
+
+        def _spy(actor, event, organization):
+            recorded.append(actor)
+            return original(actor, event, organization)
+
+        side_effects.on_delete_event = _spy  # type: ignore[method-assign]
+
+    try:
+        with patch("django.db.transaction.on_commit", side_effect=lambda func: func()):
+            facade.delete_event(calendar.id, event_id)
+    finally:
+        if side_effects is not None:
+            side_effects.on_delete_event = original  # type: ignore[method-assign]
+
+    assert not CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+
+    if side_effects is not None:
+        assert recorded, "on_delete_event side effect did not fire"
+        assert recorded[0] == system_user

@@ -1022,7 +1022,11 @@ class CalendarEventService:
             if not context.calendar_side_effects_service:
                 return
 
-            actor = _resolve_token_audit_actor(context.calendar_permission_service.token)
+            permission_token = getattr(context.calendar_permission_service, "token", None)
+            if permission_token is not None:
+                actor: Any = _resolve_token_audit_actor(permission_token)
+            else:
+                actor = context.user_or_token
             context.calendar_side_effects_service.on_update_event(
                 actor=actor,
                 event=self._serialize_event(event),
@@ -1598,10 +1602,16 @@ class CalendarEventService:
 
         event.delete()
 
+        permission_token = getattr(context.calendar_permission_service, "token", None)
+        if permission_token is not None:
+            audit_actor: Any = _resolve_token_audit_actor(permission_token)
+        else:
+            audit_actor = context.user_or_token
+
         transaction.on_commit(
             lambda: (
                 context.calendar_side_effects_service.on_delete_event(
-                    actor=_resolve_token_audit_actor(context.calendar_permission_service.token),
+                    actor=audit_actor,
                     event=serialized_event,
                     organization=event.organization,
                 )
