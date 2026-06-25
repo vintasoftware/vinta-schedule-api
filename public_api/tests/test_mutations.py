@@ -9217,8 +9217,16 @@ class TestScopedTokenScheduleEvent:
             .exists()
         )
 
-    def test_schedule_event_bundle_calendar_clean_error_no_row(self):
-        """A bundle calendar owned by the scoped owner -> clean error, no row."""
+    def test_schedule_event_bundle_calendar_proceeds_to_fanout(self):
+        """Bundle creation is ALLOWED for the scoped owner — it proceeds to the bundle
+        fan-out (``_create_bundle_event``) rather than being policy-rejected.
+
+        The test bundle has no child calendars, so the fan-out fails validation with a
+        clean ``"no child calendars"`` error (no row) — proving the create reached the
+        fan-out, not the removed bundle-policy block. (Amended 2026-06-23: bundle create
+        is permitted for an owner-scoped token that owns the bundle calendar, parity with
+        bundle reschedule/cancel.)
+        """
         from calendar_integration.models import CalendarEvent
 
         org = self._setup_org()
@@ -9238,7 +9246,9 @@ class TestScopedTokenScheduleEvent:
         assert response.status_code == 200
         data = response.json()
         assert "errors" in data and len(data["errors"]) > 0
-        assert "bundle" in str(data["errors"]).lower()
+        # The fan-out validation error (childless bundle), NOT the removed permission
+        # block — confirms create reached _create_bundle_event.
+        assert "child" in str(data["errors"]).lower()
         assert (
             not CalendarEvent.objects.filter_by_organization(org.id)
             .filter(calendar_fk_id=bundle.id)

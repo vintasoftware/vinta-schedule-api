@@ -863,6 +863,46 @@ def test_create_event_org_wide_system_user_stays_blocked(write_allowance_setup):
     ).exists()
 
 
+@pytest.mark.django_db
+def test_create_event_allows_scoped_token_on_owned_bundle_calendar(write_allowance_setup):
+    """A scoped token that OWNS the bundle calendar may CREATE a bundle event.
+
+    Bundle creation routes to ``_create_bundle_event`` (the designed fan-out), permitted
+    through the Public API for an owner-scoped token that owns the bundle calendar. This
+    is the create-side parity of the bundle reschedule/cancel allowance. Org-wide create
+    stays blocked (see ``test_create_event_org_wide_system_user_stays_blocked``). The
+    fan-out is mocked to isolate the authorization decision (no child/availability setup).
+    """
+    from unittest import mock
+
+    from calendar_integration.constants import CalendarType
+    from public_api.services import PublicAPIAuthService
+
+    setup = write_allowance_setup
+    org = setup["organization"]
+    bundle = setup["bundle_calendar"]
+    membership_a = setup["membership_a"]
+    assert bundle.calendar_type == CalendarType.BUNDLE
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="write_allow_create_bundle",
+        organization=org,
+        scoped_to_membership=membership_a,
+    )
+
+    sentinel_event = _make_event_for_write_tests(org, bundle)
+
+    facade = _facade_for_system_user(system_user, org)
+    with mock.patch.object(
+        facade, "_create_bundle_event", return_value=sentinel_event
+    ) as mock_create_bundle:
+        result = facade.create_event(bundle.id, _scoped_event_input())
+
+    # No PermissionDenied raised; the bundle create fan-out was reached.
+    mock_create_bundle.assert_called_once()
+    assert result.id == sentinel_event.id
+
+
 # ------------------------------------------------------------------
 # Scoped token writing to a BUNDLE calendar it owns — ALLOWED
 # (bundle reschedule/cancel is permitted through the Public API, unlike create)

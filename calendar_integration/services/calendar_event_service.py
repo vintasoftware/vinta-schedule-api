@@ -430,13 +430,11 @@ class CalendarEventService:
             # route through single-use codes / public scheduling.
             if not self._scoped_system_user_owns_calendar(context.user_or_token, calendar):
                 raise PermissionDenied("Events cannot be created through the Public API.")
-            # Bundle calendars are rejected for scoped tokens: create_event would recurse
-            # into per-child creates that span other providers' calendars, producing a
-            # confusing partial failure. Reject up front with a clear, scoped error.
-            if calendar.calendar_type == CalendarType.BUNDLE:
-                raise PermissionDenied(
-                    "Events cannot be scheduled on a bundle calendar through the Public API."
-                )
+            # Bundle calendars ARE permitted for an owner-scoped token that owns the
+            # bundle calendar: creation routes to _create_bundle_event below (the
+            # designed fan-out). Org-wide tokens remain blocked above (the plan keeps
+            # create owner-scoped-only). Amended 2026-06-23 for parity with bundle
+            # reschedule/cancel.
             is_owner_scoped_system_user = True
 
         # The permission-token scheduling check applies to the User / token flows. The
