@@ -685,20 +685,14 @@ class CalendarEventService:
                 # Surface a not-found-parity message so a cross-owner caller cannot
                 # distinguish a forbidden calendar from a genuinely missing one.
                 raise PermissionDenied("Calendar matching query does not exist.")
-            # Bundle calendars are rejected for scoped (owner) tokens: the bundle
-            # fan-out spans multiple providers and can produce confusing partial
-            # failures. Org-wide tokens follow the existing service rules (bundle
-            # primary events reach _update_bundle_event below, which handles them).
-            # This guard targets bundle PRIMARY events on the BUNDLE calendar only;
-            # bundle representation/child events (on PERSONAL/RESOURCE calendars with
-            # bundle_primary_event set) are caught by the is_bundle_event ValueError below.
-            if (
-                system_user.scoped_to_membership_user_id is not None
-                and event.calendar.calendar_type == CalendarType.BUNDLE
-            ):
-                raise PermissionDenied(
-                    "Events cannot be updated on a bundle calendar through the Public API."
-                )
+            # Bundle events ARE permitted through the Public API: updating an EXISTING
+            # bundle PRIMARY event is a well-defined operation that reaches
+            # _update_bundle_event below (which fans the change out to the children).
+            # This deliberately diverges from create_event, where create on a bundle
+            # calendar fans out into problematic per-child CREATES. The only gate is
+            # _public_token_may_write above (owner-scoped tokens must own the bundle
+            # calendar; org-wide acts org-wide). Non-primary bundle child events are
+            # still rejected by the is_bundle_event ValueError below.
             is_public_token_write = True
 
         serialized_old_event = self._serialize_event(event)
@@ -1535,20 +1529,14 @@ class CalendarEventService:
                 # Surface a not-found-parity message so a cross-owner caller cannot
                 # distinguish a forbidden calendar from a genuinely missing one.
                 raise PermissionDenied("Calendar matching query does not exist.")
-            # Bundle calendars are rejected for scoped (owner) tokens: the bundle
-            # fan-out spans multiple providers and can produce confusing partial
-            # failures. Org-wide tokens follow the existing service rules (bundle
-            # primary events reach _delete_bundle_event below, which handles them).
-            # This guard targets bundle PRIMARY events on the BUNDLE calendar only;
-            # bundle representation/child events (on PERSONAL/RESOURCE calendars with
-            # bundle_primary_event set) are caught by the is_bundle_event ValueError below.
-            if (
-                system_user.scoped_to_membership_user_id is not None
-                and event.calendar.calendar_type == CalendarType.BUNDLE
-            ):
-                raise PermissionDenied(
-                    "Events cannot be deleted on a bundle calendar through the Public API."
-                )
+            # Bundle events ARE permitted through the Public API: deleting an EXISTING
+            # bundle PRIMARY event is a well-defined operation that reaches
+            # _delete_bundle_event below (which fans the deletion out to the children).
+            # This deliberately diverges from create_event, where create on a bundle
+            # calendar fans out into problematic per-child CREATES. The only gate is
+            # _public_token_may_write above (owner-scoped tokens must own the bundle
+            # calendar; org-wide acts org-wide). Non-primary bundle child events are
+            # still rejected by the is_bundle_event ValueError below.
             is_public_token_write = True
 
         serialized_old_event = self._serialize_event(event)

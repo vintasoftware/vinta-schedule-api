@@ -864,18 +864,22 @@ def test_create_event_org_wide_system_user_stays_blocked(write_allowance_setup):
 
 
 # ------------------------------------------------------------------
-# Scoped token writing to a BUNDLE calendar — rejected
+# Scoped token writing to a BUNDLE calendar it owns — ALLOWED
+# (bundle reschedule/cancel is permitted through the Public API, unlike create)
 # ------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-def test_update_event_blocks_scoped_token_on_bundle_calendar(write_allowance_setup):
-    """A scoped token cannot update events on a bundle calendar.
+def test_update_event_allows_scoped_token_on_owned_bundle_primary_event(write_allowance_setup):
+    """A scoped token that OWNS the bundle calendar may update a bundle PRIMARY event.
 
-    Bundle fan-out spans multiple providers and can produce confusing partial
-    failures; scoped tokens are rejected up front with a clear error.
+    Updating an existing bundle primary event is a well-defined operation that reaches
+    ``_update_bundle_event`` (the fan-out). It is permitted through the Public API,
+    gated only by ``_public_token_may_write`` — unlike ``create_event``, which blocks
+    creation on a bundle calendar. The bundle fan-out is mocked so the test isolates the
+    authorization decision (no provider/child setup needed).
     """
-    from django.core.exceptions import PermissionDenied
+    from unittest import mock
 
     from calendar_integration.constants import CalendarType
     from public_api.services import PublicAPIAuthService
@@ -885,8 +889,6 @@ def test_update_event_blocks_scoped_token_on_bundle_calendar(write_allowance_set
     bundle = setup["bundle_calendar"]
     membership_a = setup["membership_a"]
 
-    # Create an event directly on the bundle calendar (bypassing service-layer
-    # fan-out) to set up the target for the authorization test.
     event = CalendarEvent.objects.create(
         title="Bundle Event",
         description="On the bundle calendar",
@@ -896,24 +898,36 @@ def test_update_event_blocks_scoped_token_on_bundle_calendar(write_allowance_set
         external_id="bundle-evt-update",
         calendar=bundle,
         organization=org,
+        is_bundle_primary=True,
     )
     assert bundle.calendar_type == CalendarType.BUNDLE
 
     system_user, _token = PublicAPIAuthService().create_system_user(
-        integration_name="write_deny_update_bundle",
+        integration_name="write_allow_update_bundle",
         organization=org,
         scoped_to_membership=membership_a,
     )
 
     facade = _facade_for_system_user(system_user, org)
-    with pytest.raises(PermissionDenied, match="bundle calendar"):
-        facade.update_event(bundle.id, event.id, _updated_event_input())
+    with mock.patch.object(
+        facade, "_update_bundle_event", return_value=event
+    ) as mock_update_bundle:
+        result = facade.update_event(bundle.id, event.id, _updated_event_input())
+
+    # No PermissionDenied raised; the bundle primary path was reached.
+    mock_update_bundle.assert_called_once()
+    assert result.id == event.id
 
 
 @pytest.mark.django_db
-def test_delete_event_blocks_scoped_token_on_bundle_calendar(write_allowance_setup):
-    """A scoped token cannot delete events on a bundle calendar."""
-    from django.core.exceptions import PermissionDenied
+def test_delete_event_allows_scoped_token_on_owned_bundle_primary_event(write_allowance_setup):
+    """A scoped token that OWNS the bundle calendar may delete a bundle PRIMARY event.
+
+    Deleting an existing bundle primary event reaches ``_delete_bundle_event`` (the
+    fan-out), permitted through the Public API and gated only by
+    ``_public_token_may_write``. The fan-out is mocked to isolate the authorization.
+    """
+    from unittest import mock
 
     from calendar_integration.constants import CalendarType
     from public_api.services import PublicAPIAuthService
@@ -932,22 +946,23 @@ def test_delete_event_blocks_scoped_token_on_bundle_calendar(write_allowance_set
         external_id="bundle-evt-delete",
         calendar=bundle,
         organization=org,
+        is_bundle_primary=True,
     )
     assert bundle.calendar_type == CalendarType.BUNDLE
-    event_id = event.id
 
     system_user, _token = PublicAPIAuthService().create_system_user(
-        integration_name="write_deny_delete_bundle",
+        integration_name="write_allow_delete_bundle",
         organization=org,
         scoped_to_membership=membership_a,
     )
 
     facade = _facade_for_system_user(system_user, org)
-    with pytest.raises(PermissionDenied, match="bundle calendar"):
-        facade.delete_event(bundle.id, event_id)
+    with mock.patch.object(facade, "_delete_bundle_event") as mock_delete_bundle:
+        facade.delete_event(bundle.id, event.id)
 
-    # The event must survive.
-    assert CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+    # No PermissionDenied raised; the bundle primary delete path was reached
+    # (the fan-out itself is mocked, so the row is not actually removed here).
+    mock_delete_bundle.assert_called_once()
 
 
 # ------------------------------------------------------------------

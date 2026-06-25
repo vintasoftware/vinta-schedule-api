@@ -54,6 +54,7 @@
 | **Cancel grouping** | A single `cancelEvent` mutation handles both single-calendar and grouped events by branching on `event.calendar_group_fk_id`, exactly like `cancelEventWithCode`. Grouped → `CalendarGroupService.cancel_grouped_event` (also deletes the linked non-primary `BlockedTime` rows); single → `delete_event`. |
 | **Resource mapping** | All three fields map to `PublicAPIResources.CALENDAR_EVENT` in `FIELD_TO_RESOURCE_MAPPING` (the brief says "reuse `CALENDAR_EVENT`"). `CALENDAR_EVENT` is **already** in `PROVIDER_SCOPED_RESOURCES` ([public_api/constants.py:64-80](../public_api/constants.py#L64-L80)), so provider/owner-scoped tokens can already be granted it — **no `PROVIDER_SCOPED_RESOURCES` change is required**. |
 | **Feature flag** | **No flag — purely additive surface.** The three fields are brand-new; the new service branch fires only for `SystemUser` principals that currently always error, so no existing *successful* caller changes behavior. A regression test asserts `create_event` for an org-wide token stays blocked. |
+| **Bundle events** | **Amended 2026-06-23.** Bundle events **ARE** reschedulable/cancellable through the Public API. Updating/deleting an *existing* bundle **primary** event is a well-defined operation (`_update_bundle_event` / `_delete_bundle_event` fan the change out to children) — unlike `create_event`, where create on a bundle calendar fans out into problematic per-child *creates* (so create stays bundle-blocked). The only gate for reschedule/cancel is `_public_token_may_write` (owner-scoped tokens must own the bundle calendar; org-wide acts org-wide). Non-primary bundle *child* events remain rejected by the existing `is_bundle_event` `ValueError`. Do **not** re-introduce a bundle-calendar `PermissionDenied` in `update_event` / `delete_event` / `_load_recurring_master_for_occurrence`. |
 | **Migrations** | None. No schema change. |
 
 ## 3. Data Model Changes
@@ -432,3 +433,7 @@ attempts return the uniform not-found error with no deletion.
 - Edit [public_api/permissions.py](../public_api/permissions.py) — mapping entry.
 - Edit [public_api/tests/test_mutations.py](../public_api/tests/test_mutations.py) (+ scoping security).
 - Regenerate schema artifact (if present).
+
+## Amendments
+
+- **2026-06-23** — Bundle events must be reschedulable/cancellable through the Public API. Removed the scoped-token bundle-calendar `PermissionDenied` from `update_event` + `delete_event` (Phase 0a) and `_load_recurring_master_for_occurrence` (Phase 0b); bundle **primary** events now flow to `_update_bundle_event` / `_delete_bundle_event`, gated only by `_public_token_may_write`. Flipped the three "bundle blocked" unit tests to "bundle allowed". Added the **Bundle events** row to Guiding Decisions. Affected phases: 0a, 0b (code + tests). Branches force-pushed: phase-0a, phase-0b, and downstream rebases phase-1, phase-2, phase-3.
