@@ -1613,14 +1613,16 @@ def test_occurrence_methods_reject_non_recurring_master(write_allowance_setup):
 
 
 @pytest.mark.django_db
-def test_occurrence_methods_bundle_calendar_blocked_for_scoped_token(write_allowance_setup):
-    """A scoped token cannot reschedule or cancel an occurrence on a bundle calendar.
+def test_occurrence_methods_allowed_for_scoped_token_on_owned_bundle_calendar(
+    write_allowance_setup,
+):
+    """A scoped token that OWNS the bundle calendar may reschedule/cancel an occurrence.
 
-    Mirrors the update/delete bundle guard; scoped tokens are rejected up front.
-    Org-wide tokens are not tested here (they follow existing service rules).
+    Bundle reschedule/cancel is permitted through the Public API (mirrors update/delete):
+    the occurrence loader gates only on ``_public_token_may_write``. Occurrence ops operate
+    on the master's exception primitives (no bundle fan-out), so they create the expected
+    ``EventRecurrenceException`` rows.
     """
-    from django.core.exceptions import PermissionDenied
-
     from calendar_integration.models import EventRecurrenceException, RecurrenceRule
     from public_api.services import PublicAPIAuthService
 
@@ -1646,33 +1648,35 @@ def test_occurrence_methods_bundle_calendar_blocked_for_scoped_token(write_allow
     master.save()
 
     system_user, _token = PublicAPIAuthService().create_system_user(
-        integration_name="occurrence_deny_bundle",
+        integration_name="occurrence_allow_bundle",
         organization=org,
         scoped_to_membership=membership_a,
     )
 
     facade = _facade_for_system_user(system_user, org)
 
-    with pytest.raises(PermissionDenied, match="bundle calendar"):
-        facade.reschedule_event_occurrence(
-            calendar_id=bundle.id,
-            master_event_id=master.id,
-            recurrence_id=_RECURRENCE_ID,
-            start_time=datetime.datetime(2026, 7, 17, 14, 0, tzinfo=datetime.UTC),
-            end_time=datetime.datetime(2026, 7, 17, 15, 0, tzinfo=datetime.UTC),
-            timezone="UTC",
-        )
-    with pytest.raises(PermissionDenied, match="bundle calendar"):
-        facade.cancel_event_occurrence(
-            calendar_id=bundle.id,
-            master_event_id=master.id,
-            recurrence_id=_RECURRENCE_ID,
-        )
+    # Reschedule one occurrence → a modified-occurrence exception is created (no bundle
+    # fan-out; BUNDLE calendars have no write adapter, so the modified event is local).
+    facade.reschedule_event_occurrence(
+        calendar_id=bundle.id,
+        master_event_id=master.id,
+        recurrence_id=_RECURRENCE_ID,
+        start_time=datetime.datetime(2026, 7, 17, 14, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2026, 7, 17, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+    )
+    exc = EventRecurrenceException.objects.get(parent_event_fk=master, organization_id=org.id)
+    assert exc.is_cancelled is False
+    assert exc.modified_event_fk_id is not None
 
-    # No exception row created.
-    assert not EventRecurrenceException.objects.filter(
-        parent_event_fk=master, organization_id=org.id
-    ).exists()
+    # Cancel the same occurrence → the exception upserts to cancelled.
+    facade.cancel_event_occurrence(
+        calendar_id=bundle.id,
+        master_event_id=master.id,
+        recurrence_id=_RECURRENCE_ID,
+    )
+    exc.refresh_from_db()
+    assert exc.is_cancelled is True
 
 
 @pytest.mark.django_db

@@ -1266,15 +1266,9 @@ class CalendarEventService:
                 # Not-found parity: a cross-owner caller cannot distinguish a forbidden
                 # calendar from a genuinely missing one (no existence leak).
                 raise PermissionDenied("Calendar matching query does not exist.")
-            # Bundle calendars are rejected for scoped tokens (mirrors update_event /
-            # delete_event). Org-wide tokens follow the existing service rules.
-            if (
-                context.user_or_token.scoped_to_membership_user_id is not None
-                and master.calendar.calendar_type == CalendarType.BUNDLE
-            ):
-                raise PermissionDenied(
-                    "Events cannot be rescheduled or cancelled on a bundle calendar through the Public API."
-                )
+            # Bundle events ARE permitted through the Public API (mirrors update_event /
+            # delete_event): the only gate is _public_token_may_write above. Owner-scoped
+            # tokens must own the bundle calendar; org-wide acts org-wide.
 
         if not master.is_recurring:
             raise ValueError(
