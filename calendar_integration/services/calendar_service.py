@@ -145,6 +145,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Sentinel for partial updates: distinguishes "omit capacity" from "explicit null"
+_UNCHANGED = object()
+
 
 def _resolve_owner_membership_user_id(user: User, organization: Organization) -> int | None:
     """Resolve the membership-scoped owner id for a CalendarOwnership write.
@@ -944,6 +947,109 @@ class CalendarService(BaseCalendarService):
             calendar,
             diff={"visibility": {"old": old_visibility, "new": calendar.visibility}},
         )
+
+        return calendar
+
+    @transaction.atomic()
+    def update_resource_calendar(
+        self,
+        calendar_id: int,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        capacity: int | None = _UNCHANGED,  # type: ignore[assignment]
+        manage_available_windows: bool | None = None,
+        accepts_public_scheduling: bool | None = None,
+        visibility: str | None = None,
+    ) -> Calendar:
+        """Partially update a resource calendar.
+
+        Only the provided (non-None, non-_UNCHANGED) fields are written; omitted fields
+        remain unchanged. The target calendar must be of type RESOURCE and must have
+        provider INTERNAL (not synced from an external provider).
+
+        Special handling for capacity: if ``capacity`` is explicitly ``None``, it clears
+        the capacity to unlimited (null). If ``capacity`` is the sentinel ``_UNCHANGED``
+        (the default), the existing value is left untouched. Any integer value sets it.
+
+        :param calendar_id: Primary key of the Calendar to update.
+        :param name: New name, or None to leave unchanged.
+        :param description: New description, or None to leave unchanged.
+        :param capacity: Maximum attendees, None to clear (unlimited), _UNCHANGED to
+            leave unchanged, or an int to set.
+        :param manage_available_windows: New availability-window flag, or None to
+            leave unchanged.
+        :param accepts_public_scheduling: New scheduling flag, or None to leave unchanged.
+        :param visibility: New visibility string (e.g. ACTIVE/INACTIVE), or None to
+            leave unchanged.
+        :return: The updated Calendar instance.
+        :raises Calendar.DoesNotExist: If no calendar with this id exists within the org.
+        :raises ValueError: If the calendar is not of type RESOURCE or is synced from
+            an external provider (not INTERNAL).
+        """
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        calendar = Calendar.objects.filter_by_organization(self.organization.id).get(id=calendar_id)
+
+        if calendar.provider != CalendarProvider.INTERNAL:
+            raise ValueError(
+                f"Calendar {calendar_id} is synced from an external provider "
+                f"(provider={calendar.provider}) and cannot be edited."
+            )
+
+        if calendar.calendar_type != CalendarType.RESOURCE:
+            raise ValueError(
+                f"Calendar {calendar_id} is not a resource calendar "
+                f"(type={calendar.calendar_type})."
+            )
+
+        before = {
+            "name": calendar.name,
+            "description": calendar.description,
+            "capacity": calendar.capacity,
+            "manage_available_windows": calendar.manage_available_windows,
+            "accepts_public_scheduling": calendar.accepts_public_scheduling,
+            "visibility": calendar.visibility,
+        }
+        update_fields: list[str] = []
+
+        if name is not None:
+            calendar.name = name
+            update_fields.append("name")
+        if description is not None:
+            calendar.description = description
+            update_fields.append("description")
+        if capacity is not _UNCHANGED:
+            calendar.capacity = capacity
+            update_fields.append("capacity")
+        if manage_available_windows is not None:
+            calendar.manage_available_windows = manage_available_windows
+            update_fields.append("manage_available_windows")
+        if accepts_public_scheduling is not None:
+            calendar.accepts_public_scheduling = accepts_public_scheduling
+            update_fields.append("accepts_public_scheduling")
+        if visibility is not None:
+            if visibility not in CalendarVisibility.values:
+                raise ValueError(
+                    f"Invalid visibility {visibility!r}; must be one of {CalendarVisibility.values}."
+                )
+            calendar.visibility = visibility
+            update_fields.append("visibility")
+
+        if update_fields:
+            calendar.save(update_fields=update_fields)
+            after = {
+                "name": calendar.name,
+                "description": calendar.description,
+                "capacity": calendar.capacity,
+                "manage_available_windows": calendar.manage_available_windows,
+                "accepts_public_scheduling": calendar.accepts_public_scheduling,
+                "visibility": calendar.visibility,
+            }
+            self._audit_calendar_write(
+                AuditAction.UPDATE, calendar, diff=compute_diff(before, after)
+            )
 
         return calendar
 
