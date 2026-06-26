@@ -27,7 +27,7 @@ from calendar_integration.graphql import (
     CalendarEventGraphQLType,
     CalendarGraphQLType,
 )
-from calendar_integration.models import Calendar
+from calendar_integration.models import Calendar, CalendarEvent
 from calendar_integration.mutations import (
     CalendarGroupMutations,
     ExternalEventChangeRequestMutations,
@@ -38,6 +38,7 @@ from calendar_integration.services.dataclasses import (
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
+    ResourceAllocationInputData,
 )
 from organizations.exceptions import NoServiceAccountConfiguredError, UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
@@ -660,6 +661,108 @@ class ScheduleEventInput:
         default_factory=list
     )
     rrule_string: str | None = None
+
+
+@strawberry.input
+class RescheduleCalendarEventInput:
+    """Input for rescheduling a single-calendar event via a public-API token.
+
+    Supports three modes:
+    - **Whole event / series** (``recurrence_id`` omitted): updates the event's time fields
+      and, optionally, its recurrence rule. The existing rule is preserved when
+      ``rrule_string`` is omitted — callers must not strip the series accidentally.
+    - **Series with new rule** (``recurrence_id`` omitted, ``rrule_string`` provided):
+      moves the event AND updates the recurrence pattern.
+    - **Single occurrence** (``recurrence_id`` provided): reschedules exactly the
+      occurrence whose original start equals ``recurrence_id`` without touching the
+      master or any other occurrence.
+
+    An owner-scoped token may only reschedule events on calendars its owner owns;
+    an org-wide token acts org-wide.
+    """
+
+    organization_id: int
+    calendar_id: int
+    event_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+    # Optional: change the series' recurrence pattern. Omit to PRESERVE the existing rule.
+    rrule_string: str | None = None
+    # Optional: when set, reschedule ONLY this occurrence of a recurring series
+    # (the occurrence's original start == CalendarEvent.recurrence_id). Omit for whole event/series.
+    recurrence_id: datetime.datetime | None = None
+
+
+@strawberry.input
+class RescheduleCalendarGroupEventInput:
+    """Input for rescheduling a grouped calendar event via a public-API token.
+
+    Grouped events consist of a primary ``CalendarEvent`` on the primary calendar plus
+    linked non-primary ``BlockedTime`` rows on each additional calendar in the group.
+    All of them move together when this mutation succeeds.
+
+    Whole-event only — group events are not recurring in v1 (no ``recurrenceId``).
+
+    An owner-scoped token may only reschedule grouped events whose primary calendar is
+    owned by the token's owner; an org-wide token acts org-wide.
+    """
+
+    organization_id: int
+    event_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+
+
+@strawberry.type
+class CancelEventResult:
+    """Result of a ``cancelEvent`` mutation.
+
+    ``success`` is ``True`` when the event (or the targeted occurrence / series)
+    was cancelled successfully.
+    """
+
+    success: bool
+
+
+@strawberry.input
+class CancelEventInput:
+    """Input for cancelling a single-calendar or grouped calendar event via a public-API token.
+
+    Supports three cancellation modes:
+
+    - **Single occurrence** (``recurrence_id`` set): cancels exactly the occurrence
+      whose original start equals ``recurrence_id`` by creating a cancellation
+      ``EventRecurrenceException`` (``is_cancelled=True``).  The master event and
+      series rule remain intact.  Use this to omit one occurrence without touching
+      the rest of the series.
+
+    - **Whole event / series** (``recurrence_id`` omitted, ``delete_series=False``):
+      deletes the event row (the master for recurring events).
+
+      .. warning::
+          For a recurring master, passing ``delete_series=False`` without providing
+          a ``recurrence_id`` deletes the **master event row** outright — this is
+          intentional but may not be what you want.  To cancel a single occurrence,
+          supply ``recurrence_id`` instead.  To delete the entire series including
+          all instances and the rule, set ``delete_series=True``.
+
+    - **Whole series delete** (``delete_series=True``): deletes the master event
+      together with all generated instances, exceptions, and the recurrence rule.
+
+    An owner-scoped token may only cancel events on calendars its owner owns;
+    an org-wide token acts org-wide.
+    """
+
+    organization_id: int
+    calendar_id: int
+    event_id: int
+    # When True, deletes the entire series (master + instances + exceptions + rule).
+    delete_series: bool = False
+    # When set, cancels ONLY this occurrence of a recurring series addressed by its
+    # original start time (== CalendarEvent.recurrence_id).
+    recurrence_id: datetime.datetime | None = None
 
 
 @strawberry.type
@@ -2152,3 +2255,348 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError(str(exc)) from exc
 
         return event  # type: ignore[return-value]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def reschedule_calendar_event(
+        self,
+        info: strawberry.Info,
+        input: RescheduleCalendarEventInput,  # noqa: A002
+    ) -> CalendarEventGraphQLType:
+        """Reschedule a single-calendar event (whole, series-preserving, or single-occurrence).
+
+        Three distinct paths share a single resolver:
+
+        1. **Single-occurrence** (``input.recurrence_id`` is set): delegates to
+           ``CalendarService.reschedule_event_occurrence``, which creates or updates a
+           modified-occurrence ``EventRecurrenceException`` without touching the master or the
+           series rule.
+
+        2. **Whole event / series** (``input.recurrence_id`` is None): builds a
+           ``CalendarEventInputData`` that preserves the existing event's non-time fields
+           (title, description, attendances, external attendances, resource allocations) while
+           overriding start/end/timezone and the recurrence rule.
+
+           - **Series-preserving sub-case** (``input.rrule_string`` is None): the master's
+             existing rule string is re-passed so ``update_event`` does not silently strip the
+             series.
+           - **Explicit-new-rule sub-case** (``input.rrule_string`` provided): the new rule
+             replaces the existing one.
+
+        Authorization:
+        - Owner-scoped token: ``assert_calendar_in_owner_scope`` restricts to calendars owned
+          by the token's owner; cross-owner → ``"Calendar not found."`` (same as missing).
+        - Org-wide token: ``assert_calendar_in_owner_scope`` is a no-op → acts org-wide.
+        - The service independently re-verifies ownership as defense-in-depth.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
+
+        # Owner-scope guard: a scoped token may only target its owner's calendars.
+        # Cross-owner and missing calendars return the identical error — no existence leak.
+        try:
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, input.calendar_id)
+            Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Calendar not found.") from exc
+
+        # Load the event — needed for the whole-event/series path (to preserve non-time
+        # fields) and to validate ownership independently of the calendar guard.
+        try:
+            existing_event = (
+                CalendarEvent.objects.filter_by_organization(org.id)
+                .select_related("calendar", "recurrence_rule")
+                .prefetch_related(
+                    "attendances",
+                    "external_attendances__external_attendee",
+                    "resource_allocations",
+                )
+                .get(id=input.event_id, calendar_fk_id=input.calendar_id)
+            )
+        except CalendarEvent.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+
+        try:
+            if input.recurrence_id is not None:
+                # Single-occurrence path: create / update a modified exception for exactly
+                # this one occurrence; master and series rule are untouched.
+                event = calendar_service.reschedule_event_occurrence(
+                    calendar_id=input.calendar_id,
+                    master_event_id=input.event_id,
+                    recurrence_id=input.recurrence_id,
+                    start_time=input.start_time,
+                    end_time=input.end_time,
+                    timezone=input.timezone,
+                )
+            else:
+                # Whole-event / series path: preserve all non-time fields from the existing
+                # event and override only start/end/timezone (+ optionally the rrule).
+
+                # Preserve internal attendances.
+                preserved_attendances = [
+                    EventAttendanceInputData(user_id=attendance.membership_user_id)
+                    for attendance in existing_event.attendances.all()
+                    if attendance.membership_user_id is not None
+                ]
+
+                # Preserve external attendances — carry the ExternalAttendee id so that
+                # update_event can correlate status and detect "no change" correctly.
+                preserved_external_attendances = [
+                    EventExternalAttendanceInputData(
+                        external_attendee=ExternalAttendeeInputData(
+                            email=ea.external_attendee.email,
+                            name=ea.external_attendee.name or "",
+                            id=ea.external_attendee_fk_id,
+                        )
+                    )
+                    for ea in existing_event.external_attendances.all()
+                    if ea.external_attendee_fk_id is not None
+                ]
+
+                # Preserve resource allocations.
+                preserved_resource_allocations = [
+                    ResourceAllocationInputData(resource_id=ra.calendar_fk_id)  # type: ignore[arg-type]
+                    for ra in existing_event.resource_allocations.all()
+                    if ra.calendar_fk_id
+                ]
+
+                # Recurrence rule preservation: if the caller omits rrule_string, re-pass
+                # the existing rule string so update_event does NOT strip the series.
+                # (update_event deletes the rule when recurrence_rule=None.)
+                if input.rrule_string is not None:
+                    recurrence_rule = input.rrule_string
+                elif existing_event.is_recurring:
+                    recurrence_rule = existing_event.recurrence_rule.to_rrule_string()
+                else:
+                    recurrence_rule = None
+
+                event_data = CalendarEventInputData(
+                    title=existing_event.title,
+                    description=existing_event.description or "",
+                    start_time=input.start_time,
+                    end_time=input.end_time,
+                    timezone=input.timezone,
+                    attendances=preserved_attendances,
+                    external_attendances=preserved_external_attendances,
+                    resource_allocations=preserved_resource_allocations,
+                    recurrence_rule=recurrence_rule,
+                )
+                event = calendar_service.update_event(input.calendar_id, input.event_id, event_data)
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Calendar not found.") from exc
+        except CalendarEvent.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+        except PermissionDenied as exc:
+            raise GraphQLError(
+                str(exc) or "You do not have permission to reschedule this event."
+            ) from exc
+        except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
+            raise GraphQLError(str(exc)) from exc
+
+        return event  # type: ignore[return-value]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def reschedule_calendar_group_event(
+        self,
+        info: strawberry.Info,
+        input: RescheduleCalendarGroupEventInput,  # noqa: A002
+    ) -> CalendarEventGraphQLType:
+        """Reschedule a grouped event's times while preserving all other details.
+
+        Moves the primary ``CalendarEvent`` on the primary calendar AND the linked
+        non-primary ``BlockedTime`` rows (identified by the
+        ``group-event-{event_id}-cal-{cid}`` external_id convention) to the new
+        start/end/timezone simultaneously.
+
+        Whole-event only — group events are not recurring in v1 (no ``recurrenceId``).
+
+        Authorization:
+        - Owner-scoped token: restricted to grouped events whose primary calendar is
+          owned by the token's owner; cross-owner → ``"Event not found."`` (same
+          as missing event — no existence leak).
+        - Org-wide token: acts org-wide.
+        - The service independently re-verifies ownership as defense-in-depth.
+
+        Returns the updated primary ``CalendarEvent``.
+        """
+        from calendar_integration.exceptions import CalendarGroupValidationError
+
+        # Sentinel emitted by CalendarEventService.update_event when a SystemUser's
+        # scoped calendar can't be found (racing cross-owner path). Map it to the
+        # uniform not-found message to prevent a discriminating oracle.
+        calendar_not_found_sentinel = "Calendar matching query does not exist."
+
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
+
+        # input.organization_id is intentionally ignored: org is derived from the
+        # authenticated request context, not from caller-supplied input.
+
+        # Load the grouped event scoped to the organization to derive the primary
+        # calendar and validate that it is actually a grouped event.
+        try:
+            grouped_event = (
+                CalendarEvent.objects.filter_by_organization(org.id)
+                .select_related("calendar")
+                .get(id=input.event_id)
+            )
+        except CalendarEvent.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+
+        if grouped_event.calendar_group_fk_id is None:
+            # Non-grouped event — uniform not-found, no existence leak.
+            raise GraphQLError("Event not found.")
+
+        primary_calendar_id: int = grouped_event.calendar_fk_id  # type: ignore[assignment]
+
+        # Owner-scope guard on the PRIMARY calendar: a scoped token may only target
+        # grouped events whose primary calendar its owner owns. The grouped event was
+        # already loaded org-scoped with select_related("calendar"), so the derived
+        # primary calendar provably exists — only the ownership check can fail here.
+        # Map Calendar.DoesNotExist (cross-owner) to "Event not found." — uniform
+        # not-found, no existence leak.
+        try:
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, primary_calendar_id)
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+
+        # Wire the group service: inject the already-initialized calendar_service so
+        # that the public-token auth context flows into reschedule_grouped_event →
+        # update_event. This mirrors exactly how rescheduleCalendarGroupEventWithCode
+        # wires its deps (deps.calendar_group_service.calendar_service = deps.calendar_service).
+        group_deps = get_calendar_mutation_dependencies()
+        group_deps.calendar_group_service.calendar_service = calendar_service
+        group_deps.calendar_group_service.initialize(organization=org)
+
+        try:
+            event = group_deps.calendar_group_service.reschedule_grouped_event(
+                event_id=input.event_id,
+                start_time=input.start_time,
+                end_time=input.end_time,
+                tz=input.timezone,
+            )
+        except Calendar.DoesNotExist as exc:
+            # Derived-calendar miss must not leak existence either (caller addresses by event).
+            raise GraphQLError("Event not found.") from exc
+        except CalendarEvent.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+        except PermissionDenied as exc:
+            # Defense-in-depth: update_event raises PermissionDenied with the sentinel
+            # message when a racing cross-owner SystemUser calendar lookup fails.
+            # Surface it as the uniform not-found rather than the distinct sentinel.
+            if str(exc) == calendar_not_found_sentinel:
+                raise GraphQLError("Event not found.") from exc
+            raise GraphQLError(
+                str(exc) or "You do not have permission to reschedule this event."
+            ) from exc
+        except CalendarGroupValidationError as exc:
+            raise GraphQLError(str(exc)) from exc
+        except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
+            raise GraphQLError(str(exc)) from exc
+
+        return event  # type: ignore[return-value]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def cancel_event(
+        self,
+        info: strawberry.Info,
+        input: CancelEventInput,  # noqa: A002
+    ) -> CancelEventResult:
+        """Cancel a single-calendar or grouped event, an entire series, or one occurrence.
+
+        Three distinct execution paths share a single resolver:
+
+        1. **Single-occurrence** (``input.recurrence_id`` is set): delegates to
+           ``CalendarService.cancel_event_occurrence``, which creates a cancellation
+           ``EventRecurrenceException`` (``is_cancelled=True``) for that occurrence without
+           touching the master event or the series rule.
+
+        2. **Grouped event** (``event.calendar_group_fk_id is not None``, no ``recurrence_id``):
+           delegates to ``CalendarGroupService.cancel_grouped_event``, which deletes the
+           primary ``CalendarEvent`` AND the linked non-primary ``BlockedTime`` rows
+           identified by the ``group-event-{event_id}-cal-{cid}`` external_id convention.
+           ``input.delete_series`` is forwarded to the group service.
+
+        3. **Single-calendar event** (no ``recurrence_id``, not grouped): delegates to
+           ``CalendarService.delete_event`` with ``delete_series=input.delete_series``.
+
+           .. warning::
+               For a recurring master, passing ``delete_series=False`` (default) deletes
+               the master event row outright — not a silent no-op, but also not an entire
+               series wipe.  To cancel one occurrence use ``recurrence_id``; to delete the
+               whole series set ``delete_series=True``.
+
+        Authorization:
+        - Owner-scoped token: ``assert_calendar_in_owner_scope`` restricts to calendars
+          owned by the token's owner; cross-owner → ``"Calendar not found."`` (same as
+          missing — no existence leak).  This is correct here because the input is
+          calendar-addressed (``calendar_id`` is explicit), so "Calendar not found." for
+          a cross-owner calendar_id is the intended uniform response.
+        - Org-wide token: ``assert_calendar_in_owner_scope`` is a no-op → acts org-wide.
+        - The service independently re-verifies ownership as defense-in-depth.
+        """
+        from calendar_integration.exceptions import CalendarGroupValidationError
+
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
+
+        # Owner-scope guard (calendar-addressed input): a scoped token may only target
+        # its owner's calendars.  Cross-owner and genuinely missing calendars return the
+        # identical error — no existence leak.
+        try:
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, input.calendar_id)
+            Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Calendar not found.") from exc
+
+        # Load the event — needed to detect grouped-ness before branching.
+        try:
+            event = (
+                CalendarEvent.objects.filter_by_organization(org.id)
+                .select_related("calendar")
+                .get(id=input.event_id, calendar_fk_id=input.calendar_id)
+            )
+        except CalendarEvent.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+
+        try:
+            if input.recurrence_id is not None:
+                # Single-occurrence path: create / update a cancellation exception for
+                # exactly this occurrence; master and series rule are left intact.
+                calendar_service.cancel_event_occurrence(
+                    calendar_id=input.calendar_id,
+                    master_event_id=input.event_id,
+                    recurrence_id=input.recurrence_id,
+                )
+            elif event.calendar_group_fk_id is not None:
+                # Grouped-event path: wire the group service with the already-initialized
+                # calendar_service so that the public-token auth context flows through
+                # cancel_grouped_event → delete_event.  Mirrors how cancel_event_with_code
+                # and reschedule_calendar_group_event wire their deps.
+                group_deps = get_calendar_mutation_dependencies()
+                group_deps.calendar_group_service.calendar_service = calendar_service
+                group_deps.calendar_group_service.initialize(organization=org)
+                group_deps.calendar_group_service.cancel_grouped_event(
+                    event_id=input.event_id,
+                    delete_series=input.delete_series,
+                )
+            else:
+                # Single-calendar path.
+                calendar_service.delete_event(
+                    calendar_id=input.calendar_id,
+                    event_id=input.event_id,
+                    delete_series=input.delete_series,
+                )
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Calendar not found.") from exc
+        except CalendarEvent.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+        except PermissionDenied as exc:
+            raise GraphQLError(
+                str(exc) or "You do not have permission to cancel this event."
+            ) from exc
+        except CalendarGroupValidationError as exc:
+            raise GraphQLError(str(exc)) from exc
+        except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
+            raise GraphQLError(str(exc)) from exc
+
+        return CancelEventResult(success=True)

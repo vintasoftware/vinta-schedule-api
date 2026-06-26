@@ -334,6 +334,35 @@ class CalendarEventService:
             .exists()
         )
 
+    def _public_token_may_write(self, system_user: SystemUser, calendar: Calendar) -> bool:
+        """Check whether a public-API ``SystemUser`` is permitted to update/delete ``calendar``'s events.
+
+        Unlike ``create_event`` (which blocks org-wide tokens), reschedule and cancel allow
+        both token types:
+        - **Org-wide** tokens (``scoped_to_membership_user_id is None``) → always allowed for
+          any calendar in their organization.
+        - **Owner-scoped** tokens → allowed only when the token's owner independently owns the
+          target calendar (verified via ``_scoped_system_user_owns_calendar``, which re-derives
+          the ``CalendarOwnership`` relation from the DB — NOT trusted from the caller).
+
+        This is the single choke-point for the update/delete public-token allowance. Gating
+        a future feature flag here covers both ``update_event`` and ``delete_event``.
+
+        Args:
+            system_user: The token (``SystemUser``) attempting the write.
+            calendar: The target calendar whose event the caller wants to update/delete.
+
+        Returns:
+            ``True`` when the token may proceed; ``False`` when it must be denied.
+        """
+        if system_user.scoped_to_membership_user_id is None:
+            # Org-wide token — permitted for any event in its OWN organization. Re-derive the
+            # tenant boundary from the loaded objects (defense in depth) rather than trusting
+            # the caller-supplied context.organization, mirroring the scoped path.
+            return system_user.organization_id == calendar.organization_id
+        # Owner-scoped token — only when the token's owner independently owns the calendar.
+        return self._scoped_system_user_owns_calendar(system_user, calendar)
+
     def _serialize_event(self, event: CalendarEvent) -> CalendarEventData:
         """Build webhook payload for calendar event."""
         return _serialize_event_util(event)
@@ -401,13 +430,11 @@ class CalendarEventService:
             # route through single-use codes / public scheduling.
             if not self._scoped_system_user_owns_calendar(context.user_or_token, calendar):
                 raise PermissionDenied("Events cannot be created through the Public API.")
-            # Bundle calendars are rejected for scoped tokens: create_event would recurse
-            # into per-child creates that span other providers' calendars, producing a
-            # confusing partial failure. Reject up front with a clear, scoped error.
-            if calendar.calendar_type == CalendarType.BUNDLE:
-                raise PermissionDenied(
-                    "Events cannot be scheduled on a bundle calendar through the Public API."
-                )
+            # Bundle calendars ARE permitted for an owner-scoped token that owns the
+            # bundle calendar: creation routes to _create_bundle_event below (the
+            # designed fan-out). Org-wide tokens remain blocked above (the plan keeps
+            # create owner-scoped-only). Amended 2026-06-23 for parity with bundle
+            # reschedule/cancel.
             is_owner_scoped_system_user = True
 
         # The permission-token scheduling check applies to the User / token flows. The
@@ -639,6 +666,11 @@ class CalendarEventService:
             organization_id=context.organization.id,
         )
 
+        # When True, authorization is granted by the public-token write allowance
+        # (org-wide or owner-scoped) and the subsequent permission-service check is
+        # bypassed (the service has no CalendarManagementToken initialized for it).
+        is_public_token_write = False
+
         if isinstance(context.user_or_token, User):
             context.calendar_permission_service.initialize_with_user(
                 context.user_or_token,
@@ -646,10 +678,23 @@ class CalendarEventService:
                 event_id=event_id,
             )
         elif isinstance(context.user_or_token, SystemUser):
-            raise PermissionDenied("Events cannot be created through the Public API.")
+            system_user = context.user_or_token
+            if not self._public_token_may_write(system_user, event.calendar):
+                # Surface a not-found-parity message so a cross-owner caller cannot
+                # distinguish a forbidden calendar from a genuinely missing one.
+                raise PermissionDenied("Calendar matching query does not exist.")
+            # Bundle events ARE permitted through the Public API: updating an EXISTING
+            # bundle PRIMARY event is a well-defined operation that reaches
+            # _update_bundle_event below (which fans the change out to the children).
+            # This deliberately diverges from create_event, where create on a bundle
+            # calendar fans out into problematic per-child CREATES. The only gate is
+            # _public_token_may_write above (owner-scoped tokens must own the bundle
+            # calendar; org-wide acts org-wide). Non-primary bundle child events are
+            # still rejected by the is_bundle_event ValueError below.
+            is_public_token_write = True
 
         serialized_old_event = self._serialize_event(event)
-        if not context.calendar_permission_service.can_perform_update(
+        if not is_public_token_write and not context.calendar_permission_service.can_perform_update(
             old_event=serialized_old_event,
             new_event=self._serialize_event_data_input(event, event_data),
         ):
@@ -969,7 +1014,11 @@ class CalendarEventService:
             if not context.calendar_side_effects_service:
                 return
 
-            actor = _resolve_token_audit_actor(context.calendar_permission_service.token)
+            permission_token = getattr(context.calendar_permission_service, "token", None)
+            if permission_token is not None:
+                actor: Any = _resolve_token_audit_actor(permission_token)
+            else:
+                actor = context.user_or_token
             context.calendar_side_effects_service.on_update_event(
                 actor=actor,
                 event=self._serialize_event(event),
@@ -1177,6 +1226,234 @@ class CalendarEventService:
             exception_manager_delete_callback=delete_exception_manager,
         )
         return cast(CalendarEvent, result) if result else None
+
+    def _load_recurring_master_for_occurrence(
+        self, calendar_id: int, master_event_id: int
+    ) -> CalendarEvent:
+        """Load and authorize the recurring master event for a single-occurrence op.
+
+        Shared scaffolding for ``reschedule_event_occurrence`` and
+        ``cancel_event_occurrence``. The master is loaded org-scoped through the model
+        manager (never bypassing the multi-tenancy guard); a miss raises
+        ``CalendarEvent.DoesNotExist`` which callers map to a not-found.
+
+        Authorization reuses the ``_public_token_may_write`` seam (Phase 0a) so BOTH
+        org-wide and owner-scoped public tokens are honored — this is deliberately NOT
+        ``create_event``'s allowance (which blocks org-wide tokens). A cross-owner /
+        cross-tenant token is denied with the not-found-parity message so it cannot
+        distinguish a forbidden calendar from a missing one. A Django ``User`` principal
+        keeps the existing (non-public) semantics and is not subjected to the
+        public-token check.
+
+        Finally, the master must actually be recurring (have a ``recurrence_rule``);
+        otherwise a ``ValueError`` is raised — single-occurrence addressing is
+        meaningless for a non-recurring event.
+        """
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
+
+        master = (
+            CalendarEvent.objects.filter_by_organization(context.organization.id)
+            .select_related("calendar")
+            .get(id=master_event_id, calendar_fk_id=calendar_id)
+        )
+
+        if isinstance(context.user_or_token, SystemUser):
+            if not self._public_token_may_write(context.user_or_token, master.calendar):
+                # Not-found parity: a cross-owner caller cannot distinguish a forbidden
+                # calendar from a genuinely missing one (no existence leak).
+                raise PermissionDenied("Calendar matching query does not exist.")
+            # Bundle events ARE permitted through the Public API (mirrors update_event /
+            # delete_event): the only gate is _public_token_may_write above. Owner-scoped
+            # tokens must own the bundle calendar; org-wide acts org-wide.
+
+        if not master.is_recurring:
+            raise ValueError(
+                "Cannot reschedule or cancel a single occurrence of a non-recurring event."
+            )
+
+        return master
+
+    @transaction.atomic()
+    def reschedule_event_occurrence(
+        self,
+        calendar_id: int,
+        master_event_id: int,
+        recurrence_id: datetime.datetime,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+    ) -> CalendarEvent:
+        """Reschedule a SINGLE occurrence of a recurring series to a new time.
+
+        The occurrence is addressed by ``(calendar_id, master_event_id, recurrence_id)``
+        where ``recurrence_id`` is the occurrence's ORIGINAL start datetime
+        (== ``CalendarEvent.recurrence_id``). Un-materialized occurrences have no row of
+        their own; this creates a modified-occurrence ``CalendarEvent`` and links it to
+        the master through an ``EventRecurrenceException``.
+
+        The modified-occurrence event is built DIRECTLY here (not through
+        ``create_event``) so the org-wide public-token block in ``create_event`` is not
+        re-applied — authorization already happened in
+        ``_load_recurring_master_for_occurrence`` via ``_public_token_may_write``, which
+        intentionally permits org-wide tokens.
+
+        Idempotent: ``create_exception`` upserts on ``(organization, exception_date)``, so
+        rescheduling the same ``recurrence_id`` twice updates the existing exception (and
+        re-points its modified event) rather than creating a second exception row.
+
+        Args:
+            calendar_id: Internal ID of the calendar holding the master event.
+            master_event_id: Internal ID of the recurring master event.
+            recurrence_id: The occurrence's original start datetime.
+            start_time: New start time for the occurrence.
+            end_time: New end time for the occurrence.
+            timezone: IANA timezone for the new times.
+
+        Returns:
+            The modified-occurrence ``CalendarEvent``.
+        """
+        context = cast("BaseCalendarService", self._context)
+        master = self._load_recurring_master_for_occurrence(calendar_id, master_event_id)
+
+        # Idempotency: if a prior reschedule already materialized a modified-occurrence
+        # event for this recurrence_id, update it in place rather than delete+recreate.
+        # Deleting and recreating would orphan the external provider event (the old
+        # external_id is abandoned while a new one is created). Updating in place keeps
+        # the existing external_id intact and issues an update call to the adapter, so
+        # no external event is ever orphaned on repeated reschedules of the same
+        # recurrence_id.
+        existing_exception = master.recurrence_exceptions.filter(
+            organization_id=context.organization.id,
+            exception_date=recurrence_id,
+        ).first()
+        if existing_exception is not None and existing_exception.modified_event_fk_id is not None:
+            existing_modified = existing_exception.modified_event
+            existing_modified.start_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+                start_time, timezone
+            )
+            existing_modified.end_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+                end_time, timezone
+            )
+            existing_modified.timezone = timezone
+
+            # Sync the updated times to the external provider when an adapter is available,
+            # reusing the existing external_id so no orphan is left behind.
+            if (
+                master.calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE]
+                and existing_modified.external_id
+                and (write_adapter := self._host._get_write_adapter_for_calendar(master.calendar))
+            ):
+                updated_external = write_adapter.update_event(
+                    master.calendar.external_id,
+                    existing_modified.external_id,
+                    CalendarEventAdapterInputData(
+                        calendar_external_id=master.calendar.external_id,
+                        title=master.title,
+                        description=master.description,
+                        start_time=start_time,
+                        end_time=end_time,
+                        timezone=timezone,
+                        attendees=[],
+                        resources=[],
+                        recurrence_rule=None,
+                        is_recurring_instance=True,
+                    ),
+                )
+                if context.calendar_adapter:
+                    existing_modified.meta = {
+                        "latest_original_payload": updated_external.original_payload or {}
+                    }
+
+            existing_modified.save()
+            # The exception row already points at existing_modified; no re-link needed.
+            return existing_modified
+
+        # Mirror create_event's external-sync behavior for an exception event: on
+        # PERSONAL/RESOURCE calendars with a write adapter, create_event syncs the
+        # modified occurrence as a recurring-instance event in the external provider.
+        external_id = ""
+        original_payload: dict[str, Any] = {}
+        if master.calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE] and (
+            write_adapter := self._host._get_write_adapter_for_calendar(master.calendar)
+        ):
+            created_external = write_adapter.create_event(
+                CalendarEventAdapterInputData(
+                    calendar_external_id=master.calendar.external_id,
+                    title=master.title,
+                    description=master.description,
+                    start_time=start_time,
+                    end_time=end_time,
+                    timezone=timezone,
+                    attendees=[],
+                    resources=[],
+                    recurrence_rule=None,
+                    is_recurring_instance=True,
+                )
+            )
+            external_id = created_external.external_id
+            original_payload = created_external.original_payload or {}
+
+        # Build the modified-occurrence event directly (mirroring create_event's field
+        # construction for the parent_event/is_recurring_exception path) so we never
+        # recurse through create_event's org-wide public-token block.
+        modified_event = CalendarEvent(
+            calendar_fk=master.calendar,
+            organization=context.organization,
+            title=master.title,
+            description=master.description or "",
+            start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(start_time, timezone),
+            end_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(end_time, timezone),
+            timezone=timezone,
+            external_id=external_id,
+            meta={"latest_original_payload": original_payload} if context.calendar_adapter else {},
+            parent_recurring_object_fk=master,
+            is_recurring_exception=True,
+            # Deliberately set to the ORIGINAL occurrence start (recurrence_id), not
+            # the new start_time. The EventRecurrenceException is matched by
+            # exception_date == original start, so original-start is the consistent
+            # key across all references to this exception; this intentionally diverges
+            # from create_event's recurrence_id=event_data.start_time path.
+            recurrence_id=recurrence_id,
+        )
+        modified_event.save()
+
+        # Link via the master's exception primitive (upserts on (org, exception_date) →
+        # idempotent for a repeated recurrence_id).
+        master.create_exception(
+            exception_date=recurrence_id,
+            is_cancelled=False,
+            modified_object=modified_event,
+        )
+
+        return modified_event
+
+    @transaction.atomic()
+    def cancel_event_occurrence(
+        self,
+        calendar_id: int,
+        master_event_id: int,
+        recurrence_id: datetime.datetime,
+    ) -> None:
+        """Cancel a SINGLE occurrence of a recurring series.
+
+        The occurrence is addressed by ``(calendar_id, master_event_id, recurrence_id)``
+        (the occurrence's original start). This creates a cancellation
+        ``EventRecurrenceException`` (``is_cancelled=True``, no ``modified_event``) without
+        mutating the master or its recurrence rule.
+
+        Idempotent: ``create_exception`` upserts on ``(organization, exception_date)``, so
+        cancelling the same ``recurrence_id`` twice updates the existing exception in
+        place rather than creating a second row.
+
+        Args:
+            calendar_id: Internal ID of the calendar holding the master event.
+            master_event_id: Internal ID of the recurring master event.
+            recurrence_id: The occurrence's original start datetime.
+        """
+        master = self._load_recurring_master_for_occurrence(calendar_id, master_event_id)
+        master.create_exception(exception_date=recurrence_id, is_cancelled=True)
 
     def get_recurring_event_instances(
         self,
@@ -1461,6 +1738,11 @@ class CalendarEventService:
             id=event_id,
             organization_id=context.organization.id,
         )
+        # When True, authorization is granted by the public-token write allowance
+        # (org-wide or owner-scoped) and the subsequent permission-service check is
+        # bypassed (the service has no CalendarManagementToken initialized for it).
+        is_public_token_write = False
+
         if isinstance(context.user_or_token, User):
             context.calendar_permission_service.initialize_with_user(
                 context.user_or_token,
@@ -1468,10 +1750,23 @@ class CalendarEventService:
                 event_id=event_id,
             )
         elif isinstance(context.user_or_token, SystemUser):
-            raise PermissionDenied("Events cannot be created through the Public API.")
+            system_user = context.user_or_token
+            if not self._public_token_may_write(system_user, event.calendar):
+                # Surface a not-found-parity message so a cross-owner caller cannot
+                # distinguish a forbidden calendar from a genuinely missing one.
+                raise PermissionDenied("Calendar matching query does not exist.")
+            # Bundle events ARE permitted through the Public API: deleting an EXISTING
+            # bundle PRIMARY event is a well-defined operation that reaches
+            # _delete_bundle_event below (which fans the deletion out to the children).
+            # This deliberately diverges from create_event, where create on a bundle
+            # calendar fans out into problematic per-child CREATES. The only gate is
+            # _public_token_may_write above (owner-scoped tokens must own the bundle
+            # calendar; org-wide acts org-wide). Non-primary bundle child events are
+            # still rejected by the is_bundle_event ValueError below.
+            is_public_token_write = True
 
         serialized_old_event = self._serialize_event(event)
-        if not context.calendar_permission_service.can_perform_update(
+        if not is_public_token_write and not context.calendar_permission_service.can_perform_update(
             old_event=serialized_old_event,
             new_event=None,
         ):
@@ -1521,10 +1816,16 @@ class CalendarEventService:
 
         event.delete()
 
+        permission_token = getattr(context.calendar_permission_service, "token", None)
+        if permission_token is not None:
+            audit_actor: Any = _resolve_token_audit_actor(permission_token)
+        else:
+            audit_actor = context.user_or_token
+
         transaction.on_commit(
             lambda: (
                 context.calendar_side_effects_service.on_delete_event(
-                    actor=_resolve_token_audit_actor(context.calendar_permission_service.token),
+                    actor=audit_actor,
                     event=serialized_event,
                     organization=event.organization,
                 )
