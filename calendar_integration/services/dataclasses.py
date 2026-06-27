@@ -2,7 +2,7 @@ import datetime
 from collections.abc import Iterable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from calendar_integration.constants import (
     CalendarProvider,
@@ -13,6 +13,10 @@ from calendar_integration.models import (
     EventAttendance,
     EventExternalAttendance,
 )
+
+
+if TYPE_CHECKING:
+    from calendar_integration.models import BookingPolicy
 
 
 @dataclass
@@ -345,3 +349,86 @@ class BookableSlotProposal:
 
     start_time: datetime.datetime
     end_time: datetime.datetime
+
+
+@dataclass(frozen=True)
+class EffectivePolicy:
+    """The resolved set of booking guardrails for a calendar, bundle, or group.
+
+    Field semantics (mirrors ``BookingPolicy`` field encoding):
+    - ``lead_time``: minimum advance notice required before a slot can start.
+      Zero means "bookable now."
+    - ``max_horizon``: how far ahead a slot may be offered. ``None`` means
+      unbounded (no horizon constraint). A stored ``max_horizon_seconds=0`` on the
+      model maps to ``None`` here — "0 = no constraint" per spec.
+    - ``buffer_before``: dead zone before an existing event; candidate slots whose
+      window extends into ``[event.start - buffer_before, event.start)`` are blocked.
+      Zero means flush booking is allowed.
+    - ``buffer_after``: dead zone after an existing event. Zero means flush allowed.
+    """
+
+    lead_time: datetime.timedelta
+    max_horizon: datetime.timedelta | None  # None = unbounded
+    buffer_before: datetime.timedelta
+    buffer_after: datetime.timedelta
+
+    @classmethod
+    def unconstrained(cls) -> "EffectivePolicy":
+        """Return an EffectivePolicy with no constraints on any field."""
+        return cls(
+            lead_time=datetime.timedelta(0),
+            max_horizon=None,
+            buffer_before=datetime.timedelta(0),
+            buffer_after=datetime.timedelta(0),
+        )
+
+    @classmethod
+    def from_model(cls, policy: "BookingPolicy") -> "EffectivePolicy":
+        """Build an EffectivePolicy from a BookingPolicy model instance.
+
+        ``max_horizon_seconds=0`` on the model means "unbounded" and maps to
+        ``max_horizon=None`` here, consistent with the spec's "0 = no constraint."
+        """
+        return cls(
+            lead_time=datetime.timedelta(seconds=policy.lead_time_seconds),
+            max_horizon=(
+                datetime.timedelta(seconds=policy.max_horizon_seconds)
+                if policy.max_horizon_seconds > 0
+                else None
+            ),
+            buffer_before=datetime.timedelta(seconds=policy.buffer_before_seconds),
+            buffer_after=datetime.timedelta(seconds=policy.buffer_after_seconds),
+        )
+
+    @staticmethod
+    def most_restrictive(policies: Iterable["EffectivePolicy"]) -> "EffectivePolicy":
+        """Combine multiple EffectivePolicy instances into the most-restrictive one.
+
+        Field combination rules:
+        - ``lead_time``: max (the longest required advance notice wins).
+        - ``max_horizon``: min of the non-None values (the shortest horizon wins;
+          ``None`` = unbounded = effectively infinite, so it is excluded from the
+          min — only binding if ALL policies have ``None`` horizon).
+        - ``buffer_before``: max (the largest buffer wins).
+        - ``buffer_after``: max.
+
+        An empty input sequence returns ``unconstrained()``.
+        """
+        policy_list = list(policies)
+        if not policy_list:
+            return EffectivePolicy.unconstrained()
+
+        max_lead = max(p.lead_time for p in policy_list)
+        max_buffer_before = max(p.buffer_before for p in policy_list)
+        max_buffer_after = max(p.buffer_after for p in policy_list)
+
+        # Finite horizons only; None (unbounded) acts as +∞ and is skipped.
+        finite_horizons = [p.max_horizon for p in policy_list if p.max_horizon is not None]
+        min_horizon = min(finite_horizons) if finite_horizons else None
+
+        return EffectivePolicy(
+            lead_time=max_lead,
+            max_horizon=min_horizon,
+            buffer_before=max_buffer_before,
+            buffer_after=max_buffer_after,
+        )
