@@ -12,6 +12,7 @@ from calendar_integration.exceptions import (
     TokenRevokedError,
 )
 from calendar_integration.querysets import (
+    BookingPolicyQuerySet,
     CalendarEventGroupSelectionQuerySet,
     CalendarEventQuerySet,
     CalendarGroupQuerySet,
@@ -27,7 +28,7 @@ from organizations.managers import BaseOrganizationModelManager
 
 
 if TYPE_CHECKING:
-    from calendar_integration.models import CalendarManagementToken
+    from calendar_integration.models import BookingPolicy, CalendarManagementToken
     from organizations.models import OrganizationMembership as OrganizationMembershipType
 
 
@@ -337,3 +338,54 @@ class ExternalEventChangeRequestManager(BaseOrganizationModelManager):
         Returns change requests the given membership is eligible to resolve.
         """
         return self.get_queryset().resolvable_by(membership)
+
+
+class BookingPolicyManager(BaseOrganizationModelManager):
+    """Manager for BookingPolicy exposing the per-target lookups the resolver uses.
+
+    A policy is attached to exactly one target (calendar / membership / calendar
+    group / organization default); these helpers return the single matching row
+    (or ``None``) for a given target, all scoped through the inherited
+    organization filter.
+    """
+
+    def get_queryset(self) -> BookingPolicyQuerySet:
+        return BookingPolicyQuerySet(self.model, using=self._db)
+
+    def for_target(
+        self,
+        *,
+        calendar_id: int | None = None,
+        membership_user_id: int | None = None,
+        calendar_group_id: int | None = None,
+    ) -> "BookingPolicy | None":
+        """Return the policy attached to exactly one of the given targets, or ``None``.
+
+        Exactly one of ``calendar_id`` / ``membership_user_id`` /
+        ``calendar_group_id`` must be provided. The per-target partial unique
+        indexes guarantee at most one matching row.
+        """
+        provided = [
+            value
+            for value in (calendar_id, membership_user_id, calendar_group_id)
+            if value is not None
+        ]
+        if len(provided) != 1:
+            raise ValueError(
+                "for_target requires exactly one of calendar_id, membership_user_id, "
+                "or calendar_group_id."
+            )
+
+        queryset = self.get_queryset()
+        if calendar_id is not None:
+            queryset = queryset.for_calendar(calendar_id)
+        elif membership_user_id is not None:
+            queryset = queryset.for_membership(membership_user_id)
+        else:
+            queryset = queryset.for_calendar_group(calendar_group_id)  # type: ignore[arg-type]
+
+        return queryset.first()
+
+    def org_default(self) -> "BookingPolicy | None":
+        """Return the organization-default policy, or ``None`` if none is set."""
+        return self.get_queryset().org_default().first()

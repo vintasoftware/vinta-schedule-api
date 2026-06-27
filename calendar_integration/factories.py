@@ -2,6 +2,7 @@ import datetime
 
 from .constants import CalendarProvider, ExternalEventChangeKind, RecurrenceFrequency
 from .models import (
+    BookingPolicy,
     CalendarEvent,
     CalendarOwnership,
     EventAttendance,
@@ -330,5 +331,78 @@ def create_external_event_change_request(
         proposed_values=proposed_values if proposed_values is not None else {},
         proposed_payload=proposed_payload if proposed_payload is not None else {},
         retained_values=retained_values if retained_values is not None else {},
+        **kwargs,
+    )
+
+
+def create_booking_policy(
+    *,
+    calendar=None,
+    membership_user_id: int | None = None,
+    calendar_group=None,
+    is_organization_default: bool = False,
+    organization=None,
+    lead_time_seconds: int = 0,
+    max_horizon_seconds: int = 0,
+    buffer_before_seconds: int = 0,
+    buffer_after_seconds: int = 0,
+    **kwargs,
+) -> BookingPolicy:
+    """Create a valid single-target ``BookingPolicy``.
+
+    Exactly one target must be set: ``calendar`` (the default — pass a
+    ``Calendar`` to attach a calendar-scoped policy), ``membership_user_id``,
+    ``calendar_group``, or ``is_organization_default=True``. Passing zero or more
+    than one target raises ``ValueError`` before hitting the DB, so tests that
+    want to exercise the ``bookingpolicy_exactly_one_target`` check constraint
+    should build the row directly via ``BookingPolicy.objects.create(...)``.
+
+    The organization is inferred from the provided ``calendar`` /
+    ``calendar_group`` target; for membership / organization-default targets the
+    ``organization`` kwarg is required. A mismatch between an explicit
+    ``organization`` and the target's organization raises ``ValueError``.
+    """
+    targets = [
+        calendar is not None,
+        membership_user_id is not None,
+        calendar_group is not None,
+        is_organization_default,
+    ]
+    if sum(targets) != 1:
+        raise ValueError(
+            "create_booking_policy requires exactly one target: calendar, "
+            "membership_user_id, calendar_group, or is_organization_default."
+        )
+
+    effective_org = organization
+    if calendar is not None:
+        effective_org = calendar.organization
+    elif calendar_group is not None:
+        effective_org = calendar_group.organization
+
+    if effective_org is None:
+        raise ValueError(
+            "organization is required when the target is a membership or the organization default."
+        )
+    if (
+        organization is not None
+        and (calendar is not None or calendar_group is not None)
+        and organization != effective_org
+    ):
+        raise ValueError(
+            f"organization mismatch: passed {organization!r} but target belongs to "
+            f"{effective_org!r}"
+        )
+
+    return BookingPolicy.objects.create(
+        organization=effective_org,
+        calendar=calendar,
+        membership_user_id=membership_user_id,
+        calendar_group=calendar_group,
+        is_organization_default=is_organization_default,
+        lead_time_seconds=lead_time_seconds,
+        max_horizon_seconds=max_horizon_seconds,
+        buffer_before_seconds=buffer_before_seconds,
+        buffer_after_seconds=buffer_after_seconds,
         **kwargs,
     )

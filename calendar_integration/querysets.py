@@ -608,3 +608,29 @@ class ExternalEventChangeRequestQuerySet(BaseOrganizationModelQuerySet):
         ).values("event_fk_id")
 
         return self.filter(event_fk_id__in=attendee_event_ids)
+
+
+class BookingPolicyQuerySet(BaseOrganizationModelQuerySet):
+    """QuerySet for :class:`~calendar_integration.models.BookingPolicy`.
+
+    A ``BookingPolicy`` is attached to exactly one target: a calendar, an owning
+    membership, a calendar group, or the organization default. These chainable
+    helpers expose the per-target lookups the resolver uses, all scoped through
+    the inherited organization filter.
+    """
+
+    def for_calendar(self, calendar_id: int) -> "BookingPolicyQuerySet":
+        """Return the policy (if any) attached directly to ``calendar_id``."""
+        return self.filter(calendar_fk_id=calendar_id)
+
+    def for_membership(self, membership_user_id: int) -> "BookingPolicyQuerySet":
+        """Return the policy (if any) attached to the membership ``membership_user_id``."""
+        return self.filter(membership_user_id=membership_user_id)
+
+    def for_calendar_group(self, calendar_group_id: int) -> "BookingPolicyQuerySet":
+        """Return the policy (if any) attached to ``calendar_group_id``."""
+        return self.filter(calendar_group_fk_id=calendar_group_id)
+
+    def org_default(self) -> "BookingPolicyQuerySet":
+        """Return the organization-default policy (if any)."""
+        return self.filter(is_organization_default=True)

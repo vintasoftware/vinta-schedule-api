@@ -26,6 +26,7 @@ from calendar_integration.constants import (
 from calendar_integration.managers import (
     AvailableTimeManager,
     BlockedTimeManager,
+    BookingPolicyManager,
     CalendarEventGroupSelectionManager,
     CalendarEventManager,
     CalendarGroupManager,
@@ -2029,3 +2030,140 @@ class ExternalEventChangeRequest(OrganizationModel):
         return (
             f"ExternalEventChangeRequest(event={event_id}, kind={self.kind}, status={self.status})"
         )
+
+
+class BookingPolicy(OrganizationModel):
+    """A flat set of booking guardrails attached to exactly one target.
+
+    The target is a calendar, an owning membership, a calendar group, or the
+    organization default (``is_organization_default=True``). Exactly one target
+    must be set — enforced by the ``bookingpolicy_exactly_one_target`` check
+    constraint — and per-target partial unique indexes keep resolution
+    unambiguous (at most one policy per calendar / membership / group, and at
+    most one organization-default policy per organization).
+
+    All four guardrails are second-counts. **Zero means "no constraint for that
+    field"**: ``lead_time_seconds=0`` is bookable now, ``max_horizon_seconds=0``
+    is unbounded (NOT "cannot book"), and ``buffer_*_seconds=0`` allows flush
+    booking. ``PositiveIntegerField`` rejects negative values at the DB level.
+
+    ``on_delete=CASCADE`` to each target: deleting the calendar / membership /
+    group removes its policy and resolution falls through to the next level.
+    """
+
+    calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="booking_policies",
+    )
+    membership = OrganizationMembershipForeignKey(
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="booking_policies",
+    )
+    calendar_group = OrganizationForeignKey(
+        CalendarGroup,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="booking_policies",
+    )
+    is_organization_default = models.BooleanField(default=False)
+
+    lead_time_seconds = models.PositiveIntegerField(default=0)
+    max_horizon_seconds = models.PositiveIntegerField(default=0)  # 0 = unbounded
+    buffer_before_seconds = models.PositiveIntegerField(default=0)
+    buffer_after_seconds = models.PositiveIntegerField(default=0)
+
+    objects: BookingPolicyManager = BookingPolicyManager()
+
+    class Meta:
+        indexes: ClassVar = [
+            models.Index(
+                fields=["organization", "calendar_fk"],
+                name="bookingpolicy_org_cal_idx",
+            ),
+            models.Index(
+                fields=["organization", "membership_user_id"],
+                name="bookingpolicy_org_member_idx",
+            ),
+            models.Index(
+                fields=["organization", "calendar_group_fk"],
+                name="bookingpolicy_org_group_idx",
+            ),
+        ]
+        constraints: ClassVar = [
+            # Exactly one target set. Each of the four targets is mutually
+            # exclusive: the only valid rows are those matching exactly one of
+            # the four single-target shapes (the other three columns NULL /
+            # False). Expressed as an OR of the four mutually-exclusive shapes so
+            # the constraint reads as a disjunction Postgres can evaluate per row.
+            models.CheckConstraint(
+                name="bookingpolicy_exactly_one_target",
+                condition=(
+                    models.Q(
+                        calendar_fk__isnull=False,
+                        membership_user_id__isnull=True,
+                        calendar_group_fk__isnull=True,
+                        is_organization_default=False,
+                    )
+                    | models.Q(
+                        calendar_fk__isnull=True,
+                        membership_user_id__isnull=False,
+                        calendar_group_fk__isnull=True,
+                        is_organization_default=False,
+                    )
+                    | models.Q(
+                        calendar_fk__isnull=True,
+                        membership_user_id__isnull=True,
+                        calendar_group_fk__isnull=False,
+                        is_organization_default=False,
+                    )
+                    | models.Q(
+                        calendar_fk__isnull=True,
+                        membership_user_id__isnull=True,
+                        calendar_group_fk__isnull=True,
+                        is_organization_default=True,
+                    )
+                ),
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "calendar_fk"],
+                condition=models.Q(calendar_fk__isnull=False),
+                name="bookingpolicy_uniq_calendar",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "membership_user_id"],
+                condition=models.Q(membership_user_id__isnull=False),
+                name="bookingpolicy_uniq_membership",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "calendar_group_fk"],
+                condition=models.Q(calendar_group_fk__isnull=False),
+                name="bookingpolicy_uniq_group",
+            ),
+            models.UniqueConstraint(
+                fields=["organization"],
+                condition=models.Q(is_organization_default=True),
+                name="bookingpolicy_uniq_org_default",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        if self.calendar_fk_id is not None:
+            target = f"calendar {self.calendar_fk_id}"
+        elif self.membership_user_id is not None:  # type: ignore[attr-defined]
+            # ``membership_user_id`` is the concrete column contributed by
+            # ``OrganizationMembershipForeignKey.contribute_to_class``; django-stubs
+            # can't see the dynamically-added field, so the access is annotated.
+            target = f"membership {self.membership_user_id}"  # type: ignore[attr-defined]
+        elif self.calendar_group_fk_id is not None:
+            target = f"calendar group {self.calendar_group_fk_id}"
+        elif self.is_organization_default:
+            target = "organization default"
+        else:
+            target = "unset target"
+        return f"BookingPolicy({target}, org={self.organization_id})"
