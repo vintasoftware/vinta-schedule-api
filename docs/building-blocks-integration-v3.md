@@ -2,7 +2,7 @@
 
 The objective of this document is to explain how the integration is going to work and what parts are still missing in the Vinta-Schedule APIs to make sure the integration is covered.
 
-> **v3 note.** Since v2 was written, most of the gaps it listed have shipped to `main`. This revision re-checks every call against the **actual current schema** (`public_api/queries.py`, `public_api/mutations.py`, `calendar_integration/graphql.py`, `calendar_integration/mutations.py`, `public_api/permissions.py`, `public_api/constants.py`) and against the implementation plans under `ai-plans/`. Signatures in the "Integration touch-points per screen" section now reflect real field/argument names, not proposals. See **[What changed since v2](#what-changed-since-v2)** for the diff.
+> **v3 note.** Every gap v2 listed has now shipped to `main` — **the integration surface is fully covered**, with no 🔶/❌ API items left. This revision re-checks every call against the **actual current schema** (`public_api/queries.py`, `public_api/mutations.py`, `calendar_integration/graphql.py`, `calendar_integration/mutations.py`, `public_api/permissions.py`, `public_api/constants.py`) and against the implementation plans under `ai-plans/`. Signatures in the "Integration touch-points per screen" section reflect real field/argument names, not proposals. See **[What changed since v2](#what-changed-since-v2)** for the diff.
 
 ## Status legend
 
@@ -42,6 +42,8 @@ Implementation plans that **landed** (verified in code on `main`):
 | `userId` argument on `calendarEvents` | ✅ Ready | `calendarEvents(userId: Int, ...)` | `CALENDAR_EVENTS_USER_FILTER` |
 | Single-use scheduling/booking codes (GraphQL) | ✅ Ready | 6 mint mutations + `revokeBookingCode`, 5 `*WithCode` reads, 5 `*WithCode` actions | `SINGLE_USE_SCHEDULING_CODES` |
 | Per-user / patient-scoped tokens (§3.2) | ✅ Ready | `createScopedSystemUser` + `scoped_to_membership` scoping enforced on reads **and** writes; `scheduleEvent` for owner-scoped event creation | `PER_OWNER_SCOPED_PUBLIC_API_TOKENS` + `..._WRITES` |
+| Authenticated provider reschedule/cancel | ✅ Ready | `rescheduleCalendarEvent`, `rescheduleCalendarGroupEvent`, `cancelEvent` (owner-scope guarded; recurrence/series aware) | service-wrapper follow-up |
+| Resource-calendar capacity edit | ✅ Ready | `updateResourceCalendar` (name/description/**capacity**/manageAvailableWindows/isPrivate/visibility; INTERNAL resource calendars only) | service-wrapper follow-up |
 | `user_created` webhook (§2.1) | ✅ Ready (**renamed**) | event type is **`organization_member_created`**, not `user_created`; webhook config now manageable over GraphQL too | `ORGANIZATION_MEMBER_CREATED_WEBHOOK` |
 
 New capabilities that didn't exist as concepts in v2:
@@ -50,7 +52,7 @@ New capabilities that didn't exist as concepts in v2:
 - **ICS export** — `eventIcs(eventId: Int!): String` GraphQL query + `GET /calendar-events/{id}/ics/` REST. Plan: `CALENDAR_EVENT_ICS_EXPORT`.
 - **Whitelabel / reseller surface** — `createOrganization`, `createInvitation`, `createSystemUserToken`, `updateBranding`, `childOrganizations`, and unauthenticated `brandingForTenant` / `validateReturnUrl`. Plan: `WHITELABEL_API_PROVISIONING`.
 
-Remaining real gaps after v3 are small — see **[What needs to be done](#what-needs-to-be-done-gap-summary)**.
+**Every API gap from v2 is now closed.** No 🔶/❌ items remain on the integration surface — see **[What needs to be done](#what-needs-to-be-done-gap-summary)**, which now lists only integration-side decisions.
 
 ---
 
@@ -138,7 +140,7 @@ Integrations can drive the approval queue via `externalEventChangeRequests` (que
 
 # Integration touch-points per screen
 
-Each call lists its **status tag** and a concrete GraphQL signature reflecting the **current** schema. Remaining 🔶/❌ items are explicitly called out.
+Each call lists its **status tag** and a concrete GraphQL signature reflecting the **current** schema. Every call is now ✅ Ready; the "(was 🔶/❌)" notes record what changed since v2.
 
 ## Provider/Admin App
 
@@ -178,15 +180,15 @@ mutation CreateResourceCalendar($input: CreateResourceCalendarInput!) {
 }
 ```
 
-- **editResourceCalendar** — ✅ Ready for name/description/isPrivate via `updateCalendar`; 🔶 for **capacity**
+- **editResourceCalendar** — ✅ Ready (was 🔶 for capacity in the previous draft)
 
-  Use the generic `updateCalendar` mutation (resource `UPDATE_CALENDAR`). Its input is `{ organizationId, calendarId, name?, description?, isPrivate? }` — it does **not** accept `capacity`, so editing a resource calendar's capacity is still a small gap (needs an input field or a dedicated service method).
+  Use the dedicated `updateResourceCalendar` mutation (resource `UPDATE_RESOURCE_CALENDAR`). It is a partial update — only provided fields change — and now includes **`capacity`** (integer sets it, explicit `null` clears to unlimited, omit to leave unchanged). The target must be a `RESOURCE`-type calendar with provider `INTERNAL` (Google-synced resource calendars are rejected). A generic `updateCalendar` (name/description/isPrivate) also exists for non-resource calendars.
 
 ```graphql
-mutation UpdateCalendar($input: UpdateCalendarInput!) {
-  # input: { organizationId, calendarId, name, description, isPrivate }
-  updateCalendar(input: $input) {
-    success errorMessage calendar { id name description isPrivate }
+mutation UpdateResourceCalendar($input: UpdateResourceCalendarInput!) {
+  # input: { organizationId, calendarId, name, description, capacity, manageAvailableWindows, isPrivate, visibility }
+  updateResourceCalendar(input: $input) {
+    success errorMessage calendar { id name description capacity isPrivate }
   }
 }
 ```
@@ -544,9 +546,40 @@ query EventIcs($eventId: Int!) { eventIcs(eventId: $eventId) }   # returns RFC-5
 ### Reschedule / Cancel Modal (provider side)
 
 - **List resources / calendar / user / group available times** — ✅ Ready (same as Create Appointment Modal).
-- **rescheduleCalendarEvent() / rescheduleCalendarGroupEvent() / cancelEvent()** (authenticated provider) — ❌ **Still missing**
+- **rescheduleCalendarEvent()** — ✅ Ready (was ❌)
 
-  The service methods exist (`CalendarEventService.update_event` / `delete_event`), but there is **no authenticated** GraphQL mutation to reschedule/cancel a single or grouped event with an org or provider-scoped token. The only shipped reschedule/cancel paths are the **patient `*WithCode`** mutations (see Patient Portal) and the **change-request approval** flow (§4). If the provider/admin app must reschedule/cancel directly, this is the main remaining wrapper to build (🔶 — service ready / GraphQL missing).
+  Owner-scope guarded (resource `CALENDAR_EVENT`): an owner-scoped token may only reschedule events on its owner's calendars; an org-wide token acts org-wide. Supports whole-event, series-with-new-rule, and single-occurrence modes. Omit `rruleString` to preserve the existing series rule; set `recurrenceId` (the occurrence's original start) to move just one occurrence. Returns the event directly.
+
+```graphql
+mutation RescheduleCalendarEvent($input: RescheduleCalendarEventInput!) {
+  # input: { organizationId, calendarId, eventId, startTime, endTime, timezone, rruleString, recurrenceId }
+  rescheduleCalendarEvent(input: $input) { id title startTime endTime }
+}
+```
+
+- **rescheduleCalendarGroupEvent()** — ✅ Ready (was ❌; whole-event only, no recurrence in v1)
+
+  Moves the primary event and all linked non-primary `BlockedTime` rows together. Owner-scoped tokens may only act when the **primary** calendar is theirs.
+
+```graphql
+mutation RescheduleCalendarGroupEvent($input: RescheduleCalendarGroupEventInput!) {
+  # input: { organizationId, eventId, startTime, endTime, timezone }
+  rescheduleCalendarGroupEvent(input: $input) { id title startTime endTime }
+}
+```
+
+- **cancelEvent()** — ✅ Ready (was ❌)
+
+  Owner-scope guarded. Three modes via input flags: single-occurrence (`recurrenceId` set), whole event / master delete (`deleteSeries: false`), or whole-series delete (`deleteSeries: true`). Handles grouped events automatically when the event belongs to a group.
+
+```graphql
+mutation CancelEvent($input: CancelEventInput!) {
+  # input: { organizationId, calendarId, eventId, deleteSeries, recurrenceId }
+  cancelEvent(input: $input) { success }
+}
+```
+
+  The patient-facing `*WithCode` reschedule/cancel mutations (Patient Portal) and the **change-request approval** flow (§4) remain the other two paths.
 
 ## Patient Portal
 
@@ -636,17 +669,15 @@ mutation CancelEventWithCode($input: CancelWithCodeInput!) {  # { code }
 
 # What needs to be done (gap summary)
 
-The v2 gap list is almost entirely closed. What remains:
+**The integration surface is now fully covered.** Every screen call in this document maps to a shipped Public API field. No 🔶/❌ API gaps remain.
 
-### A. Real gaps (🔶 / ❌)
+What's left is integration-side decisions, not Vinta-Schedule work:
 
-1. **Authenticated provider reschedule/cancel** — 🔶 No `rescheduleCalendarEvent`, `rescheduleCalendarGroupEvent`, or `cancelEvent` mutation for org/provider-scoped tokens. Services exist (`CalendarEventService.update_event` / `delete_event`); the GraphQL wrappers (and an owner-scope guard mirroring `scheduleEvent`) are the missing piece. Today provider apps can only **create** (`scheduleEvent`) or rely on the patient `*WithCode` path / the change-request approval flow.
-2. **Resource-calendar capacity edit** — 🔶 `updateCalendar` covers name/description/isPrivate but not `capacity`; editing a resource calendar's capacity needs an input field or a dedicated service method.
+1. **Webhook payload envelope** — outgoing payloads are now `{ id, type, timestamp, data }`. Confirm the Medplum bot subscribers parse the envelope (breaking change vs. pre-envelope `calendar_event_*`).
+2. **External-event change-request UX** — decide whether Building Blocks surfaces the `change_request` queue to providers or sets the org policy to `allow`/`forbidden` and skips it.
+3. **Group reschedule scope** — `rescheduleCalendarGroupEventWithCode` (patient) and `rescheduleCalendarGroupEvent` (provider) both change **times only** in v1; slot re-selection is deferred. Confirm that matches the Building Blocks reschedule UX, or schedule the slot-re-selection follow-up.
 
-### B. Nice-to-have / confirm
-
-3. **Webhook payload envelope** — outgoing payloads are now `{ id, type, timestamp, data }`. Confirm the Medplum bot subscribers parse the envelope (breaking change vs. pre-envelope `calendar_event_*`).
-4. **External-event change-request UX** — decide whether Building Blocks surfaces the `change_request` queue to providers or sets the org policy to `allow`/`forbidden` and skips it.
+Separately, one **additive enhancement** is specced but not yet built — single-calendar/bundle bookable slots and booking policies. It is not a gap in the surface documented above (the booking screens already work via group slots); it's new capability. See **[Next-step prompts](#next-step-prompts)**.
 
 ### Already done since v2 (✅ — no work)
 
@@ -667,12 +698,21 @@ The v2 gap list is almost entirely closed. What remains:
 
 # Next-step prompts
 
-Most v2 prompts are now implemented. The remaining net-new work is small enough to plan directly:
+All v2 implementation prompts have shipped. The integration surface described in the screens above is fully covered, and the open items in **[What needs to be done](#what-needs-to-be-done-gap-summary)** are integration-side decisions (webhook envelope parsing, change-request UX, group-reschedule scope), not new API work.
 
-### Prompt A-1 — Authenticated provider reschedule/cancel mutations
+The one piece of **net-new, additive** API work on the roadmap is the bookable-slots / booking-policy feature below.
 
-> Plan thin Public GraphQL wrappers `rescheduleCalendarEvent`, `rescheduleCalendarGroupEvent`, and `cancelEvent` over `CalendarEventService.update_event` / `delete_event`, mirroring `scheduleEvent`'s owner-scope guard (`assert_calendar_in_owner_scope`) so provider-scoped tokens can only reschedule/cancel events on their own calendars, while org-wide tokens act org-wide. Register each on `public_api/mutations.py`, add `FIELD_TO_RESOURCE_MAPPING` entries (reuse `CALENDAR_EVENT`; add to `PROVIDER_SCOPED_RESOURCES` where provider tokens need it), and return the project's result shape. Tests must cover cross-owner denial (same not-found error, no existence leak) and series vs. single-occurrence semantics. Negative scope: the patient `*WithCode` reschedule/cancel mutations already exist — do not touch them.
+### Planned — Bookable slots for single calendars & bundles, with booking policies
 
-### Prompt A-2 — Resource-calendar capacity edit
+> **Spec:** [`ai-plans/2026-06-26-BOOKABLE_SLOTS_SINGLE_CALENDAR_AND_BOOKING_POLICY_SPEC.md`](../ai-plans/2026-06-26-BOOKABLE_SLOTS_SINGLE_CALENDAR_AND_BOOKING_POLICY_SPEC.md) — status: **spec written, not yet planned/implemented.**
 
-> Plan adding `capacity` to the `updateCalendar` input (or a dedicated `updateResourceCalendar` mutation + service method) so resource-calendar capacity can be edited from the integration. Only manual `provider=INTERNAL` resource calendars should be editable; Google-synced ones must be rejected. Add tests for the INTERNAL-vs-synced guard and org scoping.
+Today, discretized bookable slots are only available for a **calendar group** (`calendarGroupBookableSlots` / `calendarGroupBookableSlotsWithCode`). This feature closes two gaps that affect the **Create Appointment Modal** (provider) and the **Patient Portal → Booking Calendar** screens:
+
+1. **Unified single-calendar + bundle bookable-slots query** (and its `_with_code` variant) — ❌ Missing. A consumer can request discretized slots for one calendar id, or for a bundle calendar id (auto-expanded; a slot is offered only when every participating child is free). Removes the workaround of wrapping a single calendar in a throwaway group.
+2. **BookingPolicy model + full CRUD** on public GraphQL **and** private REST — ❌ Missing. Three guardrails — **lead time**, **max horizon**, **buffer-before/after** — resolved per target with deterministic precedence (Calendar → owning membership → org default; bundles/groups use an explicit override, else the most-restrictive combination of participants). Policies are honored on **all** slot surfaces (single, bundle, **and** the existing group query) **and** enforced on the booking write path, so discovery and booking agree.
+
+> Backward-compatibility guarantee from the spec: with **no** policy set anywhere, the existing `calendarGroupBookableSlots` output is byte-for-byte identical to today — so this is additive, not breaking, until an org opts in by creating a policy.
+
+Suggested driver prompt for `plan-feature`:
+
+> Plan the feature in `ai-plans/2026-06-26-BOOKABLE_SLOTS_SINGLE_CALENDAR_AND_BOOKING_POLICY_SPEC.md`: a unified single-calendar/bundle bookable-slots query (authenticated + `_with_code`), a `BookingPolicy` model (lead time / max horizon / buffer-before / buffer-after) with a deterministic resolution chain and most-restrictive bundle/group combination, public-GraphQL + private-REST policy CRUD with organization-scope enforcement, and booking-time enforcement on the existing write path. Resolve the spec's Open Questions (owning-membership resolution, bundle-child bookability predicate, single org-default policy, delete-absent semantics, code-gated response shape) before drafting phases. Honor the negative scope: no new booking mechanics, no absolute horizon cutoff, no recurring/per-appointment-type policies, no REST slot-read surface, no changes to continuous availability/unavailability queries.
