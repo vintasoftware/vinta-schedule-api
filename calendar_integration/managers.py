@@ -354,6 +354,7 @@ class BookingPolicyManager(BaseOrganizationModelManager):
 
     def for_target(
         self,
+        organization_id: int,
         *,
         calendar_id: int | None = None,
         membership_user_id: int | None = None,
@@ -361,6 +362,8 @@ class BookingPolicyManager(BaseOrganizationModelManager):
     ) -> "BookingPolicy | None":
         """Return the policy attached to exactly one of the given targets, or ``None``.
 
+        Scoped to ``organization_id`` via ``filter_by_organization`` (required —
+        the base queryset refuses to evaluate without an organization filter).
         Exactly one of ``calendar_id`` / ``membership_user_id`` /
         ``calendar_group_id`` must be provided. The per-target partial unique
         indexes guarantee at most one matching row.
@@ -376,7 +379,7 @@ class BookingPolicyManager(BaseOrganizationModelManager):
                 "or calendar_group_id."
             )
 
-        queryset = self.get_queryset()
+        queryset = self.get_queryset().filter_by_organization(organization_id)
         if calendar_id is not None:
             queryset = queryset.for_calendar(calendar_id)
         elif membership_user_id is not None:
@@ -386,6 +389,10 @@ class BookingPolicyManager(BaseOrganizationModelManager):
 
         return queryset.first()
 
-    def org_default(self) -> "BookingPolicy | None":
-        """Return the organization-default policy, or ``None`` if none is set."""
-        return self.get_queryset().org_default().first()
+    def org_default(self, organization_id: int) -> "BookingPolicy | None":
+        """Return the organization-default policy, or ``None`` if none is set.
+
+        Scoped to ``organization_id`` via ``filter_by_organization`` (required —
+        the base queryset refuses to evaluate without an organization filter).
+        """
+        return self.get_queryset().filter_by_organization(organization_id).org_default().first()

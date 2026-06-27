@@ -212,6 +212,68 @@ def test_manager_org_default_lookup():
 
 
 @pytest.mark.django_db
+def test_manager_for_target_org_scoped_returns_row_and_none():
+    """``BookingPolicyManager.for_target(org_id, ...)`` is org-scoped and returns the row or None."""
+    org = baker.make("organizations.Organization")
+    calendar = _make_calendar(org)
+    policy = create_booking_policy(calendar=calendar)
+
+    found = BookingPolicy.objects.for_target(org.id, calendar_id=calendar.id)
+    assert found is not None
+    assert found.pk == policy.pk
+
+    other_calendar = _make_calendar(org, external_id="other-cal")
+    assert BookingPolicy.objects.for_target(org.id, calendar_id=other_calendar.id) is None
+
+
+@pytest.mark.django_db
+def test_manager_org_default_org_scoped_returns_row_and_none():
+    """``BookingPolicyManager.org_default(org_id)`` is org-scoped and returns the row or None."""
+    org = baker.make("organizations.Organization")
+    policy = create_booking_policy(is_organization_default=True, organization=org)
+
+    found = BookingPolicy.objects.org_default(org.id)
+    assert found is not None
+    assert found.pk == policy.pk
+
+    other_org = baker.make("organizations.Organization")
+    assert BookingPolicy.objects.org_default(other_org.id) is None
+
+
+@pytest.mark.django_db(transaction=True)
+def test_membership_composite_fk_rejects_nonexistent_membership():
+    """A membership policy pointing at a non-existent membership raises at commit.
+
+    The composite FK is ``DEFERRABLE INITIALLY DEFERRED``, so the violation only
+    surfaces when the transaction COMMITs — hence ``transaction=True`` and the
+    explicit ``transaction.atomic()`` block.
+    """
+    org = baker.make("organizations.Organization")
+
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            BookingPolicy.objects.create(
+                organization=org,
+                membership_user_id=999_999_999,
+            )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_membership_delete_blocked_while_policy_live():
+    """Deleting a membership referenced by a live policy is blocked at commit (deferred NO ACTION)."""
+    from organizations.models import OrganizationMembership
+
+    org = baker.make("organizations.Organization")
+    user = baker.make("users.User")
+    membership = OrganizationMembership.objects.create(user=user, organization=org)
+    create_booking_policy(membership_user_id=user.id, organization=org)
+
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            membership.delete()
+
+
+@pytest.mark.django_db
 def test_str_describes_target():
     org = baker.make("organizations.Organization")
     calendar = _make_calendar(org)

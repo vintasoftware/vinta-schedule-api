@@ -2047,8 +2047,14 @@ class BookingPolicy(OrganizationModel):
     is unbounded (NOT "cannot book"), and ``buffer_*_seconds=0`` allows flush
     booking. ``PositiveIntegerField`` rejects negative values at the DB level.
 
-    ``on_delete=CASCADE`` to each target: deleting the calendar / membership /
-    group removes its policy and resolution falls through to the next level.
+    Deleting the ``calendar`` or ``calendar_group`` target (real
+    ``OrganizationForeignKey`` relations) CASCADEs: the policy is removed and
+    resolution falls through to the next level. The ``membership`` target is
+    different — it is a ``ForeignObject`` (no DB constraint of its own), so
+    deletion is PROTECTed: a membership cannot be deleted while a live policy
+    references it. The real NO ACTION / PROTECT-at-commit semantics come from the
+    composite FK added in migration 0040; the ``on_delete=PROTECT`` on the field
+    is declared for honesty and consistency with the sibling models.
     """
 
     calendar = OrganizationForeignKey(
@@ -2059,7 +2065,7 @@ class BookingPolicy(OrganizationModel):
         related_name="booking_policies",
     )
     membership = OrganizationMembershipForeignKey(
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         null=True,
         blank=True,
         related_name="booking_policies",
@@ -2078,7 +2084,7 @@ class BookingPolicy(OrganizationModel):
     buffer_before_seconds = models.PositiveIntegerField(default=0)
     buffer_after_seconds = models.PositiveIntegerField(default=0)
 
-    objects: BookingPolicyManager = BookingPolicyManager()
+    objects = BookingPolicyManager()
 
     class Meta:
         indexes: ClassVar = [

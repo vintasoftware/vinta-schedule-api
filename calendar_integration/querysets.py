@@ -620,17 +620,17 @@ class BookingPolicyQuerySet(BaseOrganizationModelQuerySet):
     """
 
     def for_calendar(self, calendar_id: int) -> "BookingPolicyQuerySet":
-        """Return the policy (if any) attached directly to ``calendar_id``."""
+        """Narrow the queryset to the policy attached directly to ``calendar_id``."""
         return self.filter(calendar_fk_id=calendar_id)
 
     def for_membership(self, membership_user_id: int) -> "BookingPolicyQuerySet":
-        """Return the policy (if any) attached to the membership ``membership_user_id``."""
+        """Narrow the queryset to the policy attached to the membership ``membership_user_id``."""
         return self.filter(membership_user_id=membership_user_id)
 
     def for_calendar_group(self, calendar_group_id: int) -> "BookingPolicyQuerySet":
-        """Return the policy (if any) attached to ``calendar_group_id``."""
+        """Narrow the queryset to the policy attached to ``calendar_group_id``."""
         return self.filter(calendar_group_fk_id=calendar_group_id)
 
     def org_default(self) -> "BookingPolicyQuerySet":
-        """Return the organization-default policy (if any)."""
+        """Narrow the queryset to the organization-default policy."""
         return self.filter(is_organization_default=True)
