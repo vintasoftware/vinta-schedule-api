@@ -55,6 +55,7 @@ from users.models import User
 
 if TYPE_CHECKING:
     from audit.services import AuditService
+    from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_service import CalendarService
 
 
@@ -69,11 +70,15 @@ class CalendarGroupService:
             "CalendarPermissionService | None", Provide["calendar_permission_service"]
         ] = None,
         audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
+        booking_policy_service: Annotated[
+            "BookingPolicyService | None", Provide["booking_policy_service"]
+        ] = None,
     ) -> None:
         self.organization = None
         self.calendar_service = calendar_service
         self.calendar_permission_service = calendar_permission_service
         self.audit_service = audit_service
+        self.booking_policy_service = booking_policy_service
 
     def _audit_group_write(
         self,
@@ -112,8 +117,13 @@ class CalendarGroupService:
         or authenticate `self.calendar_service` with the same organization — the
         grouped-event flow needs external-provider adapters if any of the
         selected calendars is backed by one.
+
+        Also propagates the org context to ``booking_policy_service`` when present,
+        so the policy resolver is bound to the same tenant.
         """
         self.organization = organization
+        if self.booking_policy_service is not None:
+            self.booking_policy_service.initialize(organization)
 
     def _assert_initialized(self) -> None:
         if self.organization is None:
@@ -958,11 +968,12 @@ class CalendarGroupService:
         duration: datetime.timedelta,
         slot_step: datetime.timedelta = datetime.timedelta(minutes=15),
         with_bulk_modifications: bool = False,
+        now: datetime.datetime | None = None,
     ) -> list[BookableSlotProposal]:
         """Return every `(candidate_start, candidate_start + duration)` within
         `[search_window_start, search_window_end]`, stepping by `slot_step`,
         where every slot in the group has at least `required_count` calendars
-        available.
+        available, filtered by the resolved group booking policy.
 
         The implementation fetches blocking data (AvailableTime for managed
         calendars, CalendarEvent + BlockedTime for unmanaged calendars) once
@@ -973,12 +984,25 @@ class CalendarGroupService:
 
         Set `with_bulk_modifications=True` to expand recurring events through
         their bulk-modification continuation series.
+
+        ``now`` defaults to ``timezone.now()`` (the request instant) and is used
+        for lead-time / max-horizon cutoffs.  The GraphQL resolvers keep calling
+        this method without the ``now`` argument (default accepted) — no signature
+        change at the GraphQL layer.
+
+        Policy-awareness gate: when no ``BookingPolicy`` resolves for the group
+        (i.e. the resolved policy is ``EffectivePolicy.unconstrained()``), the
+        output is byte-for-byte identical to the pre-feature engine result — no
+        buffer fetch, no filter applied.
         """
         self._assert_initialized()
         if slot_step <= datetime.timedelta(0):
             raise CalendarGroupValidationError("slot_step must be a positive timedelta.")
         if duration <= datetime.timedelta(0):
             raise CalendarGroupValidationError("duration must be a positive timedelta.")
+
+        if now is None:
+            now = timezone.now()
 
         group = self._get_group_by_id(group_id)
         slots = list(group.slots.all())
@@ -1040,4 +1064,41 @@ class CalendarGroupService:
             if all_slots_satisfied:
                 proposals.append(BookableSlotProposal(start_time=window_start, end_time=window_end))
             cursor = cursor + slot_step
-        return proposals
+
+        # ------------------------------------------------------------------
+        # Policy filter — gated by data-presence
+        # ------------------------------------------------------------------
+        # When no booking_policy_service is injected (e.g. legacy test fixtures
+        # that instantiate CalendarGroupService directly without DI), or when the
+        # resolved policy is unconstrained (no BookingPolicy anywhere for this
+        # group), skip ALL policy work so the output is byte-for-byte the
+        # pre-feature engine result.
+        if self.booking_policy_service is None:
+            return proposals
+
+        from calendar_integration.services.dataclasses import EffectivePolicy
+
+        policy = self.booking_policy_service.resolve_for_group(group)
+        if policy == EffectivePolicy.unconstrained():
+            return proposals
+
+        # A buffer applies → fetch blocking spans for ALL participant calendars
+        # (managed included), mirroring BookableSlotsService._buffer_blocking_spans.
+        # Window widened: start side by buffer_after, end side by buffer_before
+        # (so spans just outside the search window can still clip a candidate via
+        # their dead zone — see slot_engine module docstring).
+        no_buffer = policy.buffer_before <= datetime.timedelta(0) and policy.buffer_after <= (
+            datetime.timedelta(0)
+        )
+        if no_buffer:
+            buffer_blocking_spans: slot_engine.SpansByCalendarId = {}
+        else:
+            buffer_blocking_spans = slot_engine.fetch_blocking_spans(
+                self.organization.id,
+                all_calendar_ids,
+                search_window_start - policy.buffer_after,
+                search_window_end + policy.buffer_before,
+                with_bulk_modifications=with_bulk_modifications,
+            )
+
+        return slot_engine.apply_policy_filter(proposals, policy, now, buffer_blocking_spans)

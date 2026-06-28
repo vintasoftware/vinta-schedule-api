@@ -149,6 +149,7 @@ class AppContainer(containers.DeclarativeContainer):
         calendar_service=calendar_service,
         calendar_permission_service=calendar_permission_service,
         audit_service=audit_service,
+        booking_policy_service=booking_policy_service,
     )
 
     organization_service = providers.Factory(
