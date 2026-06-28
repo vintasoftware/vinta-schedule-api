@@ -21,6 +21,7 @@
 - Phase 3: `plan/bookable-slots-single-calendar-and-booking-policy/phase-3` (base phase-2)
 - Phase 4: `plan/bookable-slots-single-calendar-and-booking-policy/phase-4` (base phase-3)
 - Phase 5: `plan/bookable-slots-single-calendar-and-booking-policy/phase-5` (base phase-4)
+- Phase 6: `plan/bookable-slots-single-calendar-and-booking-policy/phase-6` (base phase-5)
 
 ## Completed phases
 
@@ -80,11 +81,21 @@
 - **Gates**: ruff clean; mypy 297 (no new); `makemigrations --check` clean (no migration); `check --deploy` 0 errors; full `pytest -n auto` → 3398 passed; group + single==group parity green (no-policy byte-for-byte holds).
 - **Acceptance**: ✅ personal + bundle policy-compliant slots; busy bundle child suppresses; no-policy == pre-feature engine; scenario #4 first post-event slot = 15:20.
 
+### Phase 6 — calendar_bookable_slots_with_code ✅
+- **Status**: DONE (reviewed, fixed, pushed, PR open)
+- **Model used**: haiku (plan tier T2) impl + sonnet fixer (test hardening)
+- **Branch**: `plan/bookable-slots-single-calendar-and-booking-policy/phase-6` (base phase-5)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/171
+- **Commits**: `8711548` (impl) + `09bbe00`/`02676d2` (test hardening)
+- **Summary**: New unauthenticated `calendar_bookable_slots_with_code` query mirroring the `*_with_code` siblings — range guard before code resolve, uniform `"Invalid or expired code."`, group-code rejection, `token.calendar`/`token.event.calendar` derivation, delegates to Phase-5 `BookableSlotsService`, slots-only response. No auth/resource permission classes.
+- **Review findings fixed**: no BLOCKERs (field line-for-line correct vs siblings; `token.event.calendar` fallback confirmed as established convention). SHOULD-FIX — haiku's tests were thin/fully-mocked; added 8 real-fixture tests: real-service busy-span exclusion, lead-time policy filtering through the code path, equivalence with the authenticated query, bundle code (busy child suppresses), expired/revoked/used → uniform error, no-policy-field disclosure. Also: docker daemon was down mid-phase; restarted it and ran the full gate (haiku had skipped it).
+- **Gates**: ruff clean; mypy 297 (no new); `makemigrations --check` clean (no migration); `check --deploy` 0 errors; schema drift-free; full `pytest -n auto` → 3412 passed.
+- **Acceptance**: ✅ code-gated variant == authenticated query for the scope; slots-only; code-validation contract enforced; bundle + policy filtering work through the code path.
+
 ## Current phase
-Phase 6 — calendar_bookable_slots_with_code (next).
+Phase 7 — make the existing group slot query policy-aware (next).
 
 ## Remaining phases
-- Phase 6 — calendar_bookable_slots_with_code (T2 / haiku)
 - Phase 7 — group query policy-aware (T3 / sonnet)
 - Phase 8a — enforcement single/bundle/code (T3 / sonnet)
 - Phase 8b — enforcement group (T3 / sonnet)
