@@ -30,6 +30,7 @@ from calendar_integration.models import (
     BlockedTime,
     Calendar,
     CalendarEvent,
+    CalendarGroup,
 )
 from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.calendar_group_service import CalendarGroupService
@@ -132,7 +133,7 @@ def _make_two_slot_group(
     room: Calendar,
     *,
     org: Organization,
-) -> CalendarGroupInputData:
+) -> CalendarGroup:
     """Create a group with two slots — one per calendar."""
     return service.create_group(
         CalendarGroupInputData(
