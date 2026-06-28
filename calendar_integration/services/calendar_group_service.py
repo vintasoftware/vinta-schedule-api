@@ -1,6 +1,6 @@
 import datetime
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
@@ -44,6 +44,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupRangeAvailability,
     CalendarGroupSlotAvailability,
     CalendarGroupSlotInputData,
+    EffectivePolicy,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
@@ -994,6 +995,14 @@ class CalendarGroupService:
         (i.e. the resolved policy is ``EffectivePolicy.unconstrained()``), the
         output is byte-for-byte identical to the pre-feature engine result — no
         buffer fetch, no filter applied.
+
+        Buffer suppression semantics: when a buffer policy applies, a candidate
+        is dropped if ANY participant calendar (across all slot pools, regardless
+        of ``required_count``) has an event within the buffer dead zone.  This is
+        the conservative "reject if any participant would reject" rule — even a
+        calendar that is not counted toward a slot's ``required_count`` can block
+        the candidate.  This aligns with the plan's intent to never offer a slot
+        that a participant would individually reject.
         """
         self._assert_initialized()
         if slot_step <= datetime.timedelta(0):
@@ -1076,7 +1085,8 @@ class CalendarGroupService:
         if self.booking_policy_service is None:
             return proposals
 
-        from calendar_integration.services.dataclasses import EffectivePolicy
+        # _assert_initialized() already ran above; org is guaranteed non-None here.
+        org_id = cast(Organization, self.organization).id
 
         policy = self.booking_policy_service.resolve_for_group(group)
         if policy == EffectivePolicy.unconstrained():
@@ -1094,7 +1104,7 @@ class CalendarGroupService:
             buffer_blocking_spans: slot_engine.SpansByCalendarId = {}
         else:
             buffer_blocking_spans = slot_engine.fetch_blocking_spans(
-                self.organization.id,
+                org_id,
                 all_calendar_ids,
                 search_window_start - policy.buffer_after,
                 search_window_end + policy.buffer_before,
