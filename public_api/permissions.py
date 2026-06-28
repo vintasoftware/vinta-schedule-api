@@ -87,6 +87,7 @@ class OrganizationResourceAccess(BasePermission):
         "externalEventChangeRequests": PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST,
         "approveExternalEventChangeRequest": PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST,
         "rejectExternalEventChangeRequest": PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST,
+        "calendarBookableSlots": PublicAPIResources.BOOKABLE_SLOTS,
         "bookingPolicies": PublicAPIResources.BOOKING_POLICY,
         "createBookingPolicy": PublicAPIResources.BOOKING_POLICY,
         "updateBookingPolicy": PublicAPIResources.BOOKING_POLICY,

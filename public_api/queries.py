@@ -68,6 +68,7 @@ from webhooks.models import WebhookConfiguration, WebhookEvent
 
 
 if TYPE_CHECKING:
+    from calendar_integration.services.bookable_slots_service import BookableSlotsService
     from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_permission_service import CalendarPermissionService
@@ -122,6 +123,18 @@ def get_booking_policy_query_dependencies(
     if booking_policy_service is None:
         raise GraphQLError("Missing required dependency: booking_policy_service")
     return booking_policy_service
+
+
+@inject
+def get_bookable_slots_service(
+    bookable_slots_service: Annotated[
+        "BookableSlotsService | None", Provide["bookable_slots_service"]
+    ] = None,
+) -> "BookableSlotsService":
+    """Resolve the BookableSlotsService from the DI container."""
+    if bookable_slots_service is None:
+        raise GraphQLError("Missing required dependency: bookable_slots_service")
+    return bookable_slots_service
 
 
 def _get_org(info: strawberry.Info):
@@ -862,6 +875,49 @@ class Query:
 
         proposals = deps.calendar_group_service.find_bookable_slots(
             group_id=group_id,
+            search_window_start=search_window_start,
+            search_window_end=search_window_end,
+            duration=datetime.timedelta(seconds=duration_seconds),
+            slot_step=datetime.timedelta(seconds=slot_step_seconds),
+        )
+        return [
+            BookableSlotProposalGraphQLType(start_time=p.start_time, end_time=p.end_time)
+            for p in proposals
+        ]
+
+    @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def calendar_bookable_slots(
+        self,
+        info: strawberry.Info,
+        calendar_id: int,
+        search_window_start: datetime.datetime,
+        search_window_end: datetime.datetime,
+        duration_seconds: int,
+        slot_step_seconds: int = 15 * 60,
+    ) -> list[BookableSlotProposalGraphQLType]:
+        """Return policy-compliant bookable slot windows for a single calendar.
+
+        Auto-detects personal vs bundle from ``calendar_type``: for a bundle, a
+        window is offered only when every child calendar is free.  The resolved
+        booking policy (lead-time, max-horizon, buffers) is applied; with no
+        policy anywhere the result matches the pre-policy slot engine.
+        """
+        org = _get_org(info)
+
+        # Owner-scope check: scoped tokens may only target their owner's calendars.
+        # Match the same not-found path used for a genuinely missing calendar.
+        request: PublicApiHttpRequest = info.context.request
+        system_user = request.public_api_system_user
+        if system_user is not None:
+            allowed_ids = scoped_calendar_ids(system_user, org)
+            if allowed_ids is not None and calendar_id not in allowed_ids:
+                raise Calendar.DoesNotExist("Calendar matching query does not exist.")
+
+        service = get_bookable_slots_service()
+        service.initialize(organization=org)
+
+        proposals = service.find_bookable_slots_for_calendar(
+            calendar_id=calendar_id,
             search_window_start=search_window_start,
             search_window_end=search_window_end,
             duration=datetime.timedelta(seconds=duration_seconds),
