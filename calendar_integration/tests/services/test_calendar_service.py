@@ -6490,7 +6490,7 @@ def test_create_bundle_event_creates_representations(
     # Mock the create_event method to track calls
     created_events = []
 
-    def mock_create_event(calendar_id, event_data):
+    def mock_create_event(calendar_id, event_data, **kwargs):
         # Get calendar from the bundle relationships
         relationships = bundle_calendar.bundle_relationships.all()
         calendar = None

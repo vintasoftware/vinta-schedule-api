@@ -112,7 +112,7 @@ def _owner_calendar(org: Organization) -> tuple:
     return user, membership, cal
 
 
-def _scoped_system_user(org: Organization, membership: OrganizationMembership):
+def _scoped_system_user(org, membership):
     auth_service = PublicAPIAuthService()
     system_user, token = auth_service.create_system_user(
         integration_name=f"enforce_su_{uuid.uuid4().hex[:6]}",
@@ -500,3 +500,109 @@ class TestCreateCalendarEventWithCodePolicyEnforcement:
         result = data["data"]["createCalendarEventWithCode"]
         assert result["success"] is False
         assert result["errorCode"] == "SLOT_UNAVAILABLE"
+
+    def test_discovery_enforcement_agreement_horizon(self):
+        """A slot beyond the max-horizon is rejected by both discovery and enforcement."""
+        from calendar_integration.services.bookable_slots_service import BookableSlotsService
+        from calendar_integration.services.booking_policy_service import BookingPolicyService
+
+        org = _org()
+        cal = _code_calendar(org)
+
+        # Horizon shorter than the gap to _START → slot is beyond the window.
+        horizon_s = int((_START - _NOW).total_seconds()) - 3600
+        create_booking_policy(calendar=cal, max_horizon_seconds=horizon_s)
+
+        # Discovery rejects.
+        slots_svc = BookableSlotsService(booking_policy_service=BookingPolicyService())
+        slots_svc.initialize(org)
+        slots = slots_svc.find_bookable_slots_for_calendar(
+            calendar_id=cal.id,
+            search_window_start=_START - datetime.timedelta(minutes=5),
+            search_window_end=_END + datetime.timedelta(minutes=5),
+            duration=datetime.timedelta(hours=1),
+            now=_NOW,
+        )
+        assert len(slots) == 0, "Discovery should NOT offer the slot beyond horizon"
+
+        # Enforcement rejects.
+        _token_obj, code = _booking_code(org, cal)
+        with patch("calendar_integration.services.calendar_service._tz") as mock_tz:
+            mock_tz.now.return_value = _NOW
+            data = _post_code_gated(variables={"input": _code_input(code)})
+
+        result = data["data"]["createCalendarEventWithCode"]
+        assert result["success"] is False
+        assert result["errorCode"] == "SLOT_UNAVAILABLE"
+
+    def test_discovery_enforcement_agreement_buffer(self):
+        """A slot inside an existing event's buffer dead zone is rejected by both."""
+        from calendar_integration.services.bookable_slots_service import BookableSlotsService
+        from calendar_integration.services.booking_policy_service import BookingPolicyService
+
+        org = _org()
+        cal = _code_calendar(org)
+
+        # Existing event ending at 09:00; buffer_after = 3601s → dead zone [09:00, 10:00:01).
+        CalendarEvent.objects.create(
+            organization=org,
+            calendar_fk=cal,
+            title="Busy",
+            description="",
+            external_id=f"busy-{uuid.uuid4().hex[:6]}",
+            start_time_tz_unaware=datetime.datetime(2030, 6, 1, 8, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2030, 6, 1, 9, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+        create_booking_policy(calendar=cal, buffer_after_seconds=3601)
+
+        # Discovery rejects.
+        slots_svc = BookableSlotsService(booking_policy_service=BookingPolicyService())
+        slots_svc.initialize(org)
+        slots = slots_svc.find_bookable_slots_for_calendar(
+            calendar_id=cal.id,
+            search_window_start=_START - datetime.timedelta(minutes=5),
+            search_window_end=_END + datetime.timedelta(minutes=5),
+            duration=datetime.timedelta(hours=1),
+            now=_NOW,
+        )
+        assert len(slots) == 0, "Discovery should NOT offer the slot inside buffer dead zone"
+
+        # Enforcement rejects.
+        _token_obj, code = _booking_code(org, cal)
+        with patch("calendar_integration.services.calendar_service._tz") as mock_tz:
+            mock_tz.now.return_value = _NOW
+            data = _post_code_gated(variables={"input": _code_input(code)})
+
+        result = data["data"]["createCalendarEventWithCode"]
+        assert result["success"] is False
+        assert result["errorCode"] == "SLOT_UNAVAILABLE"
+
+    def test_discovery_enforcement_agreement_positive(self):
+        """A slot the engine DOES offer is accepted by the mutation (positive agreement)."""
+        from calendar_integration.services.bookable_slots_service import BookableSlotsService
+        from calendar_integration.services.booking_policy_service import BookingPolicyService
+
+        org = _org()
+        cal = _code_calendar(org)
+
+        # Policy: no lead-time constraint → all future slots offered.
+        create_booking_policy(calendar=cal, lead_time_seconds=0)
+
+        # Discovery offers the slot.
+        slots_svc = BookableSlotsService(booking_policy_service=BookingPolicyService())
+        slots_svc.initialize(org)
+        slots = slots_svc.find_bookable_slots_for_calendar(
+            calendar_id=cal.id,
+            search_window_start=_START - datetime.timedelta(minutes=5),
+            search_window_end=_END + datetime.timedelta(minutes=5),
+            duration=datetime.timedelta(hours=1),
+            now=_NOW,
+        )
+        assert len(slots) > 0, "Discovery should offer the slot"
+
+        # Enforcement accepts.
+        _token_obj, code = _booking_code(org, cal)
+        data = _post_code_gated(variables={"input": _code_input(code)})
+        result = data["data"]["createCalendarEventWithCode"]
+        assert result["success"] is True

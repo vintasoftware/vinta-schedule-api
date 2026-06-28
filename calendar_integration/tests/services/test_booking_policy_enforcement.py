@@ -361,26 +361,26 @@ class TestBookingPolicyEnforcementBundle:
         return bundle, child
 
     def test_bundle_no_policy_write_unchanged(self, org):
-        """No policy on bundle or children → create_event is not blocked."""
-        bundle, _child = self._make_bundle(org)
-        svc = _service(org)
-        # The bundle create_event path actually calls _create_bundle_event which
-        # does additional bundle-specific checks, but it should not raise
-        # BookingPolicyViolationError when no policy exists.
-        # Since we're in a non-managed bundle without a full adapter, the
-        # call may raise NoAvailableTimeWindowsError or similar for the child,
-        # but NOT BookingPolicyViolationError.
-        from calendar_integration.exceptions import BookingPolicyViolationError
+        """No policy on bundle → booking completes; primary event persisted.
 
-        try:
-            svc.create_event(bundle.id, _event_input_data())
-        except BookingPolicyViolationError:
-            pytest.fail("BookingPolicyViolationError raised with no policy in place")
-        except Exception:  # noqa: BLE001
-            pass  # other errors (NoAvailableTime, PermissionDenied) are acceptable
+        The ``_make_bundle`` helper has a single child designated as primary.
+        We assert that the booking succeeds (primary event created, marked as
+        bundle primary) and that the BookingPolicyViolationError is NOT raised —
+        the meaningful check for the off-state.
+        """
+        bundle, _primary_child = self._make_bundle(org)
+        svc = _service(org)
+        primary = svc.create_event(bundle.id, _event_input_data())
+        assert primary is not None
+        assert primary.is_bundle_primary
+        # Primary event exists in the DB.
+        assert CalendarEvent.objects.filter_by_organization(org.id).filter(id=primary.id).exists()
 
     def test_bundle_lead_time_violation_raises(self, org):
-        """Policy attached directly to the bundle calendar enforces lead time."""
+        """Policy attached directly to the bundle calendar enforces lead time.
+
+        Also asserts ZERO rows (CalendarEvent + BlockedTime) persist after rejection.
+        """
         bundle, _child = self._make_bundle(org)
         lead_seconds = int((_BOOKING_START - _NOW).total_seconds()) + 3600
         create_booking_policy(calendar=bundle, lead_time_seconds=lead_seconds)
@@ -393,8 +393,15 @@ class TestBookingPolicyEnforcementBundle:
                 mock_tz.now.return_value = _NOW
                 svc.create_event(bundle.id, _event_input_data())
 
+        # No orphan rows must remain after the rolled-back create.
+        assert CalendarEvent.objects.filter_by_organization(org.id).count() == 0
+        assert BlockedTime.objects.filter_by_organization(org.id).count() == 0
+
     def test_bundle_horizon_violation_raises(self, org):
-        """Policy attached to bundle calendar enforces max_horizon."""
+        """Policy attached to bundle calendar enforces max_horizon.
+
+        Also asserts ZERO rows (CalendarEvent + BlockedTime) persist after rejection.
+        """
         bundle, _child = self._make_bundle(org)
         short_horizon = int((_BOOKING_START - _NOW).total_seconds()) - 3600
         create_booking_policy(calendar=bundle, max_horizon_seconds=short_horizon)
@@ -406,6 +413,52 @@ class TestBookingPolicyEnforcementBundle:
             with patch("calendar_integration.services.calendar_service._tz") as mock_tz:
                 mock_tz.now.return_value = _NOW
                 svc.create_event(bundle.id, _event_input_data())
+
+        # No orphan rows must remain after the rolled-back create.
+        assert CalendarEvent.objects.filter_by_organization(org.id).count() == 0
+        assert BlockedTime.objects.filter_by_organization(org.id).count() == 0
+
+    def test_bundle_explicit_policy_allows_when_child_individual_policy_is_stricter(self, org):
+        """Discovery/enforcement agreement for the key divergence case.
+
+        Setup: bundle has an explicit policy that allows the booking.  A child
+        calendar has its OWN stricter policy (shorter lead time) that would
+        forbid the booking if enforcement checked the child individually.
+
+        Expected: booking SUCCEEDS because enforcement uses ``resolve_for_bundle``
+        (precedence #1 = explicit bundle policy), not ``resolve_for_calendar`` on
+        the child.  This mirrors what Phase-5 discovery returns (it also uses
+        ``resolve_for_bundle``).  Regression guard for SHOULD-FIX 1.
+        """
+        from calendar_integration.services.bookable_slots_service import BookableSlotsService
+        from calendar_integration.services.booking_policy_service import BookingPolicyService
+
+        bundle, child = self._make_bundle(org)
+
+        # Bundle policy: lead_time = 0 (no constraint) → booking at _BOOKING_START is allowed.
+        create_booking_policy(calendar=bundle, lead_time_seconds=0)
+
+        # Child policy: lead_time = entire gap + 1h → would reject the booking if checked.
+        lead_seconds_strict = int((_BOOKING_START - _NOW).total_seconds()) + 3600
+        create_booking_policy(calendar=child, lead_time_seconds=lead_seconds_strict)
+
+        # 1. Discovery: Phase-5 slot engine uses resolve_for_bundle → should OFFER the slot.
+        slots_svc = BookableSlotsService(booking_policy_service=BookingPolicyService())
+        slots_svc.initialize(org)
+        slots = slots_svc.find_bookable_slots_for_calendar(
+            calendar_id=bundle.id,
+            search_window_start=_BOOKING_START - datetime.timedelta(minutes=5),
+            search_window_end=_BOOKING_END + datetime.timedelta(minutes=5),
+            duration=datetime.timedelta(hours=1),
+            now=_NOW,
+        )
+        assert len(slots) > 0, "Discovery should offer the slot (bundle policy is permissive)"
+
+        # 2. Enforcement: create_event must also ALLOW the booking (not re-check child policy).
+        svc = _service(org)
+        primary = svc.create_event(bundle.id, _event_input_data())
+        assert primary is not None
+        assert primary.is_bundle_primary
 
 
 @pytest.mark.django_db

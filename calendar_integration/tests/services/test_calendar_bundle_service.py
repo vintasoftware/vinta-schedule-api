@@ -464,7 +464,9 @@ def test_create_bundle_event_uses_designated_primary(
 
     created_calls: list[tuple[int, CalendarEventInputData]] = []
 
-    def fake_create_event(calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
+    def fake_create_event(
+        calendar_id: int, event_data: CalendarEventInputData, **kwargs
+    ) -> CalendarEvent:
         """Return a minimal CalendarEvent for the requested calendar."""
         cal = Calendar.objects.get(id=calendar_id, organization=organization)
         evt = CalendarEvent(
@@ -531,7 +533,9 @@ def test_create_bundle_event_creates_blocked_time_for_provider_children(
         )
     ]
 
-    def fake_create_event(calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
+    def fake_create_event(
+        calendar_id: int, event_data: CalendarEventInputData, **kwargs
+    ) -> CalendarEvent:
         cal = Calendar.objects.get(id=calendar_id, organization=organization)
         evt = CalendarEvent(
             title=event_data.title,

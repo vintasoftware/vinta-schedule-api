@@ -1298,14 +1298,25 @@ class CalendarService(BaseCalendarService):
         if not allowed:
             raise BookingPolicyViolationError()
 
-    def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
+    def create_event(
+        self,
+        calendar_id: int,
+        event_data: CalendarEventInputData,
+        *,
+        _enforce_policy: bool = True,
+    ) -> CalendarEvent:
         """
         Create a new event in the calendar.
         :param calendar_id: Internal ID of the calendar
         :param event_data: Dictionary containing event details.
+        :param _enforce_policy: Internal flag; callers must NOT pass this. Set to
+            ``False`` by the bundle fan-out so policy is enforced exactly once at the
+            top-level entry point (using ``resolve_for_bundle``), not again for each
+            child create (which would use ``resolve_for_calendar`` on the child and
+            could falsely reject bookings the bundle policy permits).
         :return: Response from the calendar client.
         """
-        if self.organization is not None:
+        if _enforce_policy and self.organization is not None:
             # Enforcement runs inside the existing transaction (ATOMIC_REQUESTS) so any
             # violation rolls back the entire write — no event or blocked time is created.
             try:
@@ -1321,6 +1332,10 @@ class CalendarService(BaseCalendarService):
                 end_time=event_data.end_time,
                 now=_tz.now(),
             )
+            # Populate the calendar cache so the event service does not re-query the
+            # same row. The cache is keyed on (organization_id, calendar_id) — the same
+            # shape used by _get_calendar_by_id_util.
+            self._calendar_cache[(self.organization.id, calendar_id)] = calendar
         return self._get_event_service().create_event(calendar_id, event_data)
 
     def _update_bundle_event(
