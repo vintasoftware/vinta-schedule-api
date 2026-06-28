@@ -126,17 +126,18 @@ class AppContainer(containers.DeclarativeContainer):
         notification_service=notification_service,
     )
 
+    booking_policy_service = providers.Factory(
+        BookingPolicyService,
+        audit_service=audit_service,
+    )
+
     calendar_service = providers.Factory(
         CalendarService,
         calendar_side_effects_service=calendar_side_effects_service,
         calendar_permission_service=calendar_permission_service,
         audit_service=audit_service,
         external_event_change_request_service=external_event_change_request_service,
-    )
-
-    booking_policy_service = providers.Factory(
-        BookingPolicyService,
-        audit_service=audit_service,
+        booking_policy_service=booking_policy_service,
     )
 
     bookable_slots_service = providers.Factory(

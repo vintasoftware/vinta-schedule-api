@@ -14,6 +14,7 @@ from graphql import GraphQLError
 
 from calendar_integration.constants import ExternalEventChangeRequestStatus
 from calendar_integration.exceptions import (
+    BookingPolicyViolationError,
     CalendarGroupError,
     CalendarGroupValidationError,
     ChangeRequestIneligibleError,
@@ -1255,6 +1256,15 @@ class CalendarGroupMutations:
                 success=False,
                 error_code=BookingCodeErrorCode.NOT_PERMITTED,
                 error_message="This code does not permit booking on this calendar.",
+            )
+        except BookingPolicyViolationError:
+            # Policy violated — code NOT consumed (txn rolled back), patient may retry.
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
+                error_message=(
+                    "The requested time slot is not available under the current booking policy."
+                ),
             )
         except (NoAvailableTimeWindowsError, EventManagementError):
             # Slot taken / invalid times — code NOT consumed (txn rolled back), patient may retry.

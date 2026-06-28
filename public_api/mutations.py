@@ -17,6 +17,7 @@ from graphql import GraphQLError
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
+    BookingPolicyViolationError,
     CalendarIntegrationError,
     DuplicateBookingPolicyError,
     NoAvailableTimeWindowsError,
@@ -2266,6 +2267,11 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError("Calendar not found.") from exc
         except NoAvailableTimeWindowsError as exc:
             raise GraphQLError("No available time window covers the requested event time.") from exc
+        except BookingPolicyViolationError as exc:
+            raise GraphQLError(
+                str(exc)
+                or "The requested time slot is not available under the current booking policy."
+            ) from exc
         except PermissionDenied as exc:
             raise GraphQLError(
                 str(exc) or "You do not have permission to schedule this event."

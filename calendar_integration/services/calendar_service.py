@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Annotated
 from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
+from django.utils import timezone as _tz
 
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from dependency_injector.wiring import Provide, inject
@@ -50,6 +51,7 @@ from calendar_integration.constants import (
     CalendarVisibility,
 )
 from calendar_integration.exceptions import (
+    BookingPolicyViolationError,
     InvalidCalendarTokenError,
 )
 from calendar_integration.models import (
@@ -62,13 +64,16 @@ from calendar_integration.models import (
     CalendarSync,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
+    ChildrenCalendarRelationship,
     EventAttendance,
     EventExternalAttendance,
     GoogleCalendarServiceAccount,
     RecurrenceRule,
 )
 from calendar_integration.querysets import CalendarEventQuerySet
+from calendar_integration.services import slot_engine
 from calendar_integration.services.availability_service import AvailabilityService
+from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.calendar_bundle_service import CalendarBundleService
 from calendar_integration.services.calendar_event_service import CalendarEventService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
@@ -112,10 +117,12 @@ from calendar_integration.services.calendar_webhook_service import (
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     AvailableTimeWindow,
+    BookableSlotProposal,
     CalendarEventAdapterOutputData,
     CalendarEventData,
     CalendarEventInputData,
     CalendarResourceData,
+    EffectivePolicy,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     EventExternalAttendeeData,
@@ -187,6 +194,9 @@ class CalendarService(BaseCalendarService):
             "ExternalEventChangeRequestService | None",
             Provide["external_event_change_request_service"],
         ] = None,
+        booking_policy_service: Annotated[
+            "BookingPolicyService | None", Provide["booking_policy_service"]
+        ] = None,
     ) -> None:
         """Initialize a CalendarService instance. Call authenticate() before using calendar operations."""
         self.organization = None
@@ -197,6 +207,7 @@ class CalendarService(BaseCalendarService):
         self.calendar_permission_service = calendar_permission_service
         self.audit_service = audit_service
         self.external_event_change_request_service = external_event_change_request_service
+        self.booking_policy_service = booking_policy_service
         # Per-instance calendar lookup cache: keyed on (organization_id, id_or_external_id).
         # This replaces the @lru_cache approach which was keyed only on id/external_id and
         # could return a cached Calendar from a different organization when the service
@@ -1214,6 +1225,79 @@ class CalendarService(BaseCalendarService):
     ) -> CalendarEventData:
         return _serialize_event_data_input_util(event, event_data, self.organization)
 
+    def _check_booking_policy(
+        self,
+        calendar: Calendar,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        now: datetime.datetime,
+    ) -> None:
+        """Enforce the resolved EffectivePolicy for a booking request.
+
+        This is the single enforcement gate for ALL ``create_event`` paths: single
+        calendar, bundle calendar (both fan-out to the same facade entry point), and
+        the code-gated single-calendar path (which also calls ``create_event``).
+
+        Steps:
+        1. Skip entirely when ``booking_policy_service`` is not injected or no
+           policy resolves for the target (``EffectivePolicy.unconstrained()``) —
+           preserving byte-for-byte pre-feature behavior (the data-presence gate).
+        2. Resolve the EffectivePolicy: ``resolve_for_bundle`` for bundle calendars,
+           ``resolve_for_calendar`` for all others.
+        3. Build a single ``BookableSlotProposal(start_time, end_time)`` and fetch
+           the buffer blocking spans the same way Phase 5 does (all target calendars,
+           window widened by the buffer magnitudes).
+        4. Call ``slot_engine.apply_policy_filter`` — if the result is empty, the
+           booking violates the policy and ``BookingPolicyViolationError`` is raised.
+
+        This re-reads current calendar state inside the existing ``create_event``
+        transaction, so a slot valid at discovery but invalidated by a concurrent
+        booking is correctly rejected (the concurrency guard).
+        """
+        if self.booking_policy_service is None or self.organization is None:
+            return
+
+        self.booking_policy_service.initialize(self.organization)
+
+        if calendar.calendar_type == CalendarType.BUNDLE:
+            policy = self.booking_policy_service.resolve_for_bundle(calendar)
+            target_calendar_ids: set[int] = set(
+                ChildrenCalendarRelationship.objects.filter_by_organization(self.organization.id)
+                .filter(bundle_calendar_fk_id=calendar.pk)
+                .values_list("child_calendar_fk_id", flat=True)
+            )
+            if not target_calendar_ids:
+                target_calendar_ids = {calendar.id}
+        else:
+            policy = self.booking_policy_service.resolve_for_calendar(calendar)
+            target_calendar_ids = {calendar.id}
+
+        if policy == EffectivePolicy.unconstrained():
+            # No policy → skip all enforcement (data-presence gate).
+            return
+
+        # Fetch buffer blocking spans across all target calendars (managed + unmanaged),
+        # widening the window by the buffer magnitudes — mirrors Phase 5's
+        # ``BookableSlotsService._buffer_blocking_spans``.
+        no_buffer = policy.buffer_before <= datetime.timedelta(
+            0
+        ) and policy.buffer_after <= datetime.timedelta(0)
+        if no_buffer:
+            buffer_blocking_spans: slot_engine.SpansByCalendarId = {}
+        else:
+            buffer_blocking_spans = slot_engine.fetch_blocking_spans(
+                self.organization.id,
+                target_calendar_ids,
+                start_time - policy.buffer_after,
+                end_time + policy.buffer_before,
+                with_bulk_modifications=False,
+            )
+
+        proposal = BookableSlotProposal(start_time=start_time, end_time=end_time)
+        allowed = slot_engine.apply_policy_filter([proposal], policy, now, buffer_blocking_spans)
+        if not allowed:
+            raise BookingPolicyViolationError()
+
     def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
         """
         Create a new event in the calendar.
@@ -1221,6 +1305,22 @@ class CalendarService(BaseCalendarService):
         :param event_data: Dictionary containing event details.
         :return: Response from the calendar client.
         """
+        if self.organization is not None:
+            # Enforcement runs inside the existing transaction (ATOMIC_REQUESTS) so any
+            # violation rolls back the entire write — no event or blocked time is created.
+            try:
+                calendar = Calendar.objects.filter_by_organization(self.organization.id).get(
+                    id=calendar_id
+                )
+            except Calendar.DoesNotExist:
+                # Let the event service raise the not-found; do not hide the error.
+                return self._get_event_service().create_event(calendar_id, event_data)
+            self._check_booking_policy(
+                calendar,
+                start_time=event_data.start_time,
+                end_time=event_data.end_time,
+                now=_tz.now(),
+            )
         return self._get_event_service().create_event(calendar_id, event_data)
 
     def _update_bundle_event(

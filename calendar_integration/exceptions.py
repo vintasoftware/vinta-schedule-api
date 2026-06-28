@@ -351,3 +351,16 @@ class DuplicateBookingPolicyError(CalendarIntegrationError):
     """
 
     pass
+
+
+class BookingPolicyViolationError(CalendarIntegrationError):
+    """Raised when a booking request violates the resolved EffectivePolicy.
+
+    The violation may be due to lead-time (too soon), max-horizon (too far
+    ahead), or a buffer envelope (the requested window overlaps the dead zone
+    of an existing event).  Callers (GraphQL mutations) should map this to a
+    user-facing error explaining that the slot is not available under the
+    current policy.
+    """
+
+    default_message = "The requested time slot is not available under the current booking policy."
