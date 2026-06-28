@@ -67,7 +67,6 @@ CREATE_BOOKING_POLICY_MUTATION = """
 mutation CreateBookingPolicy($input: CreateBookingPolicyInput!) {
     createBookingPolicy(input: $input) {
         success
-        errorMessage
         policy {
             id
             calendarId
@@ -87,7 +86,6 @@ UPDATE_BOOKING_POLICY_MUTATION = """
 mutation UpdateBookingPolicy($input: UpdateBookingPolicyInput!) {
     updateBookingPolicy(input: $input) {
         success
-        errorMessage
         policy {
             id
             leadTimeSeconds
@@ -103,7 +101,6 @@ DELETE_BOOKING_POLICY_MUTATION = """
 mutation DeleteBookingPolicy($input: DeleteBookingPolicyInput!) {
     deleteBookingPolicy(input: $input) {
         success
-        errorMessage
     }
 }
 """
@@ -387,7 +384,6 @@ class TestCreateBookingPolicyMutation:
         assert "errors" not in data, data.get("errors")
         result = data["data"]["createBookingPolicy"]
         assert result["success"] is True
-        assert result["errorMessage"] is None
         policy = result["policy"]
         assert policy["calendarId"] == cal.id
         assert policy["leadTimeSeconds"] == 300
@@ -577,6 +573,96 @@ class TestCreateBookingPolicyMutation:
 
         data = response.json()
         assert data.get("errors") or data["data"].get("createBookingPolicy") is None
+
+    def test_create_membership_user_not_in_org_rejected(self):
+        """Passing a membershipUserId for a user who is NOT in the caller's org returns a clean GraphQL error."""
+        _org, system_user, token, auth_service = _setup_org_and_token()
+        # Create a user that is a member of a different org, not the caller's org.
+        other_org = baker.make(Organization, name="Other Org Membership")
+        other_user = UserFactory().create_user()
+        baker.make(OrganizationMembership, user=other_user, organization=other_org)
+
+        response = _post_graphql(
+            CREATE_BOOKING_POLICY_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {"input": {"membershipUserId": other_user.id}},
+        )
+
+        data = response.json()
+        # Must surface a GraphQL error — no 500, errors array populated.
+        assert data.get("errors"), "Expected a GraphQL error for cross-org membership"
+        assert response.status_code == 200
+
+    def test_create_nonexistent_membership_user_rejected(self):
+        """Passing a membershipUserId that doesn't exist anywhere returns a clean GraphQL error."""
+        _org, system_user, token, auth_service = _setup_org_and_token()
+
+        response = _post_graphql(
+            CREATE_BOOKING_POLICY_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {"input": {"membershipUserId": 999999}},
+        )
+
+        data = response.json()
+        assert data.get("errors"), "Expected a GraphQL error for nonexistent membership user"
+        assert response.status_code == 200
+
+    def test_create_multiple_targets_rejected(self):
+        """Passing two targets (calendarId + isOrganizationDefault=True) returns a clean GraphQL error."""
+        org, system_user, token, auth_service = _setup_org_and_token()
+        cal = baker.make(Calendar, organization=org)
+
+        response = _post_graphql(
+            CREATE_BOOKING_POLICY_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {"input": {"calendarId": cal.id, "isOrganizationDefault": True}},
+        )
+
+        data = response.json()
+        assert data.get("errors"), "Expected a GraphQL error for multiple targets"
+
+    def test_create_duplicate_membership_policy_rejected(self):
+        """Creating a second policy for the same membershipUserId returns a GraphQL error."""
+        org, system_user, token, auth_service = _setup_org_and_token()
+        user = UserFactory().create_user()
+        baker.make(OrganizationMembership, user=user, organization=org)
+        create_booking_policy(membership_user_id=user.id, organization=org)
+
+        response = _post_graphql(
+            CREATE_BOOKING_POLICY_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {"input": {"membershipUserId": user.id}},
+        )
+
+        data = response.json()
+        assert data.get("errors"), "Expected a GraphQL error for duplicate membership policy"
+        assert any("already exists" in e["message"] for e in data["errors"])
+
+    def test_create_duplicate_calendar_group_policy_rejected(self):
+        """Creating a second policy for the same calendarGroupId returns a GraphQL error."""
+        org, system_user, token, auth_service = _setup_org_and_token()
+        group = baker.make(CalendarGroup, organization=org)
+        create_booking_policy(calendar_group=group)
+
+        response = _post_graphql(
+            CREATE_BOOKING_POLICY_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {"input": {"calendarGroupId": group.id}},
+        )
+
+        data = response.json()
+        assert data.get("errors"), "Expected a GraphQL error for duplicate calendar-group policy"
+        assert any("already exists" in e["message"] for e in data["errors"])
 
 
 # ---------------------------------------------------------------------------

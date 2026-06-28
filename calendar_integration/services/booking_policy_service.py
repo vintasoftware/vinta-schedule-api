@@ -39,7 +39,7 @@ from calendar_integration.models import (
     ChildrenCalendarRelationship,
 )
 from calendar_integration.services.dataclasses import EffectivePolicy
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 
 
 if TYPE_CHECKING:
@@ -329,6 +329,13 @@ class BookingPolicyService:
 
         org_id = self.organization.id  # type: ignore[union-attr]
         org = self.organization  # type: ignore[assignment]
+
+        # Validate that membership_user_id references a real membership in the bound org.
+        if membership_user_id is not None:
+            if not OrganizationMembership.objects.filter(
+                organization_id=org_id, user_id=membership_user_id
+            ).exists():
+                raise ValueError("No membership with this user id in your organization.")
 
         # Check uniqueness before hitting the DB constraint to provide a clear error.
         if calendar is not None and self._policy_for_calendar(calendar.id) is not None:

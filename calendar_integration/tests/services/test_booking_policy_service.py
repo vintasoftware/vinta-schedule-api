@@ -738,6 +738,18 @@ class TestCreateBookingPolicy:
         with pytest.raises(CalendarServiceOrganizationNotSetError):
             svc.create_booking_policy(is_organization_default=True)
 
+    def test_raises_value_error_when_membership_user_id_not_in_org(self):
+        """create_booking_policy raises ValueError when membership_user_id is not a member of the bound org."""
+        org = _org()
+        other_org = _org()
+        uid = _membership(other_org)  # member of other_org, not org
+        svc = _service(org)
+
+        with pytest.raises(
+            ValueError, match=r"No membership with this user id in your organization\."
+        ):
+            svc.create_booking_policy(membership_user_id=uid)
+
     def test_emits_audit_record_on_create(self):
         org = _org()
         cal = _calendar(org)

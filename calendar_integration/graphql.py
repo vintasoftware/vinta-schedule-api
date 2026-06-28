@@ -871,7 +871,7 @@ class BookingPolicyGraphQLType:
     @strawberry.field
     def membership_user_id(self) -> int | None:
         """Return the denormalized membership user id, or None."""
-        return self.membership_user_id  # type: ignore[attr-defined]
+        return self.membership_user_id  # type: ignore[return-value]
 
 
 @strawberry.input
@@ -922,7 +922,6 @@ class BookingPolicyResult:
 
     success: bool
     policy: BookingPolicyGraphQLType | None = None
-    error_message: str | None = None
 
 
 @strawberry.type
@@ -930,7 +929,6 @@ class DeleteBookingPolicyResult:
     """Result type for the deleteBookingPolicy mutation."""
 
     success: bool
-    error_message: str | None = None
 
 
 @strawberry.type
