@@ -12374,11 +12374,13 @@ components:
 
         Validation:
         - ``validate()`` enforces the exactly-one-target invariant on create.
+        - ``validate_membership_user_id()`` checks that the supplied user id belongs
+          to the caller's organization (on create only; targets are immutable on update).
         - ``DuplicateBookingPolicyError`` from the service is caught and surfaced as
           a 400 validation error so the client gets a named conflict message.
-        - ``PositiveIntegerField`` on the model rejects negatives at the DB level
-          (Django also enforces this in full-clean), but DRF's ``IntegerField``
-          wrapping is permissive by default, so we add ``min_value=0`` below.
+        - The four rule fields use ``min_value=0`` so DRF rejects negatives with a
+          clear field-level 400 before the value reaches the model's
+          ``PositiveIntegerField`` constraint.
 
         Write paths (create / update) delegate to ``BookingPolicyService`` stored on
         the serializer context as ``"booking_policy_service"`` (the viewset sets it).
@@ -14046,11 +14048,13 @@ components:
 
         Validation:
         - ``validate()`` enforces the exactly-one-target invariant on create.
+        - ``validate_membership_user_id()`` checks that the supplied user id belongs
+          to the caller's organization (on create only; targets are immutable on update).
         - ``DuplicateBookingPolicyError`` from the service is caught and surfaced as
           a 400 validation error so the client gets a named conflict message.
-        - ``PositiveIntegerField`` on the model rejects negatives at the DB level
-          (Django also enforces this in full-clean), but DRF's ``IntegerField``
-          wrapping is permissive by default, so we add ``min_value=0`` below.
+        - The four rule fields use ``min_value=0`` so DRF rejects negatives with a
+          clear field-level 400 before the value reaches the model's
+          ``PositiveIntegerField`` constraint.
 
         Write paths (create / update) delegate to ``BookingPolicyService`` stored on
         the serializer context as ``"booking_policy_service"`` (the viewset sets it).

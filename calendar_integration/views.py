@@ -2057,14 +2057,6 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
 
         return booking_policy_service
 
-    def get_serializer_context(self):
-        """Inject the initialized ``BookingPolicyService`` into the serializer context."""
-        context = super().get_serializer_context()
-        # We defer service construction to the @inject-decorated action methods
-        # (create / update / destroy) so DI is wired correctly per-request.
-        # The context key is set there, not here, to keep get_serializer_context pure.
-        return context
-
     @extend_schema(
         summary="Create a booking policy",
         description=(
@@ -2088,10 +2080,10 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
         """POST /booking-policies/ — create a new policy."""
         service = self._build_service(booking_policy_service)
 
-        serializer = self.get_serializer(data=request.data)
-        # Pass the initialized service through context so BookingPolicySerializer
-        # can delegate to it without direct-importing the service.
-        cast(dict, serializer.context)["booking_policy_service"] = service
+        serializer = self.get_serializer(
+            data=request.data,
+            context={**self.get_serializer_context(), "booking_policy_service": service},
+        )
         serializer.is_valid(raise_exception=True)
         policy = serializer.save()
 
@@ -2125,8 +2117,12 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
         partial = kwargs.pop("partial", False)
         instance = self.get_object()
 
-        serializer = self.get_serializer(instance, data=request.data, partial=partial)
-        cast(dict, serializer.context)["booking_policy_service"] = service
+        serializer = self.get_serializer(
+            instance,
+            data=request.data,
+            partial=partial,
+            context={**self.get_serializer_context(), "booking_policy_service": service},
+        )
         serializer.is_valid(raise_exception=True)
         policy = serializer.save()
 

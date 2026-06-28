@@ -72,7 +72,11 @@ from calendar_integration.virtual_models import (
     ResourceAllocationVirtualModel,
 )
 from common.utils.serializer_utils import VirtualModelSerializer
-from organizations.models import Organization, get_active_organization_membership
+from organizations.models import (
+    Organization,
+    OrganizationMembership,
+    get_active_organization_membership,
+)
 from users.models import User
 
 
@@ -2787,19 +2791,20 @@ class BookingPolicySerializer(serializers.ModelSerializer):
 
     Validation:
     - ``validate()`` enforces the exactly-one-target invariant on create.
+    - ``validate_membership_user_id()`` checks that the supplied user id belongs
+      to the caller's organization (on create only; targets are immutable on update).
     - ``DuplicateBookingPolicyError`` from the service is caught and surfaced as
       a 400 validation error so the client gets a named conflict message.
-    - ``PositiveIntegerField`` on the model rejects negatives at the DB level
-      (Django also enforces this in full-clean), but DRF's ``IntegerField``
-      wrapping is permissive by default, so we add ``min_value=0`` below.
+    - The four rule fields use ``min_value=0`` so DRF rejects negatives with a
+      clear field-level 400 before the value reaches the model's
+      ``PositiveIntegerField`` constraint.
 
     Write paths (create / update) delegate to ``BookingPolicyService`` stored on
     the serializer context as ``"booking_policy_service"`` (the viewset sets it).
     """
 
-    # Rule fields — PositiveIntegerField enforces >= 0 at the DB layer; we also
-    # add min_value=0 here so the serializer rejects negatives before even
-    # reaching model validation, giving a clear field-level error message.
+    # Rule fields — the effective guard is DRF's min_value=0; the model's
+    # PositiveIntegerField is a secondary DB-level constraint.
     lead_time_seconds = serializers.IntegerField(min_value=0, default=0)
     max_horizon_seconds = serializers.IntegerField(min_value=0, default=0)
     buffer_before_seconds = serializers.IntegerField(min_value=0, default=0)
@@ -2862,6 +2867,37 @@ class BookingPolicySerializer(serializers.ModelSerializer):
             required=False,
             allow_null=True,
         )
+
+    def validate_membership_user_id(self, value):
+        """Reject a ``membership_user_id`` that is not a member of the caller's org.
+
+        Skipped on update (targets are immutable and already stripped in ``validate``).
+        A bogus or cross-org id would otherwise reach the Phase-1 composite PROTECT FK
+        at commit time and raise an ``IntegrityError`` (HTTP 500); surfacing it here
+        gives a clean 400 instead.
+        """
+        if value is None:
+            return value
+        if self.instance is not None:
+            # Update path — target fields are immutable; skip the check.
+            return value
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        membership = (
+            get_active_organization_membership(user)
+            if user and getattr(user, "is_authenticated", False)
+            else None
+        )
+        if membership is None:
+            # No org context — permission layer will deny the request.
+            return value
+        if not OrganizationMembership.objects.filter(
+            organization_id=membership.organization_id, user_id=value
+        ).exists():
+            raise serializers.ValidationError(
+                "No membership with this user id in your organization."
+            )
+        return value
 
     def validate(self, attrs: dict) -> dict:
         """Enforce the exactly-one-target invariant on creates only.

@@ -1,10 +1,11 @@
 """Integration tests for the BookingPolicy REST API (Phase 3).
 
 Covers:
-- Authenticated CRUD happy paths (create, read, update, delete).
-- Unauthorized / forbidden paths (unauthenticated, wrong org via X-Organization-Id header).
+- Authenticated CRUD happy paths (create, read, update, delete) — org admin only for writes.
+- Unauthorized / forbidden paths (unauthenticated, non-admin member, wrong org via X-Organization-Id header).
 - Duplicate-target create → 400 naming the conflict.
-- Negative buffer field → 400 naming the field.
+- Negative buffer field → 400 naming the field (all four rule fields).
+- bogus membership_user_id → 400 (not 500).
 - Delete-absent → 204 no-op (idempotent destroy).
 - Audit record emitted on create / update / delete.
 """
@@ -158,7 +159,7 @@ class TestBookingPolicyCreate:
     """POST /booking-policies/ — happy paths, validation, duplicates, audit."""
 
     def test_create_calendar_policy(self):
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         cal = _make_calendar(org)
 
@@ -181,7 +182,7 @@ class TestBookingPolicyCreate:
         assert policy.calendar_fk_id == cal.id
 
     def test_create_org_default_policy(self):
-        _, membership = _make_org_with_member()
+        _, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
 
         response = client.post(
@@ -195,7 +196,7 @@ class TestBookingPolicyCreate:
         assert response.json()["is_organization_default"] is True
 
     def test_create_group_policy(self):
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         group = _make_group(org)
 
@@ -207,7 +208,7 @@ class TestBookingPolicyCreate:
         assert response.json()["lead_time_seconds"] == 1800
 
     def test_create_membership_policy(self):
-        _, membership = _make_org_with_member()
+        _, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
 
         response = client.post(
@@ -221,14 +222,14 @@ class TestBookingPolicyCreate:
         assert response.json()["membership_user_id"] == membership.user_id
 
     def test_create_without_target_returns_400(self):
-        _, membership = _make_org_with_member()
+        _, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
 
         response = client.post(_list_url(), {"lead_time_seconds": 60})
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
     def test_create_with_two_targets_returns_400(self):
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         cal = _make_calendar(org)
 
@@ -244,7 +245,7 @@ class TestBookingPolicyCreate:
 
     def test_duplicate_calendar_target_returns_400(self):
         """Creating a second policy for the same calendar returns 400."""
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         cal = _make_calendar(org)
         create_booking_policy(calendar=cal)
@@ -261,7 +262,7 @@ class TestBookingPolicyCreate:
 
     def test_duplicate_org_default_returns_400(self):
         """Creating a second org-default policy returns 400."""
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         create_booking_policy(is_organization_default=True, organization=org)
 
@@ -273,7 +274,7 @@ class TestBookingPolicyCreate:
 
     def test_negative_buffer_returns_400(self):
         """Negative rule field values are rejected with a 400 naming the field."""
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         cal = _make_calendar(org)
 
@@ -290,7 +291,7 @@ class TestBookingPolicyCreate:
         assert "buffer_before_seconds" in body
 
     def test_negative_lead_time_returns_400_naming_field(self):
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         cal = _make_calendar(org)
 
@@ -302,14 +303,52 @@ class TestBookingPolicyCreate:
         body = response.json()
         assert "lead_time_seconds" in body
 
+    def test_negative_max_horizon_returns_400_naming_field(self):
+        org, membership = _make_org_with_member(is_admin=True)
+        client = _auth_client(membership)
+        cal = _make_calendar(org)
+
+        response = client.post(
+            _list_url(),
+            {"calendar": cal.pk, "max_horizon_seconds": -1},
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        body = response.json()
+        assert "max_horizon_seconds" in body
+
+    def test_negative_buffer_after_returns_400_naming_field(self):
+        org, membership = _make_org_with_member(is_admin=True)
+        client = _auth_client(membership)
+        cal = _make_calendar(org)
+
+        response = client.post(
+            _list_url(),
+            {"calendar": cal.pk, "buffer_after_seconds": -1},
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        body = response.json()
+        assert "buffer_after_seconds" in body
+
     def test_unauthenticated_create_returns_401(self):
         client = APIClient()
         response = client.post(_list_url(), {"is_organization_default": True})
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
+    def test_member_cannot_create_policy(self):
+        """A non-admin member POST → 403."""
+        org, membership = _make_org_with_member(is_admin=False)
+        client = _auth_client(membership)
+        cal = _make_calendar(org)
+
+        response = client.post(
+            _list_url(),
+            {"calendar": cal.pk, "lead_time_seconds": 60},
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
     def test_create_emits_audit_record(self, django_capture_on_commit_callbacks):
         """create writes an audit CREATE record."""
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         cal = _make_calendar(org)
 
@@ -328,7 +367,7 @@ class TestBookingPolicyCreate:
 
     def test_cross_org_calendar_not_accepted(self):
         """Passing a calendar from a different org is rejected (FK queryset check)."""
-        _, membership = _make_org_with_member()
+        _, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
 
         other_org, _ = _make_org_with_member()
@@ -341,6 +380,21 @@ class TestBookingPolicyCreate:
         # The serializer's org-scoped queryset will reject the cross-org calendar PK.
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
+    def test_create_membership_policy_bogus_user_id_returns_400(self):
+        """membership_user_id that is not a member of the org → 400, not 500."""
+        _, membership = _make_org_with_member(is_admin=True)
+        client = _auth_client(membership)
+
+        bogus_user_id = 999_999_999
+
+        response = client.post(
+            _list_url(),
+            {"membership_user_id": bogus_user_id, "lead_time_seconds": 60},
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        body = response.json()
+        assert "membership_user_id" in body
+
 
 # ---------------------------------------------------------------------------
 # Update
@@ -352,7 +406,7 @@ class TestBookingPolicyUpdate:
     """PUT/PATCH /booking-policies/{id}/ — rule fields only, audit."""
 
     def test_patch_updates_rule_fields(self):
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         cal = _make_calendar(org)
         policy = create_booking_policy(calendar=cal, lead_time_seconds=60)
@@ -368,7 +422,7 @@ class TestBookingPolicyUpdate:
 
     def test_target_fields_ignored_on_update(self):
         """Passing 'is_organization_default' on update is silently ignored (target immutable)."""
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         cal = _make_calendar(org)
         policy = create_booking_policy(calendar=cal)
@@ -384,7 +438,7 @@ class TestBookingPolicyUpdate:
         assert policy.lead_time_seconds == 200
 
     def test_negative_buffer_on_update_returns_400(self):
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         cal = _make_calendar(org)
         policy = create_booking_policy(calendar=cal)
@@ -399,7 +453,7 @@ class TestBookingPolicyUpdate:
 
     def test_update_cross_org_returns_404(self):
         """Updating a policy from a different org returns 404 (not found in queryset)."""
-        _, membership = _make_org_with_member()
+        _, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
 
         other_org, _ = _make_org_with_member()
@@ -409,9 +463,28 @@ class TestBookingPolicyUpdate:
         response = client.patch(_detail_url(other_policy.pk), {"lead_time_seconds": 999})
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
+    def test_member_cannot_update_policy(self):
+        """A non-admin member PATCH → 403."""
+        org, _admin_membership = _make_org_with_member(is_admin=True)
+        cal = _make_calendar(org)
+        policy = create_booking_policy(calendar=cal, lead_time_seconds=60)
+
+        # Create a non-admin member in the same org
+        non_admin_user = UserFactory().create_user()
+        non_admin_membership = OrganizationMembership.objects.create(
+            user=non_admin_user,
+            organization=org,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        client = _auth_client(non_admin_membership)
+
+        response = client.patch(_detail_url(policy.pk), {"lead_time_seconds": 999})
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
     def test_update_emits_audit_record(self, django_capture_on_commit_callbacks):
         """update writes an audit UPDATE record with a diff."""
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         cal = _make_calendar(org)
         policy = create_booking_policy(calendar=cal, lead_time_seconds=60)
@@ -440,7 +513,7 @@ class TestBookingPolicyDestroy:
     """DELETE /booking-policies/{id}/ — idempotent no-op + audit."""
 
     def test_delete_existing_policy(self):
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         cal = _make_calendar(org)
         policy = create_booking_policy(calendar=cal)
@@ -453,7 +526,7 @@ class TestBookingPolicyDestroy:
 
     def test_delete_absent_returns_204_no_op(self):
         """Deleting a non-existent policy pk returns 204 (idempotent no-op)."""
-        _, membership = _make_org_with_member()
+        _, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
 
         non_existent_pk = 9_999_999
@@ -466,7 +539,7 @@ class TestBookingPolicyDestroy:
         The plan's delete-absent semantics mean: if the policy isn't resolvable in
         the caller's org, treat it the same as absent → 204 no-op.
         """
-        _, membership = _make_org_with_member()
+        _, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
 
         other_org, _ = _make_org_with_member()
@@ -482,9 +555,27 @@ class TestBookingPolicyDestroy:
             .exists()
         )
 
+    def test_member_cannot_delete_policy(self):
+        """A non-admin member DELETE → 403."""
+        org, _admin_membership = _make_org_with_member(is_admin=True)
+        cal = _make_calendar(org)
+        policy = create_booking_policy(calendar=cal)
+
+        non_admin_user = UserFactory().create_user()
+        non_admin_membership = OrganizationMembership.objects.create(
+            user=non_admin_user,
+            organization=org,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        client = _auth_client(non_admin_membership)
+
+        response = client.delete(_detail_url(policy.pk))
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
     def test_delete_emits_audit_record(self, django_capture_on_commit_callbacks):
         """delete writes an audit DELETE record."""
-        org, membership = _make_org_with_member()
+        org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
         cal = _make_calendar(org)
         policy = create_booking_policy(calendar=cal)
@@ -500,7 +591,7 @@ class TestBookingPolicyDestroy:
 
     def test_delete_absent_does_not_emit_audit_record(self, django_capture_on_commit_callbacks):
         """No audit record when the policy was already absent (truly idempotent)."""
-        _, membership = _make_org_with_member()
+        _, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
 
         with patch("audit.services.persist_audit_record") as mock_task:

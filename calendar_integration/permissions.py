@@ -1,5 +1,5 @@
 from dependency_injector.wiring import Provide, inject
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 from calendar_integration.models import CalendarOwnership
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
@@ -9,24 +9,26 @@ from organizations.models import get_active_organization_membership
 class BookingPolicyPermission(BasePermission):
     """Permission for ``BookingPolicyViewSet``.
 
-    Requires an authenticated user.  Membership-less (gated) users are allowed
-    through: ``get_queryset()`` returns an empty queryset for them so the list
-    action returns 200+[] rather than 403, which is the consistent pattern used
-    by ``CalendarEventViewSet`` and ``BlockedTimeViewSet``.
+    Reads (GET/HEAD/OPTIONS — list/retrieve) are open to any authenticated user;
+    ``get_queryset()`` already restricts visibility to the caller's org.
 
-    Write operations (create, update, destroy) that reach a membership-less user
-    will fail gracefully because ``_build_service()`` gets ``None`` from
-    ``get_active_organization_membership`` and will not initialize the service
-    with a tenant — but in practice the ``TenantScopedViewMixin`` will have
-    already returned 400/403 if the user has no org context.
+    Writes (POST/PUT/PATCH/DELETE — create/update/destroy) require the caller to
+    be an **organization admin** (per SPEC use-case 3, consistent with sibling
+    org-wide config writes gated by ``IsOrganizationAdmin``).
 
-    Org-admin gating is intentionally **not** applied here — the plan does not
-    restrict policy management to admins only.
+    Membership-less (gated) users are allowed through on safe methods: the
+    queryset returns [] rather than 403, which is the consistent pattern used by
+    ``CalendarEventViewSet`` and ``BlockedTimeViewSet``.
     """
 
     def has_permission(self, request, view) -> bool:
-        """Allow any authenticated user through (membership check happens in get_queryset)."""
-        return bool(request.user.is_authenticated)
+        """Safe methods: any authenticated user. Unsafe methods: org admin only."""
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        membership = get_active_organization_membership(request.user)
+        return membership is not None and membership.is_admin
 
 
 class ExternalEventChangeRequestPermission(BasePermission):
