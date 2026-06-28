@@ -12,6 +12,7 @@ from audit.constants import AuditAction
 from audit.diff import compute_diff
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.exceptions import (
+    BookingPolicyViolationError,
     CalendarGroupHasFutureEventsError,
     CalendarGroupSlotInUseError,
     CalendarGroupValidationError,
@@ -454,6 +455,84 @@ class CalendarGroupService:
         return results
 
     # ------------------------------------------------------------------
+    # Booking policy enforcement (group path)
+    # ------------------------------------------------------------------
+
+    def _check_group_booking_policy(
+        self,
+        group: CalendarGroup,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        now: datetime.datetime,
+    ) -> None:
+        """Enforce the resolved EffectivePolicy for a group booking request.
+
+        Mirrors the shape of ``CalendarService._check_booking_policy`` (Phase 8a) for
+        the group write path.  Steps:
+
+        1. Skip when ``booking_policy_service`` is not injected or when the resolved
+           policy is ``EffectivePolicy.unconstrained()`` — preserving byte-for-byte
+           pre-feature behavior (the data-presence gate).
+        2. Resolve the ``EffectivePolicy`` via ``resolve_for_group`` — the same
+           resolver Phase 7 uses in ``find_bookable_slots``, so enforcement and
+           discovery agree.
+        3. Collect ALL participant calendar IDs across every slot pool of the group
+           (the same ``all_calendar_ids`` set ``find_bookable_slots`` uses), so the
+           buffer dead-zone check is conservative: any participant that would
+           individually reject the window blocks the booking.
+        4. Fetch buffer blocking spans across the full participant set (managed +
+           unmanaged), widening the window by the buffer magnitudes — mirrors Phase
+           7's buffer fetch in ``find_bookable_slots``.
+        5. Build a single ``BookableSlotProposal`` and call
+           ``slot_engine.apply_policy_filter``; empty result → raise
+           ``BookingPolicyViolationError``.
+
+        This check runs inside ``create_grouped_event``'s ``@transaction.atomic()``
+        decorator, so a violation rolls back the entire group write — no events or
+        blocked times are persisted.
+        """
+        if self.booking_policy_service is None or self.organization is None:
+            # Data-presence gate: no service → skip (pre-feature behavior).
+            return
+
+        policy = self.booking_policy_service.resolve_for_group(group)
+        if policy == EffectivePolicy.unconstrained():
+            # No policy anywhere for this group → skip all enforcement.
+            return
+
+        # Collect ALL calendar IDs in the group's slot pools — the same set
+        # find_bookable_slots uses so enforcement matches discovery exactly.
+        org_id = cast(Organization, self.organization).id
+        slots = list(group.slots.all())
+        all_calendar_ids: set[int] = set()
+        for slot in slots:
+            cal_ids = (
+                CalendarGroupSlotMembership.objects.filter_by_organization(org_id)
+                .filter(slot_fk=slot)
+                .values_list("calendar_fk_id", flat=True)
+            )
+            all_calendar_ids.update(cal_ids)
+
+        no_buffer = policy.buffer_before <= datetime.timedelta(
+            0
+        ) and policy.buffer_after <= datetime.timedelta(0)
+        if no_buffer:
+            buffer_blocking_spans: slot_engine.SpansByCalendarId = {}
+        else:
+            buffer_blocking_spans = slot_engine.fetch_blocking_spans(
+                org_id,
+                all_calendar_ids,
+                start_time - policy.buffer_after,
+                end_time + policy.buffer_before,
+                with_bulk_modifications=False,
+            )
+
+        proposal = BookableSlotProposal(start_time=start_time, end_time=end_time)
+        allowed = slot_engine.apply_policy_filter([proposal], policy, now, buffer_blocking_spans)
+        if not allowed:
+            raise BookingPolicyViolationError()
+
+    # ------------------------------------------------------------------
     # Grouped event creation
     # ------------------------------------------------------------------
     @transaction.atomic()
@@ -531,6 +610,16 @@ class CalendarGroupService:
         selections_by_slot_id = self._validate_selections(group, slots, data.slot_selections)
         all_selected_ids = {cid for sel in data.slot_selections for cid in sel.calendar_ids}
         self._assert_calendars_available(all_selected_ids, data.start_time, data.end_time)
+
+        # --- Booking policy enforcement ---
+        # Runs inside the @transaction.atomic() so any violation rolls back the
+        # entire write — no events or blocked times are persisted on rejection.
+        self._check_group_booking_policy(
+            group=group,
+            start_time=data.start_time,
+            end_time=data.end_time,
+            now=timezone.now(),
+        )
 
         primary_slot = slots[0]
         primary_calendar_id = selections_by_slot_id[primary_slot.id].calendar_ids[0]

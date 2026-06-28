@@ -749,6 +749,14 @@ class CalendarGroupMutations:
                     "A token or scheduling code is required."
                 ),
             )
+        except BookingPolicyViolationError as e:
+            return CalendarGroupEventResult(
+                success=False,
+                error_message=(
+                    str(e)
+                    or "The requested time slot is not available under the current booking policy."
+                ),
+            )
         except CalendarGroupError as e:
             return CalendarGroupEventResult(success=False, error_message=str(e))
         return CalendarGroupEventResult(success=True, event=event)  # type: ignore[arg-type]
@@ -1428,6 +1436,15 @@ class CalendarGroupMutations:
                 success=False,
                 error_code=BookingCodeErrorCode.NOT_PERMITTED,
                 error_message="This code does not permit booking on this calendar.",
+            )
+        except BookingPolicyViolationError:
+            # Policy violated — code NOT consumed (txn rolled back), patient may retry.
+            return CodeEventResult(
+                success=False,
+                error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
+                error_message=(
+                    "The requested time slot is not available under the current booking policy."
+                ),
             )
         except (EventManagementError, CalendarGroupError):
             # Slot taken / invalid selection / invalid times — code NOT consumed (txn rolled
