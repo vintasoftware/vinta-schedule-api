@@ -23,6 +23,7 @@
 - Phase 5: `plan/bookable-slots-single-calendar-and-booking-policy/phase-5` (base phase-4)
 - Phase 6: `plan/bookable-slots-single-calendar-and-booking-policy/phase-6` (base phase-5)
 - Phase 7: `plan/bookable-slots-single-calendar-and-booking-policy/phase-7` (base phase-6)
+- Phase 8a: `plan/bookable-slots-single-calendar-and-booking-policy/phase-8a` (base phase-7)
 
 ## Completed phases
 
@@ -104,12 +105,25 @@
 - **Gates**: ruff clean; mypy **297** (back to baseline, no new); `makemigrations --check` clean (no migration); `check --deploy` 0 errors; full `pytest -n auto` → 3424 passed; existing 44 group tests green (byte-for-byte proof).
 - **Acceptance**: ✅ group query filters by resolved group policy; no-policy output identical to pre-feature.
 
+### Phase 8a — booking-time enforcement: single/bundle/code-gated ✅
+- **Status**: DONE (reviewed, fixed, pushed, PR open)
+- **Model used**: sonnet (plan tier T3) — implementer + sonnet fixer
+- **Branch**: `plan/bookable-slots-single-calendar-and-booking-policy/phase-8a` (base phase-7)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/173
+- **Commits**: `8d02d73` (impl) + `bdd650e` (review fixes)
+- **Summary**: `BookingPolicyViolationError`; single enforcement gate `_check_booking_policy` in `CalendarService.create_event` (covers single + bundle + code-gated, all funnel through it). Reuses `slot_engine.apply_policy_filter([proposal], …)` so enforcement == discovery by construction. Data-presence skip on `unconstrained()`. Runs in the create transaction (rollback on violation). Error mapping: `schedule_event` → explanatory error, `create_calendar_event_with_code` → `SLOT_UNAVAILABLE`. DI `booking_policy_service` into CalendarService; `_calendar_cache` populated. 30 tests.
+- **Review findings fixed**: no BLOCKERs. SHOULD-FIX (correctness) — bundle fan-out re-checked each child's individual policy → divergence (a stricter child rejecting a booking the bundle policy/discovery allows). Fixed with `_enforce_policy=False` on bundle child creates → enforce once at top-level via `resolve_for_bundle`; added the divergence test. Also: cache fix (dup query); bundle no-rows-on-violation + compliant-success + agreement tests; mutation horizon/buffer/positive agreement tests. NIT — mypy +1 → back to 297.
+- **Gates**: ruff clean; mypy **297**; `makemigrations --check` clean (no migration); `check --deploy` 0 errors; full `pytest -n auto` → 3455 passed.
+- **Acceptance**: ✅ policy-violating single/bundle/code-gated bookings rejected with no rows persisted; compliant succeed; no-policy unchanged; discovery/enforcement agree.
+
 ## Current phase
-Phase 8a — booking-time enforcement: single/bundle/code-gated (next).
+Phase 8b — booking-time enforcement: group bookings (final executable phase).
 
 ## Remaining phases
-- Phase 8a — enforcement single/bundle/code (T3 / sonnet)
 - Phase 8b — enforcement group (T3 / sonnet)
 
 ## Deferred phases
 None (no cross-repo, no flag-removal — data-presence gate means no flag).
+
+## Follow-up notes (not in this plan's scope)
+- **Recurring-series enforcement** (flagged in Phase 8a review): the internal `create_recurring_event` shortcut bypasses the facade `_check_booking_policy`. The public `schedule_event` rrule path IS enforced on the first occurrence (via the facade), but per-occurrence enforcement of an entire recurring series is not covered by this plan. Candidate for a future ticket.
