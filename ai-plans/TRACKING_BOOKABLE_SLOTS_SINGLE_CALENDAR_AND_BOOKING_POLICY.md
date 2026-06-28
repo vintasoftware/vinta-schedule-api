@@ -18,6 +18,7 @@
 ## Branch stack
 - Phase 1: `plan/bookable-slots-single-calendar-and-booking-policy/phase-1` (base `main`)
 - Phase 2: `plan/bookable-slots-single-calendar-and-booking-policy/phase-2` (base phase-1)
+- Phase 3: `plan/bookable-slots-single-calendar-and-booking-policy/phase-3` (base phase-2)
 
 ## Completed phases
 
@@ -44,11 +45,21 @@
 - **Gates**: ruff clean; mypy baseline unchanged; `makemigrations --check` clean (no migration); `check --deploy` 0 errors; full `pytest -n auto` → 3307 passed.
 - **Acceptance**: ✅ `resolve_for_*` returns spec-correct `EffectivePolicy` across the full matrix; unconstrained when nothing applies.
 
+### Phase 3 — Policy CRUD private REST ✅
+- **Status**: DONE (reviewed, fixed, pushed, PR open)
+- **Model used**: sonnet (plan tier T2 → stepped up per >3-files rule) — implementer + sonnet fixer
+- **Branch**: `plan/bookable-slots-single-calendar-and-booking-policy/phase-3` (base phase-2)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/168
+- **Commits**: `1abddaf` (impl) + `6e5efeb` (review fixes)
+- **Summary**: `BookingPolicySerializer` (exactly-one-target, immutable targets on update, org-scoped FK querysets, `validate_membership_user_id`, `min_value=0`, `DuplicateBookingPolicyError`→400), `BookingPolicyViewSet(VintaScheduleModelViewSet)` (org-scoped get_queryset; create/update/destroy delegate to DI `booking_policy_service` w/ `set_actor`; idempotent destroy→204), `BookingPolicyPermission` (reads=member, **writes=org admin**), `booking-policies` route, regenerated `schema.yml`. 35 API tests.
+- **Review findings fixed**: BLOCKER — permission allowed any member to write org-wide config; gated writes to `IsOrganizationAdmin` (`membership.is_admin`), reads stay member-visible (spec use-case 3). SHOULD-FIX — added `validate_membership_user_id` (bogus id 500→400); deleted dead `get_serializer_context` override; clean `context=` serializer wiring; added member-forbidden(403)/bogus-id(400)/all-four-negative-field tests. Plain ModelSerializer reviewed + cleared.
+- **Gates**: ruff clean; mypy no new errors; `makemigrations --check` clean (no migration); `check --deploy` 0 errors; `schema.yml` drift-free; full `pytest -n auto` → 3342 passed.
+- **Acceptance**: ✅ REST CRUD org-scoped; duplicate/invalid→400; delete-absent→204; writes audited; member writes forbidden.
+
 ## Current phase
-Phase 3 — Policy CRUD private REST (next).
+Phase 4 — Policy CRUD public GraphQL (next).
 
 ## Remaining phases
-- Phase 3 — Policy CRUD private REST (T2 / haiku)
 - Phase 4 — Policy CRUD public GraphQL (T3 / sonnet)
 - Phase 5 — calendar_bookable_slots single+bundle (T4 / opus)
 - Phase 6 — calendar_bookable_slots_with_code (T2 / haiku)
