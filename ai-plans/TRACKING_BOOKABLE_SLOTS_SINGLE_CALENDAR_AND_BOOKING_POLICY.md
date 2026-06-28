@@ -20,6 +20,7 @@
 - Phase 2: `plan/bookable-slots-single-calendar-and-booking-policy/phase-2` (base phase-1)
 - Phase 3: `plan/bookable-slots-single-calendar-and-booking-policy/phase-3` (base phase-2)
 - Phase 4: `plan/bookable-slots-single-calendar-and-booking-policy/phase-4` (base phase-3)
+- Phase 5: `plan/bookable-slots-single-calendar-and-booking-policy/phase-5` (base phase-4)
 
 ## Completed phases
 
@@ -68,11 +69,21 @@
 - **Gates**: ruff clean; mypy 299 (1 fewer than baseline, no new); `makemigrations --check` clean; `check --deploy` 0 errors; `schema.yml` drift-free; full `pytest -n auto` → 3377 passed.
 - **Acceptance**: ✅ GraphQL CRUD org+resource-scoped; behavior matches REST (incl. clean bogus-membership error); writes audited.
 
+### Phase 5 — calendar_bookable_slots single+bundle ✅ (keystone)
+- **Status**: DONE (reviewed, fixed, pushed, PR open)
+- **Model used**: opus (plan tier T4) — implementer + opus fixer
+- **Branch**: `plan/bookable-slots-single-calendar-and-booking-policy/phase-5` (base phase-4)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/170
+- **Commits**: `7092937` (impl) + `3e81ddc` (buffer-semantics fix) + `43d81ec` (contract-doc correction)
+- **Summary**: New `slot_engine.py` (group walker primitives extracted to pure org-scoped functions + `apply_policy_filter`); `CalendarGroupService.find_bookable_slots` delegates (pure refactor, group tests green, required_count preserved). New `BookableSlotsService.find_bookable_slots_for_calendar` (personal/bundle detect, all-children-free, `resolve_for_calendar`/`resolve_for_bundle`, engine + policy filter), DI `bookable_slots_service`. New `calendar_bookable_slots` query + `PublicAPIResources.BOOKABLE_SLOTS` + owner-scope check. 22 service + 3 GraphQL tests + scenario-#4 test.
+- **Review findings fixed**: **BLOCKER (correctness)** — buffer used a candidate-envelope model that was INVERTED vs spec scenario #4 (swapped before/after; first post-event slot 15:10 not 15:20). Corrected to **event-envelope** (dead-zone-around-event): candidate `[start,end]` dropped iff overlaps span expanded to `[bs-buffer_before, be+buffer_after]`; fetch window widened start-by-buffer_after / end-by-buffer_before. **Also corrected the spec + plan buffer-rule wording** (they carried the inverted formula — fixed so Phases 7/8 inherit the right contract). SHOULD-FIX — made the no-policy test compare against the real `CalendarGroupService` reference; added `BookableSlotsValidationError` (was reusing the group exception). NIT — class-level annotation.
+- **Gates**: ruff clean; mypy 297 (no new); `makemigrations --check` clean (no migration); `check --deploy` 0 errors; full `pytest -n auto` → 3398 passed; group + single==group parity green (no-policy byte-for-byte holds).
+- **Acceptance**: ✅ personal + bundle policy-compliant slots; busy bundle child suppresses; no-policy == pre-feature engine; scenario #4 first post-event slot = 15:20.
+
 ## Current phase
-Phase 5 — calendar_bookable_slots single+bundle (next) — the slot-engine keystone.
+Phase 6 — calendar_bookable_slots_with_code (next).
 
 ## Remaining phases
-- Phase 5 — calendar_bookable_slots single+bundle (T4 / opus)
 - Phase 6 — calendar_bookable_slots_with_code (T2 / haiku)
 - Phase 7 — group query policy-aware (T3 / sonnet)
 - Phase 8a — enforcement single/bundle/code (T3 / sonnet)
