@@ -1488,7 +1488,9 @@ query CalendarBookableSlotsWithCodeBadField(
 _managed_calendar_counter = 0
 
 
-def _managed_calendar_for_org(org: Organization, *, calendar_type=CalendarType.PERSONAL) -> Calendar:
+def _managed_calendar_for_org(
+    org: Organization, *, calendar_type=CalendarType.PERSONAL
+) -> Calendar:
     """Create a managed internal calendar for the given org with a unique external_id."""
     global _managed_calendar_counter
     _managed_calendar_counter += 1
@@ -1503,7 +1505,9 @@ def _managed_calendar_for_org(org: Organization, *, calendar_type=CalendarType.P
     )
 
 
-def _available_time(org: Organization, cal: Calendar, start: datetime.datetime, end: datetime.datetime) -> AvailableTime:
+def _available_time(
+    org: Organization, cal: Calendar, start: datetime.datetime, end: datetime.datetime
+) -> AvailableTime:
     return AvailableTime.objects.create(
         organization=org,
         calendar=cal,
@@ -1513,7 +1517,9 @@ def _available_time(org: Organization, cal: Calendar, start: datetime.datetime, 
     )
 
 
-def _calendar_event(org: Organization, cal: Calendar, start: datetime.datetime, end: datetime.datetime) -> CalendarEvent:
+def _calendar_event(
+    org: Organization, cal: Calendar, start: datetime.datetime, end: datetime.datetime
+) -> CalendarEvent:
     return CalendarEvent.objects.create(
         organization=org,
         calendar_fk=cal,
@@ -1526,7 +1532,7 @@ def _calendar_event(org: Organization, cal: Calendar, start: datetime.datetime, 
     )
 
 
-def _authed_client_with_bookable_slots(org: Organization) -> APIClient:
+def _authed_client_with_bookable_slots(org):
     """Return an APIClient authenticated as a system user with BOOKABLE_SLOTS resource."""
     from public_api.constants import PublicAPIResources
     from public_api.models import ResourceAccess
@@ -1537,7 +1543,9 @@ def _authed_client_with_bookable_slots(org: Organization) -> APIClient:
         integration_name="slots_integration",
         organization=org,
     )
-    baker.make(ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.BOOKABLE_SLOTS)
+    baker.make(
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.BOOKABLE_SLOTS
+    )
     client = APIClient()
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
     return client
@@ -1613,11 +1621,22 @@ class TestCalendarBookableSlotsWithCodeStrengthened:
         returned_starts = [r["startTime"] for r in result]
 
         # Free slots: 09:00, 09:30, 10:30 (10:00 is blocked).
-        assert datetime.datetime(2027, 3, 15, 9, 0, tzinfo=datetime.UTC).isoformat() in returned_starts
-        assert datetime.datetime(2027, 3, 15, 9, 30, tzinfo=datetime.UTC).isoformat() in returned_starts
-        assert datetime.datetime(2027, 3, 15, 10, 30, tzinfo=datetime.UTC).isoformat() in returned_starts
+        assert (
+            datetime.datetime(2027, 3, 15, 9, 0, tzinfo=datetime.UTC).isoformat() in returned_starts
+        )
+        assert (
+            datetime.datetime(2027, 3, 15, 9, 30, tzinfo=datetime.UTC).isoformat()
+            in returned_starts
+        )
+        assert (
+            datetime.datetime(2027, 3, 15, 10, 30, tzinfo=datetime.UTC).isoformat()
+            in returned_starts
+        )
         # Busy slot must be absent.
-        assert datetime.datetime(2027, 3, 15, 10, 0, tzinfo=datetime.UTC).isoformat() not in returned_starts
+        assert (
+            datetime.datetime(2027, 3, 15, 10, 0, tzinfo=datetime.UTC).isoformat()
+            not in returned_starts
+        )
 
     # ------------------------------------------------------------------
     # 2. Policy filtering — lead-time excludes near-future slots
