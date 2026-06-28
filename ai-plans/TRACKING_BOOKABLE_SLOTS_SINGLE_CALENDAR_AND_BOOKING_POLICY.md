@@ -19,6 +19,7 @@
 - Phase 1: `plan/bookable-slots-single-calendar-and-booking-policy/phase-1` (base `main`)
 - Phase 2: `plan/bookable-slots-single-calendar-and-booking-policy/phase-2` (base phase-1)
 - Phase 3: `plan/bookable-slots-single-calendar-and-booking-policy/phase-3` (base phase-2)
+- Phase 4: `plan/bookable-slots-single-calendar-and-booking-policy/phase-4` (base phase-3)
 
 ## Completed phases
 
@@ -56,11 +57,21 @@
 - **Gates**: ruff clean; mypy no new errors; `makemigrations --check` clean (no migration); `check --deploy` 0 errors; `schema.yml` drift-free; full `pytest -n auto` → 3342 passed.
 - **Acceptance**: ✅ REST CRUD org-scoped; duplicate/invalid→400; delete-absent→204; writes audited; member writes forbidden.
 
+### Phase 4 — Policy CRUD public GraphQL ✅
+- **Status**: DONE (reviewed, fixed, pushed, PR open)
+- **Model used**: sonnet (plan tier T3) — implementer + sonnet fixer
+- **Branch**: `plan/bookable-slots-single-calendar-and-booking-policy/phase-4` (base phase-3)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/169
+- **Commits**: `5c14975` (impl) + `c0a08ed` (review fixes)
+- **Summary**: `BookingPolicyGraphQLType` + input/result types (`calendar_integration/graphql.py`); `booking_policies` query (org-scoped, target filters); `create/update/delete_booking_policy` mutations (`public_api/mutations.py`) delegating to shared `BookingPolicyService` w/ `actor_from_system_user`, org-scoped target resolution, `DuplicateBookingPolicyError`/`ValueError`→GraphQLError, idempotent delete; `PublicAPIResources.BOOKING_POLICY` + 4 `FIELD_TO_RESOURCE_MAPPING` entries. 35 GraphQL tests + 1 service test.
+- **Review findings fixed**: BLOCKER — GraphQL bypassed the REST serializer's membership validation → bogus `membership_user_id` 500. Moved membership-existence validation into the **shared service** `create_booking_policy` (raises ValueError; GraphQL maps it) → REST/GraphQL parity in one place. SHOULD-FIX — removed dead `error_message` from both result types (errors-as-exceptions, sibling-consistent); added multiple-targets + duplicate-membership/group GraphQL tests + bogus-membership GraphQL/service tests. NIT — corrected `type: ignore` category on the membership resolver.
+- **Gates**: ruff clean; mypy 299 (1 fewer than baseline, no new); `makemigrations --check` clean; `check --deploy` 0 errors; `schema.yml` drift-free; full `pytest -n auto` → 3377 passed.
+- **Acceptance**: ✅ GraphQL CRUD org+resource-scoped; behavior matches REST (incl. clean bogus-membership error); writes audited.
+
 ## Current phase
-Phase 4 — Policy CRUD public GraphQL (next).
+Phase 5 — calendar_bookable_slots single+bundle (next) — the slot-engine keystone.
 
 ## Remaining phases
-- Phase 4 — Policy CRUD public GraphQL (T3 / sonnet)
 - Phase 5 — calendar_bookable_slots single+bundle (T4 / opus)
 - Phase 6 — calendar_bookable_slots_with_code (T2 / haiku)
 - Phase 7 — group query policy-aware (T3 / sonnet)
