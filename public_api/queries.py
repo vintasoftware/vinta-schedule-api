@@ -25,6 +25,7 @@ from calendar_integration.graphql import (
     AvailableTimeWindowGraphQLType,
     BlockedTimeGraphQLType,
     BookableSlotProposalGraphQLType,
+    BookingPolicyGraphQLType,
     CalendarBundleGraphQLType,
     CalendarEventGraphQLType,
     CalendarGraphQLType,
@@ -67,6 +68,7 @@ from webhooks.models import WebhookConfiguration, WebhookEvent
 
 
 if TYPE_CHECKING:
+    from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_permission_service import CalendarPermissionService
     from calendar_integration.services.calendar_service import CalendarService
@@ -108,6 +110,18 @@ def get_query_dependencies(
         calendar_group_service=cast("CalendarGroupService", calendar_group_service),
         calendar_permission_service=cast("CalendarPermissionService", calendar_permission_service),
     )
+
+
+@inject
+def get_booking_policy_query_dependencies(
+    booking_policy_service: Annotated[
+        "BookingPolicyService | None", Provide["booking_policy_service"]
+    ] = None,
+) -> "BookingPolicyService":
+    """Resolve the BookingPolicyService from the DI container."""
+    if booking_policy_service is None:
+        raise GraphQLError("Missing required dependency: booking_policy_service")
+    return booking_policy_service
 
 
 def _get_org(info: strawberry.Info):
@@ -1064,6 +1078,44 @@ class Query:
             list[ExternalEventChangeRequestGraphQLType],
             list(_slice_qs(qs, offset, limit)),
         )
+
+    # ------------------------------------------------------------------
+    # BookingPolicy queries (Phase 4)
+    # ------------------------------------------------------------------
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def booking_policies(
+        self,
+        info: strawberry.Info,
+        calendar_id: int | None = None,
+        membership_user_id: int | None = None,
+        calendar_group_id: int | None = None,
+        is_organization_default: bool | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[BookingPolicyGraphQLType]:
+        """List BookingPolicy rows for the caller's organization.
+
+        All four filter args are optional and combinable.  When none are
+        supplied, all policies for the org are returned (paginated).
+        """
+        org = _get_org(info)
+        service = get_booking_policy_query_dependencies()
+        service.initialize(org)
+
+        qs = service.get_all_policies()
+
+        if calendar_id is not None:
+            qs = qs.filter(calendar_fk_id=calendar_id)
+        if membership_user_id is not None:
+            qs = qs.filter(membership_user_id=membership_user_id)
+        if calendar_group_id is not None:
+            qs = qs.filter(calendar_group_fk_id=calendar_group_id)
+        if is_organization_default is not None:
+            qs = qs.filter(is_organization_default=is_organization_default)
+
+        qs = _slice_qs(qs.order_by("pk"), offset, limit)
+        return cast(list[BookingPolicyGraphQLType], list(qs))
 
     # ------------------------------------------------------------------
     # Code-gated read fields (unauthenticated — authorized by booking code)

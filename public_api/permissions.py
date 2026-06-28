@@ -87,6 +87,10 @@ class OrganizationResourceAccess(BasePermission):
         "externalEventChangeRequests": PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST,
         "approveExternalEventChangeRequest": PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST,
         "rejectExternalEventChangeRequest": PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST,
+        "bookingPolicies": PublicAPIResources.BOOKING_POLICY,
+        "createBookingPolicy": PublicAPIResources.BOOKING_POLICY,
+        "updateBookingPolicy": PublicAPIResources.BOOKING_POLICY,
+        "deleteBookingPolicy": PublicAPIResources.BOOKING_POLICY,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
