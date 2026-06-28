@@ -29,10 +29,17 @@ Boundary semantics (decided once, applied consistently):
   exactly at the lead horizon is bookable).
 - **max-horizon**: a candidate is kept iff ``start <= now + max_horizon`` (the
   instant exactly at the far horizon is bookable).
-- **buffer envelope**: the envelope ``[start - buffer_before, end + buffer_after]``
-  is tested against blocking spans with the same half-open overlap rule, so an
-  envelope that ends exactly where a blocking span begins (or begins exactly where
-  one ends) is **allowed** (flush booking with a zero gap is permitted).
+- **buffer envelope (event-envelope / dead-zone-around-the-event)**: each blocking
+  span ``[bs, be)`` is expanded to its dead zone ``[bs - buffer_before, be +
+  buffer_after)`` and the **bare** candidate ``[start, end)`` is tested against that
+  expanded zone with the same half-open overlap rule.  ``buffer_before`` protects
+  the time *before* the event and ``buffer_after`` protects the time *after* it.
+  Worked example: an event ``14:00-15:00`` with ``buffer_before=10m`` and
+  ``buffer_after=20m`` has a dead zone of ``13:50-15:20``; a candidate overlapping
+  any part of ``13:50-15:20`` is dropped, so the first post-event 30-min slot can
+  only start at ``15:20`` (not ``15:10``).  Touching is still not overlap: a
+  candidate ending exactly at ``13:50`` (or starting exactly at ``15:20``) is
+  **allowed** (flush booking with a zero gap is permitted).
 """
 
 import datetime
@@ -211,10 +218,11 @@ def apply_policy_filter(
     - **lead-time**: drop a proposal whose ``start < now + lead_time``.
     - **max-horizon**: drop a proposal whose ``start > now + max_horizon`` (only
       when ``max_horizon`` is not ``None``).
-    - **buffer envelope**: when a buffer applies, drop a proposal whose envelope
-      ``[start - buffer_before, end + buffer_after]`` overlaps **any** blocking
-      span across **all** target calendars (``buffer_blocking_spans`` is the union
-      of managed + unmanaged blocking spans gathered by the caller).
+    - **buffer envelope (event-envelope)**: when a buffer applies, drop a proposal
+      whose **bare** window ``[start, end)`` overlaps the dead zone of **any**
+      blocking span across **all** target calendars — the dead zone being the span
+      expanded to ``[bs - buffer_before, be + buffer_after)`` (``buffer_blocking_spans``
+      is the union of managed + unmanaged blocking spans gathered by the caller).
 
     ``buffer_blocking_spans`` is consulted only when a buffer is in effect; the
     caller passes an empty mapping when no buffer applies (and should skip the
@@ -226,8 +234,9 @@ def apply_policy_filter(
         datetime.timedelta(0)
     )
 
-    # Flatten the per-calendar blocking spans into a single list once; the buffer
-    # envelope is rejected if it overlaps a blocking span on ANY target calendar.
+    # Flatten the per-calendar blocking spans into a single list once; a candidate
+    # is rejected if its bare window overlaps any blocking span's dead zone on ANY
+    # target calendar.
     all_blocking_spans: list[Span] = []
     if has_buffer:
         for cal_spans in buffer_blocking_spans.values():
@@ -240,10 +249,15 @@ def apply_policy_filter(
         if horizon_cutoff is not None and proposal.start_time > horizon_cutoff:
             continue
         if has_buffer:
-            env_start = proposal.start_time - policy.buffer_before
-            env_end = proposal.end_time + policy.buffer_after
+            # Event-envelope: expand each blocking span to its dead zone
+            # [bs - buffer_before, be + buffer_after) and test the BARE candidate.
+            candidate = (proposal.start_time, proposal.end_time)
             if any(
-                intervals_overlap((bs, be), (env_start, env_end)) for bs, be in all_blocking_spans
+                intervals_overlap(
+                    candidate,
+                    (bs - policy.buffer_before, be + policy.buffer_after),
+                )
+                for bs, be in all_blocking_spans
             ):
                 continue
         filtered.append(proposal)

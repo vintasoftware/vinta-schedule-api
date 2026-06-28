@@ -335,6 +335,13 @@ class CalendarGroupHasFutureEventsError(CalendarGroupError):
     default_message = "Cannot delete CalendarGroup because it has future bookings."
 
 
+# Bookable Slots errors
+class BookableSlotsValidationError(CalendarIntegrationError):
+    """Raised when single-calendar / bundle bookable-slot input data is invalid."""
+
+    pass
+
+
 # Booking Policy Errors
 class DuplicateBookingPolicyError(CalendarIntegrationError):
     """Raised when a second BookingPolicy is created for the same target/org.

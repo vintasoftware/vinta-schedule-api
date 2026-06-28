@@ -30,7 +30,7 @@ from django.utils import timezone
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
-    CalendarGroupValidationError,
+    BookableSlotsValidationError,
     CalendarServiceOrganizationNotSetError,
 )
 from calendar_integration.models import (
@@ -55,6 +55,7 @@ class BookableSlotsService:
     """
 
     organization: Organization | None
+    booking_policy_service: BookingPolicyService | None
 
     def __init__(self, booking_policy_service: BookingPolicyService | None = None) -> None:
         self.organization = None
@@ -107,9 +108,9 @@ class BookableSlotsService:
         booking_policy_service = cast(BookingPolicyService, self.booking_policy_service)
 
         if slot_step <= datetime.timedelta(0):
-            raise CalendarGroupValidationError("slot_step must be a positive timedelta.")
+            raise BookableSlotsValidationError("slot_step must be a positive timedelta.")
         if duration <= datetime.timedelta(0):
-            raise CalendarGroupValidationError("duration must be a positive timedelta.")
+            raise BookableSlotsValidationError("duration must be a positive timedelta.")
 
         if now is None:
             now = timezone.now()
@@ -229,17 +230,21 @@ class BookableSlotsService:
         calendars — managed included — so this fetches blocking spans for the full
         target set (not just unmanaged ones).  The fetch window is widened by the
         buffers so a blocking span just outside the search window can still clip a
-        candidate's envelope.
+        candidate via its dead zone.
         """
         no_buffer = policy.buffer_before <= datetime.timedelta(0) and policy.buffer_after <= (
             datetime.timedelta(0)
         )
         if no_buffer or not target_calendar_ids:
             return {}
+        # Event-envelope widening: a span before the window matters when its
+        # be + buffer_after reaches back to search_window_start (so widen START by
+        # buffer_after); a span after the window matters when its bs - buffer_before
+        # reaches forward to search_window_end (so widen END by buffer_before).
         return slot_engine.fetch_blocking_spans(
             org_id,
             target_calendar_ids,
-            search_window_start - policy.buffer_before,
-            search_window_end + policy.buffer_after,
+            search_window_start - policy.buffer_after,
+            search_window_end + policy.buffer_before,
             with_bulk_modifications=with_bulk_modifications,
         )

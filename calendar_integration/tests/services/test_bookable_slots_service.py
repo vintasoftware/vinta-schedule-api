@@ -26,7 +26,7 @@ from django.utils import timezone
 import pytest
 
 from calendar_integration.constants import CalendarProvider, CalendarType
-from calendar_integration.exceptions import CalendarGroupValidationError
+from calendar_integration.exceptions import BookableSlotsValidationError
 from calendar_integration.factories import create_booking_policy
 from calendar_integration.models import (
     AvailableTime,
@@ -315,14 +315,14 @@ def test_step_larger_than_window_returns_empty(service, organization):
 def test_invalid_durations_rejected(service, organization):
     cal = _calendar(organization, managed=True)
     now = timezone.now().replace(microsecond=0)
-    with pytest.raises(CalendarGroupValidationError):
+    with pytest.raises(BookableSlotsValidationError):
         service.find_bookable_slots_for_calendar(
             calendar_id=cal.id,
             search_window_start=now,
             search_window_end=now + timedelta(hours=1),
             duration=timedelta(0),
         )
-    with pytest.raises(CalendarGroupValidationError):
+    with pytest.raises(BookableSlotsValidationError):
         service.find_bookable_slots_for_calendar(
             calendar_id=cal.id,
             search_window_start=now,
@@ -338,45 +338,28 @@ def test_invalid_durations_rejected(service, organization):
 
 
 @pytest.mark.django_db
-def test_no_policy_matches_unpolicied_engine(service, organization):
-    """With no policy anywhere, the service result equals the raw engine walk."""
+def test_no_policy_matches_one_calendar_group(service, group_service, organization):
+    """With no policy anywhere, the service result is byte-for-byte identical to the
+    pre-feature reference: ``CalendarGroupService.find_bookable_slots`` for a
+    one-calendar group containing the same single calendar."""
     cal = _calendar(organization, managed=False)
     now = timezone.now().replace(microsecond=0)
     window_start = now + timedelta(hours=1)
     window_end = window_start + timedelta(hours=3)
     _event(cal, window_start + timedelta(minutes=30), window_start + timedelta(minutes=90))
 
-    duration = timedelta(minutes=30)
-    slot_step = timedelta(minutes=15)
-
-    service_proposals = service.find_bookable_slots_for_calendar(
-        calendar_id=cal.id,
+    kwargs = dict(
         search_window_start=window_start,
         search_window_end=window_end,
-        duration=duration,
-        slot_step=slot_step,
+        duration=timedelta(minutes=30),
+        slot_step=timedelta(minutes=15),
     )
 
-    # Re-run the engine directly with no policy applied.
-    managed_ids, unmanaged_ids = slot_engine.split_calendars_by_management(
-        organization.id, {cal.id}
-    )
-    available_spans = slot_engine.fetch_available_spans(
-        organization.id, managed_ids, window_start, window_end
-    )
-    blocking_spans = slot_engine.fetch_blocking_spans(
-        organization.id, unmanaged_ids, window_start, window_end, with_bulk_modifications=False
-    )
-    engine_proposals = []
-    cursor = window_start
-    while cursor + duration <= window_end:
-        if slot_engine.calendar_free_for_window(
-            cal.id, cursor, cursor + duration, managed_ids, available_spans, blocking_spans
-        ):
-            engine_proposals.append((cursor, cursor + duration))
-        cursor += slot_step
+    group = _one_calendar_group(group_service, cal)
+    group_proposals = group_service.find_bookable_slots(group_id=group.id, **kwargs)
+    service_proposals = service.find_bookable_slots_for_calendar(calendar_id=cal.id, **kwargs)
 
-    assert _times(service_proposals) == engine_proposals
+    assert _times(service_proposals) == _times(group_proposals)
 
 
 # ---------------------------------------------------------------------------
@@ -429,49 +412,19 @@ def test_max_horizon_drops_far_candidates(service, organization):
 
 
 @pytest.mark.django_db
-def test_buffer_before_drops_candidates_after_event(service, organization):
-    # buffer_before extends the candidate's protected zone BACKWARD
-    # ([start - buffer_before, ...]), so it blocks candidates that begin too soon
-    # AFTER an existing event. Place the event before the candidate window.
-    cal = _calendar(organization, managed=False)
-    now = timezone.now().replace(microsecond=0)
-    base = now + timedelta(hours=1)
-    event_start = base
-    event_end = base + timedelta(minutes=30)
-    _event(cal, event_start, event_end)
-    create_booking_policy(
-        calendar=cal, buffer_before_seconds=int(timedelta(minutes=30).total_seconds())
-    )
-
-    proposals = service.find_bookable_slots_for_calendar(
-        calendar_id=cal.id,
-        search_window_start=event_end,  # candidates strictly after the event
-        search_window_end=event_end + timedelta(hours=2),
-        duration=timedelta(minutes=30),
-        slot_step=timedelta(minutes=15),
-        now=now,
-    )
-    # A candidate is kept iff its envelope [start - 30m, end] does not overlap the
-    # event: i.e. start - 30m >= event_end → start >= event_end + 30m.
-    cutoff = event_end + timedelta(minutes=30)
-    assert proposals
-    assert all(p.start_time >= cutoff for p in proposals)
-    # The candidate at exactly the cutoff survives (touching is not overlap).
-    assert any(p.start_time == cutoff for p in proposals)
-
-
-@pytest.mark.django_db
-def test_buffer_after_drops_candidates_before_event(service, organization):
-    # buffer_after extends the candidate's protected zone FORWARD
-    # ([..., end + buffer_after]), so it blocks candidates ending too soon BEFORE
-    # an existing event. Place the event after the candidate window.
+def test_buffer_before_drops_candidates_before_event(service, organization):
+    # Event-envelope: buffer_before protects time BEFORE the event. The event's
+    # dead zone is [event_start - buffer_before, event_end], so candidates that end
+    # too close before the event start are dropped. Place the event after the
+    # candidate window.
     cal = _calendar(organization, managed=False)
     now = timezone.now().replace(microsecond=0)
     base = now + timedelta(hours=1)
     event_start = base + timedelta(hours=1)
-    _event(cal, event_start, event_start + timedelta(minutes=30))
+    event_end = event_start + timedelta(minutes=30)
+    _event(cal, event_start, event_end)
     create_booking_policy(
-        calendar=cal, buffer_after_seconds=int(timedelta(minutes=30).total_seconds())
+        calendar=cal, buffer_before_seconds=int(timedelta(minutes=30).total_seconds())
     )
 
     proposals = service.find_bookable_slots_for_calendar(
@@ -482,12 +435,95 @@ def test_buffer_after_drops_candidates_before_event(service, organization):
         slot_step=timedelta(minutes=15),
         now=now,
     )
-    # A candidate is kept iff its envelope [start, end + 30m] does not overlap the
-    # event: i.e. end + 30m <= event_start → end <= event_start - 30m.
+    # Dead zone = [event_start - 30m, event_end]. A candidate is kept iff its bare
+    # window does not overlap it: i.e. end <= event_start - 30m.
     cutoff = event_start - timedelta(minutes=30)
     assert proposals
     assert all(p.end_time <= cutoff for p in proposals)
+    # The candidate ending exactly at the cutoff survives (touching is not overlap).
     assert any(p.end_time == cutoff for p in proposals)
+
+
+@pytest.mark.django_db
+def test_buffer_after_drops_candidates_after_event(service, organization):
+    # Event-envelope: buffer_after protects time AFTER the event. The event's dead
+    # zone is [event_start, event_end + buffer_after], so candidates that start too
+    # soon after the event end are dropped. Place the event before the candidate
+    # window.
+    cal = _calendar(organization, managed=False)
+    now = timezone.now().replace(microsecond=0)
+    base = now + timedelta(hours=1)
+    event_start = base
+    event_end = base + timedelta(minutes=30)
+    _event(cal, event_start, event_end)
+    create_booking_policy(
+        calendar=cal, buffer_after_seconds=int(timedelta(minutes=30).total_seconds())
+    )
+
+    proposals = service.find_bookable_slots_for_calendar(
+        calendar_id=cal.id,
+        search_window_start=event_end,  # candidates strictly after the event
+        search_window_end=event_end + timedelta(hours=2),
+        duration=timedelta(minutes=30),
+        slot_step=timedelta(minutes=15),
+        now=now,
+    )
+    # Dead zone = [event_start, event_end + 30m]. A candidate is kept iff its bare
+    # window does not overlap it: i.e. start >= event_end + 30m.
+    cutoff = event_end + timedelta(minutes=30)
+    assert proposals
+    assert all(p.start_time >= cutoff for p in proposals)
+    # The candidate starting exactly at the cutoff survives (touching is not overlap).
+    assert any(p.start_time == cutoff for p in proposals)
+
+
+@pytest.mark.django_db
+def test_buffer_scenario_4_asymmetric(service, organization):
+    # SPEC acceptance scenario #4: event 14:00-15:00, buffer_before=10m,
+    # buffer_after=20m → dead zone 13:50-15:20. The first 30-min slot at/after the
+    # event must start at 15:20 (NOT 15:10), and a slot ending exactly at 13:50 is
+    # still offered (touching is not overlap).
+    cal = _calendar(organization, managed=False)
+    # Pin now far in the past so lead/horizon never interfere.
+    now = datetime.datetime(2020, 1, 1, 0, 0, tzinfo=datetime.UTC)
+    day = datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC)
+    event_start = day.replace(hour=14)
+    event_end = day.replace(hour=15)
+    _event(cal, event_start, event_end)
+    create_booking_policy(
+        calendar=cal,
+        buffer_before_seconds=int(timedelta(minutes=10).total_seconds()),
+        buffer_after_seconds=int(timedelta(minutes=20).total_seconds()),
+    )
+
+    # Start at 12:50 so the 15-min grid lands on :05/:20/:35/:50 — both the
+    # touching candidate (13:20-13:50) and the first post-event slot (15:20) are
+    # reachable.
+    proposals = service.find_bookable_slots_for_calendar(
+        calendar_id=cal.id,
+        search_window_start=day.replace(hour=12, minute=50),
+        search_window_end=day.replace(hour=16),
+        duration=timedelta(minutes=30),
+        slot_step=timedelta(minutes=15),
+        now=now,
+    )
+
+    dead_zone_start = day.replace(hour=13, minute=50)
+    dead_zone_end = day.replace(hour=15, minute=20)
+    # No offered slot overlaps the dead zone [13:50, 15:20].
+    assert proposals
+    assert all(
+        not (p.start_time < dead_zone_end and dead_zone_start < p.end_time) for p in proposals
+    )
+    # The first slot at/after the event starts at 15:20 (not 15:10).
+    post_event = [p for p in proposals if p.start_time >= event_end]
+    assert post_event
+    assert min(p.start_time for p in post_event) == dead_zone_end
+    # A slot ending exactly at 13:50 (start 13:20) is still offered (touching != overlap).
+    assert any(
+        p.start_time == day.replace(hour=13, minute=20) and p.end_time == dead_zone_start
+        for p in proposals
+    )
 
 
 @pytest.mark.django_db
@@ -566,22 +602,23 @@ class TestPolicyFilterBoundaries:
         policy = EffectivePolicy(
             lead_time=timedelta(0),
             max_horizon=None,
-            buffer_before=timedelta(0),
-            buffer_after=timedelta(minutes=15),
+            buffer_before=timedelta(minutes=15),
+            buffer_after=timedelta(0),
         )
-        # Candidate ends at T; envelope end = T + 15m. Blocking span starts exactly
-        # at T + 15m → touching, NOT overlap → allowed.
+        # Event-envelope: the blocking span's dead zone starts at bs - buffer_before.
+        # Candidate ends at T; place the span so its dead-zone start = T (i.e. the
+        # span begins at T + 15m) → touching, NOT overlap → allowed.
         candidate_start = now + timedelta(hours=1)
         candidate_end = candidate_start + timedelta(minutes=30)
-        envelope_end = candidate_end + timedelta(minutes=15)
-        spans = {1: [(envelope_end, envelope_end + timedelta(minutes=30))]}
+        span_start = candidate_end + timedelta(minutes=15)  # dead zone starts at candidate_end
+        spans = {1: [(span_start, span_start + timedelta(minutes=30))]}
         proposal = self._proposal(candidate_start)
         result = slot_engine.apply_policy_filter([proposal], policy, now, spans)
         assert result == [proposal]
 
-        # Move the span one second earlier so the envelope overlaps → rejected.
+        # Move the span one second earlier so its dead zone overlaps the candidate → rejected.
         spans_overlap = {
-            1: [(envelope_end - timedelta(seconds=1), envelope_end + timedelta(minutes=30))]
+            1: [(span_start - timedelta(seconds=1), span_start + timedelta(minutes=30))]
         }
         result2 = slot_engine.apply_policy_filter([proposal], policy, now, spans_overlap)
         assert result2 == []
