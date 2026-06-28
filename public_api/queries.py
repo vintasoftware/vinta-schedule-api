@@ -1328,6 +1328,51 @@ class Query:
         ]
 
     @strawberry.field()
+    def calendar_bookable_slots_with_code(
+        self,
+        code: str,
+        search_window_start: datetime.datetime,
+        search_window_end: datetime.datetime,
+        duration_seconds: int,
+        slot_step_seconds: int = 15 * 60,
+    ) -> list[BookableSlotProposalGraphQLType]:
+        """Return policy-compliant bookable slot windows for a calendar via booking code.
+
+        No org token required.  The code gates access to its bound calendar or
+        calendar bundle only. Reads are repeatable: the code is never consumed by
+        this query. A group-scoped code is rejected (single/bundle calendars only).
+
+        The response omits policy rule values — slots only.
+        """
+        _validate_code_gated_range(search_window_start, search_window_end)
+        deps = get_query_dependencies()
+        token = _resolve_code_from_deps(deps, code)
+
+        # Resolve the bound calendar (calendar-scope or event.calendar fallback).
+        # Reject group-scoped codes (single/bundle only).
+        calendar = token.calendar
+        if calendar is None and token.event is not None:
+            calendar = token.event.calendar
+        if calendar is None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
+
+        org = _get_org_from_token(token)
+        service = get_bookable_slots_service()
+        service.initialize(organization=org)
+
+        proposals = service.find_bookable_slots_for_calendar(
+            calendar_id=calendar.id,
+            search_window_start=search_window_start,
+            search_window_end=search_window_end,
+            duration=datetime.timedelta(seconds=duration_seconds),
+            slot_step=datetime.timedelta(seconds=slot_step_seconds),
+        )
+        return [
+            BookableSlotProposalGraphQLType(start_time=p.start_time, end_time=p.end_time)
+            for p in proposals
+        ]
+
+    @strawberry.field()
     def calendar_group_availability_with_code(
         self,
         code: str,

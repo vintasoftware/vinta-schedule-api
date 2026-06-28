@@ -7,6 +7,9 @@ Covers Phase 4:
 - calendarGroupBookableSlotsWithCode
 - calendarGroupAvailabilityWithCode
 
+Covers Phase 6:
+- calendarBookableSlotsWithCode
+
 All fields are unauthenticated (no Authorization header required).  The booking
 code authorizes access to its bound calendar / calendar group.  Reads never
 consume the code (used_at remains NULL after any read).
@@ -1241,6 +1244,188 @@ class TestCodeGatedRangeClamp:
                 # 367 days — one day over the 366-day cap
                 "searchWindowEnd": "2026-01-03T00:00:00Z",
                 "durationSeconds": 3600,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Requested time range is too large."
+
+
+# ---------------------------------------------------------------------------
+# Calendar bookable slots with code (Phase 6)
+# ---------------------------------------------------------------------------
+
+CALENDAR_BOOKABLE_SLOTS_WITH_CODE = """
+query CalendarBookableSlotsWithCode(
+    $code: String!,
+    $searchWindowStart: DateTime!,
+    $searchWindowEnd: DateTime!,
+    $durationSeconds: Int!
+) {
+    calendarBookableSlotsWithCode(
+        code: $code,
+        searchWindowStart: $searchWindowStart,
+        searchWindowEnd: $searchWindowEnd,
+        durationSeconds: $durationSeconds
+    ) {
+        startTime
+        endTime
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestCalendarBookableSlotsWithCode:
+    """Tests for calendarBookableSlotsWithCode — code-gated single/bundle slots."""
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_returns_slots_for_valid_calendar_code(
+        self, mock_rate_limiter, anon_client, calendar_booking_code
+    ):
+        """A valid calendar-scoped code returns bookable slots with no auth header."""
+        from di_core.containers import container
+
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = calendar_booking_code
+
+        start = datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2025, 9, 2, 10, 30, tzinfo=datetime.UTC)
+        proposals = [
+            BookableSlotProposal(start_time=start, end_time=start + datetime.timedelta(minutes=30)),
+            BookableSlotProposal(start_time=start + datetime.timedelta(minutes=30), end_time=end),
+        ]
+
+        mock_slots_service = Mock()
+        mock_slots_service.initialize.return_value = None
+        mock_slots_service.find_bookable_slots_for_calendar.return_value = proposals
+
+        with container.bookable_slots_service.override(mock_slots_service):
+            data = post_graphql(
+                anon_client,
+                CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+                {
+                    "code": code,
+                    "searchWindowStart": start.isoformat(),
+                    "searchWindowEnd": end.isoformat(),
+                    "durationSeconds": 30 * 60,
+                },
+            )
+
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["calendarBookableSlotsWithCode"]
+        assert len(result) == 2
+        assert result[0]["startTime"] == start.isoformat()
+        assert result[0]["endTime"] == (start + datetime.timedelta(minutes=30)).isoformat()
+        assert result[1]["startTime"] == (start + datetime.timedelta(minutes=30)).isoformat()
+        assert result[1]["endTime"] == end.isoformat()
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_code_not_consumed_after_read(
+        self, mock_rate_limiter, anon_client, calendar_booking_code
+    ):
+        """calendarBookableSlotsWithCode must not consume the code."""
+        from di_core.containers import container
+
+        mock_rate_limiter.return_value = iter([None])
+        token, code = calendar_booking_code
+
+        start = datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC)
+
+        mock_slots_service = Mock()
+        mock_slots_service.initialize.return_value = None
+        mock_slots_service.find_bookable_slots_for_calendar.return_value = []
+
+        with container.bookable_slots_service.override(mock_slots_service):
+            post_graphql(
+                anon_client,
+                CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+                {
+                    "code": code,
+                    "searchWindowStart": start.isoformat(),
+                    "searchWindowEnd": end.isoformat(),
+                    "durationSeconds": 30 * 60,
+                },
+            )
+
+        token.refresh_from_db()
+        assert token.used_at is None, "used_at should remain NULL after a read"
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_invalid_code_returns_error(self, mock_rate_limiter, anon_client):
+        """An invalid / unknown code returns the uniform error message."""
+        mock_rate_limiter.return_value = iter([None])
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": "aW52YWxpZA==",  # "invalid" base64 — no matching token
+                "searchWindowStart": "2025-09-02T09:00:00Z",
+                "searchWindowEnd": "2025-09-02T10:00:00Z",
+                "durationSeconds": 30 * 60,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid or expired code."
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_group_code_rejected(self, mock_rate_limiter, anon_client, group_booking_code):
+        """A group-scoped code is rejected (single/bundle calendars only)."""
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = group_booking_code
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": "2025-09-02T09:00:00Z",
+                "searchWindowEnd": "2025-09-02T10:00:00Z",
+                "durationSeconds": 30 * 60,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid or expired code."
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_backwards_range_rejected(self, mock_rate_limiter, anon_client, calendar_booking_code):
+        """A backwards range (end <= start) is rejected."""
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = calendar_booking_code
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": "2025-09-02T10:00:00Z",
+                "searchWindowEnd": "2025-09-02T09:00:00Z",
+                "durationSeconds": 30 * 60,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid time range."
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_over_max_range_rejected(self, mock_rate_limiter, anon_client, calendar_booking_code):
+        """A range exceeding MAX_CODE_GATED_RANGE (366 days) is rejected."""
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = calendar_booking_code
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": "2025-01-01T00:00:00Z",
+                # 367 days — one day over the 366-day cap
+                "searchWindowEnd": "2026-01-03T00:00:00Z",
+                "durationSeconds": 30 * 60,
             },
         )
 
