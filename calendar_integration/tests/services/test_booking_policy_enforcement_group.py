@@ -434,6 +434,10 @@ class TestGroupBookingPolicyEnforcement:
         # Enforcement: booking must succeed.
         event = _book(service, group, calendar)
         assert event is not None
+        # The full group write actually persisted (symmetry with the
+        # no-rows-on-violation assertions): the event + its slot selections exist.
+        assert CalendarEvent.objects.filter_by_organization(org.id).count() >= 1
+        assert CalendarEventGroupSelection.objects.filter_by_organization(org.id).count() >= 1
 
     # ------------------------------------------------------------------
     # Policy resolves via resolve_for_group (org-default fallthrough)
