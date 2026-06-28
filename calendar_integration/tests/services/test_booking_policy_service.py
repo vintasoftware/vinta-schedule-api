@@ -21,7 +21,10 @@ import pytest
 from model_bakery import baker
 
 from calendar_integration.constants import CalendarType
-from calendar_integration.exceptions import CalendarServiceOrganizationNotSetError
+from calendar_integration.exceptions import (
+    CalendarServiceOrganizationNotSetError,
+    DuplicateBookingPolicyError,
+)
 from calendar_integration.factories import create_booking_policy
 from calendar_integration.models import (
     BookingPolicy,
@@ -32,10 +35,7 @@ from calendar_integration.models import (
     CalendarOwnership,
     ChildrenCalendarRelationship,
 )
-from calendar_integration.services.booking_policy_service import (
-    BookingPolicyService,
-    DuplicateBookingPolicyError,
-)
+from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.dataclasses import EffectivePolicy
 from organizations.models import Organization, OrganizationMembership
 
@@ -556,6 +556,28 @@ class TestResolveForBundle:
 
         assert result.lead_time == datetime.timedelta(seconds=120)
 
+    def test_bundle_unconstrained_when_children_have_owners_but_no_policies(self):
+        """Bundle whose children have CalendarOwnership rows but no policy anywhere
+        (no calendar/membership/group/bundle policy AND no org-default) →
+        resolve_for_bundle returns EffectivePolicy.unconstrained().
+
+        This exercises the ``combined != unconstrained()`` short-circuit's false branch
+        distinct from the no-children path.
+        """
+        org = _org()
+        bundle, children = self._make_bundle_with_children(org, 2)
+        # Give each child an owner (CalendarOwnership) but no policy anywhere.
+        uid_a = _membership(org)
+        uid_b = _membership(org)
+        _own(children[0], uid_a)
+        _own(children[1], uid_b)
+        # No BookingPolicy created for any target, no org default.
+
+        svc = _service(org)
+        result = svc.resolve_for_bundle(bundle)
+
+        assert result == EffectivePolicy.unconstrained()
+
 
 # ---------------------------------------------------------------------------
 # resolve_for_group
@@ -797,8 +819,11 @@ class TestUpdateBookingPolicy:
 
         svc.update_booking_policy(policy)
 
-        # The audit record is always emitted (diff may be None/empty when no change).
+        # The audit record is always emitted; compute_diff returns None for identical
+        # before/after, so the diff kwarg must be None.
         mock_audit.record.assert_called_once()
+        call_kwargs = mock_audit.record.call_args.kwargs
+        assert call_kwargs["diff"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -859,6 +884,26 @@ class TestDeleteBookingPolicy:
         org = _org()
         svc = _service(org)
         svc.delete_org_default_policy()  # No policy — no-op.
+
+    def test_delete_policy_for_membership_noop_when_absent(self):
+        """delete_policy_for_membership is a no-op and emits no audit record when absent."""
+        org = _org()
+        uid = _membership(org)
+        mock_audit = MagicMock()
+        svc = _service(org, audit_service=mock_audit)
+        # No policy for this membership — should not raise.
+        svc.delete_policy_for_membership(uid)
+        mock_audit.record.assert_not_called()
+
+    def test_delete_policy_for_group_noop_when_absent(self):
+        """delete_policy_for_group is a no-op and emits no audit record when absent."""
+        org = _org()
+        group = baker.make(CalendarGroup, organization=org, name="G-noop")
+        mock_audit = MagicMock()
+        svc = _service(org, audit_service=mock_audit)
+        # No policy for this group — should not raise.
+        svc.delete_policy_for_group(group)
+        mock_audit.record.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

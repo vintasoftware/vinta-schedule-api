@@ -333,3 +333,14 @@ class CalendarGroupHasFutureEventsError(CalendarGroupError):
     """Raised when a group cannot be deleted because it has future bookings."""
 
     default_message = "Cannot delete CalendarGroup because it has future bookings."
+
+
+# Booking Policy Errors
+class DuplicateBookingPolicyError(CalendarIntegrationError):
+    """Raised when a second BookingPolicy is created for the same target/org.
+
+    Callers (REST serializers, GraphQL mutations) should map this to a 400 /
+    validation error with the message surfaced to the client.
+    """
+
+    pass

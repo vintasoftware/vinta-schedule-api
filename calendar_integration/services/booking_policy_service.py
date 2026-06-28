@@ -29,6 +29,7 @@ from audit.constants import AuditAction
 from audit.diff import compute_diff
 from calendar_integration.exceptions import (
     CalendarServiceOrganizationNotSetError,
+    DuplicateBookingPolicyError,
 )
 from calendar_integration.models import (
     BookingPolicy,
@@ -44,16 +45,8 @@ from organizations.models import Organization
 
 if TYPE_CHECKING:
     from audit.services import AuditService
-
-
-class DuplicateBookingPolicyError(Exception):
-    """Raised when a second BookingPolicy is created for the same target/org.
-
-    Callers (REST serializers, GraphQL mutations) should map this to a 400 /
-    validation error with the message surfaced to the client.
-    """
-
-    pass
+    from audit.types import ActorSnapshot
+    from calendar_integration.querysets import BookingPolicyQuerySet
 
 
 class BookingPolicyService:
@@ -76,7 +69,7 @@ class BookingPolicyService:
         # Optional actor context for audit records — set by the caller via
         # ``set_actor`` when the acting principal is known (e.g. a REST view or
         # GraphQL mutation that has an authenticated user/system-user).
-        self._actor: object | None = None
+        self._actor: ActorSnapshot | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -86,7 +79,7 @@ class BookingPolicyService:
         """Bind this service instance to a tenant organization."""
         self.organization = organization
 
-    def set_actor(self, actor: object) -> None:
+    def set_actor(self, actor: "ActorSnapshot") -> None:
         """Capture the acting principal for audit records.
 
         Pass the resolved ``ActorSnapshot`` from the calling layer (REST view or
@@ -121,15 +114,16 @@ class BookingPolicyService:
         """
         if self.audit_service is None or self.organization is None:
             return
+        # Runtime import: AuditService is TYPE_CHECKING-only at module top to avoid the di_core import cycle.
         from audit.services import AuditService
 
-        actor = self._actor
-        if actor is None:
-            actor = AuditService.system_actor()
+        actor: ActorSnapshot = (
+            self._actor if self._actor is not None else AuditService.system_actor()
+        )
         self.audit_service.record(
             organization_id=self.organization.id,
             action=action,
-            actor=actor,  # type: ignore[arg-type]
+            actor=actor,
             subject=self.audit_service.subject_from_instance(policy),
             diff=diff,
         )
@@ -494,7 +488,7 @@ class BookingPolicyService:
     # Fetch helpers (for REST / GraphQL read paths)
     # ------------------------------------------------------------------
 
-    def get_all_policies(self):  # type: ignore[return]
+    def get_all_policies(self) -> "BookingPolicyQuerySet":
         """Return an org-scoped queryset of all BookingPolicy rows."""
         self._assert_initialized()
         return BookingPolicy.objects.filter_by_organization(self.organization.id)  # type: ignore[union-attr]
