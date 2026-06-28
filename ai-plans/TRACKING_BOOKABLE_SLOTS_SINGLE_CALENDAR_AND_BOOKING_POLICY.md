@@ -22,6 +22,7 @@
 - Phase 4: `plan/bookable-slots-single-calendar-and-booking-policy/phase-4` (base phase-3)
 - Phase 5: `plan/bookable-slots-single-calendar-and-booking-policy/phase-5` (base phase-4)
 - Phase 6: `plan/bookable-slots-single-calendar-and-booking-policy/phase-6` (base phase-5)
+- Phase 7: `plan/bookable-slots-single-calendar-and-booking-policy/phase-7` (base phase-6)
 
 ## Completed phases
 
@@ -92,11 +93,21 @@
 - **Gates**: ruff clean; mypy 297 (no new); `makemigrations --check` clean (no migration); `check --deploy` 0 errors; schema drift-free; full `pytest -n auto` → 3412 passed.
 - **Acceptance**: ✅ code-gated variant == authenticated query for the scope; slots-only; code-validation contract enforced; bundle + policy filtering work through the code path.
 
+### Phase 7 — group query policy-aware ✅
+- **Status**: DONE (reviewed, fixed, pushed, PR open)
+- **Model used**: sonnet (plan tier T3) — implementer + sonnet fixer (+ orchestrator 1-line mypy fix)
+- **Branch**: `plan/bookable-slots-single-calendar-and-booking-policy/phase-7` (base phase-6)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/172
+- **Commits**: `46a57b9` (impl) + `b712d13` (review fixes) + `895b138` (mypy annotation fix)
+- **Summary**: `CalendarGroupService.find_bookable_slots` resolves the group `EffectivePolicy` (`resolve_for_group`) after the candidate walk and applies `slot_engine.apply_policy_filter`; **data-presence short-circuit** returns raw proposals when unconstrained / no service (byte-for-byte). Buffer fetch mirrors Phase 5 (event-envelope, all participants, corrected widening). DI `booking_policy_service` into the group provider; `now` param. Both group queries (authed + `_with_code`) inherit it. 12 policy tests incl. GraphQL-resolver-level.
+- **Review findings fixed**: no BLOCKERs (byte-for-byte holds, DI sound). SHOULD-FIX — documented + tested the conservative group-wide buffer suppression (any participant's dead-zone event drops the slot, regardless of required_count); added explicit-group-override-beats-participant test, managed buffer-width test, GraphQL-resolver policy tests. NIT — moved late `EffectivePolicy` import to module level; narrowed `self.organization.id` via cast (mypy 299→297 after the orchestrator fixed the new test helper's wrong return annotation).
+- **Gates**: ruff clean; mypy **297** (back to baseline, no new); `makemigrations --check` clean (no migration); `check --deploy` 0 errors; full `pytest -n auto` → 3424 passed; existing 44 group tests green (byte-for-byte proof).
+- **Acceptance**: ✅ group query filters by resolved group policy; no-policy output identical to pre-feature.
+
 ## Current phase
-Phase 7 — make the existing group slot query policy-aware (next).
+Phase 8a — booking-time enforcement: single/bundle/code-gated (next).
 
 ## Remaining phases
-- Phase 7 — group query policy-aware (T3 / sonnet)
 - Phase 8a — enforcement single/bundle/code (T3 / sonnet)
 - Phase 8b — enforcement group (T3 / sonnet)
 
