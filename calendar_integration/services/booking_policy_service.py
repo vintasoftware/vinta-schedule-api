@@ -35,7 +35,6 @@ from calendar_integration.models import (
     BookingPolicy,
     Calendar,
     CalendarGroup,
-    CalendarGroupSlotMembership,
     CalendarOwnership,
     ChildrenCalendarRelationship,
 )
@@ -206,34 +205,25 @@ class BookingPolicyService:
     def resolve_for_calendar(self, calendar: Calendar) -> EffectivePolicy:
         """Resolve the effective booking policy for a single (non-bundle) calendar.
 
-        Precedence:
+        Precedence (resolved entirely in the DB via
+        ``CalendarQuerySet.annotate_effective_policy``):
         1. Calendar-level policy.
         2. Owning-membership policy (lone owner, or ``is_default`` owner when
            several; otherwise skip).
         3. Org-default policy.
         4. ``EffectivePolicy.unconstrained()``.
+
+        One query: the precedence chain — including the owning-membership
+        tiebreak — is evaluated in SQL and surfaced as four annotated columns.
         """
         self._assert_initialized()
 
-        # 1. Calendar-level policy.
-        cal_policy = self._policy_for_calendar(calendar.id)
-        if cal_policy is not None:
-            return EffectivePolicy.from_model(cal_policy)
-
-        # 2. Owning-membership policy.
-        owning_user_id = self._resolve_owning_membership_user_id(calendar)
-        if owning_user_id is not None:
-            mem_policy = self._policy_for_membership(owning_user_id)
-            if mem_policy is not None:
-                return EffectivePolicy.from_model(mem_policy)
-
-        # 3. Org-default policy.
-        default_policy = self._org_default_policy()
-        if default_policy is not None:
-            return EffectivePolicy.from_model(default_policy)
-
-        # 4. No policy anywhere → unconstrained.
-        return EffectivePolicy.unconstrained()
+        row = (
+            Calendar.objects.filter_by_organization(self.organization.id)  # type: ignore[union-attr]
+            .annotate_effective_policy()
+            .get(pk=calendar.id)
+        )
+        return EffectivePolicy.from_annotation(row)
 
     def resolve_for_bundle(self, bundle_calendar: Calendar) -> EffectivePolicy:
         """Resolve the effective booking policy for a bundle calendar.
@@ -241,30 +231,36 @@ class BookingPolicyService:
         Precedence:
         1. Explicit policy attached directly to the bundle calendar (calendar FK).
         2. ``most_restrictive`` combination across all ``bundle_children``
-           calendars, where each child's policy is resolved via
-           ``resolve_for_calendar``.
+           calendars, where each child's policy is resolved via the single-
+           calendar DB annotation.
         3. ``EffectivePolicy.unconstrained()``.
+
+        The children are resolved in a single annotated query (no per-child
+        round trip), then combined in Python via
+        ``EffectivePolicy.most_restrictive``.
         """
         self._assert_initialized()
 
-        # 1. Explicit bundle-calendar policy.
+        # 1. Explicit bundle-calendar policy.  A policy attached to the bundle
+        #    calendar IS a calendar-level policy, so it short-circuits the
+        #    children combination — preserving the original precedence.
         bundle_policy = self._policy_for_calendar(bundle_calendar.id)
         if bundle_policy is not None:
             return EffectivePolicy.from_model(bundle_policy)
 
-        # 2. Most-restrictive across all child calendars.
+        # 2. Most-restrictive across all child calendars (single annotated query).
         child_calendar_ids = list(
             ChildrenCalendarRelationship.objects.filter_by_organization(self.organization.id)  # type: ignore[union-attr]
             .filter(bundle_calendar_fk_id=bundle_calendar.pk)
             .values_list("child_calendar_fk_id", flat=True)
         )
         if child_calendar_ids:
-            child_calendars = list(
-                Calendar.objects.filter_by_organization(self.organization.id).filter(  # type: ignore[union-attr]
-                    id__in=child_calendar_ids
-                )
+            child_rows = (
+                Calendar.objects.filter_by_organization(self.organization.id)  # type: ignore[union-attr]
+                .annotate_effective_policy()
+                .filter(id__in=child_calendar_ids)
             )
-            child_policies = [self.resolve_for_calendar(cal) for cal in child_calendars]
+            child_policies = [EffectivePolicy.from_annotation(row) for row in child_rows]
             combined = EffectivePolicy.most_restrictive(child_policies)
             if combined != EffectivePolicy.unconstrained():
                 return combined
@@ -275,41 +271,24 @@ class BookingPolicyService:
     def resolve_for_group(self, group: CalendarGroup) -> EffectivePolicy:
         """Resolve the effective booking policy for a calendar group.
 
-        Precedence:
+        Precedence (resolved entirely in the DB via
+        ``CalendarGroupQuerySet.annotate_effective_policy``):
         1. Explicit policy attached to the group (calendar_group FK).
         2. ``most_restrictive`` combination across all calendars that belong to
-           any slot in the group, each resolved via ``resolve_for_calendar``.
+           any slot in the group, each resolved via the single-calendar chain.
         3. ``EffectivePolicy.unconstrained()``.
+
+        One query regardless of participant count: the participant traversal and
+        the ``most_restrictive`` aggregate are evaluated in SQL.
         """
         self._assert_initialized()
 
-        # 1. Explicit group policy.
-        group_policy = self._policy_for_group(group.id)
-        if group_policy is not None:
-            return EffectivePolicy.from_model(group_policy)
-
-        # 2. Most-restrictive across all participant calendars.
-        # Collect all distinct calendar IDs across every slot of the group.
-        # Use slot_fk__group_fk_id to traverse the concrete FK columns.
-        participant_calendar_ids = list(
-            CalendarGroupSlotMembership.objects.filter_by_organization(self.organization.id)  # type: ignore[union-attr]
-            .filter(slot_fk__group_fk_id=group.id)
-            .values_list("calendar_fk_id", flat=True)
-            .distinct()
+        row = (
+            CalendarGroup.objects.filter_by_organization(self.organization.id)  # type: ignore[union-attr]
+            .annotate_effective_policy()
+            .get(pk=group.id)
         )
-        if participant_calendar_ids:
-            participant_calendars = list(
-                Calendar.objects.filter_by_organization(self.organization.id).filter(  # type: ignore[union-attr]
-                    id__in=participant_calendar_ids
-                )
-            )
-            participant_policies = [self.resolve_for_calendar(cal) for cal in participant_calendars]
-            combined = EffectivePolicy.most_restrictive(participant_policies)
-            if combined != EffectivePolicy.unconstrained():
-                return combined
-
-        # 3. Unconstrained.
-        return EffectivePolicy.unconstrained()
+        return EffectivePolicy.from_annotation(row)
 
     # ------------------------------------------------------------------
     # Write API (create / update / delete)

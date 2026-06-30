@@ -154,6 +154,14 @@ class CalendarManager(BaseOrganizationModelManager):
             ranges=ranges
         )
 
+    def annotate_effective_policy(self) -> CalendarQuerySet:
+        """Annotate the four ``effective_*_seconds`` booking-policy columns.
+
+        Delegates to the queryset; resolves the whole-policy precedence chain
+        (calendar → owning-membership → org-default → unconstrained) in SQL.
+        """
+        return self.get_queryset().annotate_effective_policy()
+
 
 class CalendarEventManager(BaseOrganizationModelManager, RecurringManagerMixin):
     """Custom manager for CalendarEvent model to handle specific queries."""
@@ -221,6 +229,15 @@ class CalendarGroupManager(BaseOrganizationModelManager):
         return self.get_queryset().only_groups_bookable_in_ranges_with_bulk_modifications(
             ranges=ranges
         )
+
+    def annotate_effective_policy(self) -> CalendarGroupQuerySet:
+        """Annotate the four ``effective_*_seconds`` booking-policy columns.
+
+        Delegates to the queryset; resolves the group precedence chain (explicit
+        group policy → most_restrictive across participant calendars →
+        unconstrained) in SQL.
+        """
+        return self.get_queryset().annotate_effective_policy()
 
 
 class CalendarGroupSlotManager(BaseOrganizationModelManager):

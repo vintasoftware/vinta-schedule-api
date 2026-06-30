@@ -937,3 +937,438 @@ def test_org_default_from_other_org_not_used():
     result = svc.resolve_for_calendar(cal_a)
 
     assert result == EffectivePolicy.unconstrained()
+
+
+# ---------------------------------------------------------------------------
+# DB-annotation equivalence — the resolution moved into SQL must produce the
+# EXACT EffectivePolicy the original Python precedence rules prescribe.
+# ---------------------------------------------------------------------------
+
+
+def _ep(lead=0, horizon=None, before=0, after=0) -> EffectivePolicy:
+    """Shorthand to build an expected EffectivePolicy from second-counts."""
+    return EffectivePolicy(
+        lead_time=datetime.timedelta(seconds=lead),
+        max_horizon=(datetime.timedelta(seconds=horizon) if horizon else None),
+        buffer_before=datetime.timedelta(seconds=before),
+        buffer_after=datetime.timedelta(seconds=after),
+    )
+
+
+@pytest.mark.django_db
+class TestResolveForCalendarAnnotationEquivalence:
+    """Each scenario asserts the DB-annotated resolution equals the hand-computed
+    EffectivePolicy the documented precedence prescribes."""
+
+    def test_calendar_layer_whole_policy(self):
+        org = _org()
+        cal = _calendar(org)
+        uid = _membership(org)
+        _own(cal, uid)
+        # Calendar policy wins as a WHOLE — even fields it leaves at 0/unbounded
+        # are taken from it, never merged with the membership/org layers.
+        create_booking_policy(
+            calendar=cal,
+            lead_time_seconds=120,
+            max_horizon_seconds=0,  # unbounded — must stay unbounded
+            buffer_before_seconds=0,
+            buffer_after_seconds=45,
+        )
+        create_booking_policy(
+            membership_user_id=uid,
+            organization=org,
+            lead_time_seconds=9000,
+            max_horizon_seconds=86400,
+            buffer_before_seconds=600,
+            buffer_after_seconds=600,
+        )
+        create_booking_policy(
+            is_organization_default=True,
+            organization=org,
+            max_horizon_seconds=999,
+            buffer_before_seconds=999,
+        )
+
+        result = _service(org).resolve_for_calendar(cal)
+        assert result == _ep(lead=120, horizon=None, before=0, after=45)
+
+    def test_membership_layer_whole_policy(self):
+        org = _org()
+        cal = _calendar(org)
+        uid = _membership(org)
+        _own(cal, uid)
+        create_booking_policy(
+            membership_user_id=uid,
+            organization=org,
+            lead_time_seconds=300,
+            max_horizon_seconds=0,
+            buffer_before_seconds=15,
+            buffer_after_seconds=0,
+        )
+        create_booking_policy(
+            is_organization_default=True,
+            organization=org,
+            lead_time_seconds=9999,
+            max_horizon_seconds=7,
+        )
+        result = _service(org).resolve_for_calendar(cal)
+        assert result == _ep(lead=300, horizon=None, before=15, after=0)
+
+    def test_org_default_layer_whole_policy(self):
+        org = _org()
+        cal = _calendar(org)
+        create_booking_policy(
+            is_organization_default=True,
+            organization=org,
+            lead_time_seconds=60,
+            max_horizon_seconds=3600,
+            buffer_before_seconds=30,
+            buffer_after_seconds=90,
+        )
+        result = _service(org).resolve_for_calendar(cal)
+        assert result == _ep(lead=60, horizon=3600, before=30, after=90)
+
+    def test_no_policy_layer_unconstrained(self):
+        org = _org()
+        cal = _calendar(org)
+        result = _service(org).resolve_for_calendar(cal)
+        assert result == EffectivePolicy.unconstrained()
+
+    def test_membership_zero_owners_skips_to_org_default(self):
+        org = _org()
+        cal = _calendar(org)
+        create_booking_policy(is_organization_default=True, organization=org, lead_time_seconds=7)
+        result = _service(org).resolve_for_calendar(cal)
+        assert result == _ep(lead=7)
+
+    def test_membership_single_owner_used(self):
+        org = _org()
+        cal = _calendar(org)
+        uid = _membership(org)
+        _own(cal, uid, is_default=False)
+        create_booking_policy(membership_user_id=uid, organization=org, lead_time_seconds=88)
+        result = _service(org).resolve_for_calendar(cal)
+        assert result == _ep(lead=88)
+
+    def test_membership_multiple_owners_default_used(self):
+        org = _org()
+        cal = _calendar(org)
+        uid_a = _membership(org)
+        uid_b = _membership(org)
+        _own(cal, uid_a, is_default=False)
+        _own(cal, uid_b, is_default=True)
+        create_booking_policy(membership_user_id=uid_a, organization=org, lead_time_seconds=111)
+        create_booking_policy(membership_user_id=uid_b, organization=org, lead_time_seconds=222)
+        result = _service(org).resolve_for_calendar(cal)
+        # The is_default owner (uid_b) drives resolution.
+        assert result == _ep(lead=222)
+
+    def test_membership_multiple_owners_no_default_skips_layer(self):
+        org = _org()
+        cal = _calendar(org)
+        uid_a = _membership(org)
+        uid_b = _membership(org)
+        _own(cal, uid_a, is_default=False)
+        _own(cal, uid_b, is_default=False)
+        create_booking_policy(membership_user_id=uid_a, organization=org, lead_time_seconds=111)
+        create_booking_policy(membership_user_id=uid_b, organization=org, lead_time_seconds=222)
+        create_booking_policy(is_organization_default=True, organization=org, lead_time_seconds=9)
+        result = _service(org).resolve_for_calendar(cal)
+        # No is_default owner → membership layer skipped → org default wins.
+        assert result == _ep(lead=9)
+
+    def test_orphan_ownership_excluded(self):
+        org = _org()
+        cal = _calendar(org)
+        CalendarOwnership.objects.create(
+            organization=org, calendar=cal, membership_user_id=None, is_default=False
+        )
+        create_booking_policy(is_organization_default=True, organization=org, lead_time_seconds=5)
+        result = _service(org).resolve_for_calendar(cal)
+        assert result == _ep(lead=5)
+
+
+@pytest.mark.django_db
+class TestResolveForGroupAnnotationEquivalence:
+    def _group_with_calendars(self, org: Organization, n: int):
+        group = baker.make(CalendarGroup, organization=org, name=f"G-{id(org)}-{n}")
+        slot = baker.make(CalendarGroupSlot, organization=org, group=group, name="S")
+        calendars = []
+        for _ in range(n):
+            cal = _calendar(org)
+            CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=cal)
+            calendars.append(cal)
+        return group, calendars
+
+    def test_explicit_group_policy_whole(self):
+        org = _org()
+        group, cals = self._group_with_calendars(org, 2)
+        # Group policy with an unbounded horizon must stay unbounded even though
+        # participants have finite horizons (whole-policy short-circuit).
+        create_booking_policy(
+            calendar_group=group,
+            lead_time_seconds=30,
+            max_horizon_seconds=0,
+            buffer_before_seconds=5,
+            buffer_after_seconds=0,
+        )
+        create_booking_policy(calendar=cals[0], max_horizon_seconds=3600, lead_time_seconds=9000)
+        result = _service(org).resolve_for_group(group)
+        assert result == _ep(lead=30, horizon=None, before=5, after=0)
+
+    def test_most_restrictive_field_by_field(self):
+        org = _org()
+        group, cals = self._group_with_calendars(org, 2)
+        create_booking_policy(
+            calendar=cals[0],
+            lead_time_seconds=7200,
+            max_horizon_seconds=7 * 86400,
+            buffer_before_seconds=900,
+            buffer_after_seconds=300,
+        )
+        create_booking_policy(
+            calendar=cals[1],
+            lead_time_seconds=3600,
+            max_horizon_seconds=30 * 86400,
+            buffer_before_seconds=1800,
+            buffer_after_seconds=600,
+        )
+        result = _service(org).resolve_for_group(group)
+        # max lead, min horizon, max before, max after.
+        assert result == _ep(lead=7200, horizon=7 * 86400, before=1800, after=600)
+
+    def test_all_unbounded_horizons_stay_unbounded(self):
+        org = _org()
+        group, cals = self._group_with_calendars(org, 2)
+        create_booking_policy(calendar=cals[0], lead_time_seconds=60, max_horizon_seconds=0)
+        create_booking_policy(calendar=cals[1], lead_time_seconds=120, max_horizon_seconds=0)
+        result = _service(org).resolve_for_group(group)
+        assert result == _ep(lead=120, horizon=None)
+
+    def test_mixed_bounded_and_unbounded_horizon_takes_finite_min(self):
+        org = _org()
+        group, cals = self._group_with_calendars(org, 2)
+        create_booking_policy(calendar=cals[0], max_horizon_seconds=0)  # unbounded
+        create_booking_policy(calendar=cals[1], max_horizon_seconds=14 * 86400)
+        result = _service(org).resolve_for_group(group)
+        assert result == _ep(horizon=14 * 86400)
+
+    def test_no_participant_policies_unconstrained(self):
+        org = _org()
+        group, _ = self._group_with_calendars(org, 3)
+        result = _service(org).resolve_for_group(group)
+        assert result == EffectivePolicy.unconstrained()
+
+    def test_participant_resolved_through_own_chain(self):
+        """A participant with no direct policy but an owner+membership policy
+        contributes that membership policy to the combination."""
+        org = _org()
+        group, cals = self._group_with_calendars(org, 2)
+        uid = _membership(org)
+        _own(cals[0], uid)
+        create_booking_policy(membership_user_id=uid, organization=org, lead_time_seconds=4500)
+        create_booking_policy(calendar=cals[1], lead_time_seconds=600)
+        result = _service(org).resolve_for_group(group)
+        assert result == _ep(lead=4500)
+
+
+@pytest.mark.django_db
+class TestResolveForBundleAnnotationEquivalence:
+    def _bundle(self, org: Organization, n: int):
+        bundle = _calendar(org, calendar_type=CalendarType.BUNDLE)
+        children = []
+        for i in range(n):
+            child = _calendar(org)
+            ChildrenCalendarRelationship.objects.create(
+                organization=org,
+                bundle_calendar=bundle,
+                child_calendar=child,
+                is_primary=(i == 0),
+            )
+            children.append(child)
+        return bundle, children
+
+    def test_explicit_bundle_policy_whole(self):
+        org = _org()
+        bundle, children = self._bundle(org, 2)
+        create_booking_policy(
+            calendar=bundle,
+            lead_time_seconds=15,
+            max_horizon_seconds=0,
+            buffer_before_seconds=0,
+            buffer_after_seconds=5,
+        )
+        create_booking_policy(
+            calendar=children[0], max_horizon_seconds=3600, lead_time_seconds=9999
+        )
+        result = _service(org).resolve_for_bundle(bundle)
+        assert result == _ep(lead=15, horizon=None, before=0, after=5)
+
+    def test_children_most_restrictive_field_by_field(self):
+        org = _org()
+        bundle, children = self._bundle(org, 2)
+        create_booking_policy(
+            calendar=children[0],
+            lead_time_seconds=1800,
+            max_horizon_seconds=10 * 86400,
+            buffer_before_seconds=120,
+            buffer_after_seconds=900,
+        )
+        create_booking_policy(
+            calendar=children[1],
+            lead_time_seconds=3600,
+            max_horizon_seconds=5 * 86400,
+            buffer_before_seconds=60,
+            buffer_after_seconds=60,
+        )
+        result = _service(org).resolve_for_bundle(bundle)
+        assert result == _ep(lead=3600, horizon=5 * 86400, before=120, after=900)
+
+    def test_children_all_unbounded_horizon(self):
+        org = _org()
+        bundle, children = self._bundle(org, 2)
+        create_booking_policy(calendar=children[0], lead_time_seconds=1, max_horizon_seconds=0)
+        create_booking_policy(calendar=children[1], lead_time_seconds=2, max_horizon_seconds=0)
+        result = _service(org).resolve_for_bundle(bundle)
+        assert result == _ep(lead=2, horizon=None)
+
+
+# ---------------------------------------------------------------------------
+# Query-count: bundle/group resolution must be bounded regardless of the number
+# of participant calendars — the N+1 walk collapsed into a bounded set of
+# queries.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestResolutionQueryCount:
+    def test_group_resolution_bounded_regardless_of_participant_count(
+        self, django_assert_num_queries
+    ):
+        org = _org()
+        group = baker.make(CalendarGroup, organization=org, name="Big Group")
+        slot = baker.make(CalendarGroupSlot, organization=org, group=group, name="S")
+        for _ in range(8):
+            cal = _calendar(org)
+            CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=cal)
+            create_booking_policy(calendar=cal, lead_time_seconds=300)
+
+        svc = _service(org)
+        # Group resolution is a single annotated SELECT — it does NOT scale with
+        # the participant count.
+        with django_assert_num_queries(1):
+            svc.resolve_for_group(group)
+
+    def test_group_resolution_same_query_count_for_more_participants(
+        self, django_assert_num_queries
+    ):
+        """Resolution for a 2-participant and a 12-participant group issues the
+        same (constant) number of queries."""
+        org = _org()
+
+        def _build(n: int) -> CalendarGroup:
+            group = baker.make(CalendarGroup, organization=org, name=f"QC-{n}")
+            slot = baker.make(CalendarGroupSlot, organization=org, group=group, name="S")
+            for _ in range(n):
+                cal = _calendar(org)
+                CalendarGroupSlotMembership.objects.create(
+                    organization=org, slot=slot, calendar=cal
+                )
+                create_booking_policy(calendar=cal, max_horizon_seconds=86400)
+            return group
+
+        small = _build(2)
+        large = _build(12)
+        svc = _service(org)
+        with django_assert_num_queries(1):
+            svc.resolve_for_group(small)
+        with django_assert_num_queries(1):
+            svc.resolve_for_group(large)
+
+    def test_bundle_resolution_bounded(self, django_assert_num_queries):
+        org = _org()
+        bundle = _calendar(org, calendar_type=CalendarType.BUNDLE)
+        for i in range(8):
+            child = _calendar(org)
+            ChildrenCalendarRelationship.objects.create(
+                organization=org,
+                bundle_calendar=bundle,
+                child_calendar=child,
+                is_primary=(i == 0),
+            )
+            create_booking_policy(calendar=child, lead_time_seconds=600)
+
+        svc = _service(org)
+        # Bundle resolution: (1) explicit-bundle-policy lookup, (2) child-id
+        # lookup, (3) the single annotated children SELECT — a small constant
+        # independent of the child count.
+        with django_assert_num_queries(3):
+            svc.resolve_for_bundle(bundle)
+
+
+# ---------------------------------------------------------------------------
+# Org-scope: a second organization with conflicting parallel fixtures must not
+# influence resolution for the first organization.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestResolutionOrgScope:
+    def test_calendar_resolution_ignores_other_org(self):
+        org_a = _org()
+        org_b = _org()
+        cal_a = _calendar(org_a)
+        uid_a = _membership(org_a)
+        _own(cal_a, uid_a)
+        create_booking_policy(membership_user_id=uid_a, organization=org_a, lead_time_seconds=300)
+
+        # Parallel, conflicting fixtures in org_b — a calendar policy AND an
+        # org-default with very different numbers.
+        cal_b = _calendar(org_b)
+        create_booking_policy(calendar=cal_b, lead_time_seconds=99999)
+        create_booking_policy(is_organization_default=True, organization=org_b, lead_time_seconds=1)
+
+        result = _service(org_a).resolve_for_calendar(cal_a)
+        assert result == _ep(lead=300)
+
+    def test_group_resolution_ignores_other_org(self):
+        org_a = _org()
+        org_b = _org()
+
+        group_a = baker.make(CalendarGroup, organization=org_a, name="GA")
+        slot_a = baker.make(CalendarGroupSlot, organization=org_a, group=group_a, name="S")
+        ca1 = _calendar(org_a)
+        ca2 = _calendar(org_a)
+        CalendarGroupSlotMembership.objects.create(organization=org_a, slot=slot_a, calendar=ca1)
+        CalendarGroupSlotMembership.objects.create(organization=org_a, slot=slot_a, calendar=ca2)
+        create_booking_policy(calendar=ca1, lead_time_seconds=600)
+        create_booking_policy(calendar=ca2, lead_time_seconds=1200)
+
+        # org_b: an explicit group-default and conflicting calendar policies.
+        group_b = baker.make(CalendarGroup, organization=org_b, name="GB")
+        slot_b = baker.make(CalendarGroupSlot, organization=org_b, group=group_b, name="S")
+        cb1 = _calendar(org_b)
+        CalendarGroupSlotMembership.objects.create(organization=org_b, slot=slot_b, calendar=cb1)
+        create_booking_policy(calendar_group=group_b, lead_time_seconds=99999)
+        create_booking_policy(calendar=cb1, lead_time_seconds=77777)
+        create_booking_policy(is_organization_default=True, organization=org_b, lead_time_seconds=1)
+
+        result = _service(org_a).resolve_for_group(group_a)
+        # max(600, 1200) = 1200, untouched by org_b.
+        assert result == _ep(lead=1200)
+
+    def test_bundle_resolution_ignores_other_org(self):
+        org_a = _org()
+        org_b = _org()
+        bundle_a = _calendar(org_a, calendar_type=CalendarType.BUNDLE)
+        child_a = _calendar(org_a)
+        ChildrenCalendarRelationship.objects.create(
+            organization=org_a, bundle_calendar=bundle_a, child_calendar=child_a, is_primary=True
+        )
+        create_booking_policy(calendar=child_a, lead_time_seconds=450)
+
+        # org_b parallel bundle with a different number + org default.
+        create_booking_policy(is_organization_default=True, organization=org_b, lead_time_seconds=1)
+
+        result = _service(org_a).resolve_for_bundle(bundle_a)
+        assert result == _ep(lead=450)

@@ -400,6 +400,36 @@ class EffectivePolicy:
             buffer_after=datetime.timedelta(seconds=policy.buffer_after_seconds),
         )
 
+    @classmethod
+    def from_annotation(cls, row) -> "EffectivePolicy":
+        """Build an EffectivePolicy from the four ``effective_*_seconds`` annotations.
+
+        ``row`` is any object exposing the four annotated attributes produced by
+        ``annotate_effective_policy`` — typically a ``Calendar`` or
+        ``CalendarGroup`` instance fetched through an annotated queryset:
+
+        - ``effective_lead_time_seconds``
+        - ``effective_max_horizon_seconds``
+        - ``effective_buffer_before_seconds``
+        - ``effective_buffer_after_seconds``
+
+        A ``0`` or ``NULL`` horizon maps to ``max_horizon=None`` ("0 = unbounded",
+        mirroring ``from_model``). ``0`` / ``NULL`` lead-time and buffers map to
+        ``timedelta(0)``. The annotation resolves the entire precedence chain in
+        SQL, so this method does nothing more than decode the four columns.
+        """
+        lead = row.effective_lead_time_seconds or 0
+        horizon = row.effective_max_horizon_seconds or 0
+        buffer_before = row.effective_buffer_before_seconds or 0
+        buffer_after = row.effective_buffer_after_seconds or 0
+
+        return cls(
+            lead_time=datetime.timedelta(seconds=lead),
+            max_horizon=(datetime.timedelta(seconds=horizon) if horizon > 0 else None),
+            buffer_before=datetime.timedelta(seconds=buffer_before),
+            buffer_after=datetime.timedelta(seconds=buffer_after),
+        )
+
     @staticmethod
     def most_restrictive(policies: Iterable["EffectivePolicy"]) -> "EffectivePolicy":
         """Combine multiple EffectivePolicy instances into the most-restrictive one.
