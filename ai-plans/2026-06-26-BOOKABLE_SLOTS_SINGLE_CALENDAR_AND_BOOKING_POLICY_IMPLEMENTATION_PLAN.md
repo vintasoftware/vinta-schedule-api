@@ -107,7 +107,7 @@ Notes:
 
 ### 3.2 `BookingPolicyManager` / queryset
 
-Minimal custom manager (`filter_by_organization` is inherited via `OrganizationModel`). Add a `for_target(...)` convenience and an `org_default()` lookup used by the resolver.
+Minimal custom manager (`filter_by_organization` is inherited via `OrganizationModel`). Add a `for_target(...)` convenience and an `org_default()` lookup used by the resolver. **(Amended 2026-06-29)** The resolver itself no longer drives these per-layer lookups at runtime for slot/booking paths — resolution is annotated in SQL on `Calendar` / `CalendarGroup` querysets (`annotate_effective_policy()`, see Phase 2); `for_target` / `org_default` remain for the CRUD/write paths.
 
 ### 3.3 Type plumbing — `EffectivePolicy` (in @calendar_integration/services/dataclasses.py)
 
@@ -123,11 +123,13 @@ class EffectivePolicy:
     def unconstrained(cls) -> "EffectivePolicy": ...
     @classmethod
     def from_model(cls, policy: "BookingPolicy") -> "EffectivePolicy": ...   # 0 horizon -> None
+    @classmethod
+    def from_annotation(cls, row) -> "EffectivePolicy": ...   # (Amended 2026-06-29) build from the 4 annotated cols; 0/NULL horizon -> None
     @staticmethod
     def most_restrictive(policies: Iterable["EffectivePolicy"]) -> "EffectivePolicy": ...
 ```
 
-The resolver returns `EffectivePolicy`; the slot engine and booking path consume it. Slot results carry the existing `BookableSlotProposal` dataclass unchanged.
+The resolver returns `EffectivePolicy`; the slot engine and booking path consume it. Slot results carry the existing `BookableSlotProposal` dataclass unchanged. **(Amended 2026-06-29)** Resolution is computed in the DB and surfaced as queryset annotations (see Phase 2); `from_annotation` adapts an annotated row into the same `EffectivePolicy` the Python walk used to return.
 
 ## 4. API Design
 
@@ -180,30 +182,42 @@ Tests:
 
 Acceptance: migration applies and reverses cleanly; a `BookingPolicy` can be created against exactly one target and only one; duplicate-target and multi-target inserts raise `IntegrityError`.
 
-### Phase 2 — Effective-policy resolver service
+### Phase 2 — Effective-policy resolver service (DB-resolved)
 
-**Goal**: given a calendar, bundle, or group, return the resolved `EffectivePolicy` via the full precedence chain. Ship value: none user-visible — the engine the slot/booking phases call.
+> **Amended 2026-06-29** — resolution moved from a Python multi-query walk into the **database**. The precedence chain and `most_restrictive` combination are computed in SQL and surfaced as an **annotation** on `Calendar` / `CalendarGroup` querysets, collapsing the previous N+1 (one query per participant calendar in bundle/group resolution, plus the per-layer chain lookups) into a single annotated query. The public `BookingPolicyService.resolve_for_*` API is **unchanged in signature and return type** (`-> EffectivePolicy`) — it is reimplemented internally on top of the annotation. Behavior is byte-for-byte identical to the original Python resolver; that equivalence is the acceptance bar.
+
+**Goal**: given a calendar, bundle, or group, return the resolved `EffectivePolicy` via the full precedence chain — computed in the DB. Ship value: none user-visible — the engine the slot/booking phases call, now without the per-participant query fan-out.
 
 **Feature flag**: none — new service, no caller in any existing path yet.
 
 Changes:
-1. @calendar_integration/services/dataclasses.py: add `EffectivePolicy` (`unconstrained`, `from_model`, `most_restrictive`).
-2. New @calendar_integration/services/booking_policy_service.py — `BookingPolicyService` with:
-   - `resolve_for_calendar(calendar) -> EffectivePolicy` (calendar → owning-membership via `CalendarOwnership` lone/`is_default` rule → org default → unconstrained).
-   - `resolve_for_bundle(bundle_calendar)` / `resolve_for_group(group)` (explicit override → `most_restrictive` across participants → unconstrained).
-   - Create/update/delete methods (used by Phases 3 & 4) that enforce exactly-one-target + create-uniqueness and emit `AuditService` records.
-3. @di_core/containers.py: add `booking_policy_service = providers.Factory(BookingPolicyService, …)` alongside the existing calendar services (inject `audit_service`).
+1. @calendar_integration/services/dataclasses.py: add `EffectivePolicy` (`unconstrained`, `from_model`, `most_restrictive`). `from_annotation(row) -> EffectivePolicy` classmethod that builds an `EffectivePolicy` from the four annotated columns (mapping a `0`/`NULL` horizon to `None`, mirroring `from_model`).
+2. @calendar_integration/querysets.py / @calendar_integration/managers.py — **DB resolution as an annotation**:
+   - `CalendarQuerySet.annotate_effective_policy()` — annotates `effective_lead_time_seconds`, `effective_max_horizon_seconds`, `effective_buffer_before_seconds`, `effective_buffer_after_seconds` by resolving, **in SQL**, the whole-policy precedence chain: calendar-level policy → owning-membership policy (lone `CalendarOwnership` with non-NULL membership, else the `is_default=True` one; **multiple owners with no `is_default` ⇒ skip the membership layer**, exactly as the Python rule) → org-default policy → unconstrained (all-zero / unbounded). Precedence is **whole-policy** (the first existing policy in the chain wins and all four of its fields are read together — NOT a per-field COALESCE across policies).
+   - `CalendarGroupQuerySet.annotate_effective_policy()` — annotates the same four columns by resolving: explicit group policy (group FK) → `most_restrictive` aggregate (`MAX(lead)`, `MAX(buffer_before)`, `MAX(buffer_after)`, `MIN(horizon)` over **positive** horizons only — `0`/unbounded excluded from the `MIN`, binding only if every participant is unbounded) across all participant calendars each resolved via the single-calendar chain above → unconstrained.
+   - Bundle resolution reuses the calendar annotation: explicit bundle-calendar policy → `most_restrictive` across `bundle_children` (each child resolved via the calendar chain) → unconstrained.
+   - Implementation mechanism is the implementer's call **provided the org-scoping contract and behavior are preserved**: either pure-ORM (`Subquery` / `OuterRef` / `Case` / `Coalesce` / conditional aggregates) or a raw-SQL helper (a Postgres FUNCTION or VIEW via `common/raw_sql_migration_managers.py` — see [add-migration](../.claude/skills/add-migration/SKILL.md) / [create-postgres-function](../.claude/skills/create-postgres-function/SKILL.md)). If a raw-SQL structure is introduced it ships as a migration stacked after `0040`; if pure-ORM, **no migration** (gate on `makemigrations --check`). Every annotation path stays organization-scoped (no cross-tenant leakage in any subquery/join).
+3. New @calendar_integration/services/booking_policy_service.py — `BookingPolicyService` with:
+   - `resolve_for_calendar(calendar) -> EffectivePolicy` — fetches the calendar through `annotate_effective_policy()` (single query) and returns `EffectivePolicy.from_annotation(row)`.
+   - `resolve_for_bundle(bundle_calendar)` / `resolve_for_group(group)` — same, via the bundle / group annotation; explicit override short-circuits exactly as the chain encodes.
+   - Create/update/delete methods (used by Phases 3 & 4) that enforce exactly-one-target + create-uniqueness and emit `AuditService` records (unchanged from the original Phase 2).
+4. @di_core/containers.py: add `booking_policy_service = providers.Factory(BookingPolicyService, …)` alongside the existing calendar services (inject `audit_service`).
+
+Downstream consumers (Phases 5/7/8a/8b) continue to call `resolve_for_*` unchanged — they automatically inherit the single-query resolution. List-heavy discovery paths (group `find_bookable_slots`, bundle) **may** adopt `annotate_effective_policy()` directly to resolve all participants in one query; doing so is an allowed optimization within those phases but is not required by this amendment (their `resolve_for_*` calls already drop to one query each).
 
 Spec use-case: implements the **State transitions & edge cases → Effective-policy resolution** chart; consumed by use-cases 1–5.
 
 Tests:
-- **Unit**: the full precedence matrix — calendar-only, membership-only, org-default-only, each absent, and fallthrough to unconstrained; owning-membership ambiguity (zero owners → skip; one owner → use; multiple owners → `is_default`); `most_restrictive` field-by-field (`max` lead/buffers, `min` positive horizon); explicit bundle/group override beats per-participant combination.
+- **Unit**: the full precedence matrix — calendar-only, membership-only, org-default-only, each absent, and fallthrough to unconstrained; owning-membership ambiguity (zero owners → skip; one owner → use; multiple owners → `is_default`; multiple owners no `is_default` → skip); `most_restrictive` field-by-field (`max` lead/buffers, `min` positive horizon, all-unbounded → unbounded); explicit bundle/group override beats per-participant combination.
+- **Equivalence**: a parametrized test asserting the DB-annotated result equals the original Python-walk result across the full matrix (lock in byte-for-byte parity — the amendment's core guarantee).
+- **Query-count**: `django_assert_num_queries` proving bundle/group resolution is now a bounded number of queries (no per-participant fan-out) where the old path was O(participants).
+- **Org-scope**: a second organization with conflicting policies on same-id-shaped fixtures proves no cross-tenant bleed through the annotation subqueries.
 
-**Suggested AI model**: **Tier 3** — multi-branch resolution logic across `CalendarOwnership`, bundle children, and group participants with the most-restrictive combination. IDs per tier in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml).
+**Suggested AI model**: **Tier 3** — multi-branch resolution logic across `CalendarOwnership`, bundle children, and group participants with the most-restrictive combination, now expressed as DB-side SQL/ORM with the membership tiebreak and `0=unbounded` horizon semantics. IDs per tier in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml).
 
-**Reusable skills**: none — pure service + DI wiring.
+**Reusable skills**: [add-migration](../.claude/skills/add-migration/SKILL.md) and [create-postgres-function](../.claude/skills/create-postgres-function/SKILL.md) / [create-postgres-view](../.claude/skills/create-postgres-view/SKILL.md) **only if** a raw-SQL structure is chosen; otherwise none (pure-ORM annotation + service).
 
-Acceptance: `BookingPolicyService.resolve_for_*` returns the spec-correct `EffectivePolicy` for every branch of the resolution matrix; unconstrained when nothing applies.
+Acceptance: `BookingPolicyService.resolve_for_*` returns the spec-correct `EffectivePolicy` for every branch of the resolution matrix; unconstrained when nothing applies; the result is **identical** to the pre-amendment Python resolver (equivalence test green); bundle/group resolution no longer scales queries with participant count (query-count test green); annotations are organization-scoped.
 
 ### Phase 3 — Policy CRUD on the private REST API
 
@@ -429,3 +443,7 @@ Residual (recommended default, owner = scheduling/calendar domain owner; resolve
 **Phase 8b — enforcement: group**
 - [calendar_group_service.py](../calendar_integration/services/calendar_group_service.py) (group booking check)
 - group booking mutation surface (error mapping)
+
+## 9. Amendments
+
+- **2026-06-29** — Moved effective-policy resolution from the application layer (the Python multi-query walk in `BookingPolicyService.resolve_for_calendar/bundle/group`) into the **database**, surfaced as `annotate_effective_policy()` queryset annotations on `Calendar` / `CalendarGroup`, collapsing the bundle/group per-participant N+1 into a single query. The `resolve_for_*` public API keeps its signature and `EffectivePolicy` return type (reimplemented on top of the annotation); behavior is byte-for-byte identical (equivalence test is the acceptance bar). **Classification:** body-rewrite of **Phase 2** with downstream rebase cascade. **Affected phases:** 2 (rewrite); 3, 4, 5, 6, 7, 8a, 8b (rebase-only — no body change, they consume `resolve_for_*` unchanged). **Branches force-pushed:** `plan/bookable-slots-single-calendar-and-booking-policy/phase-{2,3,4,5,6,7,8a,8b}`. API shape: keep `resolve_*` + add annotation (option X).
