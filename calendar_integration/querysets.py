@@ -436,7 +436,7 @@ def _owning_membership_uid_expression(calendar_id_ref: OuterRef, org_id_ref: Out
 
 
 def _winning_calendar_policy_id_expression(
-    calendar_id_ref: OuterRef, org_id_ref: OuterRef, membership_uid_ref
+    calendar_id_ref: OuterRef, org_id_ref: OuterRef, membership_uid_ref: OuterRef
 ) -> Coalesce:
     """Resolve, in SQL, the id of the BookingPolicy that governs a single calendar.
 

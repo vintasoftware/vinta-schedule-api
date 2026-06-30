@@ -2,7 +2,7 @@ import datetime
 from collections.abc import Iterable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
 
 from calendar_integration.constants import (
     CalendarProvider,
@@ -17,6 +17,21 @@ from calendar_integration.models import (
 
 if TYPE_CHECKING:
     from calendar_integration.models import BookingPolicy
+
+
+class _EffectivePolicyRow(Protocol):
+    """Row shape consumed by ``EffectivePolicy.from_annotation``.
+
+    Any object (typically a ``Calendar`` or ``CalendarGroup`` fetched through an
+    annotated queryset) exposing the four ``effective_*_seconds`` columns produced
+    by ``annotate_effective_policy``. Each is ``int | None`` (NULL when no policy
+    resolved).
+    """
+
+    effective_lead_time_seconds: int | None
+    effective_max_horizon_seconds: int | None
+    effective_buffer_before_seconds: int | None
+    effective_buffer_after_seconds: int | None
 
 
 @dataclass
@@ -401,7 +416,7 @@ class EffectivePolicy:
         )
 
     @classmethod
-    def from_annotation(cls, row) -> "EffectivePolicy":
+    def from_annotation(cls, row: "_EffectivePolicyRow") -> "EffectivePolicy":
         """Build an EffectivePolicy from the four ``effective_*_seconds`` annotations.
 
         ``row`` is any object exposing the four annotated attributes produced by
