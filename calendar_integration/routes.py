@@ -3,6 +3,7 @@ from common.types import RouteDict
 from .views import (
     AvailableTimeViewSet,
     BlockedTimeViewSet,
+    BookingPolicyViewSet,
     CalendarEventViewSet,
     CalendarGroupViewSet,
     CalendarViewSet,
@@ -40,5 +41,10 @@ routes: list[RouteDict] = [
         "regex": r"change-requests",
         "viewset": ExternalEventChangeRequestViewSet,
         "basename": "ChangeRequests",
+    },
+    {
+        "regex": r"booking-policies",
+        "viewset": BookingPolicyViewSet,
+        "basename": "BookingPolicies",
     },
 ]

@@ -1,6 +1,6 @@
 import datetime
 from collections.abc import Callable
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 from django.db.models import Case, IntegerField, Value, When
 from django.http import Http404, HttpResponse
@@ -19,6 +19,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
 
+from audit.services import AuditService
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncTriggerSource,
@@ -43,6 +44,7 @@ from calendar_integration.filtersets import (
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
+    BookingPolicy,
     Calendar,
     CalendarEvent,
     CalendarGroup,
@@ -50,6 +52,7 @@ from calendar_integration.models import (
     ExternalEventChangeRequest,
 )
 from calendar_integration.permissions import (
+    BookingPolicyPermission,
     CalendarAvailabilityPermission,
     CalendarEventPermission,
     CalendarGroupPermission,
@@ -65,6 +68,7 @@ from calendar_integration.serializers import (
     BlockedTimeRecurringExceptionSerializer,
     BlockedTimeSerializer,
     BookableSlotProposalSerializer,
+    BookingPolicySerializer,
     BulkBlockedTimeSerializer,
     CalendarBundleCreateSerializer,
     CalendarBundleUpdateSerializer,
@@ -83,6 +87,7 @@ from calendar_integration.serializers import (
     ResourceCalendarCreateSerializer,
     UnavailableTimeWindowSerializer,
 )
+from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.external_event_change_request_service import (
@@ -1995,6 +2000,179 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
 
         payload = [{"start_time": p.start_time, "end_time": p.end_time} for p in proposals]
         return Response(BookableSlotProposalSerializer(payload, many=True).data)
+
+
+@extend_schema(tags=["Booking Policies"])
+class BookingPolicyViewSet(VintaScheduleModelViewSet):
+    """ViewSet for managing ``BookingPolicy`` objects.
+
+    Provides full CRUD for booking policies scoped to the authenticated user's
+    organization.  Write operations (create, update, delete) delegate to
+    ``BookingPolicyService`` so validation, uniqueness checking, and audit
+    emission live in a single place.
+
+    **Exactly-one-target rule:** create requests must supply exactly one of
+    ``calendar``, ``membership_user_id``, ``calendar_group``, or
+    ``is_organization_default=true``.  Any other combination returns 400.
+
+    **Duplicate target → 400:** creating a second policy for the same target
+    is a validation error (not a 409) so the serializer can name the conflict.
+
+    **Idempotent destroy:** ``DELETE /booking-policies/{id}/`` returns 204 even
+    when the policy does not exist for the bound organization.
+    """
+
+    permission_classes = (BookingPolicyPermission,)
+    queryset = BookingPolicy.objects.all()
+    serializer_class = BookingPolicySerializer
+
+    def get_queryset(self):
+        """Return all policies for the authenticated user's organization."""
+        user = self.request.user
+        if not user.is_authenticated:
+            return BookingPolicy.original_manager.none()
+
+        membership = get_active_organization_membership(user)
+        if not membership:
+            return BookingPolicy.original_manager.none()
+
+        return BookingPolicy.objects.filter_by_organization(membership.organization_id)
+
+    def _build_service(
+        self,
+        booking_policy_service: "BookingPolicyService",
+    ) -> "BookingPolicyService":
+        """Initialize the service for this request's organization + actor."""
+        membership = get_active_organization_membership(cast("Any", self.request.user))
+        if membership is None:
+            # Callers without a membership are gated at the permission layer;
+            # this branch is a safeguard only.
+            return booking_policy_service
+
+        booking_policy_service.initialize(membership.organization)
+
+        # Resolve the acting principal for audit records.
+        actor = AuditService.actor_from_user(self.request.user, membership.organization_id)
+        booking_policy_service.set_actor(actor)
+
+        return booking_policy_service
+
+    @extend_schema(
+        summary="Create a booking policy",
+        description=(
+            "Create a new booking policy for the organization. "
+            "Exactly one of 'calendar', 'membership_user_id', 'calendar_group', "
+            "or 'is_organization_default' must be set. "
+            "Returns 400 when a policy for the target already exists."
+        ),
+        responses={201: BookingPolicySerializer},
+    )
+    @inject
+    def create(
+        self,
+        request,
+        *args,
+        booking_policy_service: Annotated[
+            BookingPolicyService, Provide["booking_policy_service"]
+        ] = None,  # type: ignore[assignment]
+        **kwargs,
+    ) -> Response:
+        """POST /booking-policies/ — create a new policy."""
+        service = self._build_service(booking_policy_service)
+
+        serializer = self.get_serializer(
+            data=request.data,
+            context={**self.get_serializer_context(), "booking_policy_service": service},
+        )
+        serializer.is_valid(raise_exception=True)
+        policy = serializer.save()
+
+        # Re-fetch through the queryset so annotations are applied uniformly.
+        policy = self.get_queryset().get(pk=policy.pk)
+        return Response(self.get_serializer(policy).data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(
+        summary="Update a booking policy",
+        description=(
+            "Update the rule fields (lead_time_seconds, max_horizon_seconds, "
+            "buffer_before_seconds, buffer_after_seconds) of an existing booking policy. "
+            "Target fields (calendar, membership_user_id, calendar_group, "
+            "is_organization_default) are immutable after creation."
+        ),
+        responses={200: BookingPolicySerializer},
+    )
+    @inject
+    def update(
+        self,
+        request,
+        *args,
+        booking_policy_service: Annotated[
+            BookingPolicyService, Provide["booking_policy_service"]
+        ] = None,  # type: ignore[assignment]
+        **kwargs,
+    ) -> Response:
+        """PUT/PATCH /booking-policies/{id}/ — update rule fields."""
+        service = self._build_service(booking_policy_service)
+
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+
+        serializer = self.get_serializer(
+            instance,
+            data=request.data,
+            partial=partial,
+            context={**self.get_serializer_context(), "booking_policy_service": service},
+        )
+        serializer.is_valid(raise_exception=True)
+        policy = serializer.save()
+
+        # Re-fetch through the queryset to ensure consistency with the list/retrieve paths.
+        policy = self.get_queryset().get(pk=policy.pk)
+        return Response(self.get_serializer(policy).data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Delete a booking policy",
+        description=(
+            "Delete a booking policy by id. "
+            "Returns 204 even when the policy does not exist (idempotent no-op)."
+        ),
+        responses={204: None},
+    )
+    @inject
+    def destroy(
+        self,
+        request,
+        *args,
+        booking_policy_service: Annotated[
+            BookingPolicyService, Provide["booking_policy_service"]
+        ] = None,  # type: ignore[assignment]
+        **kwargs,
+    ) -> Response:
+        """DELETE /booking-policies/{id}/ — idempotent policy removal.
+
+        Returns 204 regardless of whether the policy existed.  The plan's
+        Guiding Decisions mandate delete-absent semantics: a missing row is not
+        an error on the caller's side.
+        """
+        service = self._build_service(booking_policy_service)
+
+        # Try to resolve the policy but do not 404 when absent — the contract
+        # is idempotent no-op.
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            # Gated — permission layer should catch this first.
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        pk = kwargs.get("pk") or self.kwargs.get("pk")
+        try:
+            policy: BookingPolicy | None = BookingPolicy.objects.filter_by_organization(
+                membership.organization_id
+            ).get(pk=pk)
+        except BookingPolicy.DoesNotExist:
+            policy = None
+
+        service.delete_booking_policy(policy)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @extend_schema(tags=["External Event Change Requests"])

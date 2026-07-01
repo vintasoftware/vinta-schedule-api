@@ -2,7 +2,7 @@ import datetime
 from collections.abc import Iterable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
 
 from calendar_integration.constants import (
     CalendarProvider,
@@ -13,6 +13,25 @@ from calendar_integration.models import (
     EventAttendance,
     EventExternalAttendance,
 )
+
+
+if TYPE_CHECKING:
+    from calendar_integration.models import BookingPolicy
+
+
+class _EffectivePolicyRow(Protocol):
+    """Row shape consumed by ``EffectivePolicy.from_annotation``.
+
+    Any object (typically a ``Calendar`` or ``CalendarGroup`` fetched through an
+    annotated queryset) exposing the four ``effective_*_seconds`` columns produced
+    by ``annotate_effective_policy``. Each is ``int | None`` (NULL when no policy
+    resolved).
+    """
+
+    effective_lead_time_seconds: int | None
+    effective_max_horizon_seconds: int | None
+    effective_buffer_before_seconds: int | None
+    effective_buffer_after_seconds: int | None
 
 
 @dataclass
@@ -345,3 +364,116 @@ class BookableSlotProposal:
 
     start_time: datetime.datetime
     end_time: datetime.datetime
+
+
+@dataclass(frozen=True)
+class EffectivePolicy:
+    """The resolved set of booking guardrails for a calendar, bundle, or group.
+
+    Field semantics (mirrors ``BookingPolicy`` field encoding):
+    - ``lead_time``: minimum advance notice required before a slot can start.
+      Zero means "bookable now."
+    - ``max_horizon``: how far ahead a slot may be offered. ``None`` means
+      unbounded (no horizon constraint). A stored ``max_horizon_seconds=0`` on the
+      model maps to ``None`` here — "0 = no constraint" per spec.
+    - ``buffer_before``: dead zone before an existing event; candidate slots whose
+      window extends into ``[event.start - buffer_before, event.start)`` are blocked.
+      Zero means flush booking is allowed.
+    - ``buffer_after``: dead zone after an existing event. Zero means flush allowed.
+    """
+
+    lead_time: datetime.timedelta
+    max_horizon: datetime.timedelta | None  # None = unbounded
+    buffer_before: datetime.timedelta
+    buffer_after: datetime.timedelta
+
+    @classmethod
+    def unconstrained(cls) -> "EffectivePolicy":
+        """Return an EffectivePolicy with no constraints on any field."""
+        return cls(
+            lead_time=datetime.timedelta(0),
+            max_horizon=None,
+            buffer_before=datetime.timedelta(0),
+            buffer_after=datetime.timedelta(0),
+        )
+
+    @classmethod
+    def from_model(cls, policy: "BookingPolicy") -> "EffectivePolicy":
+        """Build an EffectivePolicy from a BookingPolicy model instance.
+
+        ``max_horizon_seconds=0`` on the model means "unbounded" and maps to
+        ``max_horizon=None`` here, consistent with the spec's "0 = no constraint."
+        """
+        return cls(
+            lead_time=datetime.timedelta(seconds=policy.lead_time_seconds),
+            max_horizon=(
+                datetime.timedelta(seconds=policy.max_horizon_seconds)
+                if policy.max_horizon_seconds > 0
+                else None
+            ),
+            buffer_before=datetime.timedelta(seconds=policy.buffer_before_seconds),
+            buffer_after=datetime.timedelta(seconds=policy.buffer_after_seconds),
+        )
+
+    @classmethod
+    def from_annotation(cls, row: "_EffectivePolicyRow") -> "EffectivePolicy":
+        """Build an EffectivePolicy from the four ``effective_*_seconds`` annotations.
+
+        ``row`` is any object exposing the four annotated attributes produced by
+        ``annotate_effective_policy`` — typically a ``Calendar`` or
+        ``CalendarGroup`` instance fetched through an annotated queryset:
+
+        - ``effective_lead_time_seconds``
+        - ``effective_max_horizon_seconds``
+        - ``effective_buffer_before_seconds``
+        - ``effective_buffer_after_seconds``
+
+        A ``0`` or ``NULL`` horizon maps to ``max_horizon=None`` ("0 = unbounded",
+        mirroring ``from_model``). ``0`` / ``NULL`` lead-time and buffers map to
+        ``timedelta(0)``. The annotation resolves the entire precedence chain in
+        SQL, so this method does nothing more than decode the four columns.
+        """
+        lead = row.effective_lead_time_seconds or 0
+        horizon = row.effective_max_horizon_seconds or 0
+        buffer_before = row.effective_buffer_before_seconds or 0
+        buffer_after = row.effective_buffer_after_seconds or 0
+
+        return cls(
+            lead_time=datetime.timedelta(seconds=lead),
+            max_horizon=(datetime.timedelta(seconds=horizon) if horizon > 0 else None),
+            buffer_before=datetime.timedelta(seconds=buffer_before),
+            buffer_after=datetime.timedelta(seconds=buffer_after),
+        )
+
+    @staticmethod
+    def most_restrictive(policies: Iterable["EffectivePolicy"]) -> "EffectivePolicy":
+        """Combine multiple EffectivePolicy instances into the most-restrictive one.
+
+        Field combination rules:
+        - ``lead_time``: max (the longest required advance notice wins).
+        - ``max_horizon``: min of the non-None values (the shortest horizon wins;
+          ``None`` = unbounded = effectively infinite, so it is excluded from the
+          min — only binding if ALL policies have ``None`` horizon).
+        - ``buffer_before``: max (the largest buffer wins).
+        - ``buffer_after``: max.
+
+        An empty input sequence returns ``unconstrained()``.
+        """
+        policy_list = list(policies)
+        if not policy_list:
+            return EffectivePolicy.unconstrained()
+
+        max_lead = max(p.lead_time for p in policy_list)
+        max_buffer_before = max(p.buffer_before for p in policy_list)
+        max_buffer_after = max(p.buffer_after for p in policy_list)
+
+        # Finite horizons only; None (unbounded) acts as +∞ and is skipped.
+        finite_horizons = [p.max_horizon for p in policy_list if p.max_horizon is not None]
+        min_horizon = min(finite_horizons) if finite_horizons else None
+
+        return EffectivePolicy(
+            lead_time=max_lead,
+            max_horizon=min_horizon,
+            buffer_before=max_buffer_before,
+            buffer_after=max_buffer_after,
+        )

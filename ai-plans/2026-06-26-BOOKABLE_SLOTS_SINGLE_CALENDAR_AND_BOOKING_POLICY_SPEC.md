@@ -133,7 +133,7 @@ flowchart TD
 
 **Rule semantics.**
 - **Lead time** and **max horizon** are measured *rolling from the request's "now"*. A candidate slot whose start is earlier than `now + lead_time`, or later than `now + max_horizon`, is dropped. (Optional absolute cutoff is out of scope — see **Negative scope**.)
-- **Buffer** uses separate before and after durations. A candidate is dropped if its `[start - buffer_before, end + buffer_after]` envelope overlaps any existing CalendarEvent or BlockedTime on the calendar.
+- **Buffer** uses separate before and after durations, forming a dead zone **around each existing event**: a candidate slot `[start, end]` is dropped if it overlaps any existing CalendarEvent or BlockedTime expanded to `[event_start - buffer_before, event_end + buffer_after]`. (Worked example: an event 14:00–15:00 with buffer-before 10m / buffer-after 20m yields the dead zone 13:50–15:20 — see **Acceptance scenarios** #4. An earlier candidate-envelope phrasing here was inverted relative to scenario #4 and is corrected.)
 - **No policy anywhere** = no constraints. Output is identical to current behavior. This is the backward-compatibility guarantee for the existing group query.
 
 **Multi-calendar combination (bundle/group, no explicit override).** Effective rule = the strictest of each field across participants: `max(lead_time)`, `min(max_horizon)`, `max(buffer_before)`, `max(buffer_after)`. Rationale: never offer a slot any participant would reject.

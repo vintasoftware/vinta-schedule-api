@@ -9,6 +9,7 @@ from calendar_integration.models import (
     AvailableTimeRecurrenceException,
     BlockedTime,
     BlockedTimeRecurrenceException,
+    BookingPolicy,
     Calendar,
     CalendarEvent,
     CalendarEventGroupSelection,
@@ -830,6 +831,104 @@ class CodeEventResult:
 # ---------------------------------------------------------------------------
 # ExternalEventChangeRequest types
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BookingPolicy types (Phase 4 — public GraphQL CRUD)
+# ---------------------------------------------------------------------------
+
+
+@strawberry_django.type(BookingPolicy)
+class BookingPolicyGraphQLType:
+    """GraphQL type for a BookingPolicy row.
+
+    Exposes the id, target fields (calendar_id, membership_user_id,
+    calendar_group_id, is_organization_default) and the four rule
+    second-counts. ``calendar_id`` / ``calendar_group_id`` are the FK
+    column values; ``membership_user_id`` is the denormalized column.
+    Zero on any rule field means "no constraint".
+    """
+
+    id: strawberry.auto  # noqa: A003
+    is_organization_default: strawberry.auto
+    lead_time_seconds: strawberry.auto
+    max_horizon_seconds: strawberry.auto
+    buffer_before_seconds: strawberry.auto
+    buffer_after_seconds: strawberry.auto
+    created: datetime.datetime
+    modified: datetime.datetime
+
+    @strawberry.field
+    def calendar_id(self) -> int | None:
+        """Return the FK id of the bound calendar, or None."""
+        return self.calendar_fk_id  # type: ignore[attr-defined]
+
+    @strawberry.field
+    def calendar_group_id(self) -> int | None:
+        """Return the FK id of the bound calendar group, or None."""
+        return self.calendar_group_fk_id  # type: ignore[attr-defined]
+
+    @strawberry.field
+    def membership_user_id(self) -> int | None:
+        """Return the denormalized membership user id, or None."""
+        return self.membership_user_id  # type: ignore[return-value]
+
+
+@strawberry.input
+class CreateBookingPolicyInput:
+    """Input for creating a new BookingPolicy.
+
+    Exactly one of ``calendar_id``, ``membership_user_id``, ``calendar_group_id``,
+    or ``is_organization_default=True`` must be set. All rule fields default to 0
+    (no constraint). ``PositiveIntegerField`` rejects negative values.
+    """
+
+    calendar_id: int | None = None
+    membership_user_id: int | None = None
+    calendar_group_id: int | None = None
+    is_organization_default: bool = False
+    lead_time_seconds: int = 0
+    max_horizon_seconds: int = 0
+    buffer_before_seconds: int = 0
+    buffer_after_seconds: int = 0
+
+
+@strawberry.input
+class UpdateBookingPolicyInput:
+    """Input for updating rule fields of an existing BookingPolicy.
+
+    Target fields (calendar, membership, calendar_group, is_organization_default)
+    are immutable. Only rule-second-count fields are updatable.
+    Any field left as None is not updated.
+    """
+
+    policy_id: int
+    lead_time_seconds: int | None = None
+    max_horizon_seconds: int | None = None
+    buffer_before_seconds: int | None = None
+    buffer_after_seconds: int | None = None
+
+
+@strawberry.input
+class DeleteBookingPolicyInput:
+    """Input for deleting a BookingPolicy (idempotent no-op when absent)."""
+
+    policy_id: int
+
+
+@strawberry.type
+class BookingPolicyResult:
+    """Result type for booking-policy write mutations."""
+
+    success: bool
+    policy: BookingPolicyGraphQLType | None = None
+
+
+@strawberry.type
+class DeleteBookingPolicyResult:
+    """Result type for the deleteBookingPolicy mutation."""
+
+    success: bool
 
 
 @strawberry.type

@@ -2,7 +2,22 @@ import datetime
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q, Subquery
+from django.db.models import (
+    Case,
+    Count,
+    Exists,
+    F,
+    IntegerField,
+    Max,
+    Min,
+    OuterRef,
+    Prefetch,
+    Q,
+    Subquery,
+    Value,
+    When,
+)
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from calendar_integration.constants import (
@@ -344,6 +359,154 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
 
         return self.filter(combined_query)
 
+    def annotate_effective_policy(self) -> "CalendarQuerySet":
+        """Annotate the four ``effective_*_seconds`` booking-policy columns.
+
+        Resolves, in a single query, the whole-policy precedence chain for each
+        calendar — calendar policy → owning-membership policy → org-default →
+        unconstrained — entirely in SQL. The first existing layer wins and all
+        four of its fields are read together (no per-field COALESCE across
+        layers). Decode the result with ``EffectivePolicy.from_annotation(row)``.
+
+        The chain is org-scoped: every inner subquery filters on the calendar's
+        own ``organization_id``, so the annotation is safe on a queryset spanning
+        a single tenant (the manager always pre-filters by organization).
+        """
+        qs = self.annotate(
+            _owning_membership_uid=_owning_membership_uid_expression(
+                OuterRef("pk"), OuterRef("organization_id")
+            )
+        )
+        qs = qs.annotate(
+            _effective_policy_id=_winning_calendar_policy_id_expression(
+                OuterRef("pk"),
+                OuterRef("organization_id"),
+                OuterRef("_owning_membership_uid"),
+            )
+        )
+        return qs.annotate(
+            **_policy_field_subqueries(
+                OuterRef("_effective_policy_id"), OuterRef("organization_id")
+            )
+        )
+
+
+def _owning_membership_uid_expression(calendar_id_ref: OuterRef, org_id_ref: OuterRef) -> Coalesce:
+    """Resolve, in SQL, the single owning-membership user id for a calendar.
+
+    Matches ``BookingPolicyService._resolve_owning_membership_user_id`` exactly:
+    among ``CalendarOwnership`` rows for this calendar+org with non-NULL
+    ``membership_user_id`` —
+
+    - prefer the ``is_default=True`` owner,
+    - else the lone owner (only when there is exactly one),
+    - else NULL (multiple owners, no default → skip the membership layer).
+
+    Encoded as ``COALESCE(default_owner_uid, lone_owner_uid)``:
+
+    - 0 owners → both NULL → NULL.
+    - 1 owner (default or not) → ``lone_owner_uid`` resolves; default may too.
+    - multiple with a default → ``default_owner_uid`` resolves, lone is NULL.
+    - multiple without a default → both NULL → NULL.
+
+    Correlated to the calendar through ``calendar_id_ref`` / ``org_id_ref`` so the
+    refs must point at the calendar row, not at an intervening subquery.
+    """
+    from calendar_integration.models import CalendarOwnership
+
+    owners = (
+        CalendarOwnership.objects.get_queryset()
+        .filter(organization_id=org_id_ref, calendar_fk_id=calendar_id_ref)
+        .exclude(membership_user_id__isnull=True)
+    )
+    default_owner_uid = owners.filter(is_default=True).values("membership_user_id")[:1]
+    # Lone owner: the single owner's membership_user_id, but only when the total
+    # owner count is exactly 1 (HAVING COUNT(*) = 1).
+    lone_owner_uid = (
+        owners.values("calendar_fk_id")
+        .annotate(_cnt=Count("id"), _uid=Max("membership_user_id"))
+        .filter(_cnt=1)
+        .values("_uid")[:1]
+    )
+    return Coalesce(
+        Subquery(default_owner_uid, output_field=IntegerField()),
+        Subquery(lone_owner_uid, output_field=IntegerField()),
+        output_field=IntegerField(),
+    )
+
+
+def _winning_calendar_policy_id_expression(
+    calendar_id_ref: OuterRef, org_id_ref: OuterRef, membership_uid_ref: OuterRef
+) -> Coalesce:
+    """Resolve, in SQL, the id of the BookingPolicy that governs a single calendar.
+
+    Mirrors ``BookingPolicyService.resolve_for_calendar`` precedence **exactly**:
+
+    1. Calendar-level policy (``calendar_fk_id == calendar``).
+    2. Owning-membership policy, keyed on the pre-resolved ``membership_uid_ref``
+       (see ``_owning_membership_uid_expression``).
+    3. Organization-default policy (``is_organization_default``).
+
+    The whole-policy precedence is preserved: the FIRST existing layer wins and
+    its id is returned; the caller reads all four fields from *that* policy. No
+    per-field COALESCE across layers. Every subquery is org-scoped through
+    ``org_id_ref`` so no cross-tenant row can leak in.
+
+    ``membership_uid_ref`` is an expression (typically ``OuterRef`` of a
+    pre-computed annotation) that already resolves the owning membership for the
+    calendar — passing it in (rather than nesting the owner resolution here)
+    keeps every correlation pointed at the calendar row.
+    """
+    from calendar_integration.models import BookingPolicy
+
+    calendar_policy_id = (
+        BookingPolicy.objects.get_queryset()
+        .filter(organization_id=org_id_ref, calendar_fk_id=calendar_id_ref)
+        .values("id")[:1]
+    )
+    membership_policy_id = (
+        BookingPolicy.objects.get_queryset()
+        .filter(organization_id=org_id_ref, membership_user_id=membership_uid_ref)
+        .values("id")[:1]
+    )
+    org_default_policy_id = (
+        BookingPolicy.objects.get_queryset()
+        .filter(organization_id=org_id_ref, is_organization_default=True)
+        .values("id")[:1]
+    )
+    return Coalesce(
+        Subquery(calendar_policy_id, output_field=IntegerField()),
+        Subquery(membership_policy_id, output_field=IntegerField()),
+        Subquery(org_default_policy_id, output_field=IntegerField()),
+        output_field=IntegerField(),
+    )
+
+
+def _policy_field_subqueries(winning_policy_id_ref: OuterRef, org_id_ref: OuterRef) -> dict:
+    """Build the four ``effective_*_seconds`` field reads from a winning policy id.
+
+    Reads all four guardrail columns from the single BookingPolicy identified by
+    ``winning_policy_id_ref``. When no policy won (NULL id) every read is NULL,
+    which ``EffectivePolicy.from_annotation`` decodes as unconstrained. Scoped to
+    ``org_id_ref`` for defense-in-depth (the id is already org-resolved).
+    """
+    from calendar_integration.models import BookingPolicy
+
+    def _field(column: str) -> Subquery:
+        return Subquery(
+            BookingPolicy.objects.get_queryset()
+            .filter(organization_id=org_id_ref, id=winning_policy_id_ref)
+            .values(column)[:1],
+            output_field=IntegerField(),
+        )
+
+    return {
+        "effective_lead_time_seconds": _field("lead_time_seconds"),
+        "effective_max_horizon_seconds": _field("max_horizon_seconds"),
+        "effective_buffer_before_seconds": _field("buffer_before_seconds"),
+        "effective_buffer_after_seconds": _field("buffer_after_seconds"),
+    }
+
 
 class CalendarEventQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin):
     """
@@ -501,6 +664,131 @@ class CalendarGroupQuerySet(BaseOrganizationModelQuerySet):
 
         return qs
 
+    def annotate_effective_policy(self) -> "CalendarGroupQuerySet":
+        """Annotate the four ``effective_*_seconds`` booking-policy columns.
+
+        Resolves, in a single query, the group precedence chain entirely in SQL:
+
+        1. Explicit group policy (``calendar_group_fk == group``) — read whole.
+        2. ``most_restrictive`` aggregate across every distinct participant
+           calendar (across all slots of the group), where each participant is
+           resolved via the single-calendar chain
+           (``_winning_calendar_policy_id_subquery``): ``MAX`` of lead /
+           buffer_before / buffer_after, and ``MIN`` over the POSITIVE horizons
+           (0/unbounded participants excluded; the group horizon is unbounded
+           only when every participant is unbounded).
+        3. Unconstrained (all NULL) when neither a group policy nor any
+           participant constraint exists.
+
+        Decode with ``EffectivePolicy.from_annotation(row)``. Org-scoped: the
+        group policy lookup, the participant traversal, and every per-participant
+        calendar subquery all filter by the group's own ``organization_id``.
+        """
+        from calendar_integration.models import BookingPolicy, CalendarGroupSlotMembership
+
+        org_ref = OuterRef("organization_id")
+        group_ref = OuterRef("pk")
+
+        # Layer 1: explicit group-level policy id (whole-policy precedence — when
+        # present, ALL four fields are read from it, never mixed with the
+        # participant aggregate).
+        group_policy_id = Subquery(
+            BookingPolicy.objects.get_queryset()
+            .filter(organization_id=org_ref, calendar_group_fk_id=group_ref)
+            .values("id")[:1],
+            output_field=IntegerField(),
+        )
+
+        def _group_policy_field(column: str) -> Subquery:
+            return Subquery(
+                BookingPolicy.objects.get_queryset()
+                .filter(
+                    organization_id=OuterRef("organization_id"),
+                    id=OuterRef("_group_policy_id"),
+                )
+                .values(column)[:1],
+                output_field=IntegerField(),
+            )
+
+        # Layer 2: most_restrictive over participant calendars. Each participant's
+        # effective field is resolved through the single-calendar chain, then
+        # aggregated across the distinct participant calendars of the group.
+        def _participant_base():
+            # One row per (slot-membership) participant. Each participant's
+            # effective policy is resolved through the single-calendar chain,
+            # correlated to the membership row's own calendar + org.
+            return (
+                CalendarGroupSlotMembership.objects.get_queryset()
+                .filter(
+                    organization_id=OuterRef("organization_id"),
+                    slot_fk__group_fk_id=OuterRef("pk"),
+                )
+                .annotate(
+                    _p_owning_uid=_owning_membership_uid_expression(
+                        OuterRef("calendar_fk_id"), OuterRef("organization_id")
+                    ),
+                )
+                .annotate(
+                    _p_policy_id=_winning_calendar_policy_id_expression(
+                        OuterRef("calendar_fk_id"),
+                        OuterRef("organization_id"),
+                        OuterRef("_p_owning_uid"),
+                    ),
+                )
+            )
+
+        def _participant_field(column: str):
+            return Subquery(
+                BookingPolicy.objects.get_queryset()
+                .filter(
+                    organization_id=OuterRef("organization_id"),
+                    id=OuterRef("_p_policy_id"),
+                )
+                .values(column)[:1],
+                output_field=IntegerField(),
+            )
+
+        def _participant_aggregate(column: str, *, positive_only: bool) -> Subquery:
+            participants = _participant_base().annotate(_p_value=_participant_field(column))
+            aggregate: Min | Max
+            if positive_only:
+                participants = participants.filter(_p_value__gt=0)
+                aggregate = Min("_p_value")
+            else:
+                aggregate = Max("_p_value")
+            return Subquery(
+                participants.values("organization_id").annotate(_agg=aggregate).values("_agg")[:1],
+                output_field=IntegerField(),
+            )
+
+        def _effective(column: str, *, positive_only: bool = False):
+            # Whole-policy precedence: when a group policy exists every field is
+            # read from it; otherwise the most_restrictive participant aggregate
+            # applies. ``Value(0)`` provides the unconstrained fallback so the
+            # column is never NULL.
+            return Case(
+                When(
+                    _group_policy_id__isnull=False,
+                    then=Coalesce(
+                        _group_policy_field(column), Value(0), output_field=IntegerField()
+                    ),
+                ),
+                default=Coalesce(
+                    _participant_aggregate(column, positive_only=positive_only),
+                    Value(0),
+                    output_field=IntegerField(),
+                ),
+                output_field=IntegerField(),
+            )
+
+        qs = self.annotate(_group_policy_id=group_policy_id)
+        return qs.annotate(
+            effective_lead_time_seconds=_effective("lead_time_seconds"),
+            effective_max_horizon_seconds=_effective("max_horizon_seconds", positive_only=True),
+            effective_buffer_before_seconds=_effective("buffer_before_seconds"),
+            effective_buffer_after_seconds=_effective("buffer_after_seconds"),
+        )
+
 
 class CalendarGroupSlotQuerySet(BaseOrganizationModelQuerySet):
     """
@@ -608,3 +896,29 @@ class ExternalEventChangeRequestQuerySet(BaseOrganizationModelQuerySet):
         ).values("event_fk_id")
 
         return self.filter(event_fk_id__in=attendee_event_ids)
+
+
+class BookingPolicyQuerySet(BaseOrganizationModelQuerySet):
+    """QuerySet for :class:`~calendar_integration.models.BookingPolicy`.
+
+    A ``BookingPolicy`` is attached to exactly one target: a calendar, an owning
+    membership, a calendar group, or the organization default. These chainable
+    helpers expose the per-target lookups the resolver uses, all scoped through
+    the inherited organization filter.
+    """
+
+    def for_calendar(self, calendar_id: int) -> "BookingPolicyQuerySet":
+        """Narrow the queryset to the policy attached directly to ``calendar_id``."""
+        return self.filter(calendar_fk_id=calendar_id)
+
+    def for_membership(self, membership_user_id: int) -> "BookingPolicyQuerySet":
+        """Narrow the queryset to the policy attached to the membership ``membership_user_id``."""
+        return self.filter(membership_user_id=membership_user_id)
+
+    def for_calendar_group(self, calendar_group_id: int) -> "BookingPolicyQuerySet":
+        """Narrow the queryset to the policy attached to ``calendar_group_id``."""
+        return self.filter(calendar_group_fk_id=calendar_group_id)
+
+    def org_default(self) -> "BookingPolicyQuerySet":
+        """Narrow the queryset to the organization-default policy."""
+        return self.filter(is_organization_default=True)

@@ -231,7 +231,9 @@ def test_create_bundle_event_records_single_create(
 
     counter = {"n": 0}
 
-    def fake_create_event(calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
+    def fake_create_event(
+        calendar_id: int, event_data: CalendarEventInputData, **kwargs
+    ) -> CalendarEvent:
         counter["n"] += 1
         cal = Calendar.objects.get(id=calendar_id, organization=organization)
         evt = CalendarEvent(

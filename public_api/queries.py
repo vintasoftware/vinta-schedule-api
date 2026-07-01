@@ -25,6 +25,7 @@ from calendar_integration.graphql import (
     AvailableTimeWindowGraphQLType,
     BlockedTimeGraphQLType,
     BookableSlotProposalGraphQLType,
+    BookingPolicyGraphQLType,
     CalendarBundleGraphQLType,
     CalendarEventGraphQLType,
     CalendarGraphQLType,
@@ -67,6 +68,8 @@ from webhooks.models import WebhookConfiguration, WebhookEvent
 
 
 if TYPE_CHECKING:
+    from calendar_integration.services.bookable_slots_service import BookableSlotsService
+    from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_permission_service import CalendarPermissionService
     from calendar_integration.services.calendar_service import CalendarService
@@ -108,6 +111,30 @@ def get_query_dependencies(
         calendar_group_service=cast("CalendarGroupService", calendar_group_service),
         calendar_permission_service=cast("CalendarPermissionService", calendar_permission_service),
     )
+
+
+@inject
+def get_booking_policy_query_dependencies(
+    booking_policy_service: Annotated[
+        "BookingPolicyService | None", Provide["booking_policy_service"]
+    ] = None,
+) -> "BookingPolicyService":
+    """Resolve the BookingPolicyService from the DI container."""
+    if booking_policy_service is None:
+        raise GraphQLError("Missing required dependency: booking_policy_service")
+    return booking_policy_service
+
+
+@inject
+def get_bookable_slots_service(
+    bookable_slots_service: Annotated[
+        "BookableSlotsService | None", Provide["bookable_slots_service"]
+    ] = None,
+) -> "BookableSlotsService":
+    """Resolve the BookableSlotsService from the DI container."""
+    if bookable_slots_service is None:
+        raise GraphQLError("Missing required dependency: bookable_slots_service")
+    return bookable_slots_service
 
 
 def _get_org(info: strawberry.Info):
@@ -858,6 +885,49 @@ class Query:
             for p in proposals
         ]
 
+    @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def calendar_bookable_slots(
+        self,
+        info: strawberry.Info,
+        calendar_id: int,
+        search_window_start: datetime.datetime,
+        search_window_end: datetime.datetime,
+        duration_seconds: int,
+        slot_step_seconds: int = 15 * 60,
+    ) -> list[BookableSlotProposalGraphQLType]:
+        """Return policy-compliant bookable slot windows for a single calendar.
+
+        Auto-detects personal vs bundle from ``calendar_type``: for a bundle, a
+        window is offered only when every child calendar is free.  The resolved
+        booking policy (lead-time, max-horizon, buffers) is applied; with no
+        policy anywhere the result matches the pre-policy slot engine.
+        """
+        org = _get_org(info)
+
+        # Owner-scope check: scoped tokens may only target their owner's calendars.
+        # Match the same not-found path used for a genuinely missing calendar.
+        request: PublicApiHttpRequest = info.context.request
+        system_user = request.public_api_system_user
+        if system_user is not None:
+            allowed_ids = scoped_calendar_ids(system_user, org)
+            if allowed_ids is not None and calendar_id not in allowed_ids:
+                raise Calendar.DoesNotExist("Calendar matching query does not exist.")
+
+        service = get_bookable_slots_service()
+        service.initialize(organization=org)
+
+        proposals = service.find_bookable_slots_for_calendar(
+            calendar_id=calendar_id,
+            search_window_start=search_window_start,
+            search_window_end=search_window_end,
+            duration=datetime.timedelta(seconds=duration_seconds),
+            slot_step=datetime.timedelta(seconds=slot_step_seconds),
+        )
+        return [
+            BookableSlotProposalGraphQLType(start_time=p.start_time, end_time=p.end_time)
+            for p in proposals
+        ]
+
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def calendar_group_events(
         self,
@@ -1066,6 +1136,44 @@ class Query:
         )
 
     # ------------------------------------------------------------------
+    # BookingPolicy queries (Phase 4)
+    # ------------------------------------------------------------------
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def booking_policies(
+        self,
+        info: strawberry.Info,
+        calendar_id: int | None = None,
+        membership_user_id: int | None = None,
+        calendar_group_id: int | None = None,
+        is_organization_default: bool | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[BookingPolicyGraphQLType]:
+        """List BookingPolicy rows for the caller's organization.
+
+        All four filter args are optional and combinable.  When none are
+        supplied, all policies for the org are returned (paginated).
+        """
+        org = _get_org(info)
+        service = get_booking_policy_query_dependencies()
+        service.initialize(org)
+
+        qs = service.get_all_policies()
+
+        if calendar_id is not None:
+            qs = qs.filter(calendar_fk_id=calendar_id)
+        if membership_user_id is not None:
+            qs = qs.filter(membership_user_id=membership_user_id)
+        if calendar_group_id is not None:
+            qs = qs.filter(calendar_group_fk_id=calendar_group_id)
+        if is_organization_default is not None:
+            qs = qs.filter(is_organization_default=is_organization_default)
+
+        qs = _slice_qs(qs.order_by("pk"), offset, limit)
+        return cast(list[BookingPolicyGraphQLType], list(qs))
+
+    # ------------------------------------------------------------------
     # Code-gated read fields (unauthenticated — authorized by booking code)
     # ------------------------------------------------------------------
 
@@ -1209,6 +1317,51 @@ class Query:
 
         proposals = calendar_group_service.find_bookable_slots(
             group_id=group.id,
+            search_window_start=search_window_start,
+            search_window_end=search_window_end,
+            duration=datetime.timedelta(seconds=duration_seconds),
+            slot_step=datetime.timedelta(seconds=slot_step_seconds),
+        )
+        return [
+            BookableSlotProposalGraphQLType(start_time=p.start_time, end_time=p.end_time)
+            for p in proposals
+        ]
+
+    @strawberry.field()
+    def calendar_bookable_slots_with_code(
+        self,
+        code: str,
+        search_window_start: datetime.datetime,
+        search_window_end: datetime.datetime,
+        duration_seconds: int,
+        slot_step_seconds: int = 15 * 60,
+    ) -> list[BookableSlotProposalGraphQLType]:
+        """Return policy-compliant bookable slot windows for a calendar via booking code.
+
+        No org token required.  The code gates access to its bound calendar or
+        calendar bundle only. Reads are repeatable: the code is never consumed by
+        this query. A group-scoped code is rejected (single/bundle calendars only).
+
+        The response omits policy rule values — slots only.
+        """
+        _validate_code_gated_range(search_window_start, search_window_end)
+        deps = get_query_dependencies()
+        token = _resolve_code_from_deps(deps, code)
+
+        # Resolve the bound calendar (calendar-scope or event.calendar fallback).
+        # Reject group-scoped codes (single/bundle only).
+        calendar = token.calendar
+        if calendar is None and token.event is not None:
+            calendar = token.event.calendar
+        if calendar is None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
+
+        org = _get_org_from_token(token)
+        service = get_bookable_slots_service()
+        service.initialize(organization=org)
+
+        proposals = service.find_bookable_slots_for_calendar(
+            calendar_id=calendar.id,
             search_window_start=search_window_start,
             search_window_end=search_window_end,
             duration=datetime.timedelta(seconds=duration_seconds),
