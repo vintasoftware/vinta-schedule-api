@@ -60,6 +60,8 @@ class PublicAPIResources(TextChoices):
         "external_event_change_request",
         "External Event Change Request",
     )
+    BOOKING_POLICY = "booking_policy", "Booking Policy"
+    BOOKABLE_SLOTS = "bookable_slots", "Bookable Slots"
 
 
 PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(

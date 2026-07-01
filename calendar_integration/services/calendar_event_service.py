@@ -169,7 +169,11 @@ class EventServiceHost(Protocol):
     def _grant_event_attendee_permissions(self, event: CalendarEvent) -> None: ...
 
     def create_event(
-        self, calendar_id: int, event_data: CalendarEventInputData
+        self,
+        calendar_id: int,
+        event_data: CalendarEventInputData,
+        *,
+        _enforce_policy: bool = True,
     ) -> CalendarEvent: ...
 
     def delete_event(

@@ -12,6 +12,7 @@ from calendar_integration.exceptions import (
     TokenRevokedError,
 )
 from calendar_integration.querysets import (
+    BookingPolicyQuerySet,
     CalendarEventGroupSelectionQuerySet,
     CalendarEventQuerySet,
     CalendarGroupQuerySet,
@@ -27,7 +28,7 @@ from organizations.managers import BaseOrganizationModelManager
 
 
 if TYPE_CHECKING:
-    from calendar_integration.models import CalendarManagementToken
+    from calendar_integration.models import BookingPolicy, CalendarManagementToken
     from organizations.models import OrganizationMembership as OrganizationMembershipType
 
 
@@ -153,6 +154,14 @@ class CalendarManager(BaseOrganizationModelManager):
             ranges=ranges
         )
 
+    def annotate_effective_policy(self) -> CalendarQuerySet:
+        """Annotate the four ``effective_*_seconds`` booking-policy columns.
+
+        Delegates to the queryset; resolves the whole-policy precedence chain
+        (calendar → owning-membership → org-default → unconstrained) in SQL.
+        """
+        return self.get_queryset().annotate_effective_policy()
+
 
 class CalendarEventManager(BaseOrganizationModelManager, RecurringManagerMixin):
     """Custom manager for CalendarEvent model to handle specific queries."""
@@ -220,6 +229,15 @@ class CalendarGroupManager(BaseOrganizationModelManager):
         return self.get_queryset().only_groups_bookable_in_ranges_with_bulk_modifications(
             ranges=ranges
         )
+
+    def annotate_effective_policy(self) -> CalendarGroupQuerySet:
+        """Annotate the four ``effective_*_seconds`` booking-policy columns.
+
+        Delegates to the queryset; resolves the group precedence chain (explicit
+        group policy → most_restrictive across participant calendars →
+        unconstrained) in SQL.
+        """
+        return self.get_queryset().annotate_effective_policy()
 
 
 class CalendarGroupSlotManager(BaseOrganizationModelManager):
@@ -337,3 +355,61 @@ class ExternalEventChangeRequestManager(BaseOrganizationModelManager):
         Returns change requests the given membership is eligible to resolve.
         """
         return self.get_queryset().resolvable_by(membership)
+
+
+class BookingPolicyManager(BaseOrganizationModelManager):
+    """Manager for BookingPolicy exposing the per-target lookups the resolver uses.
+
+    A policy is attached to exactly one target (calendar / membership / calendar
+    group / organization default); these helpers return the single matching row
+    (or ``None``) for a given target, all scoped through the inherited
+    organization filter.
+    """
+
+    def get_queryset(self) -> BookingPolicyQuerySet:
+        return BookingPolicyQuerySet(self.model, using=self._db)
+
+    def for_target(
+        self,
+        organization_id: int,
+        *,
+        calendar_id: int | None = None,
+        membership_user_id: int | None = None,
+        calendar_group_id: int | None = None,
+    ) -> "BookingPolicy | None":
+        """Return the policy attached to exactly one of the given targets, or ``None``.
+
+        Scoped to ``organization_id`` via ``filter_by_organization`` (required —
+        the base queryset refuses to evaluate without an organization filter).
+        Exactly one of ``calendar_id`` / ``membership_user_id`` /
+        ``calendar_group_id`` must be provided. The per-target partial unique
+        indexes guarantee at most one matching row.
+        """
+        provided = [
+            value
+            for value in (calendar_id, membership_user_id, calendar_group_id)
+            if value is not None
+        ]
+        if len(provided) != 1:
+            raise ValueError(
+                "for_target requires exactly one of calendar_id, membership_user_id, "
+                "or calendar_group_id."
+            )
+
+        queryset = self.get_queryset().filter_by_organization(organization_id)
+        if calendar_id is not None:
+            queryset = queryset.for_calendar(calendar_id)
+        elif membership_user_id is not None:
+            queryset = queryset.for_membership(membership_user_id)
+        else:
+            queryset = queryset.for_calendar_group(calendar_group_id)  # type: ignore[arg-type]
+
+        return queryset.first()
+
+    def org_default(self, organization_id: int) -> "BookingPolicy | None":
+        """Return the organization-default policy, or ``None`` if none is set.
+
+        Scoped to ``organization_id`` via ``filter_by_organization`` (required —
+        the base queryset refuses to evaluate without an organization filter).
+        """
+        return self.get_queryset().filter_by_organization(organization_id).org_default().first()

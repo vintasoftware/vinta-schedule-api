@@ -333,3 +333,34 @@ class CalendarGroupHasFutureEventsError(CalendarGroupError):
     """Raised when a group cannot be deleted because it has future bookings."""
 
     default_message = "Cannot delete CalendarGroup because it has future bookings."
+
+
+# Bookable Slots errors
+class BookableSlotsValidationError(CalendarIntegrationError):
+    """Raised when single-calendar / bundle bookable-slot input data is invalid."""
+
+    pass
+
+
+# Booking Policy Errors
+class DuplicateBookingPolicyError(CalendarIntegrationError):
+    """Raised when a second BookingPolicy is created for the same target/org.
+
+    Callers (REST serializers, GraphQL mutations) should map this to a 400 /
+    validation error with the message surfaced to the client.
+    """
+
+    pass
+
+
+class BookingPolicyViolationError(CalendarIntegrationError):
+    """Raised when a booking request violates the resolved EffectivePolicy.
+
+    The violation may be due to lead-time (too soon), max-horizon (too far
+    ahead), or a buffer envelope (the requested window overlaps the dead zone
+    of an existing event).  Callers (GraphQL mutations) should map this to a
+    user-facing error explaining that the slot is not available under the
+    current policy.
+    """
+
+    default_message = "The requested time slot is not available under the current booking policy."

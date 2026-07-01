@@ -10,6 +10,7 @@ from django.utils.html import format_html
 
 from calendar_integration.constants import IncomingWebhookProcessingStatus
 from calendar_integration.models import (
+    BookingPolicy,
     CalendarEventGroupSelection,
     CalendarGroup,
     CalendarGroupSlot,
@@ -516,3 +517,50 @@ class ExternalEventChangeRequestAdmin(admin.ModelAdmin):
     def get_resolved_by_user_id(self, obj: ExternalEventChangeRequest) -> int | None:
         """Display the user ID of the resolver membership."""
         return obj.resolved_by_user_id
+
+
+@admin.register(BookingPolicy)
+class BookingPolicyAdmin(admin.ModelAdmin):
+    """Admin interface for BookingPolicy.
+
+    A policy targets exactly one of: a calendar, an owning membership, a
+    calendar group, or the organization default. The concrete composite-FK
+    columns (``calendar_fk`` / ``membership_user_id`` / ``calendar_group_fk``)
+    are surfaced directly since the ``ForeignObject`` joins are non-editable.
+    """
+
+    list_display = (
+        "id",
+        "organization",
+        "calendar_fk",
+        "membership_user_id",
+        "calendar_group_fk",
+        "is_organization_default",
+        "lead_time_seconds",
+        "max_horizon_seconds",
+        "buffer_before_seconds",
+        "buffer_after_seconds",
+    )
+    list_filter = ("organization", "is_organization_default")
+    search_fields = ("organization__name",)
+    readonly_fields = ("created", "modified")
+    fields = (
+        "organization",
+        "calendar_fk",
+        "membership_user_id",
+        "calendar_group_fk",
+        "is_organization_default",
+        "lead_time_seconds",
+        "max_horizon_seconds",
+        "buffer_before_seconds",
+        "buffer_after_seconds",
+        "created",
+        "modified",
+    )
+
+    def get_queryset(self, request: HttpRequest):
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("organization", "calendar_fk", "calendar_group_fk")
+        )

@@ -2266,6 +2266,600 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedBlockedTimeList'
           description: ''
+  /booking-policies/:
+    get:
+      operationId: booking_policies_list
+      description: |-
+        ViewSet for managing ``BookingPolicy`` objects.
+
+        Provides full CRUD for booking policies scoped to the authenticated user's
+        organization.  Write operations (create, update, delete) delegate to
+        ``BookingPolicyService`` so validation, uniqueness checking, and audit
+        emission live in a single place.
+
+        **Exactly-one-target rule:** create requests must supply exactly one of
+        ``calendar``, ``membership_user_id``, ``calendar_group``, or
+        ``is_organization_default=true``.  Any other combination returns 400.
+
+        **Duplicate target → 400:** creating a second policy for the same target
+        is a validation error (not a 409) so the serializer can name the conflict.
+
+        **Idempotent destroy:** ``DELETE /booking-policies/{id}/`` returns 204 even
+        when the policy does not exist for the bound organization.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - Booking Policies
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBookingPolicyList'
+          description: ''
+    post:
+      operationId: booking_policies_create
+      description: Create a new booking policy for the organization. Exactly one of
+        'calendar', 'membership_user_id', 'calendar_group', or 'is_organization_default'
+        must be set. Returns 400 when a policy for the target already exists.
+      summary: Create a booking policy
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - Booking Policies
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingPolicy'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingPolicy'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingPolicy'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingPolicy'
+          description: ''
+  /booking-policies{format}:
+    get:
+      operationId: booking_policies_formatted_list
+      description: |-
+        ViewSet for managing ``BookingPolicy`` objects.
+
+        Provides full CRUD for booking policies scoped to the authenticated user's
+        organization.  Write operations (create, update, delete) delegate to
+        ``BookingPolicyService`` so validation, uniqueness checking, and audit
+        emission live in a single place.
+
+        **Exactly-one-target rule:** create requests must supply exactly one of
+        ``calendar``, ``membership_user_id``, ``calendar_group``, or
+        ``is_organization_default=true``.  Any other combination returns 400.
+
+        **Duplicate target → 400:** creating a second policy for the same target
+        is a validation error (not a 409) so the serializer can name the conflict.
+
+        **Idempotent destroy:** ``DELETE /booking-policies/{id}/`` returns 204 even
+        when the policy does not exist for the bound organization.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - Booking Policies
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBookingPolicyList'
+          description: ''
+    post:
+      operationId: booking_policies_formatted_create
+      description: Create a new booking policy for the organization. Exactly one of
+        'calendar', 'membership_user_id', 'calendar_group', or 'is_organization_default'
+        must be set. Returns 400 when a policy for the target already exists.
+      summary: Create a booking policy
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - Booking Policies
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingPolicy'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingPolicy'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingPolicy'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingPolicy'
+          description: ''
+  /booking-policies/{id}/:
+    get:
+      operationId: booking_policies_retrieve
+      description: |-
+        ViewSet for managing ``BookingPolicy`` objects.
+
+        Provides full CRUD for booking policies scoped to the authenticated user's
+        organization.  Write operations (create, update, delete) delegate to
+        ``BookingPolicyService`` so validation, uniqueness checking, and audit
+        emission live in a single place.
+
+        **Exactly-one-target rule:** create requests must supply exactly one of
+        ``calendar``, ``membership_user_id``, ``calendar_group``, or
+        ``is_organization_default=true``.  Any other combination returns 400.
+
+        **Duplicate target → 400:** creating a second policy for the same target
+        is a validation error (not a 409) so the serializer can name the conflict.
+
+        **Idempotent destroy:** ``DELETE /booking-policies/{id}/`` returns 204 even
+        when the policy does not exist for the bound organization.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Booking Policies
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingPolicy'
+          description: ''
+    put:
+      operationId: booking_policies_update
+      description: Update the rule fields (lead_time_seconds, max_horizon_seconds,
+        buffer_before_seconds, buffer_after_seconds) of an existing booking policy.
+        Target fields (calendar, membership_user_id, calendar_group, is_organization_default)
+        are immutable after creation.
+      summary: Update a booking policy
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Booking Policies
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingPolicy'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingPolicy'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingPolicy'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingPolicy'
+          description: ''
+    patch:
+      operationId: booking_policies_partial_update
+      description: |-
+        ViewSet for managing ``BookingPolicy`` objects.
+
+        Provides full CRUD for booking policies scoped to the authenticated user's
+        organization.  Write operations (create, update, delete) delegate to
+        ``BookingPolicyService`` so validation, uniqueness checking, and audit
+        emission live in a single place.
+
+        **Exactly-one-target rule:** create requests must supply exactly one of
+        ``calendar``, ``membership_user_id``, ``calendar_group``, or
+        ``is_organization_default=true``.  Any other combination returns 400.
+
+        **Duplicate target → 400:** creating a second policy for the same target
+        is a validation error (not a 409) so the serializer can name the conflict.
+
+        **Idempotent destroy:** ``DELETE /booking-policies/{id}/`` returns 204 even
+        when the policy does not exist for the bound organization.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Booking Policies
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedBookingPolicy'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedBookingPolicy'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedBookingPolicy'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingPolicy'
+          description: ''
+    delete:
+      operationId: booking_policies_destroy
+      description: Delete a booking policy by id. Returns 204 even when the policy
+        does not exist (idempotent no-op).
+      summary: Delete a booking policy
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Booking Policies
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /booking-policies/{id}{format}:
+    get:
+      operationId: booking_policies_formatted_retrieve
+      description: |-
+        ViewSet for managing ``BookingPolicy`` objects.
+
+        Provides full CRUD for booking policies scoped to the authenticated user's
+        organization.  Write operations (create, update, delete) delegate to
+        ``BookingPolicyService`` so validation, uniqueness checking, and audit
+        emission live in a single place.
+
+        **Exactly-one-target rule:** create requests must supply exactly one of
+        ``calendar``, ``membership_user_id``, ``calendar_group``, or
+        ``is_organization_default=true``.  Any other combination returns 400.
+
+        **Duplicate target → 400:** creating a second policy for the same target
+        is a validation error (not a 409) so the serializer can name the conflict.
+
+        **Idempotent destroy:** ``DELETE /booking-policies/{id}/`` returns 204 even
+        when the policy does not exist for the bound organization.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Booking Policies
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingPolicy'
+          description: ''
+    put:
+      operationId: booking_policies_formatted_update
+      description: Update the rule fields (lead_time_seconds, max_horizon_seconds,
+        buffer_before_seconds, buffer_after_seconds) of an existing booking policy.
+        Target fields (calendar, membership_user_id, calendar_group, is_organization_default)
+        are immutable after creation.
+      summary: Update a booking policy
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Booking Policies
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingPolicy'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingPolicy'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingPolicy'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingPolicy'
+          description: ''
+    patch:
+      operationId: booking_policies_formatted_partial_update
+      description: |-
+        ViewSet for managing ``BookingPolicy`` objects.
+
+        Provides full CRUD for booking policies scoped to the authenticated user's
+        organization.  Write operations (create, update, delete) delegate to
+        ``BookingPolicyService`` so validation, uniqueness checking, and audit
+        emission live in a single place.
+
+        **Exactly-one-target rule:** create requests must supply exactly one of
+        ``calendar``, ``membership_user_id``, ``calendar_group``, or
+        ``is_organization_default=true``.  Any other combination returns 400.
+
+        **Duplicate target → 400:** creating a second policy for the same target
+        is a validation error (not a 409) so the serializer can name the conflict.
+
+        **Idempotent destroy:** ``DELETE /booking-policies/{id}/`` returns 204 even
+        when the policy does not exist for the bound organization.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Booking Policies
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedBookingPolicy'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedBookingPolicy'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedBookingPolicy'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingPolicy'
+          description: ''
+    delete:
+      operationId: booking_policies_formatted_destroy
+      description: Delete a booking policy by id. Returns 204 even when the policy
+        does not exist (idempotent no-op).
+      summary: Delete a booking policy
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Booking Policies
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /branding/:
     get:
       operationId: branding_retrieve
@@ -11334,6 +11928,7 @@ components:
       - disable_calendar_bundle
       - webhook_configuration
       - external_event_change_request
+      - booking_policy
       type: string
       description: |-
         * `calendar_event` - Calendar Event
@@ -11378,6 +11973,7 @@ components:
         * `disable_calendar_bundle` - Disable Calendar Bundle
         * `webhook_configuration` - Webhook Configuration
         * `external_event_change_request` - External Event Change Request
+        * `booking_policy` - Booking Policy
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.
@@ -11769,6 +12365,71 @@ components:
       required:
       - end_time
       - start_time
+    BookingPolicy:
+      type: object
+      description: |-
+        Serializer for ``BookingPolicy`` CRUD.
+
+        Exactly one of ``calendar``, ``membership_user_id``, ``calendar_group``, or
+        ``is_organization_default`` must be set on create.  Targets are immutable
+        after creation — only the four rule-field seconds are writable on update.
+
+        Validation:
+        - ``validate()`` enforces the exactly-one-target invariant on create.
+        - ``validate_membership_user_id()`` checks that the supplied user id belongs
+          to the caller's organization (on create only; targets are immutable on update).
+        - ``DuplicateBookingPolicyError`` from the service is caught and surfaced as
+          a 400 validation error so the client gets a named conflict message.
+        - The four rule fields use ``min_value=0`` so DRF rejects negatives with a
+          clear field-level 400 before the value reaches the model's
+          ``PositiveIntegerField`` constraint.
+
+        Write paths (create / update) delegate to ``BookingPolicyService`` stored on
+        the serializer context as ``"booking_policy_service"`` (the viewset sets it).
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        calendar:
+          type: integer
+          nullable: true
+        calendar_group:
+          type: integer
+          nullable: true
+        membership_user_id:
+          type: integer
+          nullable: true
+        is_organization_default:
+          type: boolean
+          default: false
+        lead_time_seconds:
+          type: integer
+          minimum: 0
+          default: 0
+        max_horizon_seconds:
+          type: integer
+          minimum: 0
+          default: 0
+        buffer_before_seconds:
+          type: integer
+          minimum: 0
+          default: 0
+        buffer_after_seconds:
+          type: integer
+          minimum: 0
+          default: 0
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created
+      - id
+      - modified
     BulkBlockedTime:
       type: object
       description: Serializer for creating multiple blocked times.
@@ -12920,6 +13581,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BookableSlotProposal'
+    PaginatedBookingPolicyList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookingPolicy'
     PaginatedCalendarEventList:
       type: object
       required:
@@ -13355,6 +14039,67 @@ components:
         calendar:
           type: integer
           nullable: true
+    PatchedBookingPolicy:
+      type: object
+      description: |-
+        Serializer for ``BookingPolicy`` CRUD.
+
+        Exactly one of ``calendar``, ``membership_user_id``, ``calendar_group``, or
+        ``is_organization_default`` must be set on create.  Targets are immutable
+        after creation — only the four rule-field seconds are writable on update.
+
+        Validation:
+        - ``validate()`` enforces the exactly-one-target invariant on create.
+        - ``validate_membership_user_id()`` checks that the supplied user id belongs
+          to the caller's organization (on create only; targets are immutable on update).
+        - ``DuplicateBookingPolicyError`` from the service is caught and surfaced as
+          a 400 validation error so the client gets a named conflict message.
+        - The four rule fields use ``min_value=0`` so DRF rejects negatives with a
+          clear field-level 400 before the value reaches the model's
+          ``PositiveIntegerField`` constraint.
+
+        Write paths (create / update) delegate to ``BookingPolicyService`` stored on
+        the serializer context as ``"booking_policy_service"`` (the viewset sets it).
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        calendar:
+          type: integer
+          nullable: true
+        calendar_group:
+          type: integer
+          nullable: true
+        membership_user_id:
+          type: integer
+          nullable: true
+        is_organization_default:
+          type: boolean
+          default: false
+        lead_time_seconds:
+          type: integer
+          minimum: 0
+          default: 0
+        max_horizon_seconds:
+          type: integer
+          minimum: 0
+          default: 0
+        buffer_before_seconds:
+          type: integer
+          minimum: 0
+          default: 0
+        buffer_after_seconds:
+          type: integer
+          minimum: 0
+          default: 0
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
     PatchedCalendar:
       type: object
       properties:

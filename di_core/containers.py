@@ -12,6 +12,8 @@ from vintasend_django.services.notification_template_renderers.django_templated_
 
 from audit.repositories import DjangoORMAuditRepository
 from audit.services import AuditService
+from calendar_integration.services.bookable_slots_service import BookableSlotsService
+from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
@@ -124,12 +126,23 @@ class AppContainer(containers.DeclarativeContainer):
         notification_service=notification_service,
     )
 
+    booking_policy_service = providers.Factory(
+        BookingPolicyService,
+        audit_service=audit_service,
+    )
+
     calendar_service = providers.Factory(
         CalendarService,
         calendar_side_effects_service=calendar_side_effects_service,
         calendar_permission_service=calendar_permission_service,
         audit_service=audit_service,
         external_event_change_request_service=external_event_change_request_service,
+        booking_policy_service=booking_policy_service,
+    )
+
+    bookable_slots_service = providers.Factory(
+        BookableSlotsService,
+        booking_policy_service=booking_policy_service,
     )
 
     calendar_group_service = providers.Factory(
@@ -137,6 +150,7 @@ class AppContainer(containers.DeclarativeContainer):
         calendar_service=calendar_service,
         calendar_permission_service=calendar_permission_service,
         audit_service=audit_service,
+        booking_policy_service=booking_policy_service,
     )
 
     organization_service = providers.Factory(

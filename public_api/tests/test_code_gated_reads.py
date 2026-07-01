@@ -7,6 +7,9 @@ Covers Phase 4:
 - calendarGroupBookableSlotsWithCode
 - calendarGroupAvailabilityWithCode
 
+Covers Phase 6:
+- calendarBookableSlotsWithCode
+
 All fields are unauthenticated (no Authorization header required).  The booking
 code authorizes access to its bound calendar / calendar group.  Reads never
 consume the code (used_at remains NULL after any read).
@@ -19,11 +22,14 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
+from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AvailableTime,
     Calendar,
     CalendarEvent,
     CalendarGroup,
     CalendarManagementToken,
+    ChildrenCalendarRelationship,
     EventManagementPermissions,
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
@@ -1246,3 +1252,766 @@ class TestCodeGatedRangeClamp:
 
         assert "errors" in data and len(data["errors"]) > 0
         assert data["errors"][0]["message"] == "Requested time range is too large."
+
+
+# ---------------------------------------------------------------------------
+# Calendar bookable slots with code (Phase 6)
+# ---------------------------------------------------------------------------
+
+CALENDAR_BOOKABLE_SLOTS_WITH_CODE = """
+query CalendarBookableSlotsWithCode(
+    $code: String!,
+    $searchWindowStart: DateTime!,
+    $searchWindowEnd: DateTime!,
+    $durationSeconds: Int!
+) {
+    calendarBookableSlotsWithCode(
+        code: $code,
+        searchWindowStart: $searchWindowStart,
+        searchWindowEnd: $searchWindowEnd,
+        durationSeconds: $durationSeconds
+    ) {
+        startTime
+        endTime
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestCalendarBookableSlotsWithCode:
+    """Tests for calendarBookableSlotsWithCode — code-gated single/bundle slots."""
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_returns_slots_for_valid_calendar_code(
+        self, mock_rate_limiter, anon_client, calendar_booking_code
+    ):
+        """A valid calendar-scoped code returns bookable slots with no auth header."""
+        from di_core.containers import container
+
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = calendar_booking_code
+
+        start = datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2025, 9, 2, 10, 30, tzinfo=datetime.UTC)
+        proposals = [
+            BookableSlotProposal(start_time=start, end_time=start + datetime.timedelta(minutes=30)),
+            BookableSlotProposal(start_time=start + datetime.timedelta(minutes=30), end_time=end),
+        ]
+
+        mock_slots_service = Mock()
+        mock_slots_service.initialize.return_value = None
+        mock_slots_service.find_bookable_slots_for_calendar.return_value = proposals
+
+        with container.bookable_slots_service.override(mock_slots_service):
+            data = post_graphql(
+                anon_client,
+                CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+                {
+                    "code": code,
+                    "searchWindowStart": start.isoformat(),
+                    "searchWindowEnd": end.isoformat(),
+                    "durationSeconds": 30 * 60,
+                },
+            )
+
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["calendarBookableSlotsWithCode"]
+        assert len(result) == 2
+        assert result[0]["startTime"] == start.isoformat()
+        assert result[0]["endTime"] == (start + datetime.timedelta(minutes=30)).isoformat()
+        assert result[1]["startTime"] == (start + datetime.timedelta(minutes=30)).isoformat()
+        assert result[1]["endTime"] == end.isoformat()
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_code_not_consumed_after_read(
+        self, mock_rate_limiter, anon_client, calendar_booking_code
+    ):
+        """calendarBookableSlotsWithCode must not consume the code."""
+        from di_core.containers import container
+
+        mock_rate_limiter.return_value = iter([None])
+        token, code = calendar_booking_code
+
+        start = datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC)
+
+        mock_slots_service = Mock()
+        mock_slots_service.initialize.return_value = None
+        mock_slots_service.find_bookable_slots_for_calendar.return_value = []
+
+        with container.bookable_slots_service.override(mock_slots_service):
+            post_graphql(
+                anon_client,
+                CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+                {
+                    "code": code,
+                    "searchWindowStart": start.isoformat(),
+                    "searchWindowEnd": end.isoformat(),
+                    "durationSeconds": 30 * 60,
+                },
+            )
+
+        token.refresh_from_db()
+        assert token.used_at is None, "used_at should remain NULL after a read"
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_invalid_code_returns_error(self, mock_rate_limiter, anon_client):
+        """An invalid / unknown code returns the uniform error message."""
+        mock_rate_limiter.return_value = iter([None])
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": "aW52YWxpZA==",  # "invalid" base64 — no matching token
+                "searchWindowStart": "2025-09-02T09:00:00Z",
+                "searchWindowEnd": "2025-09-02T10:00:00Z",
+                "durationSeconds": 30 * 60,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid or expired code."
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_group_code_rejected(self, mock_rate_limiter, anon_client, group_booking_code):
+        """A group-scoped code is rejected (single/bundle calendars only)."""
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = group_booking_code
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": "2025-09-02T09:00:00Z",
+                "searchWindowEnd": "2025-09-02T10:00:00Z",
+                "durationSeconds": 30 * 60,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid or expired code."
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_backwards_range_rejected(self, mock_rate_limiter, anon_client, calendar_booking_code):
+        """A backwards range (end <= start) is rejected."""
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = calendar_booking_code
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": "2025-09-02T10:00:00Z",
+                "searchWindowEnd": "2025-09-02T09:00:00Z",
+                "durationSeconds": 30 * 60,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid time range."
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_over_max_range_rejected(self, mock_rate_limiter, anon_client, calendar_booking_code):
+        """A range exceeding MAX_CODE_GATED_RANGE (366 days) is rejected."""
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = calendar_booking_code
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": "2025-01-01T00:00:00Z",
+                # 367 days — one day over the 366-day cap
+                "searchWindowEnd": "2026-01-03T00:00:00Z",
+                "durationSeconds": 30 * 60,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Requested time range is too large."
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — strengthened: real-service, policy-filtering, equivalence,
+# bundle, expired/revoked/used, no-policy-field-disclosure
+# ---------------------------------------------------------------------------
+
+# Authenticated analog used for the equivalence test.
+_CALENDAR_BOOKABLE_SLOTS_AUTHED = """
+query CalendarBookableSlotsAuthed(
+    $calendarId: Int!,
+    $searchWindowStart: DateTime!,
+    $searchWindowEnd: DateTime!,
+    $durationSeconds: Int!,
+    $slotStepSeconds: Int!
+) {
+    calendarBookableSlots(
+        calendarId: $calendarId,
+        searchWindowStart: $searchWindowStart,
+        searchWindowEnd: $searchWindowEnd,
+        durationSeconds: $durationSeconds,
+        slotStepSeconds: $slotStepSeconds
+    ) {
+        startTime
+        endTime
+    }
+}
+"""
+
+# A query that requests a non-existent field — to prove the type is slots-only.
+_CALENDAR_BOOKABLE_SLOTS_WITH_CODE_BAD_FIELD = """
+query CalendarBookableSlotsWithCodeBadField(
+    $code: String!,
+    $searchWindowStart: DateTime!,
+    $searchWindowEnd: DateTime!,
+    $durationSeconds: Int!
+) {
+    calendarBookableSlotsWithCode(
+        code: $code,
+        searchWindowStart: $searchWindowStart,
+        searchWindowEnd: $searchWindowEnd,
+        durationSeconds: $durationSeconds
+    ) {
+        startTime
+        endTime
+        leadTimeMinutes
+    }
+}
+"""
+
+
+_managed_calendar_counter = 0
+
+
+def _managed_calendar_for_org(
+    org: Organization, *, calendar_type=CalendarType.PERSONAL
+) -> Calendar:
+    """Create a managed internal calendar for the given org with a unique external_id."""
+    global _managed_calendar_counter
+    _managed_calendar_counter += 1
+    return Calendar.objects.create(
+        organization=org,
+        name="Slots cal",
+        external_id=f"slots-cal-{_managed_calendar_counter}",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=calendar_type,
+        manage_available_windows=True,
+        accepts_public_scheduling=True,
+    )
+
+
+def _available_time(
+    org: Organization, cal: Calendar, start: datetime.datetime, end: datetime.datetime
+) -> AvailableTime:
+    return AvailableTime.objects.create(
+        organization=org,
+        calendar=cal,
+        start_time_tz_unaware=start,
+        end_time_tz_unaware=end,
+        timezone="UTC",
+    )
+
+
+def _calendar_event(
+    org: Organization, cal: Calendar, start: datetime.datetime, end: datetime.datetime
+) -> CalendarEvent:
+    return CalendarEvent.objects.create(
+        organization=org,
+        calendar_fk=cal,
+        title="Busy",
+        description="",
+        external_id=f"ev-{cal.id}-{start.isoformat()}",
+        start_time_tz_unaware=start,
+        end_time_tz_unaware=end,
+        timezone="UTC",
+    )
+
+
+def _authed_client_with_bookable_slots(org):
+    """Return an APIClient authenticated as a system user with BOOKABLE_SLOTS resource."""
+    from public_api.constants import PublicAPIResources
+    from public_api.models import ResourceAccess
+    from public_api.services import PublicAPIAuthService
+
+    auth_service = PublicAPIAuthService()
+    system_user, token = auth_service.create_system_user(
+        integration_name="slots_integration",
+        organization=org,
+    )
+    baker.make(
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.BOOKABLE_SLOTS
+    )
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+    return client
+
+
+@pytest.mark.django_db
+class TestCalendarBookableSlotsWithCodeStrengthened:
+    """Strengthened Phase-6 tests: real service, policy filtering, equivalence,
+    bundle, expired/revoked/used, and no policy-field disclosure."""
+
+    # ------------------------------------------------------------------
+    # 1. Real-service happy path — no mocks on BookableSlotsService
+    # ------------------------------------------------------------------
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_real_service_returns_free_slots_excludes_busy_span(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+    ):
+        """Real-service path (no mock): unmanaged calendar with a blocking event.
+
+        An unmanaged calendar is free by default; a CalendarEvent blocks the
+        10:00-10:30 window.  With 30-min duration and 30-min step, candidates
+        within the 09:00-11:00 search window are: 09:00, 09:30, 10:00, 10:30.
+        The event blocks 10:00 → that candidate is absent; 09:00, 09:30, 10:30
+        must be present.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        org = baker.make(Organization, name="Real Happy Org", should_sync_rooms=False)
+        # Unmanaged calendar: free everywhere unless blocked by an event.
+        global _managed_calendar_counter
+        _managed_calendar_counter += 1
+        cal = Calendar.objects.create(
+            organization=org,
+            name="Unmanaged cal",
+            external_id=f"unmanaged-cal-{_managed_calendar_counter}",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+            manage_available_windows=False,
+            accepts_public_scheduling=True,
+        )
+
+        window_start = datetime.datetime(2027, 3, 15, 9, 0, tzinfo=datetime.UTC)
+        window_end = datetime.datetime(2027, 3, 15, 11, 0, tzinfo=datetime.UTC)
+        busy_start = datetime.datetime(2027, 3, 15, 10, 0, tzinfo=datetime.UTC)
+        busy_end = datetime.datetime(2027, 3, 15, 10, 30, tzinfo=datetime.UTC)
+
+        # The CalendarEvent blocks 10:00-10:30 on the unmanaged calendar.
+        _calendar_event(org, cal, busy_start, busy_end)
+
+        _token, code = permission_service.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=cal.id,
+        )
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": window_start.isoformat(),
+                "searchWindowEnd": window_end.isoformat(),
+                "durationSeconds": 30 * 60,
+            },
+        )
+
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["calendarBookableSlotsWithCode"]
+        returned_starts = [r["startTime"] for r in result]
+
+        # Free slots: 09:00, 09:30, 10:30 (10:00 is blocked).
+        assert (
+            datetime.datetime(2027, 3, 15, 9, 0, tzinfo=datetime.UTC).isoformat() in returned_starts
+        )
+        assert (
+            datetime.datetime(2027, 3, 15, 9, 30, tzinfo=datetime.UTC).isoformat()
+            in returned_starts
+        )
+        assert (
+            datetime.datetime(2027, 3, 15, 10, 30, tzinfo=datetime.UTC).isoformat()
+            in returned_starts
+        )
+        # Busy slot must be absent.
+        assert (
+            datetime.datetime(2027, 3, 15, 10, 0, tzinfo=datetime.UTC).isoformat()
+            not in returned_starts
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Policy filtering — lead-time excludes near-future slots
+    # ------------------------------------------------------------------
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_booking_policy_lead_time_filters_slots_via_code(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+    ):
+        """A BookingPolicy with lead_time_seconds on the calendar excludes near-future slots.
+
+        A 4-hour lead time is set on the calendar.  An availability window close to now
+        (1 hour from now) must be excluded; one 6 hours from now must be present.
+        """
+        from django.utils import timezone as tz
+
+        from calendar_integration.factories import create_booking_policy
+
+        mock_rate_limiter.return_value = iter([None])
+
+        org = baker.make(Organization, name="Policy Lead Org", should_sync_rooms=False)
+        cal = _managed_calendar_for_org(org)
+
+        # Lead-time of 4 hours: any slot starting within 4 hours of 'now' is cut.
+        create_booking_policy(calendar=cal, lead_time_seconds=4 * 3600)
+
+        now = tz.now()
+        # Near-future slot: 1 hour from now → blocked by 4-hour lead-time.
+        near_start = (now + datetime.timedelta(hours=1)).replace(second=0, microsecond=0)
+        near_end = near_start + datetime.timedelta(hours=1)
+        # Far-future slot: 6 hours from now → passes lead-time.
+        far_start = (now + datetime.timedelta(hours=6)).replace(second=0, microsecond=0)
+        far_end = far_start + datetime.timedelta(hours=1)
+
+        _available_time(org, cal, near_start, near_end)
+        _available_time(org, cal, far_start, far_end)
+
+        _token, code = permission_service.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=cal.id,
+        )
+
+        # Search over both windows.
+        search_start = near_start
+        search_end = far_end
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": search_start.isoformat(),
+                "searchWindowEnd": search_end.isoformat(),
+                "durationSeconds": 60 * 60,
+            },
+        )
+
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        result = data["data"]["calendarBookableSlotsWithCode"]
+        returned_starts = [r["startTime"] for r in result]
+
+        # Near slot must be absent (lead-time blocks it).
+        assert near_start.isoformat() not in returned_starts
+        # Far slot must be present.
+        assert far_start.isoformat() in returned_starts
+
+    # ------------------------------------------------------------------
+    # 3. Equivalence: code-gated == authenticated for same calendar + inputs
+    # ------------------------------------------------------------------
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_code_gated_equals_authenticated_calendarBookableSlots(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+    ):
+        """calendarBookableSlotsWithCode and calendarBookableSlots return identical slot lists."""
+        mock_rate_limiter.return_value = iter([None])
+
+        org = baker.make(Organization, name="Equiv Org", should_sync_rooms=False)
+        cal = _managed_calendar_for_org(org)
+
+        window_start = datetime.datetime(2028, 5, 10, 9, 0, tzinfo=datetime.UTC)
+        window_end = datetime.datetime(2028, 5, 10, 11, 0, tzinfo=datetime.UTC)
+        busy_start = datetime.datetime(2028, 5, 10, 9, 30, tzinfo=datetime.UTC)
+        busy_end = datetime.datetime(2028, 5, 10, 10, 0, tzinfo=datetime.UTC)
+
+        _available_time(org, cal, window_start, window_end)
+        _calendar_event(org, cal, busy_start, busy_end)
+
+        _token, code = permission_service.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=cal.id,
+        )
+
+        # Code-gated (unauthenticated).
+        code_data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": window_start.isoformat(),
+                "searchWindowEnd": window_end.isoformat(),
+                "durationSeconds": 30 * 60,
+            },
+        )
+        assert "errors" not in code_data or len(code_data.get("errors", [])) == 0
+        code_slots = code_data["data"]["calendarBookableSlotsWithCode"]
+
+        # Authenticated analog.
+        authed_client = _authed_client_with_bookable_slots(org)
+        auth_data = post_graphql(
+            authed_client,
+            _CALENDAR_BOOKABLE_SLOTS_AUTHED,
+            {
+                "calendarId": cal.id,
+                "searchWindowStart": window_start.isoformat(),
+                "searchWindowEnd": window_end.isoformat(),
+                "durationSeconds": 30 * 60,
+                "slotStepSeconds": 15 * 60,
+            },
+        )
+        assert "errors" not in auth_data or len(auth_data.get("errors", [])) == 0
+        auth_slots = auth_data["data"]["calendarBookableSlots"]
+
+        assert code_slots == auth_slots, (
+            f"Mismatch between code-gated and authenticated slot lists.\n"
+            f"code-gated: {code_slots}\nauthenticated: {auth_slots}"
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Bundle-scoped code: busy child suppresses slot
+    # ------------------------------------------------------------------
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_bundle_code_slot_suppressed_by_busy_child(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+    ):
+        """A bundle calendar code: a slot offered only when ALL children are free.
+
+        Two child calendars; only child_a has availability → bundle slot absent.
+        Then availability is added to child_b → bundle slot appears.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        org = baker.make(Organization, name="Bundle Code Org", should_sync_rooms=False)
+
+        child_a = _managed_calendar_for_org(org)
+        child_b = _managed_calendar_for_org(org)
+
+        # Bundle calendar (not managed itself — children are managed).
+        global _managed_calendar_counter
+        _managed_calendar_counter += 1
+        bundle = Calendar.objects.create(
+            organization=org,
+            name="Bundle",
+            external_id=f"bundle-code-test-{_managed_calendar_counter}",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.BUNDLE,
+            manage_available_windows=False,
+        )
+        ChildrenCalendarRelationship.objects.create(
+            organization=org,
+            bundle_calendar=bundle,
+            child_calendar=child_a,
+            is_primary=True,
+        )
+        ChildrenCalendarRelationship.objects.create(
+            organization=org,
+            bundle_calendar=bundle,
+            child_calendar=child_b,
+            is_primary=False,
+        )
+
+        window_start = datetime.datetime(2028, 7, 1, 9, 0, tzinfo=datetime.UTC)
+        window_end = datetime.datetime(2028, 7, 1, 10, 0, tzinfo=datetime.UTC)
+
+        # Only child_a is available; child_b has none → bundle slot must be absent.
+        _available_time(org, child_a, window_start, window_end)
+
+        _token, code = permission_service.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=bundle.id,
+        )
+
+        # --- Phase A: only child_a available → no bundle slot ---
+        data_a = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": window_start.isoformat(),
+                "searchWindowEnd": window_end.isoformat(),
+                "durationSeconds": 30 * 60,
+            },
+        )
+        assert "errors" not in data_a or len(data_a.get("errors", [])) == 0
+        assert data_a["data"]["calendarBookableSlotsWithCode"] == [], (
+            "Bundle slot must not appear when child_b has no availability"
+        )
+
+        # --- Phase B: both children available → slot appears ---
+        _available_time(org, child_b, window_start, window_end)
+
+        data_b = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": window_start.isoformat(),
+                "searchWindowEnd": window_end.isoformat(),
+                "durationSeconds": 30 * 60,
+            },
+        )
+        assert "errors" not in data_b or len(data_b.get("errors", [])) == 0
+        slots_b = data_b["data"]["calendarBookableSlotsWithCode"]
+        assert len(slots_b) > 0, "Bundle slot must appear when both children are free"
+
+    # ------------------------------------------------------------------
+    # 5a. Revoked code → uniform error
+    # ------------------------------------------------------------------
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_revoked_code_returns_uniform_error(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+        organization,
+        calendar,
+    ):
+        """A revoked calendar code returns the uniform 'Invalid or expired code.' error."""
+        mock_rate_limiter.return_value = iter([None])
+
+        token, code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=calendar.id,
+        )
+        permission_service.revoke_token(organization_id=organization.id, token_id=token.id)
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": "2027-09-02T09:00:00Z",
+                "searchWindowEnd": "2027-09-02T10:00:00Z",
+                "durationSeconds": 30 * 60,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid or expired code."
+
+    # ------------------------------------------------------------------
+    # 5b. Expired code → uniform error
+    # ------------------------------------------------------------------
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_expired_code_returns_uniform_error(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+        organization,
+        calendar,
+    ):
+        """An expired calendar code returns the uniform 'Invalid or expired code.' error."""
+        mock_rate_limiter.return_value = iter([None])
+
+        past = datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC)
+        _token, code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=calendar.id,
+            expires_at=past,
+        )
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": "2027-09-02T09:00:00Z",
+                "searchWindowEnd": "2027-09-02T10:00:00Z",
+                "durationSeconds": 30 * 60,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid or expired code."
+
+    # ------------------------------------------------------------------
+    # 5c. Used (consumed) code → uniform error
+    # ------------------------------------------------------------------
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_used_code_returns_uniform_error(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+        organization,
+        calendar,
+    ):
+        """A used (consumed) calendar code returns the uniform 'Invalid or expired code.' error."""
+        mock_rate_limiter.return_value = iter([None])
+
+        token, code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=calendar.id,
+        )
+        CalendarManagementToken.objects.filter(id=token.id).update(
+            used_at=datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
+        )
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": "2027-09-02T09:00:00Z",
+                "searchWindowEnd": "2027-09-02T10:00:00Z",
+                "durationSeconds": 30 * 60,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid or expired code."
+
+    # ------------------------------------------------------------------
+    # 6. No policy-field disclosure: leadTimeMinutes must be a GraphQL error
+    # ------------------------------------------------------------------
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_no_policy_field_disclosure_lead_time_minutes(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        calendar_booking_code,
+    ):
+        """BookableSlotProposalGraphQLType exposes only startTime/endTime.
+
+        Requesting a non-existent field (leadTimeMinutes) must produce a GraphQL
+        validation error — proving that policy rule values are not surfaced.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = calendar_booking_code
+
+        data = post_graphql(
+            anon_client,
+            _CALENDAR_BOOKABLE_SLOTS_WITH_CODE_BAD_FIELD,
+            {
+                "code": code,
+                "searchWindowStart": "2027-09-02T09:00:00Z",
+                "searchWindowEnd": "2027-09-02T10:00:00Z",
+                "durationSeconds": 30 * 60,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0, (
+            "Expected a GraphQL validation error for unknown field 'leadTimeMinutes'"
+        )
+        # The error must mention the unknown field, not a business-logic failure.
+        error_messages = " ".join(e["message"] for e in data["errors"])
+        assert "leadTimeMinutes" in error_messages or "Cannot query field" in error_messages

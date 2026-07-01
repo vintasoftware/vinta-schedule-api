@@ -1,10 +1,9 @@
 import datetime
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import Q
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
@@ -13,13 +12,13 @@ from audit.constants import AuditAction
 from audit.diff import compute_diff
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.exceptions import (
+    BookingPolicyViolationError,
     CalendarGroupHasFutureEventsError,
     CalendarGroupSlotInUseError,
     CalendarGroupValidationError,
     CalendarServiceOrganizationNotSetError,
 )
 from calendar_integration.models import (
-    AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
@@ -30,6 +29,7 @@ from calendar_integration.models import (
     CalendarOwnership,
 )
 from calendar_integration.querysets import CalendarEventQuerySet
+from calendar_integration.services import slot_engine
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service_utils import (
     convert_naive_utc_datetime_to_timezone as _convert_naive_utc_datetime_to_timezone,
@@ -45,6 +45,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupRangeAvailability,
     CalendarGroupSlotAvailability,
     CalendarGroupSlotInputData,
+    EffectivePolicy,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
@@ -56,16 +57,8 @@ from users.models import User
 
 if TYPE_CHECKING:
     from audit.services import AuditService
+    from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_service import CalendarService
-
-
-def _intervals_overlap(
-    a: tuple[datetime.datetime, datetime.datetime],
-    b: tuple[datetime.datetime, datetime.datetime],
-) -> bool:
-    a_start, a_end = a
-    b_start, b_end = b
-    return a_start < b_end and b_start < a_end
 
 
 class CalendarGroupService:
@@ -79,11 +72,15 @@ class CalendarGroupService:
             "CalendarPermissionService | None", Provide["calendar_permission_service"]
         ] = None,
         audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
+        booking_policy_service: Annotated[
+            "BookingPolicyService | None", Provide["booking_policy_service"]
+        ] = None,
     ) -> None:
         self.organization = None
         self.calendar_service = calendar_service
         self.calendar_permission_service = calendar_permission_service
         self.audit_service = audit_service
+        self.booking_policy_service = booking_policy_service
 
     def _audit_group_write(
         self,
@@ -122,8 +119,13 @@ class CalendarGroupService:
         or authenticate `self.calendar_service` with the same organization — the
         grouped-event flow needs external-provider adapters if any of the
         selected calendars is backed by one.
+
+        Also propagates the org context to ``booking_policy_service`` when present,
+        so the policy resolver is bound to the same tenant.
         """
         self.organization = organization
+        if self.booking_policy_service is not None:
+            self.booking_policy_service.initialize(organization)
 
     def _assert_initialized(self) -> None:
         if self.organization is None:
@@ -453,6 +455,84 @@ class CalendarGroupService:
         return results
 
     # ------------------------------------------------------------------
+    # Booking policy enforcement (group path)
+    # ------------------------------------------------------------------
+
+    def _check_group_booking_policy(
+        self,
+        group: CalendarGroup,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        now: datetime.datetime,
+    ) -> None:
+        """Enforce the resolved EffectivePolicy for a group booking request.
+
+        Mirrors the shape of ``CalendarService._check_booking_policy`` (Phase 8a) for
+        the group write path.  Steps:
+
+        1. Skip when ``booking_policy_service`` is not injected or when the resolved
+           policy is ``EffectivePolicy.unconstrained()`` — preserving byte-for-byte
+           pre-feature behavior (the data-presence gate).
+        2. Resolve the ``EffectivePolicy`` via ``resolve_for_group`` — the same
+           resolver Phase 7 uses in ``find_bookable_slots``, so enforcement and
+           discovery agree.
+        3. Collect ALL participant calendar IDs across every slot pool of the group
+           (the same ``all_calendar_ids`` set ``find_bookable_slots`` uses), so the
+           buffer dead-zone check is conservative: any participant that would
+           individually reject the window blocks the booking.
+        4. Fetch buffer blocking spans across the full participant set (managed +
+           unmanaged), widening the window by the buffer magnitudes — mirrors Phase
+           7's buffer fetch in ``find_bookable_slots``.
+        5. Build a single ``BookableSlotProposal`` and call
+           ``slot_engine.apply_policy_filter``; empty result → raise
+           ``BookingPolicyViolationError``.
+
+        This check runs inside ``create_grouped_event``'s ``@transaction.atomic()``
+        decorator, so a violation rolls back the entire group write — no events or
+        blocked times are persisted.
+        """
+        if self.booking_policy_service is None or self.organization is None:
+            # Data-presence gate: no service → skip (pre-feature behavior).
+            return
+
+        policy = self.booking_policy_service.resolve_for_group(group)
+        if policy == EffectivePolicy.unconstrained():
+            # No policy anywhere for this group → skip all enforcement.
+            return
+
+        # Collect ALL calendar IDs in the group's slot pools — the same set
+        # find_bookable_slots uses so enforcement matches discovery exactly.
+        org_id = cast(Organization, self.organization).id
+        slots = list(group.slots.all())
+        all_calendar_ids: set[int] = set()
+        for slot in slots:
+            cal_ids = (
+                CalendarGroupSlotMembership.objects.filter_by_organization(org_id)
+                .filter(slot_fk=slot)
+                .values_list("calendar_fk_id", flat=True)
+            )
+            all_calendar_ids.update(cal_ids)
+
+        no_buffer = policy.buffer_before <= datetime.timedelta(
+            0
+        ) and policy.buffer_after <= datetime.timedelta(0)
+        if no_buffer:
+            buffer_blocking_spans: slot_engine.SpansByCalendarId = {}
+        else:
+            buffer_blocking_spans = slot_engine.fetch_blocking_spans(
+                org_id,
+                all_calendar_ids,
+                start_time - policy.buffer_after,
+                end_time + policy.buffer_before,
+                with_bulk_modifications=False,
+            )
+
+        proposal = BookableSlotProposal(start_time=start_time, end_time=end_time)
+        allowed = slot_engine.apply_policy_filter([proposal], policy, now, buffer_blocking_spans)
+        if not allowed:
+            raise BookingPolicyViolationError()
+
+    # ------------------------------------------------------------------
     # Grouped event creation
     # ------------------------------------------------------------------
     @transaction.atomic()
@@ -530,6 +610,16 @@ class CalendarGroupService:
         selections_by_slot_id = self._validate_selections(group, slots, data.slot_selections)
         all_selected_ids = {cid for sel in data.slot_selections for cid in sel.calendar_ids}
         self._assert_calendars_available(all_selected_ids, data.start_time, data.end_time)
+
+        # --- Booking policy enforcement ---
+        # Runs inside the @transaction.atomic() so any violation rolls back the
+        # entire write — no events or blocked times are persisted on rejection.
+        self._check_group_booking_policy(
+            group=group,
+            start_time=data.start_time,
+            end_time=data.end_time,
+            now=timezone.now(),
+        )
 
         primary_slot = slots[0]
         primary_calendar_id = selections_by_slot_id[primary_slot.id].calendar_ids[0]
@@ -968,11 +1058,12 @@ class CalendarGroupService:
         duration: datetime.timedelta,
         slot_step: datetime.timedelta = datetime.timedelta(minutes=15),
         with_bulk_modifications: bool = False,
+        now: datetime.datetime | None = None,
     ) -> list[BookableSlotProposal]:
         """Return every `(candidate_start, candidate_start + duration)` within
         `[search_window_start, search_window_end]`, stepping by `slot_step`,
         where every slot in the group has at least `required_count` calendars
-        available.
+        available, filtered by the resolved group booking policy.
 
         The implementation fetches blocking data (AvailableTime for managed
         calendars, CalendarEvent + BlockedTime for unmanaged calendars) once
@@ -983,12 +1074,33 @@ class CalendarGroupService:
 
         Set `with_bulk_modifications=True` to expand recurring events through
         their bulk-modification continuation series.
+
+        ``now`` defaults to ``timezone.now()`` (the request instant) and is used
+        for lead-time / max-horizon cutoffs.  The GraphQL resolvers keep calling
+        this method without the ``now`` argument (default accepted) — no signature
+        change at the GraphQL layer.
+
+        Policy-awareness gate: when no ``BookingPolicy`` resolves for the group
+        (i.e. the resolved policy is ``EffectivePolicy.unconstrained()``), the
+        output is byte-for-byte identical to the pre-feature engine result — no
+        buffer fetch, no filter applied.
+
+        Buffer suppression semantics: when a buffer policy applies, a candidate
+        is dropped if ANY participant calendar (across all slot pools, regardless
+        of ``required_count``) has an event within the buffer dead zone.  This is
+        the conservative "reject if any participant would reject" rule — even a
+        calendar that is not counted toward a slot's ``required_count`` can block
+        the candidate.  This aligns with the plan's intent to never offer a slot
+        that a participant would individually reject.
         """
         self._assert_initialized()
         if slot_step <= datetime.timedelta(0):
             raise CalendarGroupValidationError("slot_step must be a positive timedelta.")
         if duration <= datetime.timedelta(0):
             raise CalendarGroupValidationError("duration must be a positive timedelta.")
+
+        if now is None:
+            now = timezone.now()
 
         group = self._get_group_by_id(group_id)
         slots = list(group.slots.all())
@@ -1011,11 +1123,14 @@ class CalendarGroupService:
         if not all_calendar_ids:
             return []
 
-        managed_ids, unmanaged_ids = self._split_calendars_by_management(all_calendar_ids)
-        available_spans = self._fetch_available_spans(
-            managed_ids, search_window_start, search_window_end
+        managed_ids, unmanaged_ids = slot_engine.split_calendars_by_management(
+            self.organization.id, all_calendar_ids
         )
-        blocking_spans = self._fetch_blocking_spans(
+        available_spans = slot_engine.fetch_available_spans(
+            self.organization.id, managed_ids, search_window_start, search_window_end
+        )
+        blocking_spans = slot_engine.fetch_blocking_spans(
+            self.organization.id,
             unmanaged_ids,
             search_window_start,
             search_window_end,
@@ -1032,116 +1147,57 @@ class CalendarGroupService:
             for slot_id, pool_ids in slot_pool_by_id.items():
                 available_count = 0
                 for cid in pool_ids:
-                    if cid in managed_ids:
-                        # Managed: needs an AvailableTime that covers the window.
-                        if any(
-                            av_start <= window_start and av_end >= window_end
-                            for av_start, av_end in available_spans.get(cid, ())
-                        ):
-                            available_count += 1
-                    else:
-                        # Unmanaged: must not overlap any blocking span.
-                        if not any(
-                            _intervals_overlap((bs, be), (window_start, window_end))
-                            for bs, be in blocking_spans.get(cid, ())
-                        ):
-                            available_count += 1
+                    if slot_engine.calendar_free_for_window(
+                        cid,
+                        window_start,
+                        window_end,
+                        managed_ids,
+                        available_spans,
+                        blocking_spans,
+                    ):
+                        available_count += 1
                 if available_count < required_count_by_slot_id[slot_id]:
                     all_slots_satisfied = False
                     break
             if all_slots_satisfied:
                 proposals.append(BookableSlotProposal(start_time=window_start, end_time=window_end))
             cursor = cursor + slot_step
-        return proposals
 
-    def _split_calendars_by_management(self, calendar_ids: set[int]) -> tuple[set[int], set[int]]:
-        managed_ids: set[int] = set()
-        unmanaged_ids: set[int] = set()
-        for cid, managed in (
-            Calendar.objects.filter_by_organization(self.organization.id)
-            .filter(id__in=calendar_ids)
-            .values_list("id", "manage_available_windows")
-        ):
-            if managed:
-                managed_ids.add(cid)
-            else:
-                unmanaged_ids.add(cid)
-        return managed_ids, unmanaged_ids
+        # ------------------------------------------------------------------
+        # Policy filter — gated by data-presence
+        # ------------------------------------------------------------------
+        # When no booking_policy_service is injected (e.g. legacy test fixtures
+        # that instantiate CalendarGroupService directly without DI), or when the
+        # resolved policy is unconstrained (no BookingPolicy anywhere for this
+        # group), skip ALL policy work so the output is byte-for-byte the
+        # pre-feature engine result.
+        if self.booking_policy_service is None:
+            return proposals
 
-    def _fetch_available_spans(
-        self,
-        managed_ids: set[int],
-        search_window_start: datetime.datetime,
-        search_window_end: datetime.datetime,
-    ) -> dict[int, list[tuple[datetime.datetime, datetime.datetime]]]:
-        spans: dict[int, list[tuple[datetime.datetime, datetime.datetime]]] = {}
-        if not managed_ids:
-            return spans
-        for row in (
-            AvailableTime.objects.filter_by_organization(self.organization.id)
-            .filter(
-                calendar_fk_id__in=managed_ids,
-                start_time__lte=search_window_end,
-                end_time__gte=search_window_start,
-            )
-            .values("calendar_fk_id", "start_time", "end_time")
-        ):
-            spans.setdefault(row["calendar_fk_id"], []).append((row["start_time"], row["end_time"]))
-        return spans
+        # _assert_initialized() already ran above; org is guaranteed non-None here.
+        org_id = cast(Organization, self.organization).id
 
-    def _fetch_blocking_spans(
-        self,
-        unmanaged_ids: set[int],
-        search_window_start: datetime.datetime,
-        search_window_end: datetime.datetime,
-        *,
-        with_bulk_modifications: bool,
-    ) -> dict[int, list[tuple[datetime.datetime, datetime.datetime]]]:
-        spans: dict[int, list[tuple[datetime.datetime, datetime.datetime]]] = {}
-        if not unmanaged_ids:
-            return spans
+        policy = self.booking_policy_service.resolve_for_group(group)
+        if policy == EffectivePolicy.unconstrained():
+            return proposals
 
-        if with_bulk_modifications:
-            events_qs = CalendarEvent.objects.filter_by_organization(
-                self.organization.id
-            ).annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
-                search_window_start, search_window_end
-            )
-        else:
-            events_qs = CalendarEvent.objects.filter_by_organization(
-                self.organization.id
-            ).annotate_recurring_occurrences_on_date_range(search_window_start, search_window_end)
-
-        overlap_filter = (
-            Q(start_time__range=(search_window_start, search_window_end))
-            | Q(end_time__range=(search_window_start, search_window_end))
-            | Q(start_time__lte=search_window_start, end_time__gte=search_window_end)
-            | Q(recurring_occurrences__len__gt=0)
+        # A buffer applies → fetch blocking spans for ALL participant calendars
+        # (managed included), mirroring BookableSlotsService._buffer_blocking_spans.
+        # Window widened: start side by buffer_after, end side by buffer_before
+        # (so spans just outside the search window can still clip a candidate via
+        # their dead zone — see slot_engine module docstring).
+        no_buffer = policy.buffer_before <= datetime.timedelta(0) and policy.buffer_after <= (
+            datetime.timedelta(0)
         )
-
-        for ev in events_qs.filter(overlap_filter, calendar_fk_id__in=unmanaged_ids).values(
-            "calendar_fk_id", "start_time", "end_time", "recurring_occurrences"
-        ):
-            bucket = spans.setdefault(ev["calendar_fk_id"], [])
-            if ev["start_time"] and ev["end_time"]:
-                bucket.append((ev["start_time"], ev["end_time"]))
-            for occ in ev["recurring_occurrences"] or ():
-                occ_start = datetime.datetime.fromisoformat(occ["start_time"])
-                occ_end = datetime.datetime.fromisoformat(occ["end_time"])
-                bucket.append((occ_start, occ_end))
-
-        for bt in (
-            BlockedTime.objects.filter_by_organization(self.organization.id)
-            .filter(
-                Q(start_time__range=(search_window_start, search_window_end))
-                | Q(end_time__range=(search_window_start, search_window_end))
-                | Q(
-                    start_time__lte=search_window_start,
-                    end_time__gte=search_window_end,
-                ),
-                calendar_fk_id__in=unmanaged_ids,
+        if no_buffer:
+            buffer_blocking_spans: slot_engine.SpansByCalendarId = {}
+        else:
+            buffer_blocking_spans = slot_engine.fetch_blocking_spans(
+                org_id,
+                all_calendar_ids,
+                search_window_start - policy.buffer_after,
+                search_window_end + policy.buffer_before,
+                with_bulk_modifications=with_bulk_modifications,
             )
-            .values("calendar_fk_id", "start_time", "end_time")
-        ):
-            spans.setdefault(bt["calendar_fk_id"], []).append((bt["start_time"], bt["end_time"]))
-        return spans
+
+        return slot_engine.apply_policy_filter(proposals, policy, now, buffer_blocking_spans)

@@ -110,7 +110,11 @@ class BundleServiceHost(Protocol):
     ) -> Iterable[AvailableTimeWindow]: ...
 
     def create_event(
-        self, calendar_id: int, event_data: CalendarEventInputData
+        self,
+        calendar_id: int,
+        event_data: CalendarEventInputData,
+        *,
+        _enforce_policy: bool = True,
     ) -> CalendarEvent: ...
 
     def update_event(
@@ -434,7 +438,14 @@ class CalendarBundleService:
             recurrence_rule=event_data.recurrence_rule,
         )
 
-        primary_event = self._host.create_event(primary_calendar.id, primary_event_data)
+        # Policy was already enforced once at the top-level CalendarService.create_event
+        # entry (using resolve_for_bundle). Skip re-enforcement for all child creates to
+        # avoid: (a) N redundant policy resolutions and buffer fetches, and (b) false
+        # rejections when a child has its own stricter individual policy that would block
+        # a booking the bundle policy (and Phase-5 discovery) correctly permits.
+        primary_event = self._host.create_event(
+            primary_calendar.id, primary_event_data, _enforce_policy=False
+        )
 
         # Mark primary event as part of bundle
         primary_event.bundle_calendar = bundle_calendar
@@ -459,7 +470,9 @@ class CalendarBundleService:
                     resource_allocations=[],
                 )
 
-                child_event = self._host.create_event(child_calendar.id, child_event_data)
+                child_event = self._host.create_event(
+                    child_calendar.id, child_event_data, _enforce_policy=False
+                )
 
                 # Link to primary event and bundle
                 child_event.bundle_calendar = bundle_calendar

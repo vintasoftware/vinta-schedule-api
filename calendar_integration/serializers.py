@@ -15,10 +15,12 @@ from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarIntegrationError,
     CalendarServiceNotInjectedError,
+    DuplicateBookingPolicyError,
 )
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
+    BookingPolicy,
     Calendar,
     CalendarEvent,
     CalendarEventGroupSelection,
@@ -70,7 +72,11 @@ from calendar_integration.virtual_models import (
     ResourceAllocationVirtualModel,
 )
 from common.utils.serializer_utils import VirtualModelSerializer
-from organizations.models import Organization, get_active_organization_membership
+from organizations.models import (
+    Organization,
+    OrganizationMembership,
+    get_active_organization_membership,
+)
 from users.models import User
 
 
@@ -2774,6 +2780,207 @@ class CalendarGroupAvailabilityQuerySerializer(serializers.Serializer):
 class BookableSlotProposalSerializer(serializers.Serializer):
     start_time = serializers.DateTimeField()
     end_time = serializers.DateTimeField()
+
+
+class BookingPolicySerializer(serializers.ModelSerializer):
+    """Serializer for ``BookingPolicy`` CRUD.
+
+    Exactly one of ``calendar``, ``membership_user_id``, ``calendar_group``, or
+    ``is_organization_default`` must be set on create.  Targets are immutable
+    after creation — only the four rule-field seconds are writable on update.
+
+    Validation:
+    - ``validate()`` enforces the exactly-one-target invariant on create.
+    - ``validate_membership_user_id()`` checks that the supplied user id belongs
+      to the caller's organization (on create only; targets are immutable on update).
+    - ``DuplicateBookingPolicyError`` from the service is caught and surfaced as
+      a 400 validation error so the client gets a named conflict message.
+    - The four rule fields use ``min_value=0`` so DRF rejects negatives with a
+      clear field-level 400 before the value reaches the model's
+      ``PositiveIntegerField`` constraint.
+
+    Write paths (create / update) delegate to ``BookingPolicyService`` stored on
+    the serializer context as ``"booking_policy_service"`` (the viewset sets it).
+    """
+
+    # Rule fields — the effective guard is DRF's min_value=0; the model's
+    # PositiveIntegerField is a secondary DB-level constraint.
+    lead_time_seconds = serializers.IntegerField(min_value=0, default=0)
+    max_horizon_seconds = serializers.IntegerField(min_value=0, default=0)
+    buffer_before_seconds = serializers.IntegerField(min_value=0, default=0)
+    buffer_after_seconds = serializers.IntegerField(min_value=0, default=0)
+
+    # membership_user_id is a denormalized integer FK (not a model FK field) —
+    # expose it directly.  Nullable so the client can omit it when another target
+    # is set.
+    membership_user_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+
+    # is_organization_default default False so the client can omit it.
+    is_organization_default = serializers.BooleanField(default=False)
+
+    class Meta:
+        model = BookingPolicy
+        fields = (
+            "id",
+            "calendar",
+            "calendar_group",
+            "membership_user_id",
+            "is_organization_default",
+            "lead_time_seconds",
+            "max_horizon_seconds",
+            "buffer_before_seconds",
+            "buffer_after_seconds",
+            "created",
+            "modified",
+        )
+        read_only_fields = ("id", "created", "modified")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Build org-scoped querysets for FK fields; fall back to empty querysets
+        # when there is no authenticated user with a membership (anonymous or
+        # membership-less callers are rejected at the permission layer anyway).
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        membership = (
+            get_active_organization_membership(user)
+            if user and getattr(user, "is_authenticated", False)
+            else None
+        )
+        org_id = membership.organization_id if membership else None
+
+        self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
+            queryset=(
+                Calendar.objects.filter_by_organization(org_id)
+                if org_id is not None
+                else Calendar.original_manager.none()
+            ),
+            required=False,
+            allow_null=True,
+        )
+        self.fields["calendar_group"] = serializers.PrimaryKeyRelatedField(
+            queryset=(
+                CalendarGroup.objects.filter_by_organization(org_id)
+                if org_id is not None
+                else CalendarGroup.original_manager.none()
+            ),
+            required=False,
+            allow_null=True,
+        )
+
+    def validate_membership_user_id(self, value):
+        """Reject a ``membership_user_id`` that is not a member of the caller's org.
+
+        Skipped on update (targets are immutable and already stripped in ``validate``).
+        A bogus or cross-org id would otherwise reach the Phase-1 composite PROTECT FK
+        at commit time and raise an ``IntegrityError`` (HTTP 500); surfacing it here
+        gives a clean 400 instead.
+        """
+        if value is None:
+            return value
+        if self.instance is not None:
+            # Update path — target fields are immutable; skip the check.
+            return value
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        membership = (
+            get_active_organization_membership(user)
+            if user and getattr(user, "is_authenticated", False)
+            else None
+        )
+        if membership is None:
+            # No org context — permission layer will deny the request.
+            return value
+        if not OrganizationMembership.objects.filter(
+            organization_id=membership.organization_id, user_id=value
+        ).exists():
+            raise serializers.ValidationError(
+                "No membership with this user id in your organization."
+            )
+        return value
+
+    def validate(self, attrs: dict) -> dict:
+        """Enforce the exactly-one-target invariant on creates only.
+
+        Targets are immutable after creation: the service's ``update_booking_policy``
+        only accepts rule-field changes, so we skip the target check on updates
+        (``self.instance is not None``).
+        """
+        if self.instance is not None:
+            # Update path — targets cannot change; strip them from attrs so the
+            # service update method only sees rule-field changes.
+            attrs.pop("calendar", None)
+            attrs.pop("calendar_group", None)
+            attrs.pop("membership_user_id", None)
+            attrs.pop("is_organization_default", None)
+            return attrs
+
+        # Create path — exactly one target must be set.
+        calendar = attrs.get("calendar")
+        membership_user_id = attrs.get("membership_user_id")
+        calendar_group = attrs.get("calendar_group")
+        is_org_default = attrs.get("is_organization_default", False)
+
+        target_count = sum(
+            [
+                calendar is not None,
+                membership_user_id is not None,
+                calendar_group is not None,
+                bool(is_org_default),
+            ]
+        )
+
+        if target_count != 1:
+            raise serializers.ValidationError(
+                {
+                    "non_field_errors": [
+                        "Exactly one of 'calendar', 'membership_user_id', 'calendar_group', "
+                        "or 'is_organization_default' must be set."
+                    ]
+                }
+            )
+
+        return attrs
+
+    def create(self, validated_data: dict) -> BookingPolicy:
+        """Delegate to ``BookingPolicyService.create_booking_policy``."""
+        service = self.context.get("booking_policy_service")
+        if service is None:
+            raise CalendarServiceNotInjectedError(
+                "booking_policy_service is not in serializer context. "
+                "The viewset must set it before calling serializer.save()."
+            )
+
+        try:
+            return service.create_booking_policy(
+                calendar=validated_data.get("calendar"),
+                membership_user_id=validated_data.get("membership_user_id"),
+                calendar_group=validated_data.get("calendar_group"),
+                is_organization_default=validated_data.get("is_organization_default", False),
+                lead_time_seconds=validated_data.get("lead_time_seconds", 0),
+                max_horizon_seconds=validated_data.get("max_horizon_seconds", 0),
+                buffer_before_seconds=validated_data.get("buffer_before_seconds", 0),
+                buffer_after_seconds=validated_data.get("buffer_after_seconds", 0),
+            )
+        except DuplicateBookingPolicyError as exc:
+            raise serializers.ValidationError({"non_field_errors": [str(exc)]}) from exc
+
+    def update(self, instance: BookingPolicy, validated_data: dict) -> BookingPolicy:
+        """Delegate to ``BookingPolicyService.update_booking_policy`` (rule fields only)."""
+        service = self.context.get("booking_policy_service")
+        if service is None:
+            raise CalendarServiceNotInjectedError(
+                "booking_policy_service is not in serializer context. "
+                "The viewset must set it before calling serializer.save()."
+            )
+
+        return service.update_booking_policy(
+            instance,
+            lead_time_seconds=validated_data.get("lead_time_seconds"),
+            max_horizon_seconds=validated_data.get("max_horizon_seconds"),
+            buffer_before_seconds=validated_data.get("buffer_before_seconds"),
+            buffer_after_seconds=validated_data.get("buffer_after_seconds"),
+        )
 
 
 class ExternalEventChangeRequestSerializer(VirtualModelSerializer):

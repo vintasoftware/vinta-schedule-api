@@ -1,9 +1,34 @@
 from dependency_injector.wiring import Provide, inject
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 from calendar_integration.models import CalendarOwnership
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from organizations.models import get_active_organization_membership
+
+
+class BookingPolicyPermission(BasePermission):
+    """Permission for ``BookingPolicyViewSet``.
+
+    Reads (GET/HEAD/OPTIONS — list/retrieve) are open to any authenticated user;
+    ``get_queryset()`` already restricts visibility to the caller's org.
+
+    Writes (POST/PUT/PATCH/DELETE — create/update/destroy) require the caller to
+    be an **organization admin** (per SPEC use-case 3, consistent with sibling
+    org-wide config writes gated by ``IsOrganizationAdmin``).
+
+    Membership-less (gated) users are allowed through on safe methods: the
+    queryset returns [] rather than 403, which is the consistent pattern used by
+    ``CalendarEventViewSet`` and ``BlockedTimeViewSet``.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        """Safe methods: any authenticated user. Unsafe methods: org admin only."""
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        membership = get_active_organization_membership(request.user)
+        return membership is not None and membership.is_admin
 
 
 class ExternalEventChangeRequestPermission(BasePermission):

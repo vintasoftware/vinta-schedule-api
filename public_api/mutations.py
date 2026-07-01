@@ -17,17 +17,24 @@ from graphql import GraphQLError
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
+    BookingPolicyViolationError,
     CalendarIntegrationError,
+    DuplicateBookingPolicyError,
     NoAvailableTimeWindowsError,
 )
 from calendar_integration.graphql import (
     AvailableTimeGraphQLType,
     BlockedTimeGraphQLType,
+    BookingPolicyResult,
     CalendarBundleGraphQLType,
     CalendarEventGraphQLType,
     CalendarGraphQLType,
+    CreateBookingPolicyInput,
+    DeleteBookingPolicyInput,
+    DeleteBookingPolicyResult,
+    UpdateBookingPolicyInput,
 )
-from calendar_integration.models import Calendar, CalendarEvent
+from calendar_integration.models import BookingPolicy, Calendar, CalendarEvent, CalendarGroup
 from calendar_integration.mutations import (
     CalendarGroupMutations,
     ExternalEventChangeRequestMutations,
@@ -74,6 +81,7 @@ if TYPE_CHECKING:
 
 
 if TYPE_CHECKING:
+    from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_service import CalendarService
 
@@ -141,6 +149,18 @@ def get_calendar_mutation_dependencies(
         calendar_service=cast("CalendarService", calendar_service),
         calendar_group_service=cast("CalendarGroupService", calendar_group_service),
     )
+
+
+@inject
+def get_booking_policy_mutation_dependencies(
+    booking_policy_service: Annotated[
+        "BookingPolicyService | None", Provide["booking_policy_service"]
+    ] = None,
+) -> "BookingPolicyService":
+    """Resolve the BookingPolicyService from the DI container."""
+    if booking_policy_service is None:
+        raise GraphQLError("Missing required dependency: booking_policy_service")
+    return booking_policy_service
 
 
 def _get_org_and_init_calendar_service(
@@ -2247,6 +2267,11 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError("Calendar not found.") from exc
         except NoAvailableTimeWindowsError as exc:
             raise GraphQLError("No available time window covers the requested event time.") from exc
+        except BookingPolicyViolationError as exc:
+            raise GraphQLError(
+                str(exc)
+                or "The requested time slot is not available under the current booking policy."
+            ) from exc
         except PermissionDenied as exc:
             raise GraphQLError(
                 str(exc) or "You do not have permission to schedule this event."
@@ -2600,3 +2625,149 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError(str(exc)) from exc
 
         return CancelEventResult(success=True)
+
+    # ------------------------------------------------------------------
+    # BookingPolicy mutations (Phase 4)
+    # ------------------------------------------------------------------
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_booking_policy(
+        self,
+        info: strawberry.Info,
+        input: CreateBookingPolicyInput,  # noqa: A002
+    ) -> BookingPolicyResult:
+        """Create a new BookingPolicy for the caller's organization.
+
+        Exactly one of ``calendar_id``, ``membership_user_id``,
+        ``calendar_group_id``, or ``is_organization_default=True`` must be set.
+        Returns an error when a policy already exists for the given target.
+        Write is audited via ``BookingPolicyService``.
+
+        The token's ``OrganizationResourceAccess`` must include the
+        ``BOOKING_POLICY`` resource.
+        """
+        from audit.services import AuditService
+
+        org = info.context.request.public_api_organization
+        if not org:
+            raise GraphQLError("Organization not found in request context")
+
+        request: PublicApiHttpRequest = info.context.request
+        service = get_booking_policy_mutation_dependencies()
+        service.initialize(org)
+        actor = AuditService.actor_from_system_user(request.public_api_system_user)
+        service.set_actor(actor)
+
+        # Resolve optional FK targets.
+        calendar: Calendar | None = None
+        if input.calendar_id is not None:
+            try:
+                calendar = Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)
+            except Calendar.DoesNotExist as exc:
+                raise GraphQLError("Calendar not found.") from exc
+
+        calendar_group: CalendarGroup | None = None
+        if input.calendar_group_id is not None:
+            try:
+                calendar_group = CalendarGroup.objects.filter_by_organization(org.id).get(
+                    id=input.calendar_group_id
+                )
+            except CalendarGroup.DoesNotExist as exc:
+                raise GraphQLError("Calendar group not found.") from exc
+
+        try:
+            policy = service.create_booking_policy(
+                calendar=calendar,
+                membership_user_id=input.membership_user_id,
+                calendar_group=calendar_group,
+                is_organization_default=input.is_organization_default,
+                lead_time_seconds=input.lead_time_seconds,
+                max_horizon_seconds=input.max_horizon_seconds,
+                buffer_before_seconds=input.buffer_before_seconds,
+                buffer_after_seconds=input.buffer_after_seconds,
+            )
+        except DuplicateBookingPolicyError as exc:
+            raise GraphQLError(str(exc)) from exc
+        except ValueError as exc:
+            raise GraphQLError(str(exc)) from exc
+
+        return BookingPolicyResult(success=True, policy=policy)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def update_booking_policy(
+        self,
+        info: strawberry.Info,
+        input: UpdateBookingPolicyInput,  # noqa: A002
+    ) -> BookingPolicyResult:
+        """Update the rule fields of an existing BookingPolicy (org-scoped).
+
+        Target fields are immutable. Only the four rule second-count fields may
+        be changed; any field supplied as ``None`` is left unchanged.
+        Write is audited via ``BookingPolicyService``.
+
+        The token's ``OrganizationResourceAccess`` must include the
+        ``BOOKING_POLICY`` resource.
+        """
+        from audit.services import AuditService
+
+        org = info.context.request.public_api_organization
+        if not org:
+            raise GraphQLError("Organization not found in request context")
+
+        request: PublicApiHttpRequest = info.context.request
+        service = get_booking_policy_mutation_dependencies()
+        service.initialize(org)
+        actor = AuditService.actor_from_system_user(request.public_api_system_user)
+        service.set_actor(actor)
+
+        try:
+            policy = BookingPolicy.objects.filter_by_organization(org.id).get(id=input.policy_id)
+        except BookingPolicy.DoesNotExist as exc:
+            raise GraphQLError("Booking policy not found.") from exc
+
+        policy = service.update_booking_policy(
+            policy,
+            lead_time_seconds=input.lead_time_seconds,
+            max_horizon_seconds=input.max_horizon_seconds,
+            buffer_before_seconds=input.buffer_before_seconds,
+            buffer_after_seconds=input.buffer_after_seconds,
+        )
+
+        return BookingPolicyResult(success=True, policy=policy)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def delete_booking_policy(
+        self,
+        info: strawberry.Info,
+        input: DeleteBookingPolicyInput,  # noqa: A002
+    ) -> DeleteBookingPolicyResult:
+        """Delete a BookingPolicy (idempotent no-op when absent).
+
+        Returns ``success=True`` regardless of whether the policy existed.
+        Write is audited when an actual row is deleted.
+
+        The token's ``OrganizationResourceAccess`` must include the
+        ``BOOKING_POLICY`` resource.
+        """
+        from audit.services import AuditService
+
+        org = info.context.request.public_api_organization
+        if not org:
+            raise GraphQLError("Organization not found in request context")
+
+        request: PublicApiHttpRequest = info.context.request
+        service = get_booking_policy_mutation_dependencies()
+        service.initialize(org)
+        actor = AuditService.actor_from_system_user(request.public_api_system_user)
+        service.set_actor(actor)
+
+        # Idempotent: a missing policy is a no-op success (per Guiding Decisions).
+        try:
+            policy: BookingPolicy | None = BookingPolicy.objects.filter_by_organization(org.id).get(
+                id=input.policy_id
+            )
+        except BookingPolicy.DoesNotExist:
+            policy = None
+
+        service.delete_booking_policy(policy)
+        return DeleteBookingPolicyResult(success=True)
