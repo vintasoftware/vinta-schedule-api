@@ -2171,6 +2171,11 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
         except BookingPolicy.DoesNotExist:
             policy = None
 
+        # Absent policy → idempotent no-op (204). A present policy the caller may
+        # not manage → 403 (non-admin deleting a group/org/other-member policy).
+        if policy is not None:
+            self.check_object_permissions(request, policy)
+
         service.delete_booking_policy(policy)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
