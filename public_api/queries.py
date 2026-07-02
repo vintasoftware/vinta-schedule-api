@@ -69,6 +69,9 @@ from webhooks.models import WebhookConfiguration, WebhookEvent
 
 if TYPE_CHECKING:
     from calendar_integration.services.bookable_slots_service import BookableSlotsService
+    from calendar_integration.services.booking_policy_permission_service import (
+        BookingPolicyPermissionService,
+    )
     from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_permission_service import CalendarPermissionService
@@ -123,6 +126,19 @@ def get_booking_policy_query_dependencies(
     if booking_policy_service is None:
         raise GraphQLError("Missing required dependency: booking_policy_service")
     return booking_policy_service
+
+
+@inject
+def get_booking_policy_permission_service(
+    booking_policy_permission_service: Annotated[
+        "BookingPolicyPermissionService | None",
+        Provide["booking_policy_permission_service"],
+    ] = None,
+) -> "BookingPolicyPermissionService":
+    """Resolve the BookingPolicyPermissionService from the DI container."""
+    if booking_policy_permission_service is None:
+        raise GraphQLError("Missing required dependency: booking_policy_permission_service")
+    return booking_policy_permission_service
 
 
 @inject
@@ -1160,6 +1176,15 @@ class Query:
         service.initialize(org)
 
         qs = service.get_all_policies()
+
+        # Owner-scope: a membership-scoped token sees only the policies it may
+        # manage (its own calendars + own membership); org-wide tokens see all.
+        permission_service = get_booking_policy_permission_service()
+        qs = permission_service.scope_policies_for_system_user(
+            qs,
+            system_user=info.context.request.public_api_system_user,
+            organization_id=org.id,
+        )
 
         if calendar_id is not None:
             qs = qs.filter(calendar_fk_id=calendar_id)

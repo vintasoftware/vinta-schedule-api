@@ -19,8 +19,13 @@ from model_bakery import baker
 from rest_framework.test import APIClient
 
 from calendar_integration.factories import create_booking_policy
-from calendar_integration.models import BookingPolicy, Calendar, CalendarGroup
-from organizations.models import Organization, OrganizationMembership
+from calendar_integration.models import (
+    BookingPolicy,
+    Calendar,
+    CalendarGroup,
+    CalendarOwnership,
+)
+from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -915,3 +920,248 @@ class TestDeleteBookingPolicyMutation:
 
         # No audit task should have been dispatched.
         assert not mock_task.delay.called
+
+
+# ---------------------------------------------------------------------------
+# Owner-scoped token authorization (scoped_to_membership)
+# ---------------------------------------------------------------------------
+
+
+def _scoped_setup(integration_name: str = "scoped_bp"):
+    """Return (org, membership, system_user, token, auth_service) for a token
+    scoped to a member's own calendars/membership, with the BOOKING_POLICY grant."""
+    org = baker.make(Organization, name="Scoped BP Org")
+    user = UserFactory().create_user()
+    membership = OrganizationMembership.objects.create(
+        user=user, organization=org, role=OrganizationRole.MEMBER, is_active=True
+    )
+    auth_service = PublicAPIAuthService()
+    system_user, token = auth_service.create_system_user(
+        integration_name=integration_name, organization=org, scoped_to_membership=membership
+    )
+    baker.make(
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.BOOKING_POLICY
+    )
+    return org, membership, system_user, token, auth_service
+
+
+def _own_cal(org: Organization, membership: OrganizationMembership, external_id: str) -> Calendar:
+    cal = baker.make(Calendar, organization=org, external_id=external_id)
+    CalendarOwnership.objects.create(
+        organization=org, calendar=cal, membership_user_id=membership.user_id, is_default=True
+    )
+    return cal
+
+
+@pytest.mark.django_db
+class TestBookingPolicyOwnerScoping:
+    """A membership-scoped SystemUser token may manage only its own calendar /
+    membership booking policies; calendar-group and org-default policies stay
+    org-wide-token only. Org-wide tokens are unaffected."""
+
+    # -- create ------------------------------------------------------------
+
+    def test_scoped_token_can_create_policy_for_owned_calendar(self):
+        org, membership, su, token, auth = _scoped_setup()
+        cal = _own_cal(org, membership, "scoped-owned-1")
+
+        resp = _post_graphql(
+            CREATE_BOOKING_POLICY_MUTATION,
+            su,
+            token,
+            auth,
+            {"input": {"calendarId": cal.id, "leadTimeSeconds": 60}},
+        )
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        assert data["data"]["createBookingPolicy"]["success"] is True
+
+    def test_scoped_token_cannot_create_policy_for_unowned_calendar(self):
+        org, _membership, su, token, auth = _scoped_setup()
+        cal = baker.make(Calendar, organization=org, external_id="scoped-unowned-1")
+
+        resp = _post_graphql(
+            CREATE_BOOKING_POLICY_MUTATION,
+            su,
+            token,
+            auth,
+            {"input": {"calendarId": cal.id, "leadTimeSeconds": 60}},
+        )
+        assert resp.json().get("errors")
+        assert not (
+            BookingPolicy.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=cal.id)
+            .exists()
+        )
+
+    def test_scoped_token_can_create_policy_for_own_membership(self):
+        _org, membership, su, token, auth = _scoped_setup()
+
+        resp = _post_graphql(
+            CREATE_BOOKING_POLICY_MUTATION,
+            su,
+            token,
+            auth,
+            {"input": {"membershipUserId": membership.user_id, "leadTimeSeconds": 60}},
+        )
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        assert data["data"]["createBookingPolicy"]["success"] is True
+
+    def test_scoped_token_cannot_create_group_policy(self):
+        org, _membership, su, token, auth = _scoped_setup()
+        group = baker.make(CalendarGroup, organization=org, name="Scoped G")
+
+        resp = _post_graphql(
+            CREATE_BOOKING_POLICY_MUTATION,
+            su,
+            token,
+            auth,
+            {"input": {"calendarGroupId": group.id, "leadTimeSeconds": 60}},
+        )
+        assert resp.json().get("errors")
+        assert not (
+            BookingPolicy.objects.filter_by_organization(org.id)
+            .filter(calendar_group_fk_id=group.id)
+            .exists()
+        )
+
+    def test_scoped_token_cannot_create_org_default_policy(self):
+        org, _membership, su, token, auth = _scoped_setup()
+
+        resp = _post_graphql(
+            CREATE_BOOKING_POLICY_MUTATION,
+            su,
+            token,
+            auth,
+            {"input": {"isOrganizationDefault": True, "leadTimeSeconds": 60}},
+        )
+        assert resp.json().get("errors")
+        assert not (
+            BookingPolicy.objects.filter_by_organization(org.id)
+            .filter(is_organization_default=True)
+            .exists()
+        )
+
+    def test_org_wide_token_can_still_create_group_policy(self):
+        org, su, token, auth = _setup_org_and_token(integration_name="orgwide_bp")
+        group = baker.make(CalendarGroup, organization=org, name="Orgwide G")
+
+        resp = _post_graphql(
+            CREATE_BOOKING_POLICY_MUTATION,
+            su,
+            token,
+            auth,
+            {"input": {"calendarGroupId": group.id, "leadTimeSeconds": 60}},
+        )
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        assert data["data"]["createBookingPolicy"]["success"] is True
+
+    # -- update ------------------------------------------------------------
+
+    def test_scoped_token_can_update_own_calendar_policy(self):
+        org, membership, su, token, auth = _scoped_setup()
+        cal = _own_cal(org, membership, "scoped-upd-own")
+        policy = create_booking_policy(calendar=cal, lead_time_seconds=60)
+
+        resp = _post_graphql(
+            UPDATE_BOOKING_POLICY_MUTATION,
+            su,
+            token,
+            auth,
+            {"input": {"policyId": policy.id, "leadTimeSeconds": 999}},
+        )
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        assert data["data"]["updateBookingPolicy"]["policy"]["leadTimeSeconds"] == 999
+
+    def test_scoped_token_cannot_update_group_policy(self):
+        org, _membership, su, token, auth = _scoped_setup()
+        group = baker.make(CalendarGroup, organization=org, name="Scoped Upd G")
+        policy = create_booking_policy(calendar_group=group, lead_time_seconds=60)
+
+        resp = _post_graphql(
+            UPDATE_BOOKING_POLICY_MUTATION,
+            su,
+            token,
+            auth,
+            {"input": {"policyId": policy.id, "leadTimeSeconds": 999}},
+        )
+        assert resp.json().get("errors")
+        policy.refresh_from_db()
+        assert policy.lead_time_seconds == 60
+
+    # -- delete ------------------------------------------------------------
+
+    def test_scoped_token_delete_group_policy_is_noop(self):
+        org, _membership, su, token, auth = _scoped_setup()
+        group = baker.make(CalendarGroup, organization=org, name="Scoped Del G")
+        policy = create_booking_policy(calendar_group=group, lead_time_seconds=60)
+
+        resp = _post_graphql(
+            DELETE_BOOKING_POLICY_MUTATION,
+            su,
+            token,
+            auth,
+            {"input": {"policyId": policy.id}},
+        )
+        data = resp.json()
+        # Idempotent: success returned, but the policy is NOT deleted.
+        assert data["data"]["deleteBookingPolicy"]["success"] is True
+        assert BookingPolicy.objects.filter_by_organization(org.id).filter(pk=policy.pk).exists()
+
+    def test_scoped_token_can_delete_own_calendar_policy(self):
+        org, membership, su, token, auth = _scoped_setup()
+        cal = _own_cal(org, membership, "scoped-del-own")
+        policy = create_booking_policy(calendar=cal)
+
+        resp = _post_graphql(
+            DELETE_BOOKING_POLICY_MUTATION,
+            su,
+            token,
+            auth,
+            {"input": {"policyId": policy.id}},
+        )
+        assert resp.json()["data"]["deleteBookingPolicy"]["success"] is True
+        assert (
+            not BookingPolicy.objects.filter_by_organization(org.id).filter(pk=policy.pk).exists()
+        )
+
+    # -- read scoping ------------------------------------------------------
+
+    def test_scoped_token_query_sees_only_own_policies(self):
+        org, membership, su, token, auth = _scoped_setup()
+        own_cal = _own_cal(org, membership, "scoped-q-own")
+        create_booking_policy(calendar=own_cal, lead_time_seconds=60)
+        create_booking_policy(
+            membership_user_id=membership.user_id, organization=org, lead_time_seconds=120
+        )
+        # Noise the scoped token must NOT see: group, org-default, another member's calendar.
+        group = baker.make(CalendarGroup, organization=org, name="Scoped Q G")
+        create_booking_policy(calendar_group=group, lead_time_seconds=30)
+        create_booking_policy(organization=org, is_organization_default=True, lead_time_seconds=15)
+        other_user = UserFactory().create_user()
+        other_membership = OrganizationMembership.objects.create(
+            user=other_user, organization=org, role=OrganizationRole.MEMBER, is_active=True
+        )
+        other_cal = _own_cal(org, other_membership, "scoped-q-other")
+        create_booking_policy(calendar=other_cal, lead_time_seconds=45)
+
+        resp = _post_graphql(BOOKING_POLICIES_QUERY, su, token, auth, {})
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        policies = data["data"]["bookingPolicies"]
+        assert len(policies) == 2
+        assert {p["leadTimeSeconds"] for p in policies} == {60, 120}
+
+    def test_org_wide_token_query_sees_all(self):
+        org, su, token, auth = _setup_org_and_token(integration_name="orgwide_q_bp")
+        cal = baker.make(Calendar, organization=org, external_id="orgwide-q")
+        create_booking_policy(calendar=cal, lead_time_seconds=60)
+        create_booking_policy(organization=org, is_organization_default=True, lead_time_seconds=15)
+
+        resp = _post_graphql(BOOKING_POLICIES_QUERY, su, token, auth, {})
+        data = resp.json()
+        assert "errors" not in data, data.get("errors")
+        assert len(data["data"]["bookingPolicies"]) == 2

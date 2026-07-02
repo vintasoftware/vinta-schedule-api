@@ -81,6 +81,9 @@ if TYPE_CHECKING:
 
 
 if TYPE_CHECKING:
+    from calendar_integration.services.booking_policy_permission_service import (
+        BookingPolicyPermissionService,
+    )
     from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_service import CalendarService
@@ -161,6 +164,19 @@ def get_booking_policy_mutation_dependencies(
     if booking_policy_service is None:
         raise GraphQLError("Missing required dependency: booking_policy_service")
     return booking_policy_service
+
+
+@inject
+def get_booking_policy_permission_service(
+    booking_policy_permission_service: Annotated[
+        "BookingPolicyPermissionService | None",
+        Provide["booking_policy_permission_service"],
+    ] = None,
+) -> "BookingPolicyPermissionService":
+    """Resolve the BookingPolicyPermissionService from the DI container."""
+    if booking_policy_permission_service is None:
+        raise GraphQLError("Missing required dependency: booking_policy_permission_service")
+    return booking_policy_permission_service
 
 
 def _get_org_and_init_calendar_service(
@@ -2658,6 +2674,21 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         actor = AuditService.actor_from_system_user(request.public_api_system_user)
         service.set_actor(actor)
 
+        # Owner-scope enforcement: a membership-scoped token may only manage its
+        # own calendar / membership policies; org-wide tokens are unrestricted.
+        permission_service = get_booking_policy_permission_service()
+        if not permission_service.can_system_user_manage_target(
+            system_user=request.public_api_system_user,
+            organization_id=org.id,
+            calendar_id=input.calendar_id,
+            membership_user_id=input.membership_user_id,
+            calendar_group_id=input.calendar_group_id,
+            is_organization_default=input.is_organization_default,
+        ):
+            raise GraphQLError(
+                "You do not have permission to manage a booking policy for this target."
+            )
+
         # Resolve optional FK targets.
         calendar: Calendar | None = None
         if input.calendar_id is not None:
@@ -2725,6 +2756,14 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         except BookingPolicy.DoesNotExist as exc:
             raise GraphQLError("Booking policy not found.") from exc
 
+        # Owner-scope enforcement — a scoped token may not touch a policy outside
+        # its scope. Reuse the not-found message so it cannot probe for existence.
+        permission_service = get_booking_policy_permission_service()
+        if not permission_service.can_system_user_manage_policy(
+            system_user=request.public_api_system_user, policy=policy
+        ):
+            raise GraphQLError("Booking policy not found.")
+
         policy = service.update_booking_policy(
             policy,
             lead_time_seconds=input.lead_time_seconds,
@@ -2768,6 +2807,16 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             )
         except BookingPolicy.DoesNotExist:
             policy = None
+
+        # Owner-scope enforcement — a policy the token may not manage is treated
+        # exactly like an absent one: no delete, success returned. This keeps the
+        # idempotent contract and prevents a scoped token from probing existence.
+        if policy is not None:
+            permission_service = get_booking_policy_permission_service()
+            if not permission_service.can_system_user_manage_policy(
+                system_user=request.public_api_system_user, policy=policy
+            ):
+                policy = None
 
         service.delete_booking_policy(policy)
         return DeleteBookingPolicyResult(success=True)
