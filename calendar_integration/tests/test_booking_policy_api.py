@@ -22,7 +22,12 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from calendar_integration.factories import create_booking_policy
-from calendar_integration.models import BookingPolicy, Calendar, CalendarGroup
+from calendar_integration.models import (
+    BookingPolicy,
+    Calendar,
+    CalendarGroup,
+    CalendarOwnership,
+)
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from users.factories import UserFactory
 
@@ -606,3 +611,149 @@ class TestBookingPolicyDestroy:
         client = APIClient()
         response = client.delete(_detail_url(1))
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+def _own(org: Organization, calendar: Calendar, membership: OrganizationMembership) -> None:
+    """Link ``membership`` to ``calendar`` as an owner."""
+    CalendarOwnership.objects.create(
+        organization=org,
+        calendar=calendar,
+        membership_user_id=membership.user_id,
+        is_default=True,
+    )
+
+
+@pytest.mark.django_db
+class TestBookingPolicySelfService:
+    """Non-admin members manage their OWN personal/calendar policies; group and
+    organization-default policies stay admin-only."""
+
+    # -- create ------------------------------------------------------------
+
+    def test_member_can_create_policy_for_owned_calendar(self):
+        org, membership = _make_org_with_member(is_admin=False)
+        cal = _make_calendar(org)
+        _own(org, cal, membership)
+        client = _auth_client(membership)
+
+        response = client.post(_list_url(), {"calendar": cal.pk, "lead_time_seconds": 60})
+
+        assert response.status_code == status.HTTP_201_CREATED, response.json()
+        assert response.json()["lead_time_seconds"] == 60
+
+    def test_member_cannot_create_policy_for_unowned_calendar(self):
+        org, membership = _make_org_with_member(is_admin=False)
+        cal = _make_calendar(org)  # not owned by this member
+        client = _auth_client(membership)
+
+        response = client.post(_list_url(), {"calendar": cal.pk, "lead_time_seconds": 60})
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_member_can_create_policy_for_own_membership(self):
+        _, membership = _make_org_with_member(is_admin=False)
+        client = _auth_client(membership)
+
+        response = client.post(
+            _list_url(),
+            {"membership_user_id": membership.user_id, "lead_time_seconds": 120},
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED, response.json()
+
+    def test_member_cannot_create_policy_for_another_membership(self):
+        org, membership = _make_org_with_member(is_admin=False)
+        other_user = UserFactory().create_user()
+        other_membership = OrganizationMembership.objects.create(
+            user=other_user, organization=org, role=OrganizationRole.MEMBER, is_active=True
+        )
+        client = _auth_client(membership)
+
+        response = client.post(
+            _list_url(),
+            {"membership_user_id": other_membership.user_id, "lead_time_seconds": 120},
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_member_cannot_create_calendar_group_policy(self):
+        org, membership = _make_org_with_member(is_admin=False)
+        group = _make_group(org)
+        client = _auth_client(membership)
+
+        response = client.post(_list_url(), {"calendar_group": group.pk, "lead_time_seconds": 60})
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_member_cannot_create_org_default_policy(self):
+        _, membership = _make_org_with_member(is_admin=False)
+        client = _auth_client(membership)
+
+        response = client.post(
+            _list_url(), {"is_organization_default": True, "lead_time_seconds": 60}
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_admin_can_create_group_and_org_default(self):
+        org, membership = _make_org_with_member(is_admin=True)
+        group = _make_group(org)
+        client = _auth_client(membership)
+
+        group_resp = client.post(_list_url(), {"calendar_group": group.pk, "lead_time_seconds": 60})
+        org_resp = client.post(
+            _list_url(), {"is_organization_default": True, "lead_time_seconds": 60}
+        )
+
+        assert group_resp.status_code == status.HTTP_201_CREATED, group_resp.json()
+        assert org_resp.status_code == status.HTTP_201_CREATED, org_resp.json()
+
+    # -- update ------------------------------------------------------------
+
+    def test_member_can_update_own_calendar_policy(self):
+        org, membership = _make_org_with_member(is_admin=False)
+        cal = _make_calendar(org)
+        _own(org, cal, membership)
+        policy = create_booking_policy(calendar=cal, lead_time_seconds=60)
+        client = _auth_client(membership)
+
+        response = client.patch(_detail_url(policy.pk), {"lead_time_seconds": 999})
+
+        assert response.status_code == status.HTTP_200_OK, response.json()
+        assert response.json()["lead_time_seconds"] == 999
+
+    def test_member_cannot_update_group_policy(self):
+        org, membership = _make_org_with_member(is_admin=False)
+        group = _make_group(org)
+        policy = create_booking_policy(calendar_group=group, lead_time_seconds=60)
+        client = _auth_client(membership)
+
+        response = client.patch(_detail_url(policy.pk), {"lead_time_seconds": 999})
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    # -- delete ------------------------------------------------------------
+
+    def test_member_can_delete_own_calendar_policy(self):
+        org, membership = _make_org_with_member(is_admin=False)
+        cal = _make_calendar(org)
+        _own(org, cal, membership)
+        policy = create_booking_policy(calendar=cal)
+        client = _auth_client(membership)
+
+        response = client.delete(_detail_url(policy.pk))
+
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+        assert (
+            not BookingPolicy.objects.filter_by_organization(org.id).filter(pk=policy.pk).exists()
+        )
+
+    def test_member_cannot_delete_org_default_policy(self):
+        org, membership = _make_org_with_member(is_admin=False)
+        policy = create_booking_policy(is_organization_default=True, organization=org)
+        client = _auth_client(membership)
+
+        response = client.delete(_detail_url(policy.pk))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert BookingPolicy.objects.filter_by_organization(org.id).filter(pk=policy.pk).exists()

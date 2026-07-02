@@ -6,15 +6,67 @@ from calendar_integration.services.calendar_permission_service import CalendarPe
 from organizations.models import get_active_organization_membership
 
 
+def _member_can_manage_booking_policy_target(
+    *,
+    user,
+    membership,
+    organization_id: int,
+    calendar_id=None,
+    membership_user_id=None,
+    calendar_group_id=None,
+    is_organization_default: bool = False,
+) -> bool:
+    """Decide whether ``user`` may create/update/delete a policy for a target.
+
+    Single source of truth for the self-service rule, shared by the create-time
+    ``has_permission`` (target read from the request body) and the object-level
+    ``has_object_permission`` (target read from the existing policy row):
+
+    - **Org admins** may manage a policy for **any** target.
+    - A **non-admin member** may manage only their *own* personal policies:
+      - a ``calendar`` policy for a calendar they **own** (an active
+        ``CalendarOwnership`` links their membership to it), or
+      - a ``membership`` policy for **their own** membership
+        (``membership_user_id == user.id``).
+    - ``calendar_group`` and ``is_organization_default`` policies are **admin
+      only** — a non-admin never reaches a grant branch for them.
+    """
+    if membership is None:
+        return False
+    if membership.is_admin:
+        return True
+
+    # Non-admin: only self-owned calendar or own-membership targets.
+    if calendar_id is not None:
+        return (
+            CalendarOwnership.objects.filter_by_organization(organization_id)
+            .filter(membership_user_id=user.id, calendar_fk_id=calendar_id)
+            .exists()
+        )
+    if membership_user_id is not None:
+        return int(membership_user_id) == user.id
+
+    # calendar_group / is_organization_default (or no recognizable target) → admin only.
+    return False
+
+
 class BookingPolicyPermission(BasePermission):
     """Permission for ``BookingPolicyViewSet``.
 
     Reads (GET/HEAD/OPTIONS — list/retrieve) are open to any authenticated user;
     ``get_queryset()`` already restricts visibility to the caller's org.
 
-    Writes (POST/PUT/PATCH/DELETE — create/update/destroy) require the caller to
-    be an **organization admin** (per SPEC use-case 3, consistent with sibling
-    org-wide config writes gated by ``IsOrganizationAdmin``).
+    Writes (POST/PUT/PATCH/DELETE — create/update/destroy) are **self-service**:
+
+    - Org admins may manage policies for any target (calendar, membership,
+      calendar group, or the organization default).
+    - Non-admin members may manage only their **own** personal policies — a
+      policy targeting a calendar they own, or their own membership. Policies for
+      calendar groups and the organization default stay **admin only**.
+
+    The per-target decision lives in ``_member_can_manage_booking_policy_target``.
+    Create reads the target from the request body here; update/delete read it from
+    the existing policy row in ``has_object_permission``.
 
     Membership-less (gated) users are allowed through on safe methods: the
     queryset returns [] rather than 403, which is the consistent pattern used by
@@ -22,13 +74,50 @@ class BookingPolicyPermission(BasePermission):
     """
 
     def has_permission(self, request, view) -> bool:
-        """Safe methods: any authenticated user. Unsafe methods: org admin only."""
+        """Safe methods: any authenticated user. Unsafe methods: self or admin."""
         if not request.user or not request.user.is_authenticated:
             return False
         if request.method in SAFE_METHODS:
             return True
+
         membership = get_active_organization_membership(request.user)
-        return membership is not None and membership.is_admin
+        if membership is None:
+            return False
+        if membership.is_admin:
+            return True
+
+        # Detail writes (update/delete) are gated per-object in
+        # ``has_object_permission`` — allow a non-admin member to proceed to it.
+        if request.method not in ("POST",):
+            return True
+
+        # Create: the target lives in the request body.
+        return _member_can_manage_booking_policy_target(
+            user=request.user,
+            membership=membership,
+            organization_id=membership.organization_id,
+            calendar_id=request.data.get("calendar"),
+            membership_user_id=request.data.get("membership_user_id"),
+            calendar_group_id=request.data.get("calendar_group"),
+            is_organization_default=bool(request.data.get("is_organization_default", False)),
+        )
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        """Detail writes: admins always; members only for their own target."""
+        if request.method in SAFE_METHODS:
+            return True
+        membership = get_active_organization_membership(request.user)
+        if membership is None or obj.organization_id != membership.organization_id:
+            return False
+        return _member_can_manage_booking_policy_target(
+            user=request.user,
+            membership=membership,
+            organization_id=obj.organization_id,
+            calendar_id=obj.calendar_fk_id,
+            membership_user_id=obj.membership_user_id,
+            calendar_group_id=obj.calendar_group_fk_id,
+            is_organization_default=obj.is_organization_default,
+        )
 
 
 class ExternalEventChangeRequestPermission(BasePermission):
