@@ -11929,6 +11929,7 @@ components:
       - webhook_configuration
       - external_event_change_request
       - booking_policy
+      - bookable_slots
       type: string
       description: |-
         * `calendar_event` - Calendar Event
@@ -11974,6 +11975,7 @@ components:
         * `webhook_configuration` - Webhook Configuration
         * `external_event_change_request` - External Event Change Request
         * `booking_policy` - Booking Policy
+        * `bookable_slots` - Bookable Slots
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.
