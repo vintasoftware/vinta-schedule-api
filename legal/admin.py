@@ -67,3 +67,9 @@ class PolicyDocumentAdmin(admin.ModelAdmin):
         if obj is not None:
             return [field.name for field in self.model._meta.fields]
         return list(super().get_readonly_fields(request, obj))
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: PolicyDocument | None = None
+    ) -> bool:
+        """Deny all delete permissions — published policy documents are immutable."""
+        return False

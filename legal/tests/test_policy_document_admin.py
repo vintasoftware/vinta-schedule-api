@@ -100,3 +100,28 @@ class TestPolicyDocumentAdminReadOnly:
         assert document.title == "Original title"
         assert document.version == 1
         assert document.document_type == PolicyDocumentType.PRIVACY_POLICY
+
+
+class TestPolicyDocumentAdminDelete:
+    def test_has_delete_permission_returns_false(self, admin_client):
+        """Attempting to GET the delete view for a published row must be rejected."""
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.PRIVACY_POLICY, version=1
+        )
+        delete_url = reverse("admin:legal_policydocument_delete", args=[document.pk])
+
+        response = admin_client.get(delete_url)
+
+        assert response.status_code in (403, 302)
+
+    def test_post_to_delete_url_is_rejected(self, admin_client):
+        """POST to the admin delete URL must be rejected and the row must still exist."""
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.PRIVACY_POLICY, version=1
+        )
+        delete_url = reverse("admin:legal_policydocument_delete", args=[document.pk])
+
+        response = admin_client.post(delete_url, {"post": "yes"})
+
+        assert response.status_code in (403, 302)
+        assert PolicyDocument.objects.filter(pk=document.pk).exists()
