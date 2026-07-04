@@ -92,6 +92,7 @@ jobs:
           TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
           TWILIO_NUMBER: '+12345678901'
           TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
+          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
 
 
       - run: uv run pre-commit run --all-files
@@ -129,6 +130,7 @@ jobs:
           TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
           TWILIO_NUMBER: '+12345678901'
           TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
+          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
       - run: uv run python manage.py makemigrations --check --dry-run
         env:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.production"
@@ -161,6 +163,7 @@ jobs:
           TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
           TWILIO_NUMBER: '+12345678901'
           TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
+          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
       - run: uv run python manage.py check --deploy
         env:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.production"
@@ -193,6 +196,7 @@ jobs:
           TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
           TWILIO_NUMBER: '+12345678901'
           TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
+          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
       - run: |
           uv run pytest $(ARG) -vs  -n auto --no-header --cov=. --cov-report=xml:junit/test-results.xml --junitxml=junit.xml -o junit_family=legacy
         env:
@@ -226,6 +230,7 @@ jobs:
           TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
           TWILIO_NUMBER: '+12345678901'
           TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
+          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
 
       - name: Archive code coverage results
         uses: actions/upload-artifact@v4
