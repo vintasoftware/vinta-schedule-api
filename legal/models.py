@@ -4,7 +4,7 @@ from django.db import models
 from django.utils import timezone
 
 from common.models import BaseModel
-from legal.managers import PolicyDocumentManager
+from legal.managers import PolicyDocumentManager, UserConsentManager
 
 
 class PolicyDocumentType(models.TextChoices):
@@ -47,3 +47,47 @@ class PolicyDocument(BaseModel):
 
     def __str__(self) -> str:
         return f"{self.get_document_type_display()} v{self.version}"
+
+
+class ConsentSource(models.TextChoices):
+    SIGNUP_FORM = "signup_form", "Signup Form"
+    OAUTH_STEP = "oauth_step", "OAuth Consent Step"
+    API = "api", "API"
+
+
+class UserConsent(BaseModel):
+    """An append-only, audit-grade record of a user accepting a policy version.
+
+    One row is created every time a user accepts a specific `PolicyDocument`
+    version — existing rows are never edited (append-only). The exact version
+    accepted is pinned via `policy_document`, and `accepted_at` / `ip_address`
+    / `user_agent` / `source` provide audit-grade proof of acceptance (e.g. for
+    Twilio/carrier SMS opt-in disputes).
+
+    Global — not tenant-scoped. `users.User` is a global model and consent is
+    per-user, not per-organization, so this is a plain `BaseModel`, not an
+    `OrganizationModel`; it carries no `organization` FK.
+
+    Re-consent policy (consent-once-ever): the SMS-consent gate is satisfied by
+    ANY `UserConsent` row whose document is of type `SMS_CONSENT`, regardless
+    of version — see `UserConsentManager.has_sms_consent`.
+    """
+
+    user = models.ForeignKey("users.User", on_delete=models.CASCADE, related_name="consents")
+    # PROTECT: proof integrity. An accepted policy version must never be
+    # deletable while a UserConsent row still references it as what the user saw.
+    policy_document = models.ForeignKey(
+        PolicyDocument, on_delete=models.PROTECT, related_name="consents"
+    )
+    accepted_at = models.DateTimeField(default=timezone.now)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True, default="")
+    source = models.CharField(max_length=16, choices=ConsentSource)
+
+    objects: UserConsentManager = UserConsentManager()
+
+    class Meta:
+        indexes: ClassVar = [models.Index(fields=["user", "policy_document"])]
+
+    def __str__(self) -> str:
+        return f"Consent by user {self.user_id} for {self.policy_document}"
