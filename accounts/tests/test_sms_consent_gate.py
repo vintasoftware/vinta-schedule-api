@@ -5,7 +5,8 @@ Covers both layers of the gate:
 - Unit: ``AccountAdapter.send_verification_code_sms`` refuses to dispatch a
   verification SMS (zero calls to ``notification_service.create_notification``)
   when ``ConsentService.has_sms_consent`` is False, and signals the refusal via
-  ``ConsentRequiredError``.
+  ``ConsentRequiredError``. Also fails closed (zero dispatch) when the consent
+  check itself raises.
 - Integration: the real headless phone-verification entry point
   (``POST /auth/browser/v1/account/phone``) returns a deterministic, well-formed
   4xx (not a 500) for a consent-less user and dispatches zero notifications; a
@@ -82,6 +83,14 @@ class TestSendVerificationCodeSmsConsentGate:
                 adapter.send_verification_code_sms(user, "+15555550100", "1234")
 
         log_warn.assert_called_once()
+
+    def test_fails_closed_when_consent_check_raises(self, adapter, user):
+        adapter.consent_service.has_sms_consent.side_effect = RuntimeError("db unavailable")
+
+        with pytest.raises(RuntimeError):
+            adapter.send_verification_code_sms(user, "+15555550100", "1234")
+
+        adapter.notification_service.create_notification.assert_not_called()
 
 
 @pytest.mark.django_db

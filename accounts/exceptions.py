@@ -2,7 +2,9 @@ from http import HTTPStatus
 
 from django.http import JsonResponse
 
+from allauth.core import context
 from allauth.core.exceptions import ImmediateHttpResponse
+from allauth.headless.internal.restkit.response import APIResponse
 
 
 class AccountError(Exception):
@@ -17,28 +19,19 @@ class UserNotAuthenticatedError(AccountError):
 
 
 class ConsentRequiredError(AccountError, ImmediateHttpResponse):
-    """Refuses an SMS send because the user has no recorded SMS-messaging consent.
+    """Raised by ``AccountAdapter.send_verification_code_sms`` to refuse an SMS
+    send when the user has no recorded ``SMS_CONSENT``.
 
-    This is the server-side backstop behind the SMS consent gate (see
-    ``AccountAdapter.send_verification_code_sms``): no valid ``SMS_CONSENT``
-    ``UserConsent`` row ⇒ the verification SMS is refused.
+    Dual-inherited: it's an ``AccountError`` (catchable in tests/callers) and an
+    ``ImmediateHttpResponse``, so allauth's
+    ``account.middleware.AccountMiddleware.process_exception`` turns it into a
+    clean 403 ``consent_required`` response instead of an unhandled 500.
 
-    Deliberately a **dual** exception: it is both an ``AccountError`` (so callers
-    and tests can identify/catch it as a normal, domain-level account error) and an
-    ``allauth.core.exceptions.ImmediateHttpResponse`` (allauth's documented hook for
-    aborting a flow mid-adapter-call with a specific ``HttpResponse``). Raising it from
-    inside an ``AccountAdapter`` hook is caught by allauth's
-    ``allauth.account.middleware.AccountMiddleware.process_exception`` and turned into
-    the well-formed 4xx response below — instead of propagating as an unhandled 500 —
-    regardless of which headless view/stage triggered the SMS send (signup phone-verify
-    stage, resend, or authenticated change-phone all funnel through the same adapter
-    call). The response body carries ``code="consent_required"`` so the frontend can
-    distinguish this error and route the user to the consent step.
-
-    The response is built as a plain ``JsonResponse`` (not allauth's headless
-    ``APIResponse``) so this error can be raised and inspected outside of an active
-    request context too (e.g. directly against the adapter in unit tests) without
-    depending on request-scoped state such as session/token metadata.
+    The response body matches allauth headless's own envelope
+    (``status``/``errors``/``meta``) when there's a live request to build it
+    from. It falls back to a plain envelope with the same ``status``/``errors``
+    keys when there isn't, since this error can also be raised and inspected
+    outside of a request (e.g. directly against the adapter in unit tests).
     """
 
     code = "consent_required"
@@ -50,10 +43,16 @@ class ConsentRequiredError(AccountError, ImmediateHttpResponse):
         ImmediateHttpResponse.__init__(self, response=self._build_response())
 
     def _build_response(self) -> JsonResponse:
+        errors = [{"code": self.code, "message": self.message}]
+        request = context.request
+        if request is not None:
+            try:
+                return APIResponse(request, errors=errors, status=HTTPStatus.FORBIDDEN)
+            except AttributeError:
+                # request isn't a fully-formed headless request (e.g. missing
+                # request.allauth.headless) - fall through to the plain envelope.
+                pass
         return JsonResponse(
-            {
-                "status": int(HTTPStatus.FORBIDDEN),
-                "errors": [{"code": self.code, "message": self.message}],
-            },
+            {"status": int(HTTPStatus.FORBIDDEN), "errors": errors},
             status=HTTPStatus.FORBIDDEN,
         )
