@@ -24,6 +24,7 @@ from calendar_integration.services.calendar_side_effects_service import Calendar
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
+from legal.services import ConsentService
 from notifications.notification_adapters.django_in_app import DjangoInAppNotificationAdapter
 from notifications.notification_template_renderers.django_in_app_renderer import (
     DjangoTemplatedInAppRenderer,
@@ -169,6 +170,11 @@ class AppContainer(containers.DeclarativeContainer):
 
     public_api_auth_service = providers.Factory(
         PublicAPIAuthService,
+        audit_service=audit_service,
+    )
+
+    consent_service = providers.Factory(
+        ConsentService,
         audit_service=audit_service,
     )
 
