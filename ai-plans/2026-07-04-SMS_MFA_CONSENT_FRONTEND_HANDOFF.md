@@ -128,7 +128,7 @@ Content-Type: application/json
 
 ### 3c. Login-by-phone and change-phone (any flow submitting a new phone)
 
-Consent is **phone-keyed** (Phase 8): the SMS gate checks whether *that specific phone* has a recorded `sms_consent`, independent of which user is asking. This affects any flow where the user submits a phone number that wasn't captured at signup:
+Consent is **phone-keyed** (Phase 8): the verification-code gate checks whether *the requesting user* has a recorded `sms_consent` for *that specific phone*. This affects any flow where the user submits a phone number that wasn't captured at signup:
 
 - **Logging in with a phone number** (`LOGIN_METHODS` includes `phone`), for a phone that has never had consent recorded.
 - **Changing your phone number** to a new one after signup.
@@ -145,7 +145,7 @@ Content-Type: application/json
 
 **If you skip this and the phone has no consent on file:**
 - A **verification-code request** (`send_verification_code_sms`) for that phone returns the `403 consent_required` error described below — handle it the same way as §3a/§3b.
-- An **unauthenticated login-by-phone attempt against an unknown phone**, or a **signup attempt against a phone that already has an account**, triggers the backend's anti-enumeration SMS path — but if that phone has no consent, the backend **silently sends nothing** (no error, no distinguishable response). This is intentional (it preserves allauth's uniform anti-enumeration response) but means the frontend **cannot rely on "the request succeeded" as a signal that an SMS was sent**. Don't build a "check your phone" UI that assumes delivery for phones the frontend hasn't already established consent for through this app's own signup/consent flows.
+- The backend's **anti-enumeration SMS** (login-by-phone against an unknown phone; signup against a phone that already has an account) are consent-gated at the phone-owner level: a **login-by-phone attempt against a phone with no account never sends any SMS** (there is no owning account to have consented), and an **account-already-exists** message is sent only when the phone's *owning account* previously consented. Either way the backend **silently sends nothing** when consent is absent (no error, no distinguishable response — this preserves allauth's uniform anti-enumeration response). The frontend therefore **cannot rely on "the request succeeded" as a signal that an SMS was sent** for these enumeration paths; don't build a "check your phone" UI that assumes delivery for a phone the user hasn't verified through this app's own flows.
 
 ### The consent gate (why the above matters)
 
