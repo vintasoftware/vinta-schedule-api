@@ -1,3 +1,5 @@
+from typing import cast
+
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
@@ -8,6 +10,7 @@ from rest_framework.viewsets import ReadOnlyModelViewSet
 
 from legal.filtersets import PolicyDocumentFilterSet
 from legal.models import PolicyDocument, PolicyDocumentType
+from legal.querysets import PolicyDocumentQuerySet
 from legal.serializers import PolicyDocumentSerializer
 
 
@@ -56,7 +59,7 @@ class PolicyDocumentViewSet(ReadOnlyModelViewSet):
 
         Public — no authentication required.
         """
-        queryset = PolicyDocument.objects.latest_per_type()
+        queryset = self.get_queryset().latest_per_type()
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -86,7 +89,8 @@ class PolicyDocumentViewSet(ReadOnlyModelViewSet):
         if document_type not in valid_types:
             raise NotFound(detail=f"Unknown document_type '{document_type}'.")
 
-        document = PolicyDocument.objects.latest_for(document_type)
+        queryset = cast(PolicyDocumentQuerySet, self.get_queryset())
+        document = queryset.of_type(document_type).order_by("-version").first()
         if document is None:
             raise NotFound(detail=f"No published document of type '{document_type}'.")
 
