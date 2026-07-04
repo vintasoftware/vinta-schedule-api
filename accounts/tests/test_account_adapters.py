@@ -11,6 +11,7 @@ from accounts.account_adapters import (
     HeadlessAdapter,
     SocialAccountAdapter,
 )
+from legal.factories import UserConsentFactory
 from users.models import Profile, User
 
 
@@ -308,6 +309,11 @@ class TestAccountAdapter:
         assert found is None
 
     def test_send_verification_code_sms_success(self, adapter, user):
+        # The SMS consent gate (Phase 5) requires a recorded SMS_CONSENT
+        # UserConsent before any verification SMS is dispatched; see
+        # accounts/tests/test_sms_consent_gate.py for the gate's own tests.
+        UserConsentFactory().create(user=user)
+
         with patch("accounts.account_adapters.logger.info") as log_info:
             adapter.send_verification_code_sms(user, "+123456789", "1234")
             log_info.assert_called()

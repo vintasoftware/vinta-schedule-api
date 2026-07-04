@@ -18,6 +18,8 @@ from vintasend.constants import NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 
+from accounts.exceptions import ConsentRequiredError
+from legal.services import ConsentService
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import get_active_organization_membership
 from organizations.services import OrganizationService
@@ -258,10 +260,12 @@ class AccountAdapter(DefaultAccountAdapter):
         *args,
         notification_service: Annotated[NotificationService, Provide["notification_service"]],
         organization_service: Annotated[OrganizationService, Provide["organization_service"]],
+        consent_service: Annotated[ConsentService, Provide["consent_service"]],
         **kwargs,
     ):
         self.notification_service = notification_service
         self.organization_service = organization_service
+        self.consent_service = consent_service
         super().__init__(*args, **kwargs)
 
     def send_password_reset_mail(self, user, email, context):
@@ -429,6 +433,12 @@ class AccountAdapter(DefaultAccountAdapter):
     def send_verification_code_sms(self, user, phone: str, code: str, **kwargs):
         """
         Sends a verification code.
+
+        Security-critical gate: no verification SMS is ever dispatched for a
+        user without a recorded SMS_CONSENT ``UserConsent`` row (fail closed).
+        This is the authoritative, server-side guarantee behind the consent
+        capture UX — see ``legal.services.ConsentService.has_sms_consent`` and
+        ``accounts.exceptions.ConsentRequiredError``.
         """
         if not user:
             logger.warning("No user provided for sending verification code SMS.")
@@ -437,6 +447,13 @@ class AccountAdapter(DefaultAccountAdapter):
         if not phone:
             logger.warning("No phone number provided for sending verification code SMS.")
             return
+
+        if not self.consent_service.has_sms_consent(user):
+            logger.warning(
+                "Refusing to send verification code SMS to user %s: no SMS_CONSENT on file.",
+                user.id,
+            )
+            raise ConsentRequiredError()
 
         # Here you would implement the logic to send the SMS.
         # This is a placeholder for the actual SMS sending logic.
