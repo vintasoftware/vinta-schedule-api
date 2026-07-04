@@ -39,6 +39,7 @@ class UserConsentSerializer(serializers.ModelSerializer):
             "accepted_at",
             "ip_address",
             "user_agent",
+            "phone_number",
         )
         read_only_fields = fields
 
@@ -46,9 +47,13 @@ class UserConsentSerializer(serializers.ModelSerializer):
 class ConsentCreateSerializer(serializers.Serializer):
     """Validates the input for the authenticated consent-record endpoint (OAuth step).
 
-    Only ``document_type`` is accepted from the client — the consenting user
-    comes from the authenticated request, and audit metadata (IP, user-agent,
-    source) is captured server-side in the view.
+    ``document_type`` is required — the consenting user comes from the
+    authenticated request, and audit metadata (IP, user-agent, source) is
+    captured server-side in the view. ``phone_number`` is optional (Phase 8 —
+    phone-keyed consent): an OAuth user can consent a phone number here,
+    before phone verification, so the SMS gate can later be satisfied for
+    that phone.
     """
 
     document_type = serializers.ChoiceField(choices=PolicyDocumentType.choices)
+    phone_number = serializers.CharField(max_length=20, required=False, allow_blank=True)

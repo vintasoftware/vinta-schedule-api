@@ -62,6 +62,35 @@ class TestRecordConsent:
         assert consent.user_agent == "Mozilla/5.0 test-agent"
         assert consent.source == ConsentSource.OAUTH_STEP
 
+    def test_stores_phone_number_when_provided(self) -> None:
+        user: User = baker.make(User)
+        PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
+        service = ConsentService()
+
+        consent = service.record_consent(
+            user,
+            PolicyDocumentType.SMS_CONSENT,
+            source=ConsentSource.SIGNUP_FORM,
+            phone_number="+15555550100",
+        )
+
+        consent.refresh_from_db()
+        assert consent.phone_number == "+15555550100"
+
+    def test_phone_number_defaults_to_blank(self) -> None:
+        user: User = baker.make(User)
+        PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
+        service = ConsentService()
+
+        consent = service.record_consent(
+            user,
+            PolicyDocumentType.SMS_CONSENT,
+            source=ConsentSource.SIGNUP_FORM,
+        )
+
+        consent.refresh_from_db()
+        assert consent.phone_number == ""
+
     def test_raises_when_no_policy_document_exists_for_type(self) -> None:
         user: User = baker.make(User)
         service = ConsentService()
@@ -158,6 +187,153 @@ class TestHasSmsConsent:
         assert service.has_sms_consent(user) is False
 
 
+class TestHasSmsConsentForPhone:
+    """Phase 8 — phone-keyed consent gate, tied to phone ownership.
+
+    A consent row only satisfies the gate when its own `user.phone_number`
+    also equals the checked phone (ownership join) — this stops an attacker
+    fabricating a consent row for a phone they don't own (their own user, a
+    victim's phone) from unlocking SMS sends to that phone.
+    """
+
+    def test_true_when_phone_has_sms_consent_row_and_user_owns_the_phone(self) -> None:
+        user: User = baker.make(User, phone_number="+15555550100")
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.SMS_CONSENT, version=1
+        )
+        UserConsentFactory().create(user, policy_document=document, phone_number="+15555550100")
+        service = ConsentService()
+
+        assert service.has_sms_consent_for_phone("+15555550100") is True
+
+    def test_false_for_a_different_phone(self) -> None:
+        user: User = baker.make(User, phone_number="+15555550100")
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.SMS_CONSENT, version=1
+        )
+        UserConsentFactory().create(user, policy_document=document, phone_number="+15555550100")
+        service = ConsentService()
+
+        assert service.has_sms_consent_for_phone("+15555550999") is False
+
+    def test_false_for_blank_phone_even_with_matching_blank_rows(self) -> None:
+        user: User = baker.make(User)
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.SMS_CONSENT, version=1
+        )
+        UserConsentFactory().create(user, policy_document=document, phone_number="")
+        service = ConsentService()
+
+        assert service.has_sms_consent_for_phone("") is False
+
+    def test_false_when_phone_only_consented_to_other_document_type(self) -> None:
+        user: User = baker.make(User, phone_number="+15555550100")
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.PRIVACY_POLICY, version=1
+        )
+        UserConsentFactory().create(user, policy_document=document, phone_number="+15555550100")
+        service = ConsentService()
+
+        assert service.has_sms_consent_for_phone("+15555550100") is False
+
+    def test_true_regardless_of_which_user_recorded_it_as_long_as_they_own_the_phone(
+        self,
+    ) -> None:
+        """Phone-keyed, not tied to a *specific* user — but ownership still applies."""
+        user: User = baker.make(User)
+        other_user: User = baker.make(User, phone_number="+15555550100")
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.SMS_CONSENT, version=1
+        )
+        UserConsentFactory().create(
+            other_user, policy_document=document, phone_number="+15555550100"
+        )
+        service = ConsentService()
+
+        assert service.has_sms_consent_for_phone("+15555550100") is True
+        assert user  # sanity: user exists but is irrelevant to the phone-keyed check
+
+    def test_false_when_consent_recorded_by_a_user_who_does_not_own_the_phone(self) -> None:
+        """BLOCKER: an attacker fabricating a row for a victim's phone must not satisfy the gate.
+
+        `user_a` owns phone X but records a consent row claiming phone Y (the
+        victim's phone) — `has_sms_consent_for_phone(Y)` must stay False,
+        because `user_a.phone_number` (X) never equals Y.
+        """
+        user_a: User = baker.make(User, phone_number="+15555550100")
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.SMS_CONSENT, version=1
+        )
+        UserConsentFactory().create(user_a, policy_document=document, phone_number="+15555550999")
+        service = ConsentService()
+
+        assert service.has_sms_consent_for_phone("+15555550999") is False
+
+    def test_true_when_the_consenting_users_own_phone_matches(self) -> None:
+        """A row whose recording user's own phone equals the checked phone satisfies the gate."""
+        user: User = baker.make(User, phone_number="+15555550999")
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.SMS_CONSENT, version=1
+        )
+        UserConsentFactory().create(user, policy_document=document, phone_number="+15555550999")
+        service = ConsentService()
+
+        assert service.has_sms_consent_for_phone("+15555550999") is True
+
+
+class TestHasSmsConsentForPhoneAndUser:
+    """Phase 8 / BLOCKER 1 — user-tied phone-keyed gate for ``send_verification_code_sms``.
+
+    Unlike ``has_sms_consent_for_phone`` (which requires `user.phone_number ==
+    phone`), this variant requires the consent row to belong to the specific
+    `user` passed in — see ``UserConsentManager.has_sms_consent_for_phone_and_user``
+    for why (allauth's `ChangePhoneForm` ordering makes `user.phone_number ==
+    phone` unreachable for a first-time add/change).
+    """
+
+    def test_true_when_the_same_user_recorded_a_row_for_that_phone(self) -> None:
+        user: User = baker.make(User)
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.SMS_CONSENT, version=1
+        )
+        UserConsentFactory().create(user, policy_document=document, phone_number="+15555550100")
+        service = ConsentService()
+
+        assert service.has_sms_consent_for_phone_and_user("+15555550100", user) is True
+
+    def test_false_when_a_different_user_recorded_the_row_for_that_phone(self) -> None:
+        """BLOCKER: user A's fabricated row for phone Y must not satisfy user B's check."""
+        user_a: User = baker.make(User)
+        user_b: User = baker.make(User)
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.SMS_CONSENT, version=1
+        )
+        UserConsentFactory().create(user_a, policy_document=document, phone_number="+15555550100")
+        service = ConsentService()
+
+        assert service.has_sms_consent_for_phone_and_user("+15555550100", user_b) is False
+
+    def test_false_for_a_different_phone(self) -> None:
+        user: User = baker.make(User)
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.SMS_CONSENT, version=1
+        )
+        UserConsentFactory().create(user, policy_document=document, phone_number="+15555550100")
+        service = ConsentService()
+
+        assert service.has_sms_consent_for_phone_and_user("+15555550999", user) is False
+
+    def test_false_for_blank_phone(self) -> None:
+        user: User = baker.make(User)
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.SMS_CONSENT, version=1
+        )
+        UserConsentFactory().create(user, policy_document=document, phone_number="")
+        service = ConsentService()
+
+        assert service.has_sms_consent_for_phone_and_user("", user) is False
+
+
 class TestUserConsentManagerDirectly:
     """Sanity check the manager predicate independent of the service layer."""
 
@@ -169,3 +345,12 @@ class TestUserConsentManagerDirectly:
         UserConsentFactory().create(user, policy_document=document)
 
         assert UserConsent.objects.has_sms_consent(user) is True
+
+    def test_has_sms_consent_for_phone_matches_manager(self) -> None:
+        user: User = baker.make(User, phone_number="+15555550100")
+        document = PolicyDocumentFactory().create(
+            document_type=PolicyDocumentType.SMS_CONSENT, version=1
+        )
+        UserConsentFactory().create(user, policy_document=document, phone_number="+15555550100")
+
+        assert UserConsent.objects.has_sms_consent_for_phone("+15555550100") is True

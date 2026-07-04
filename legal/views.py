@@ -157,6 +157,7 @@ class ConsentViewSet(GenericViewSet):
             source=ConsentSource.OAUTH_STEP,
             ip=client_ip_from_request(request),
             user_agent=user_agent_from_request(request),
+            phone_number=serializer.validated_data.get("phone_number", ""),
         )
 
         output_serializer = UserConsentSerializer(consent)

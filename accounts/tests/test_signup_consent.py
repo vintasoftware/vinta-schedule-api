@@ -1,5 +1,5 @@
 """
-Tests for consent capture in the email/password signup form (Phase 4).
+Tests for consent capture in the email/password signup form (Phase 4 / Phase 8).
 
 Covers:
 - Completing the signup form with `accepted_policies=True` records a
@@ -9,6 +9,9 @@ Covers:
 - Missing / false `accepted_policies` -> form invalid, signup never runs.
 - A document type with no published version yet is guarded (logged, not
   raised) -- signup still succeeds.
+- Phase 8: every recorded consent row carries `phone_number=user.phone_number`
+  (phone-keyed consent) -- blank for the email path (no phone collected at
+  signup), populated when the user already has one on the model.
 """
 
 import pytest
@@ -42,6 +45,11 @@ class TestEmailSignupRecordsConsent:
             document_type=PolicyDocumentType.SMS_CONSENT, version=2
         )
         user = UserFactory().create_user(email="consent-sms@example.com")
+        # The email/password path collects no phone at signup -- model_bakery's
+        # UserFactory otherwise fills phone_number with a random value that
+        # doesn't represent that reality, so blank it explicitly here.
+        user.phone_number = ""
+        user.save()
         form = BaseVintaScheduleSignupForm(data=_signup_form_data())
         assert form.is_valid(), form.errors
         request = rf.post("/", REMOTE_ADDR="203.0.113.9", HTTP_USER_AGENT="pytest-agent/1.0")
@@ -56,6 +64,27 @@ class TestEmailSignupRecordsConsent:
         assert consent.source == ConsentSource.SIGNUP_FORM
         assert consent.ip_address == "203.0.113.9"
         assert consent.user_agent == "pytest-agent/1.0"
+        assert consent.phone_number == user.phone_number == ""
+
+    def test_records_the_users_phone_number_when_already_set(self, rf):
+        """The email/password path collects no phone at signup, but if the User
+        already carries one (e.g. set by an earlier step), it must land on the
+        consent row -- phone-keyed consent (Phase 8) is keyed off whatever
+        `user.phone_number` holds at record time."""
+        PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
+        user = UserFactory().create_user(email="consent-phone@example.com")
+        user.phone_number = "+15555550100"
+        user.save()
+        form = BaseVintaScheduleSignupForm(data=_signup_form_data())
+        assert form.is_valid(), form.errors
+        request = rf.post("/", REMOTE_ADDR="203.0.113.9", HTTP_USER_AGENT="pytest-agent/1.0")
+
+        form.signup(request=request, user=user)
+
+        consent = UserConsent.objects.get(
+            user=user, policy_document__document_type=PolicyDocumentType.SMS_CONSENT
+        )
+        assert consent.phone_number == "+15555550100"
 
     def test_records_consent_for_all_three_document_types_when_published(self):
         for document_type in PolicyDocumentType.values:

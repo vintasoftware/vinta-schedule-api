@@ -13352,12 +13352,18 @@ components:
       description: |-
         Validates the input for the authenticated consent-record endpoint (OAuth step).
 
-        Only ``document_type`` is accepted from the client — the consenting user
-        comes from the authenticated request, and audit metadata (IP, user-agent,
-        source) is captured server-side in the view.
+        ``document_type`` is required — the consenting user comes from the
+        authenticated request, and audit metadata (IP, user-agent, source) is
+        captured server-side in the view. ``phone_number`` is optional (Phase 8 —
+        phone-keyed consent): an OAuth user can consent a phone number here,
+        before phone verification, so the SMS gate can later be satisfied for
+        that phone.
       properties:
         document_type:
           $ref: '#/components/schemas/DocumentTypeEnum'
+        phone_number:
+          type: string
+          maxLength: 20
       required:
       - document_type
     CurrentMembership:
@@ -15522,11 +15528,15 @@ components:
         user_agent:
           type: string
           readOnly: true
+        phone_number:
+          type: string
+          readOnly: true
       required:
       - accepted_at
       - document_type
       - id
       - ip_address
+      - phone_number
       - policy_document
       - policy_document_version
       - source

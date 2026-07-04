@@ -434,11 +434,17 @@ class AccountAdapter(DefaultAccountAdapter):
         """
         Sends a verification code.
 
-        Security-critical gate: no verification SMS is ever dispatched for a
-        user without a recorded SMS_CONSENT ``UserConsent`` row (fail closed).
-        This is the authoritative, server-side guarantee behind the consent
-        capture UX — see ``legal.services.ConsentService.has_sms_consent`` and
-        ``accounts.exceptions.ConsentRequiredError``.
+        Security-critical gate: no verification SMS is ever dispatched to a
+        phone without a recorded SMS_CONSENT ``UserConsent`` row for that
+        phone, recorded by this same `user` (fail closed). Phase 8 moved this
+        gate from user-keyed to phone-keyed consent, and a later fix
+        (BLOCKER 1) tied it to phone ownership: `has_sms_consent_for_phone_and_user`
+        requires the consent row to belong to `user` themselves, rather than
+        just any user, closing a spoofing hole where an unrelated account
+        could fabricate a consent row for a phone it doesn't own. This is the
+        authoritative, server-side guarantee behind the consent capture UX —
+        see ``legal.services.ConsentService.has_sms_consent_for_phone_and_user``
+        and ``accounts.exceptions.ConsentRequiredError``.
         """
         if not user:
             logger.warning("No user provided for sending verification code SMS.")
@@ -448,10 +454,12 @@ class AccountAdapter(DefaultAccountAdapter):
             logger.warning("No phone number provided for sending verification code SMS.")
             return
 
-        if not self.consent_service.has_sms_consent(user):
+        if not self.consent_service.has_sms_consent_for_phone_and_user(phone, user):
             logger.warning(
-                "Refusing to send verification code SMS to user %s: no SMS_CONSENT on file.",
+                "Refusing to send verification code SMS to user %s: no SMS_CONSENT on "
+                "file for phone ending in %s.",
                 user.id,
+                phone[-4:],
             )
             raise ConsentRequiredError()
 
@@ -479,9 +487,24 @@ class AccountAdapter(DefaultAccountAdapter):
         In case enumeration prevention is enabled, and, a verification code is requested for an
         unlisted phone number, this method is invoked to send a text explaining that no account
         is on file.
+
+        Consent gate (Phase 8): this fires for a raw submitted `phone` with no
+        `user` at all (there is no account), so it cannot use the user-keyed
+        gate. If `phone` has no recorded SMS_CONSENT, this is a silent no-op —
+        no SMS, no raised error — which preserves allauth's uniform,
+        enumeration-safe response (the caller can't distinguish "no consent"
+        from "SMS sent") while never sending an unconsented SMS.
         """
         if not phone:
             logger.warning("No phone number provided for sending unknown account SMS.")
+            return
+
+        if not self.consent_service.has_sms_consent_for_phone(phone):
+            logger.warning(
+                "Refusing to send unknown-account SMS to phone ending in %s: no SMS_CONSENT "
+                "on file (silent no-op to preserve enumeration prevention).",
+                phone[-4:],
+            )
             return
 
         self.notification_service.create_one_off_notification(
@@ -498,9 +521,23 @@ class AccountAdapter(DefaultAccountAdapter):
         In case enumeration prevention is enabled, and, a signup is attempted using a phone
         number that already has an account, this method is invoked to send a text explaining
         that an account is already on file (instead of revealing this via the signup response).
+
+        Consent gate (Phase 8): this fires with only a raw submitted `phone`
+        (no `user` parameter), so it uses the phone-keyed gate. If `phone` has
+        no recorded SMS_CONSENT, this is a silent no-op — no SMS, no raised
+        error — which preserves allauth's uniform, enumeration-safe response
+        while never sending an unconsented SMS.
         """
         if not phone:
             logger.warning("No phone number provided for sending account-already-exists SMS.")
+            return
+
+        if not self.consent_service.has_sms_consent_for_phone(phone):
+            logger.warning(
+                "Refusing to send account-already-exists SMS to phone ending in %s: no "
+                "SMS_CONSENT on file (silent no-op to preserve enumeration prevention).",
+                phone[-4:],
+            )
             return
 
         self.notification_service.create_one_off_notification(

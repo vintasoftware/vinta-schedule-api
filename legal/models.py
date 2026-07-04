@@ -71,6 +71,18 @@ class UserConsent(BaseModel):
     Re-consent policy (consent-once-ever): the SMS-consent gate is satisfied by
     ANY `UserConsent` row whose document is of type `SMS_CONSENT`, regardless
     of version — see `UserConsentManager.has_sms_consent`.
+
+    Phone-keyed consent (Phase 8): `phone_number` records the phone submitted
+    at consent time (signup, or the OAuth-step `/consents/` endpoint),
+    normalized via `common.utils.phone_utils.normalize_phone_number`. `user`
+    stays required — every recording site has one — and the SMS gate ties
+    ownership to that `user`: the anti-enumeration sends (no `user` at their
+    call site) require the row's own `user.phone_number` to also equal
+    `phone_number` (`UserConsentManager.has_sms_consent_for_phone`); the
+    verification-code send (which always has a `user`) requires the row to
+    belong to that same `user` (`UserConsentManager.has_sms_consent_for_phone_and_user`).
+    Either way, a row recorded by one user for another's phone number cannot
+    unlock SMS to that phone.
     """
 
     user = models.ForeignKey("users.User", on_delete=models.CASCADE, related_name="consents")
@@ -83,11 +95,15 @@ class UserConsent(BaseModel):
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.TextField(blank=True, default="")
     source = models.CharField(max_length=16, choices=ConsentSource)
+    phone_number = models.CharField(max_length=20, blank=True, default="")
 
     objects: UserConsentManager = UserConsentManager()
 
     class Meta:
-        indexes: ClassVar = [models.Index(fields=["user", "policy_document"])]
+        indexes: ClassVar = [
+            models.Index(fields=["user", "policy_document"]),
+            models.Index(fields=["phone_number"], name="legal_userconsent_phone_idx"),
+        ]
 
     def __str__(self) -> str:
         return f"Consent by user {self.user_id} for {self.policy_document}"
