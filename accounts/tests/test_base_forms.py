@@ -31,6 +31,7 @@ def _make_form(
         "first_name": first_name,
         "last_name": last_name,
         "organization_name": organization_name,
+        "accepted_policies": True,
     }
     form = BaseVintaScheduleSignupForm(data=data)
     assert form.is_valid(), form.errors

@@ -7251,6 +7251,86 @@ paths:
           description: Caller is not eligible to resolve this request.
         '409':
           description: Request is no longer PENDING.
+  /consents/:
+    post:
+      operationId: consents_create
+      description: |-
+        POST /consents/ — record acceptance of `document_type` for the current user.
+
+        Authenticated only. Captures client IP + User-Agent for audit-grade
+        proof; delegates version resolution + persistence to `ConsentService`.
+      summary: Record the authenticated user's consent to a policy document type
+      tags:
+      - Legal
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsentCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ConsentCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ConsentCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserConsent'
+          description: ''
+        '400':
+          description: Invalid document_type, or no published document of that type
+            yet
+  /consents{format}:
+    post:
+      operationId: consents_formatted_create
+      description: |-
+        POST /consents/ — record acceptance of `document_type` for the current user.
+
+        Authenticated only. Captures client IP + User-Agent for audit-grade
+        proof; delegates version resolution + persistence to `ConsentService`.
+      summary: Record the authenticated user's consent to a policy document type
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - Legal
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsentCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ConsentCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ConsentCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserConsent'
+          description: ''
+        '400':
+          description: Invalid document_type, or no published document of that type
+            yet
   /invitations/:
     get:
       operationId: invitations_list
@@ -13267,6 +13347,19 @@ components:
         * `resource` - Resource Calendar
         * `virtual` - Virtual Calendar
         * `bundle` - Bundle Calendar
+    ConsentCreate:
+      type: object
+      description: |-
+        Validates the input for the authenticated consent-record endpoint (OAuth step).
+
+        Only ``document_type`` is accepted from the client — the consenting user
+        comes from the authenticated request, and audit metadata (IP, user-agent,
+        source) is captured server-side in the view.
+      properties:
+        document_type:
+          $ref: '#/components/schemas/DocumentTypeEnum'
+      required:
+      - document_type
     CurrentMembership:
       type: object
       description: |-
@@ -15200,6 +15293,16 @@ components:
       - email
       - private_key
       - private_key_id
+    SourceEnum:
+      enum:
+      - signup_form
+      - oauth_step
+      - api
+      type: string
+      description: |-
+        * `signup_form` - Signup Form
+        * `oauth_step` - OAuth Consent Step
+        * `api` - API
     SystemUserToken:
       type: object
       description: |-
@@ -15384,6 +15487,50 @@ components:
           $ref: '#/components/schemas/RoleEnum'
       required:
       - role
+    UserConsent:
+      type: object
+      description: |-
+        Read-only representation of a recorded :class:`UserConsent`.
+
+        Returned by ``ConsentViewSet.create`` after ``ConsentService.record_consent``
+        persists the acceptance; every field is read-only here too.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        document_type:
+          type: string
+          readOnly: true
+        policy_document:
+          type: integer
+          readOnly: true
+        policy_document_version:
+          type: integer
+          readOnly: true
+        source:
+          allOf:
+          - $ref: '#/components/schemas/SourceEnum'
+          readOnly: true
+        accepted_at:
+          type: string
+          format: date-time
+          readOnly: true
+        ip_address:
+          type: string
+          readOnly: true
+          nullable: true
+        user_agent:
+          type: string
+          readOnly: true
+      required:
+      - accepted_at
+      - document_type
+      - id
+      - ip_address
+      - policy_document
+      - policy_document_version
+      - source
+      - user_agent
     VisibilityEnum:
       enum:
       - active

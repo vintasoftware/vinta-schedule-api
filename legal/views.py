@@ -1,17 +1,24 @@
-from typing import cast
+from typing import Annotated, cast
 
+from dependency_injector.wiring import Provide, inject
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.viewsets import ReadOnlyModelViewSet
+from rest_framework.viewsets import GenericViewSet, ReadOnlyModelViewSet
 
+from common.utils.request_utils import client_ip_from_request, user_agent_from_request
 from legal.filtersets import PolicyDocumentFilterSet
-from legal.models import PolicyDocument, PolicyDocumentType
+from legal.models import ConsentSource, PolicyDocument, PolicyDocumentType, UserConsent
 from legal.querysets import PolicyDocumentQuerySet
-from legal.serializers import PolicyDocumentSerializer
+from legal.serializers import (
+    ConsentCreateSerializer,
+    PolicyDocumentSerializer,
+    UserConsentSerializer,
+)
+from legal.services import ConsentService
 
 
 @extend_schema(tags=["Legal"])
@@ -96,3 +103,61 @@ class PolicyDocumentViewSet(ReadOnlyModelViewSet):
 
         serializer = self.get_serializer(document)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@extend_schema(tags=["Legal"])
+class ConsentViewSet(GenericViewSet):
+    """Write-only REST surface for recording a :class:`UserConsent` (OAuth step).
+
+    OAuth signups use ``SOCIALACCOUNT_AUTO_SIGNUP`` and collect no phone number
+    or consent acknowledgement at signup time. The frontend calls this
+    endpoint (authenticated, post-social-login) to record acceptance of a
+    published policy document with ``source=ConsentSource.OAUTH_STEP``,
+    before requesting phone verification. Mirrors the email-signup capture
+    path (``accounts.base_forms.BaseVintaScheduleSignupForm.signup``) for a
+    session that already exists.
+
+    No read surface is exposed here — consent history is not a public listing.
+    """
+
+    queryset = UserConsent.objects.none()
+    serializer_class = ConsentCreateSerializer
+    permission_classes = (IsAuthenticated,)
+    http_method_names = ("post", "options")
+
+    @extend_schema(
+        summary="Record the authenticated user's consent to a policy document type",
+        request=ConsentCreateSerializer,
+        responses={
+            201: UserConsentSerializer,
+            400: OpenApiResponse(
+                description="Invalid document_type, or no published document of that type yet"
+            ),
+        },
+    )
+    @inject
+    def create(
+        self,
+        request,
+        *args,
+        consent_service: Annotated[ConsentService, Provide["consent_service"]] = None,  # type: ignore[assignment]
+        **kwargs,
+    ):
+        """POST /consents/ — record acceptance of `document_type` for the current user.
+
+        Authenticated only. Captures client IP + User-Agent for audit-grade
+        proof; delegates version resolution + persistence to `ConsentService`.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        consent = consent_service.record_consent(
+            request.user,
+            serializer.validated_data["document_type"],
+            source=ConsentSource.OAUTH_STEP,
+            ip=client_ip_from_request(request),
+            user_agent=user_agent_from_request(request),
+        )
+
+        output_serializer = UserConsentSerializer(consent)
+        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
