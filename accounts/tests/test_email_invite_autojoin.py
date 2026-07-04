@@ -117,6 +117,7 @@ class TestInvitedEmailAutoJoin:
             "first_name": "New",
             "last_name": "User",
             "organization_name": "",  # invited user wouldn't submit a name
+            "accepted_policies": True,
         }
         form = BaseVintaScheduleSignupForm(data=form_data)
         assert form.is_valid(), form.errors

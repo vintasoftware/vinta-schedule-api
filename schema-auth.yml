@@ -1389,6 +1389,8 @@ components:
       type: object
     BaseSignup:
       properties:
+        accepted_policies:
+          type: boolean
         email:
           $ref: '#/components/schemas/Email'
         first_name:
@@ -1407,6 +1409,7 @@ components:
       - phone
       - first_name
       - last_name
+      - accepted_policies
       type: object
     ClientID:
       description: 'The client ID (in case of OAuth2 or OpenID Connect based providers)

@@ -6,12 +6,17 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.viewsets import ReadOnlyModelViewSet
+from rest_framework.viewsets import GenericViewSet, ReadOnlyModelViewSet
 
 from legal.filtersets import PolicyDocumentFilterSet
-from legal.models import PolicyDocument, PolicyDocumentType
+from legal.models import ConsentSource, PolicyDocument, PolicyDocumentType, UserConsent
 from legal.querysets import PolicyDocumentQuerySet
-from legal.serializers import PolicyDocumentSerializer
+from legal.serializers import (
+    ConsentCreateSerializer,
+    PolicyDocumentSerializer,
+    UserConsentSerializer,
+)
+from legal.services import ConsentService
 
 
 @extend_schema(tags=["Legal"])
@@ -96,3 +101,71 @@ class PolicyDocumentViewSet(ReadOnlyModelViewSet):
 
         serializer = self.get_serializer(document)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+def _client_ip_from_request(request) -> str | None:
+    """Extract the client IP address from a Django request for audit logging.
+
+    Mirrors ``calendar_integration.mutations._client_ip_from_request``: prefers
+    the first entry of ``X-Forwarded-For`` (set by load balancers / proxies);
+    falls back to ``REMOTE_ADDR``. Returns ``None`` (rather than ``""``) when
+    unavailable, since ``UserConsent.ip_address`` is a nullable
+    ``GenericIPAddressField``.
+    """
+    meta = getattr(request, "META", {})
+    forwarded_for = meta.get("HTTP_X_FORWARDED_FOR", "")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    return meta.get("REMOTE_ADDR") or None
+
+
+@extend_schema(tags=["Legal"])
+class ConsentViewSet(GenericViewSet):
+    """Write-only REST surface for recording a :class:`UserConsent` (OAuth step).
+
+    OAuth signups use ``SOCIALACCOUNT_AUTO_SIGNUP`` and collect no phone number
+    or consent acknowledgement at signup time. The frontend calls this
+    endpoint (authenticated, post-social-login) to record acceptance of a
+    published policy document with ``source=ConsentSource.OAUTH_STEP``,
+    before requesting phone verification. Mirrors the email-signup capture
+    path (``accounts.base_forms.BaseVintaScheduleSignupForm.signup``) for a
+    session that already exists.
+
+    No read surface is exposed here — consent history is not a public listing.
+    """
+
+    queryset = UserConsent.objects.none()
+    serializer_class = ConsentCreateSerializer
+    permission_classes = (IsAuthenticated,)
+    http_method_names = ("post", "options")
+
+    @extend_schema(
+        summary="Record the authenticated user's consent to a policy document type",
+        request=ConsentCreateSerializer,
+        responses={
+            201: UserConsentSerializer,
+            400: OpenApiResponse(
+                description="Invalid document_type, or no published document of that type yet"
+            ),
+        },
+    )
+    def create(self, request, *args, **kwargs):
+        """POST /consents/ — record acceptance of `document_type` for the current user.
+
+        Authenticated only. Captures client IP + User-Agent for audit-grade
+        proof; delegates version resolution + persistence to `ConsentService`.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        consent_service = ConsentService()
+        consent = consent_service.record_consent(
+            request.user,
+            serializer.validated_data["document_type"],
+            source=ConsentSource.OAUTH_STEP,
+            ip=_client_ip_from_request(request),
+            user_agent=request.headers.get("user-agent", ""),
+        )
+
+        output_serializer = UserConsentSerializer(consent)
+        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
