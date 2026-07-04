@@ -70,10 +70,12 @@ Before rendering the consent UI, fetch the policy text to link/show (endpoints i
 
 ### 3a. Email / password signup
 
-The headless signup form now has a **new required field `accepted_policies`** (boolean). It represents acceptance of the Privacy Policy, Terms of Use, and SMS messaging consent together.
+The headless signup form has **two separate required boolean fields** — `accepted_terms` and `accepted_sms_consent`. They replace the old combined `accepted_policies` field (renamed/split in Phase 9): Twilio / TCPA require SMS consent to be its own explicit, distinct opt-in, not bundled with Terms/Privacy acceptance, so each must be its **own unchecked checkbox** with its own copy — do not pre-check either, and do not merge them into one control.
 
-- Add a **required** checkbox to the signup form, e.g. "I agree to the Privacy Policy, Terms of Use, and to receive SMS messages." Link the first two to the pages in §1/§2.
-- Include `accepted_policies: true` in the existing headless signup POST body (alongside `email`, `password`, `phone`, `first_name`, `last_name`, and optional `organization_name`).
+- Add **two required** checkboxes to the signup form:
+  - `accepted_terms` — copy: **"I agree to the Privacy Policy and Terms of Use."** Link to the pages in §1/§2.
+  - `accepted_sms_consent` — copy: **"I agree to receive SMS text messages (e.g. verification codes) at the phone number I provide. Msg & data rates may apply."** This is the SMS-specific opt-in; keep it visually and functionally distinct from the terms checkbox.
+- Include both `accepted_terms: true` and `accepted_sms_consent: true` in the existing headless signup POST body (alongside `email`, `password`, `phone`, `first_name`, `last_name`, and optional `organization_name`).
 
 ```
 POST /auth/browser/v1/auth/signup     (or /auth/app/v1/auth/signup for the app client)
@@ -85,12 +87,13 @@ Content-Type: application/json
   "phone": "+15551234567",
   "first_name": "…",
   "last_name": "…",
-  "accepted_policies": true
+  "accepted_terms": true,
+  "accepted_sms_consent": true
 }
 ```
 
-- If `accepted_policies` is missing or `false`, signup is rejected with a validation error on that field — surface it inline on the checkbox.
-- On success, the backend records `sms_consent` (plus `privacy_policy` / `terms_of_use` if those are published) automatically — the frontend does **not** need a separate consent call on this path.
+- If either `accepted_terms` or `accepted_sms_consent` is missing or `false`, signup is rejected with a validation error on that specific field — surface each inline on its own checkbox.
+- On success, the backend records `sms_consent` (driven by `accepted_sms_consent`) and `privacy_policy` / `terms_of_use` (driven by `accepted_terms`, if those are published) automatically — the frontend does **not** need a separate consent call on this path.
 
 ### 3b. OAuth2 / social signup (Google, Apple)
 
@@ -170,7 +173,7 @@ Detect `errors[].code === "consent_required"` on phone-verification requests and
 | Terms page | GET | `/policy-documents/latest/terms_of_use/` | public | `404` = not published |
 | All latest | GET | `/policy-documents/latest/` | public | array, one per type |
 | History | GET | `/policy-documents/?document_type=…` | auth | paginated, newest first |
-| Email signup consent | POST | `/auth/browser/v1/auth/signup` | public | add required `accepted_policies: true` |
+| Email signup consent | POST | `/auth/browser/v1/auth/signup` | public | add required `accepted_terms: true` + `accepted_sms_consent: true` (two separate checkboxes) |
 | OAuth consent step | POST | `/consents/` | auth | `{ "document_type": "sms_consent", "phone_number": "…" }` |
 | New/changed phone consent | POST | `/consents/` | auth | same as above — record **before** requesting a code for that phone |
 | Gate refusal (has a user) | — | (verification-code requests) | — | `403` `code: consent_required` → route to consent step |

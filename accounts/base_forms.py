@@ -1,5 +1,5 @@
 import logging
-from typing import Annotated
+from typing import Annotated, ClassVar
 
 from django import forms
 from django.utils import timezone
@@ -21,14 +21,18 @@ class BaseVintaScheduleSignupForm(forms.Form):
     """
     Base form for user signup.
 
-    Captures first_name, last_name, an optional organization_name, and a
-    required policy-acceptance acknowledgement. At signup time, the intended
+    Captures first_name, last_name, an optional organization_name, and two
+    required policy-acceptance acknowledgements. At signup time, the intended
     org name is persisted on Profile.pending_organization_name so it can be
     consumed during email-confirmation provisioning (Phase 3).
 
     When a non-expired, unaccepted OrganizationInvitation exists for the
     signup email, the org name is left blank — the user will auto-join the
     inviting org instead of creating a new one.
+
+    Consent acceptance is split into two separate fields (Phase 9) rather
+    than one combined checkbox: Twilio / TCPA require SMS consent to be its
+    own explicit, distinct opt-in, not bundled with Terms/Privacy acceptance.
     """
 
     first_name = forms.CharField(max_length=255, required=True, label="First Name")
@@ -38,16 +42,38 @@ class BaseVintaScheduleSignupForm(forms.Form):
         required=False,
         label="Organization Name",
     )
-    accepted_policies = forms.BooleanField(
+    accepted_terms = forms.BooleanField(
         required=True,
-        label="I agree to the Privacy Policy, Terms of Use, and SMS messaging consent.",
+        label="I agree to the Privacy Policy and Terms of Use.",
+        error_messages={
+            "required": "You must accept the Privacy Policy and Terms of Use to create an account.",
+        },
+    )
+    accepted_sms_consent = forms.BooleanField(
+        required=True,
+        label=(
+            "I agree to receive SMS text messages (e.g. verification codes) at the "
+            "phone number I provide. Msg & data rates may apply."
+        ),
         error_messages={
             "required": (
-                "You must accept the Privacy Policy, Terms of Use, and SMS messaging "
-                "consent to create an account."
+                "You must agree to receive SMS text messages at the phone number you "
+                "provide to create an account."
             ),
         },
     )
+
+    # Maps each consent checkbox field to the PolicyDocumentType values it
+    # covers. Keeping this as an explicit mapping (rather than iterating
+    # PolicyDocumentType.values directly) means SMS consent could later
+    # become optional without touching how terms/privacy are recorded.
+    _CONSENT_FIELD_DOCUMENT_TYPES: ClassVar[dict[str, list[str]]] = {
+        "accepted_terms": [
+            PolicyDocumentType.PRIVACY_POLICY,
+            PolicyDocumentType.TERMS_OF_USE,
+        ],
+        "accepted_sms_consent": [PolicyDocumentType.SMS_CONSENT],
+    }
 
     def _has_pending_invitation(self, email: str) -> bool:
         """Return True if a non-expired, unaccepted invitation exists for *email*."""
@@ -66,6 +92,17 @@ class BaseVintaScheduleSignupForm(forms.Form):
         ``SMS_CONSENT`` gates SMS sending (Phase 5), but recording the other
         two is captured for completeness per the plan's Open Questions.
 
+        Each document type is driven by the checkbox that covers it (Phase 9
+        — separate SMS consent checkbox): ``PRIVACY_POLICY`` /
+        ``TERMS_OF_USE`` are recorded because ``accepted_terms`` is required
+        and checked, and ``SMS_CONSENT`` is recorded because
+        ``accepted_sms_consent`` is required and checked, independently. Both
+        fields are required today so all three document types are always
+        recorded on a successful signup, but the SMS row is driven
+        specifically by ``accepted_sms_consent`` — if that field ever became
+        optional, only the SMS_CONSENT recording would stop, leaving terms
+        recording untouched.
+
         Each row is recorded with ``phone_number=user.phone_number`` (Phase 8
         — phone-keyed consent). The email/password signup form collects no
         phone number, so this is ``""`` at this point in that path; the
@@ -81,23 +118,26 @@ class BaseVintaScheduleSignupForm(forms.Form):
         client_ip = client_ip_from_request(request)
         user_agent = user_agent_from_request(request)
 
-        for document_type in PolicyDocumentType.values:
-            try:
-                consent_service.record_consent(
-                    user,
-                    document_type,
-                    source=ConsentSource.SIGNUP_FORM,
-                    ip=client_ip,
-                    user_agent=user_agent,
-                    phone_number=user.phone_number,
-                )
-            except NoPolicyDocumentError:
-                logger.warning(
-                    "Skipping signup consent capture for document_type=%s, user=%s: "
-                    "no published PolicyDocument exists yet.",
-                    document_type,
-                    user.pk,
-                )
+        for field_name, document_types in self._CONSENT_FIELD_DOCUMENT_TYPES.items():
+            if not self.cleaned_data.get(field_name):
+                continue
+            for document_type in document_types:
+                try:
+                    consent_service.record_consent(
+                        user,
+                        document_type,
+                        source=ConsentSource.SIGNUP_FORM,
+                        ip=client_ip,
+                        user_agent=user_agent,
+                        phone_number=user.phone_number,
+                    )
+                except NoPolicyDocumentError:
+                    logger.warning(
+                        "Skipping signup consent capture for document_type=%s, user=%s: "
+                        "no published PolicyDocument exists yet.",
+                        document_type,
+                        user.pk,
+                    )
 
     @inject
     def signup(

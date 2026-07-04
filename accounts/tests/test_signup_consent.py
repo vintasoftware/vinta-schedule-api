@@ -1,12 +1,17 @@
 """
-Tests for consent capture in the email/password signup form (Phase 4 / Phase 8).
+Tests for consent capture in the email/password signup form (Phase 4 / Phase 8 /
+Phase 9).
 
 Covers:
-- Completing the signup form with `accepted_policies=True` records a
-  version-pinned SMS_CONSENT UserConsent with source=SIGNUP_FORM, capturing
-  the request's client IP + User-Agent.
+- Completing the signup form with `accepted_terms=True` and
+  `accepted_sms_consent=True` records a version-pinned SMS_CONSENT UserConsent
+  with source=SIGNUP_FORM, capturing the request's client IP + User-Agent.
 - Consent is recorded for all three PolicyDocumentType values when published.
-- Missing / false `accepted_policies` -> form invalid, signup never runs.
+- Missing / false `accepted_terms` -> form invalid, signup never runs.
+- Missing / false `accepted_sms_consent` -> form invalid, signup never runs.
+- SMS_CONSENT recording is driven specifically by `accepted_sms_consent`,
+  independently of `accepted_terms` (Phase 9 — separate SMS consent
+  checkbox, Twilio/TCPA compliance).
 - A document type with no published version yet is guarded (logged, not
   raised) -- signup still succeeds.
 - Phase 8: every recorded consent row carries `phone_number=user.phone_number`
@@ -30,7 +35,8 @@ def _signup_form_data(**overrides):
         "first_name": "Ada",
         "last_name": "Lovelace",
         "organization_name": "ACME Corp",
-        "accepted_policies": True,
+        "accepted_terms": True,
+        "accepted_sms_consent": True,
     }
     data.update(overrides)
     return data
@@ -143,20 +149,116 @@ class TestEmailSignupRecordsConsent:
         assert not UserConsent.objects.filter(user=user).exists()
 
 
-class TestAcceptedPoliciesRequired:
-    """`accepted_policies` is a required, must-be-True acknowledgement field."""
+class TestAcceptedTermsRequired:
+    """`accepted_terms` is a required, must-be-True acknowledgement field."""
 
     def test_missing_acceptance_makes_form_invalid(self):
         data = _signup_form_data()
-        del data["accepted_policies"]
+        del data["accepted_terms"]
 
         form = BaseVintaScheduleSignupForm(data=data)
 
         assert not form.is_valid()
-        assert "accepted_policies" in form.errors
+        assert "accepted_terms" in form.errors
 
     def test_false_acceptance_makes_form_invalid(self):
-        form = BaseVintaScheduleSignupForm(data=_signup_form_data(accepted_policies=False))
+        form = BaseVintaScheduleSignupForm(data=_signup_form_data(accepted_terms=False))
 
         assert not form.is_valid()
-        assert "accepted_policies" in form.errors
+        assert "accepted_terms" in form.errors
+
+
+class TestAcceptedSmsConsentRequired:
+    """`accepted_sms_consent` is its own required, must-be-True acknowledgement
+    field -- Twilio / TCPA compliance requires SMS consent to be a distinct,
+    explicit opt-in, not bundled with Terms/Privacy acceptance (Phase 9)."""
+
+    def test_missing_acceptance_makes_form_invalid(self):
+        data = _signup_form_data()
+        del data["accepted_sms_consent"]
+
+        form = BaseVintaScheduleSignupForm(data=data)
+
+        assert not form.is_valid()
+        assert "accepted_sms_consent" in form.errors
+
+    def test_false_acceptance_makes_form_invalid(self):
+        form = BaseVintaScheduleSignupForm(data=_signup_form_data(accepted_sms_consent=False))
+
+        assert not form.is_valid()
+        assert "accepted_sms_consent" in form.errors
+
+    def test_accepted_terms_alone_does_not_satisfy_sms_consent(self):
+        """Checking only the terms checkbox must not also satisfy the SMS
+        checkbox -- the two are independent required fields."""
+        form = BaseVintaScheduleSignupForm(
+            data=_signup_form_data(accepted_terms=True, accepted_sms_consent=False)
+        )
+
+        assert not form.is_valid()
+        assert "accepted_sms_consent" in form.errors
+        assert "accepted_terms" not in form.errors
+
+    def test_sms_consent_recording_driven_by_sms_field_not_terms_field(self, di_container):
+        """SMS_CONSENT recording is driven specifically by `accepted_sms_consent`,
+        independently of `accepted_terms`.
+
+        Both fields are required for a *valid* form submission, so this
+        exercises the recording helper directly with `accepted_terms=True` /
+        `accepted_sms_consent=False` in `cleaned_data` -- a state a valid
+        submission can never reach, but the one an implementation bug (e.g.
+        recording all three document types whenever *any* consent field is
+        truthy) would mishandle. This test would fail if SMS_CONSENT recording
+        were driven by `accepted_terms` instead of `accepted_sms_consent`.
+        """
+        for document_type in PolicyDocumentType.values:
+            PolicyDocumentFactory().create(document_type=document_type, version=1)
+
+        form = BaseVintaScheduleSignupForm(data=_signup_form_data())
+        assert form.is_valid(), form.errors
+        # Simulate "terms accepted, SMS consent not accepted" -- impossible via
+        # a real submission (both required), but proves the mapping's wiring.
+        form.cleaned_data["accepted_terms"] = True
+        form.cleaned_data["accepted_sms_consent"] = False
+
+        user = UserFactory().create_user(email="consent-terms-only@example.com")
+        consent_service = di_container.consent_service()
+
+        form._record_signup_consents(request=None, user=user, consent_service=consent_service)
+
+        assert not UserConsent.objects.filter(
+            user=user, policy_document__document_type=PolicyDocumentType.SMS_CONSENT
+        ).exists()
+        assert UserConsent.objects.filter(
+            user=user, policy_document__document_type=PolicyDocumentType.PRIVACY_POLICY
+        ).exists()
+        assert UserConsent.objects.filter(
+            user=user, policy_document__document_type=PolicyDocumentType.TERMS_OF_USE
+        ).exists()
+
+    def test_sms_consent_recorded_when_sms_field_checked_even_if_terms_not(self, di_container):
+        """Mirror case: `accepted_sms_consent=True` records SMS_CONSENT even
+        with `accepted_terms=False` -- proving the SMS row is gated solely by
+        its own field, not by terms acceptance."""
+        for document_type in PolicyDocumentType.values:
+            PolicyDocumentFactory().create(document_type=document_type, version=1)
+
+        form = BaseVintaScheduleSignupForm(data=_signup_form_data())
+        assert form.is_valid(), form.errors
+        form.cleaned_data["accepted_terms"] = False
+        form.cleaned_data["accepted_sms_consent"] = True
+
+        user = UserFactory().create_user(email="consent-sms-only@example.com")
+        consent_service = di_container.consent_service()
+
+        form._record_signup_consents(request=None, user=user, consent_service=consent_service)
+
+        assert UserConsent.objects.filter(
+            user=user, policy_document__document_type=PolicyDocumentType.SMS_CONSENT
+        ).exists()
+        assert not UserConsent.objects.filter(
+            user=user, policy_document__document_type=PolicyDocumentType.PRIVACY_POLICY
+        ).exists()
+        assert not UserConsent.objects.filter(
+            user=user, policy_document__document_type=PolicyDocumentType.TERMS_OF_USE
+        ).exists()
