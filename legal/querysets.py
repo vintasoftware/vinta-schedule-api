@@ -34,3 +34,13 @@ class UserConsentQuerySet(models.QuerySet):
     def for_user(self, user: "User") -> "UserConsentQuerySet":
         """Filter to consent rows belonging to `user`."""
         return self.filter(user=user)
+
+    def for_phone(self, phone: str) -> "UserConsentQuerySet":
+        """Filter to consent rows recorded against `phone`.
+
+        Never matches a blank `phone_number` — a blank `phone` argument (or a
+        blank stored value) must not satisfy a phone-keyed consent check.
+        """
+        if not phone:
+            return self.none()
+        return self.filter(phone_number=phone)

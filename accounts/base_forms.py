@@ -66,6 +66,13 @@ class BaseVintaScheduleSignupForm(forms.Form):
         ``SMS_CONSENT`` gates SMS sending (Phase 5), but recording the other
         two is captured for completeness per the plan's Open Questions.
 
+        Each row is recorded with ``phone_number=user.phone_number`` (Phase 8
+        — phone-keyed consent). The email/password signup form collects no
+        phone number, so this is ``""`` at this point in that path; the
+        phone-keyed SMS gate never matches a blank value, and a later phone
+        submission (e.g. login-by-phone / change-phone) records its own
+        consent row for that specific number.
+
         A document type with no published version yet raises
         ``NoPolicyDocumentError``; that is logged and swallowed per document
         type so signup still succeeds — the SMS gate independently fails
@@ -82,6 +89,7 @@ class BaseVintaScheduleSignupForm(forms.Form):
                     source=ConsentSource.SIGNUP_FORM,
                     ip=client_ip,
                     user_agent=user_agent,
+                    phone_number=user.phone_number,
                 )
             except NoPolicyDocumentError:
                 logger.warning(

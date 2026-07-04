@@ -54,6 +54,33 @@ class TestRecordConsentEndpoint:
         assert data["document_type"] == PolicyDocumentType.SMS_CONSENT
         assert data["source"] == ConsentSource.OAUTH_STEP
 
+    def test_optional_phone_number_is_persisted(self, auth_client, user):
+        PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
+
+        response = auth_client.post(
+            _consents_url(),
+            {
+                "document_type": PolicyDocumentType.SMS_CONSENT,
+                "phone_number": "+15555550100",
+            },
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED, response.data
+        consent = UserConsent.objects.get(user=user)
+        assert consent.phone_number == "+15555550100"
+        assert response.json()["phone_number"] == "+15555550100"
+
+    def test_phone_number_omitted_defaults_to_blank(self, auth_client, user):
+        PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
+
+        response = auth_client.post(
+            _consents_url(), {"document_type": PolicyDocumentType.SMS_CONSENT}
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED, response.data
+        consent = UserConsent.objects.get(user=user)
+        assert consent.phone_number == ""
+
     def test_unauthenticated_returns_401(self, anonymous_client):
         PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
 

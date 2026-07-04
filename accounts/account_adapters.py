@@ -434,10 +434,14 @@ class AccountAdapter(DefaultAccountAdapter):
         """
         Sends a verification code.
 
-        Security-critical gate: no verification SMS is ever dispatched for a
-        user without a recorded SMS_CONSENT ``UserConsent`` row (fail closed).
-        This is the authoritative, server-side guarantee behind the consent
-        capture UX — see ``legal.services.ConsentService.has_sms_consent`` and
+        Security-critical gate: no verification SMS is ever dispatched to a
+        phone without a recorded SMS_CONSENT ``UserConsent`` row for that
+        phone (fail closed). Phase 8 moved this gate from user-keyed to
+        phone-keyed consent (``has_sms_consent_for_phone``) so it shares one
+        consent model with the anti-enumeration SMS below, which have no
+        ``user`` at all. This is the authoritative, server-side guarantee
+        behind the consent capture UX — see
+        ``legal.services.ConsentService.has_sms_consent_for_phone`` and
         ``accounts.exceptions.ConsentRequiredError``.
         """
         if not user:
@@ -448,10 +452,12 @@ class AccountAdapter(DefaultAccountAdapter):
             logger.warning("No phone number provided for sending verification code SMS.")
             return
 
-        if not self.consent_service.has_sms_consent(user):
+        if not self.consent_service.has_sms_consent_for_phone(phone):
             logger.warning(
-                "Refusing to send verification code SMS to user %s: no SMS_CONSENT on file.",
+                "Refusing to send verification code SMS to user %s: no SMS_CONSENT on "
+                "file for phone %s.",
                 user.id,
+                phone,
             )
             raise ConsentRequiredError()
 
@@ -479,9 +485,24 @@ class AccountAdapter(DefaultAccountAdapter):
         In case enumeration prevention is enabled, and, a verification code is requested for an
         unlisted phone number, this method is invoked to send a text explaining that no account
         is on file.
+
+        Consent gate (Phase 8): this fires for a raw submitted `phone` with no
+        `user` at all (there is no account), so it cannot use the user-keyed
+        gate. If `phone` has no recorded SMS_CONSENT, this is a silent no-op —
+        no SMS, no raised error — which preserves allauth's uniform,
+        enumeration-safe response (the caller can't distinguish "no consent"
+        from "SMS sent") while never sending an unconsented SMS.
         """
         if not phone:
             logger.warning("No phone number provided for sending unknown account SMS.")
+            return
+
+        if not self.consent_service.has_sms_consent_for_phone(phone):
+            logger.warning(
+                "Refusing to send unknown-account SMS to phone %s: no SMS_CONSENT on file "
+                "(silent no-op to preserve enumeration prevention).",
+                phone,
+            )
             return
 
         self.notification_service.create_one_off_notification(
@@ -498,9 +519,23 @@ class AccountAdapter(DefaultAccountAdapter):
         In case enumeration prevention is enabled, and, a signup is attempted using a phone
         number that already has an account, this method is invoked to send a text explaining
         that an account is already on file (instead of revealing this via the signup response).
+
+        Consent gate (Phase 8): this fires with only a raw submitted `phone`
+        (no `user` parameter), so it uses the phone-keyed gate. If `phone` has
+        no recorded SMS_CONSENT, this is a silent no-op — no SMS, no raised
+        error — which preserves allauth's uniform, enumeration-safe response
+        while never sending an unconsented SMS.
         """
         if not phone:
             logger.warning("No phone number provided for sending account-already-exists SMS.")
+            return
+
+        if not self.consent_service.has_sms_consent_for_phone(phone):
+            logger.warning(
+                "Refusing to send account-already-exists SMS to phone %s: no SMS_CONSENT "
+                "on file (silent no-op to preserve enumeration prevention).",
+                phone,
+            )
             return
 
         self.notification_service.create_one_off_notification(

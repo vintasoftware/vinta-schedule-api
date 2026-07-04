@@ -59,3 +59,23 @@ class UserConsentManager(models.Manager):
             .for_document_type(PolicyDocumentType.SMS_CONSENT)
             .exists()
         )
+
+    def has_sms_consent_for_phone(self, phone: str) -> bool:
+        """Return True if any SMS_CONSENT row was recorded for `phone`.
+
+        Phone-keyed, `user`-independent — this is the gate used for the
+        anti-enumeration SMS sends (`send_unknown_account_sms` /
+        `send_account_already_exists_sms`), which have no `user`, only a
+        submitted phone. A blank `phone` never matches (see
+        `UserConsentQuerySet.for_phone`).
+        """
+        # Local import: legal.models imports legal.managers at module load, so
+        # importing PolicyDocumentType at module top here would be circular.
+        from legal.models import PolicyDocumentType
+
+        return (
+            self.get_queryset()
+            .for_phone(phone)
+            .for_document_type(PolicyDocumentType.SMS_CONSENT)
+            .exists()
+        )

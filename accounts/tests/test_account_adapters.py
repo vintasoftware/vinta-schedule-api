@@ -5,6 +5,7 @@ from django.conf import settings as django_settings
 
 import pytest
 from allauth.socialaccount.models import SocialLogin
+from model_bakery import baker
 
 from accounts.account_adapters import (
     AccountAdapter,
@@ -309,10 +310,11 @@ class TestAccountAdapter:
         assert found is None
 
     def test_send_verification_code_sms_success(self, adapter, user):
-        # The SMS consent gate (Phase 5) requires a recorded SMS_CONSENT
-        # UserConsent before any verification SMS is dispatched; see
-        # accounts/tests/test_sms_consent_gate.py for the gate's own tests.
-        UserConsentFactory().create(user=user)
+        # The SMS consent gate (Phase 5, phone-keyed since Phase 8) requires a
+        # recorded SMS_CONSENT UserConsent for the submitted phone before any
+        # verification SMS is dispatched; see accounts/tests/test_sms_consent_gate.py
+        # for the gate's own tests.
+        UserConsentFactory().create(user=user, phone_number="+123456789")
 
         with patch("accounts.account_adapters.logger.info") as log_info:
             adapter.send_verification_code_sms(user, "+123456789", "1234")
@@ -332,6 +334,13 @@ class TestAccountAdapter:
             )
 
     def test_send_unknown_account_sms_success(self, adapter):
+        # Phase 8 -- phone-keyed consent gate: this send is unauthenticated
+        # (no user), so it's gated by a consent row recorded against the
+        # phone itself. Needs *some* user to own the UserConsent row, but the
+        # gate is phone-keyed, not that user-keyed -- see
+        # accounts/tests/test_sms_consent_gate.py for the gate's own tests.
+        UserConsentFactory().create(user=baker.make(User), phone_number="+123456789")
+
         adapter.send_unknown_account_sms("+123456789")
         adapter.notification_service.create_one_off_notification.assert_called_once()
 

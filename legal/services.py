@@ -58,6 +58,7 @@ class ConsentService:
         source: str,
         ip: str | None = None,
         user_agent: str = "",
+        phone_number: str = "",
     ) -> UserConsent:
         """Record that `user` accepted the latest published version of `document_type`.
 
@@ -72,6 +73,10 @@ class ConsentService:
         :param source: One of ``ConsentSource``'s values.
         :param ip: The client IP address that submitted the consent, if known.
         :param user_agent: The client user-agent string, if known.
+        :param phone_number: The phone number consent applies to, if known
+            (Phase 8 — phone-keyed consent). Blank when the phone isn't known
+            at consent time; the phone-keyed SMS gate never matches a blank
+            value.
         :raises NoPolicyDocumentError: When no published ``PolicyDocument``
             exists for `document_type`.
         :return: The created, persisted ``UserConsent`` instance.
@@ -88,6 +93,7 @@ class ConsentService:
             source=source,
             ip_address=ip,
             user_agent=user_agent,
+            phone_number=phone_number,
         )
 
         self._audit_consent_created(consent)
@@ -101,6 +107,16 @@ class ConsentService:
         any prior SMS-consent row satisfies the gate, regardless of version).
         """
         return UserConsent.objects.has_sms_consent(user)
+
+    def has_sms_consent_for_phone(self, phone: str) -> bool:
+        """Return True if `phone` has ever been recorded against an SMS_CONSENT row.
+
+        Phone-keyed, ``user``-independent (Phase 8) — delegates to
+        ``UserConsentManager.has_sms_consent_for_phone``. Used to gate all
+        three SMS sends, including the two anti-enumeration sends that carry
+        no ``user``.
+        """
+        return UserConsent.objects.has_sms_consent_for_phone(phone)
 
     def _audit_consent_created(self, consent: UserConsent) -> None:
         """Emit an AuditService CREATE record for a newly-created UserConsent.

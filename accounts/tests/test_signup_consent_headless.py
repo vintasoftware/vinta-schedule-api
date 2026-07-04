@@ -61,6 +61,11 @@ class TestHeadlessSignupRecordsConsent:
             user=user, policy_document__document_type=PolicyDocumentType.SMS_CONSENT
         )
         assert consent.source == ConsentSource.SIGNUP_FORM
+        # Phase 8 -- phone-keyed consent: allauth's adapter.save_user() sets
+        # user.phone_number from the submitted "phone" field before our custom
+        # form's signup() runs, so the phone lands on the recorded consent.
+        assert user.phone_number == "+123456789"
+        assert consent.phone_number == "+123456789"
 
     def test_missing_accepted_policies_rejects_signup(self):
         for document_type in PolicyDocumentType.values:
