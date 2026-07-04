@@ -18,6 +18,7 @@ from dependency_injector.wiring import Provide, inject
 
 from audit.constants import AuditAction
 from audit.services import AuditService
+from common.utils.phone_utils import normalize_phone_number
 from legal.exceptions import NoPolicyDocumentError
 from legal.models import PolicyDocument, UserConsent
 from organizations.models import get_active_organization_membership
@@ -76,7 +77,12 @@ class ConsentService:
         :param phone_number: The phone number consent applies to, if known
             (Phase 8 — phone-keyed consent). Blank when the phone isn't known
             at consent time; the phone-keyed SMS gate never matches a blank
-            value.
+            value. Normalized (see
+            ``common.utils.phone_utils.normalize_phone_number``) before
+            persisting, so a client-submitted, human-formatted number (e.g.
+            ``"+1 555-555-0100"``) is stored in the same form allauth passes
+            to ``ConsentService.has_sms_consent_for_phone`` at verification
+            time.
         :raises NoPolicyDocumentError: When no published ``PolicyDocument``
             exists for `document_type`.
         :return: The created, persisted ``UserConsent`` instance.
@@ -93,7 +99,7 @@ class ConsentService:
             source=source,
             ip_address=ip,
             user_agent=user_agent,
-            phone_number=phone_number,
+            phone_number=normalize_phone_number(phone_number),
         )
 
         self._audit_consent_created(consent)
@@ -109,14 +115,27 @@ class ConsentService:
         return UserConsent.objects.has_sms_consent(user)
 
     def has_sms_consent_for_phone(self, phone: str) -> bool:
-        """Return True if `phone` has ever been recorded against an SMS_CONSENT row.
+        """Return True if `phone` has an SMS_CONSENT row owned by `phone`.
 
         Phone-keyed, ``user``-independent (Phase 8) — delegates to
-        ``UserConsentManager.has_sms_consent_for_phone``. Used to gate all
-        three SMS sends, including the two anti-enumeration sends that carry
-        no ``user``.
+        ``UserConsentManager.has_sms_consent_for_phone`` (requires the
+        consenting user's own ``phone_number`` to equal `phone`). Used to
+        gate the two anti-enumeration sends, which carry no ``user``. See
+        ``has_sms_consent_for_phone_and_user`` for the user-tied variant used
+        by ``send_verification_code_sms``.
         """
         return UserConsent.objects.has_sms_consent_for_phone(phone)
+
+    def has_sms_consent_for_phone_and_user(self, phone: str, user: User) -> bool:
+        """Return True if `user` recorded an SMS_CONSENT row for `phone`.
+
+        Phone-keyed AND tied to `user` (Phase 8, BLOCKER-1 fix) — delegates
+        to ``UserConsentManager.has_sms_consent_for_phone_and_user``. Used to
+        gate ``send_verification_code_sms``, which always carries a `user`;
+        see that manager method's docstring for why this checks `user`
+        directly rather than `user.phone_number == phone`.
+        """
+        return UserConsent.objects.has_sms_consent_for_phone_and_user(phone, user)
 
     def _audit_consent_created(self, consent: UserConsent) -> None:
         """Emit an AuditService CREATE record for a newly-created UserConsent.

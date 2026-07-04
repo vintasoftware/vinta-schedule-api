@@ -73,11 +73,16 @@ class UserConsent(BaseModel):
     of version — see `UserConsentManager.has_sms_consent`.
 
     Phone-keyed consent (Phase 8): `phone_number` records the phone submitted
-    at consent time (signup, or the OAuth-step `/consents/` endpoint). `user`
-    stays required — every recording site has one — but the SMS gate for the
-    two anti-enumeration SMS types (which have no `user`, only a submitted
-    phone) checks by `phone_number` alone, independent of `user`. See
-    `UserConsentManager.has_sms_consent_for_phone`.
+    at consent time (signup, or the OAuth-step `/consents/` endpoint),
+    normalized via `common.utils.phone_utils.normalize_phone_number`. `user`
+    stays required — every recording site has one — and the SMS gate ties
+    ownership to that `user`: the anti-enumeration sends (no `user` at their
+    call site) require the row's own `user.phone_number` to also equal
+    `phone_number` (`UserConsentManager.has_sms_consent_for_phone`); the
+    verification-code send (which always has a `user`) requires the row to
+    belong to that same `user` (`UserConsentManager.has_sms_consent_for_phone_and_user`).
+    Either way, a row recorded by one user for another's phone number cannot
+    unlock SMS to that phone.
     """
 
     user = models.ForeignKey("users.User", on_delete=models.CASCADE, related_name="consents")

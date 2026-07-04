@@ -2,6 +2,8 @@ from typing import TYPE_CHECKING
 
 from django.db import models
 
+from common.utils.phone_utils import normalize_phone_number
+
 
 if TYPE_CHECKING:
     from users.models import User
@@ -38,9 +40,20 @@ class UserConsentQuerySet(models.QuerySet):
     def for_phone(self, phone: str) -> "UserConsentQuerySet":
         """Filter to consent rows recorded against `phone`.
 
-        Never matches a blank `phone_number` — a blank `phone` argument (or a
-        blank stored value) must not satisfy a phone-keyed consent check.
+        `phone` is normalized (see `common.utils.phone_utils.normalize_phone_number`)
+        before matching, so a `phone_number` stored via a client that posted a
+        human-formatted number (e.g. ``"+1 555-555-0100"``) still compares equal
+        to the E.164 value allauth passes at verification time.
+
+        Never matches a blank `phone` — a blank `phone` argument (or a blank
+        stored value) must not satisfy a phone-keyed consent check. Does NOT
+        by itself enforce phone ownership — see
+        `UserConsentManager.has_sms_consent_for_phone` (join-filters on
+        `user__phone_number=phone` on top of this) and
+        `UserConsentManager.has_sms_consent_for_phone_and_user` (chains
+        `for_user` on top of this instead).
         """
+        phone = normalize_phone_number(phone)
         if not phone:
             return self.none()
         return self.filter(phone_number=phone)

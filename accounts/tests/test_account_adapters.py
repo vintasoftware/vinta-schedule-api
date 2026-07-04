@@ -311,9 +311,11 @@ class TestAccountAdapter:
 
     def test_send_verification_code_sms_success(self, adapter, user):
         # The SMS consent gate (Phase 5, phone-keyed since Phase 8) requires a
-        # recorded SMS_CONSENT UserConsent for the submitted phone before any
-        # verification SMS is dispatched; see accounts/tests/test_sms_consent_gate.py
-        # for the gate's own tests.
+        # recorded SMS_CONSENT UserConsent for the submitted phone, recorded
+        # by this same user, before any verification SMS is dispatched
+        # (BLOCKER 1 -- ties the gate to the requesting user's own consent
+        # row); see accounts/tests/test_sms_consent_gate.py for the gate's
+        # own tests.
         UserConsentFactory().create(user=user, phone_number="+123456789")
 
         with patch("accounts.account_adapters.logger.info") as log_info:
@@ -333,16 +335,18 @@ class TestAccountAdapter:
                 "No phone number provided for sending verification code SMS."
             )
 
-    def test_send_unknown_account_sms_success(self, adapter):
-        # Phase 8 -- phone-keyed consent gate: this send is unauthenticated
-        # (no user), so it's gated by a consent row recorded against the
-        # phone itself. Needs *some* user to own the UserConsent row, but the
-        # gate is phone-keyed, not that user-keyed -- see
+    def test_send_unknown_account_sms_is_a_no_op_even_with_a_consent_row(self, adapter):
+        # BLOCKER 1 fix: the gate is tied to phone ownership
+        # (`user__phone_number == phone`). `send_unknown_account_sms` only
+        # ever fires when *no* user anywhere has `phone_number == phone`
+        # (that's what makes the account "unknown"), so a consent row
+        # recorded by an unrelated user (whose own phone differs) can never
+        # satisfy the ownership join -- see
         # accounts/tests/test_sms_consent_gate.py for the gate's own tests.
         UserConsentFactory().create(user=baker.make(User), phone_number="+123456789")
 
         adapter.send_unknown_account_sms("+123456789")
-        adapter.notification_service.create_one_off_notification.assert_called_once()
+        adapter.notification_service.create_one_off_notification.assert_not_called()
 
     def test_send_unknown_account_sms_no_phone(self, adapter):
         with patch("accounts.account_adapters.logger.warning") as log_warn:

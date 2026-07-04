@@ -436,13 +436,15 @@ class AccountAdapter(DefaultAccountAdapter):
 
         Security-critical gate: no verification SMS is ever dispatched to a
         phone without a recorded SMS_CONSENT ``UserConsent`` row for that
-        phone (fail closed). Phase 8 moved this gate from user-keyed to
-        phone-keyed consent (``has_sms_consent_for_phone``) so it shares one
-        consent model with the anti-enumeration SMS below, which have no
-        ``user`` at all. This is the authoritative, server-side guarantee
-        behind the consent capture UX — see
-        ``legal.services.ConsentService.has_sms_consent_for_phone`` and
-        ``accounts.exceptions.ConsentRequiredError``.
+        phone, recorded by this same `user` (fail closed). Phase 8 moved this
+        gate from user-keyed to phone-keyed consent, and a later fix
+        (BLOCKER 1) tied it to phone ownership: `has_sms_consent_for_phone_and_user`
+        requires the consent row to belong to `user` themselves, rather than
+        just any user, closing a spoofing hole where an unrelated account
+        could fabricate a consent row for a phone it doesn't own. This is the
+        authoritative, server-side guarantee behind the consent capture UX —
+        see ``legal.services.ConsentService.has_sms_consent_for_phone_and_user``
+        and ``accounts.exceptions.ConsentRequiredError``.
         """
         if not user:
             logger.warning("No user provided for sending verification code SMS.")
@@ -452,12 +454,12 @@ class AccountAdapter(DefaultAccountAdapter):
             logger.warning("No phone number provided for sending verification code SMS.")
             return
 
-        if not self.consent_service.has_sms_consent_for_phone(phone):
+        if not self.consent_service.has_sms_consent_for_phone_and_user(phone, user):
             logger.warning(
                 "Refusing to send verification code SMS to user %s: no SMS_CONSENT on "
-                "file for phone %s.",
+                "file for phone ending in %s.",
                 user.id,
-                phone,
+                phone[-4:],
             )
             raise ConsentRequiredError()
 
@@ -499,9 +501,9 @@ class AccountAdapter(DefaultAccountAdapter):
 
         if not self.consent_service.has_sms_consent_for_phone(phone):
             logger.warning(
-                "Refusing to send unknown-account SMS to phone %s: no SMS_CONSENT on file "
-                "(silent no-op to preserve enumeration prevention).",
-                phone,
+                "Refusing to send unknown-account SMS to phone ending in %s: no SMS_CONSENT "
+                "on file (silent no-op to preserve enumeration prevention).",
+                phone[-4:],
             )
             return
 
@@ -532,9 +534,9 @@ class AccountAdapter(DefaultAccountAdapter):
 
         if not self.consent_service.has_sms_consent_for_phone(phone):
             logger.warning(
-                "Refusing to send account-already-exists SMS to phone %s: no SMS_CONSENT "
-                "on file (silent no-op to preserve enumeration prevention).",
-                phone,
+                "Refusing to send account-already-exists SMS to phone ending in %s: no "
+                "SMS_CONSENT on file (silent no-op to preserve enumeration prevention).",
+                phone[-4:],
             )
             return
 
