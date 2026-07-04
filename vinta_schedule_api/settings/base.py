@@ -39,6 +39,7 @@ INTERNAL_INSTALLED_APPS = [
     "notifications",
     "calendar_integration",
     "webhooks",
+    "legal",
     "public_api",
 ]
 INSTALLED_APPS = [
