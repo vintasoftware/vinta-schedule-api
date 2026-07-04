@@ -260,6 +260,35 @@ class TestPhoneVerifyConsentGateIntegration:
         assert response.status_code == 202
         mock_create.assert_called_once()
 
+    def test_default_disabled_flag_phone_verify_is_inert_for_a_consent_less_phone(
+        self, auth_client
+    ):
+        """Phase 6 acceptance: "with it disabled (default), the phone-verify
+        flow is inert." No ``@override_settings`` here — this exercises the
+        actual out-of-the-box default (``ACCOUNT_PHONE_VERIFICATION_ENABLED``
+        unset/False, as in production today).
+
+        Verified empirically: the vendored allauth ``ManagePhoneView`` /
+        ``ChangePhoneVerificationProcess`` call path used by this endpoint
+        does not itself branch on ``ACCOUNT_PHONE_VERIFICATION_ENABLED`` (that
+        setting is only consulted by allauth's signup/login
+        ``PhoneVerificationStage``, a different code path). So the endpoint
+        stays reachable either way; what actually keeps it inert by default is
+        the SMS-consent gate (Phase 5/8) refusing a consent-less phone. The
+        real, observed response for this exact request (no consent recorded,
+        default settings) is a 403 with the ``consent_required`` error code
+        and zero notification dispatches -- asserted below rather than
+        assumed.
+        """
+        with patch(
+            "vintasend.services.notification_service.NotificationService.create_notification"
+        ) as mock_create:
+            response = auth_client.post(self.url, {"phone": "+15555550199"}, format="json")
+
+        assert response.status_code == 403
+        assert response.json()["errors"][0]["code"] == "consent_required"
+        mock_create.assert_not_called()
+
 
 @pytest.mark.django_db
 class TestAntiEnumerationSmsRealFlowIntegration:
