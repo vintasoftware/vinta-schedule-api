@@ -1,5 +1,6 @@
-from typing import cast
+from typing import Annotated, cast
 
+from dependency_injector.wiring import Provide, inject
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
@@ -8,6 +9,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, ReadOnlyModelViewSet
 
+from common.utils.request_utils import client_ip_from_request, user_agent_from_request
 from legal.filtersets import PolicyDocumentFilterSet
 from legal.models import ConsentSource, PolicyDocument, PolicyDocumentType, UserConsent
 from legal.querysets import PolicyDocumentQuerySet
@@ -103,22 +105,6 @@ class PolicyDocumentViewSet(ReadOnlyModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-def _client_ip_from_request(request) -> str | None:
-    """Extract the client IP address from a Django request for audit logging.
-
-    Mirrors ``calendar_integration.mutations._client_ip_from_request``: prefers
-    the first entry of ``X-Forwarded-For`` (set by load balancers / proxies);
-    falls back to ``REMOTE_ADDR``. Returns ``None`` (rather than ``""``) when
-    unavailable, since ``UserConsent.ip_address`` is a nullable
-    ``GenericIPAddressField``.
-    """
-    meta = getattr(request, "META", {})
-    forwarded_for = meta.get("HTTP_X_FORWARDED_FOR", "")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return meta.get("REMOTE_ADDR") or None
-
-
 @extend_schema(tags=["Legal"])
 class ConsentViewSet(GenericViewSet):
     """Write-only REST surface for recording a :class:`UserConsent` (OAuth step).
@@ -149,7 +135,14 @@ class ConsentViewSet(GenericViewSet):
             ),
         },
     )
-    def create(self, request, *args, **kwargs):
+    @inject
+    def create(
+        self,
+        request,
+        *args,
+        consent_service: Annotated[ConsentService, Provide["consent_service"]] = None,  # type: ignore[assignment]
+        **kwargs,
+    ):
         """POST /consents/ — record acceptance of `document_type` for the current user.
 
         Authenticated only. Captures client IP + User-Agent for audit-grade
@@ -158,13 +151,12 @@ class ConsentViewSet(GenericViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        consent_service = ConsentService()
         consent = consent_service.record_consent(
             request.user,
             serializer.validated_data["document_type"],
             source=ConsentSource.OAUTH_STEP,
-            ip=_client_ip_from_request(request),
-            user_agent=request.headers.get("user-agent", ""),
+            ip=client_ip_from_request(request),
+            user_agent=user_agent_from_request(request),
         )
 
         output_serializer = UserConsentSerializer(consent)

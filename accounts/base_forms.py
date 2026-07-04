@@ -1,8 +1,12 @@
 import logging
+from typing import Annotated
 
 from django import forms
 from django.utils import timezone
 
+from dependency_injector.wiring import Provide, inject
+
+from common.utils.request_utils import client_ip_from_request, user_agent_from_request
 from legal.exceptions import NoPolicyDocumentError
 from legal.models import ConsentSource, PolicyDocumentType
 from legal.services import ConsentService
@@ -11,26 +15,6 @@ from users.models import Profile
 
 
 logger = logging.getLogger(__name__)
-
-
-def _client_ip_from_request(request: object) -> str | None:
-    """Extract the client IP address from a Django request for audit logging.
-
-    Prefers the first entry of ``X-Forwarded-For`` (set by load balancers /
-    proxies); falls back to ``REMOTE_ADDR``. Robust to a missing/``None``
-    request (allauth's ``signup()`` hook is invoked with ``request=None`` in
-    some tests) — returns ``None`` rather than raising.
-    """
-    meta = getattr(request, "META", {})
-    forwarded_for = meta.get("HTTP_X_FORWARDED_FOR", "")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return meta.get("REMOTE_ADDR") or None
-
-
-def _user_agent_from_request(request: object) -> str:
-    """Extract the client User-Agent header. Robust to a missing/``None`` request."""
-    return getattr(request, "META", {}).get("HTTP_USER_AGENT", "")
 
 
 class BaseVintaScheduleSignupForm(forms.Form):
@@ -74,7 +58,7 @@ class BaseVintaScheduleSignupForm(forms.Form):
             membership__isnull=True,
         ).exists()
 
-    def _record_signup_consents(self, request, user) -> None:
+    def _record_signup_consents(self, request, user, consent_service: ConsentService) -> None:
         """Record acceptance of every published policy document type.
 
         Consent is captured for all three ``PolicyDocumentType`` values at
@@ -87,9 +71,8 @@ class BaseVintaScheduleSignupForm(forms.Form):
         type so signup still succeeds — the SMS gate independently fails
         closed if no ``SMS_CONSENT`` record exists.
         """
-        consent_service = ConsentService()
-        client_ip = _client_ip_from_request(request)
-        user_agent = _user_agent_from_request(request)
+        client_ip = client_ip_from_request(request)
+        user_agent = user_agent_from_request(request)
 
         for document_type in PolicyDocumentType.values:
             try:
@@ -108,7 +91,13 @@ class BaseVintaScheduleSignupForm(forms.Form):
                     user.pk,
                 )
 
-    def signup(self, request, user):
+    @inject
+    def signup(
+        self,
+        request,
+        user,
+        consent_service: Annotated[ConsentService, Provide["consent_service"]] = None,  # type: ignore[assignment]
+    ):
         """
         Persist first_name, last_name, and (conditionally) organization_name on
         the user's Profile, and record acceptance of the published policy
@@ -117,10 +106,16 @@ class BaseVintaScheduleSignupForm(forms.Form):
         organization_name is stored only when no pending invitation matches the
         signup email.  Invited users will auto-join an existing org at
         email-confirmation time; they must not accidentally trigger org creation.
+
+        ``consent_service`` is DI-injected (mirrors ``AccountAdapter`` /
+        ``CalendarViewSet``'s per-method ``@inject``). It carries a
+        ``Provide`` default rather than being required so allauth's
+        positional call ``self.signup(request, user)`` (see
+        ``allauth.account.forms``) keeps working unchanged.
         """
         user.save()
 
-        self._record_signup_consents(request, user)
+        self._record_signup_consents(request, user, consent_service)
 
         first_name = self.cleaned_data.get("first_name", "")
         last_name = self.cleaned_data.get("last_name", "")
