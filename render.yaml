@@ -168,6 +168,11 @@ envVarGroups:
         sync: false
       - key: TWILIO_DEFAULT_BROADCAST_NUMBERS
         sync: false
+      # Per-environment rollout gate for SMS phone verification. Default off;
+      # flip to true in the Render dashboard once Twilio approves this
+      # environment's messaging profile.
+      - key: ACCOUNT_PHONE_VERIFICATION_ENABLED
+        value: false
 
   # AWS S3 + CloudFront storage. Values come from the Terragrunt/Scalr stack
   # under infrastructure/ — see `terragrunt output`. Secrets are sync:false so

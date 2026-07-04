@@ -347,7 +347,12 @@ HEADLESS_TOKEN_STRATEGY = "accounts.token_strategies.AccessAndRefreshTokenStrate
 ACCESS_TOKEN_EXPIRY_MINUTES = config("ACCESS_TOKEN_EXPIRY_MINUTES", cast=int, default=15)
 REFRESH_TOKEN_EXPIRY_DAYS = config("REFRESH_TOKEN_EXPIRY_DAYS", cast=int, default=30)
 ACCOUNT_LOGIN_METHODS = {"phone", "email"}
-ACCOUNT_PHONE_VERIFICATION_ENABLED = False
+# Rollout gate: default off while Twilio validates our messaging profile per
+# environment. An operator flips this in the environment (Render dashboard /
+# .env) once approved there — no code change required.
+ACCOUNT_PHONE_VERIFICATION_ENABLED = config(
+    "ACCOUNT_PHONE_VERIFICATION_ENABLED", cast=bool, default=False
+)
 ACCOUNT_PHONE_VERIFICATION_MAX_ATTEMPTS = 3
 ACCOUNT_PHONE_VERIFICATION_SUPPORTS_RESEND = True
 ACCOUNT_SIGNUP_FORM_CLASS = "accounts.base_forms.BaseVintaScheduleSignupForm"
