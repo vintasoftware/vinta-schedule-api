@@ -119,12 +119,19 @@ class OrganizationSerializer(VirtualModelSerializer):
     class Meta:
         model = Organization
         virtual_model = OrganizationVirtualModel
+        read_only_fields = (
+            "id",
+            "created",
+            "can_invite_organizations",
+            "modified",
+        )
         fields = (
             "id",
             "name",
             "should_sync_rooms",
             "external_event_update_policy",
             "google_service_account",
+            "can_invite_organizations",
             "created",
             "modified",
         )
