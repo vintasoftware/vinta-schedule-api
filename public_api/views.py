@@ -1,7 +1,6 @@
 import logging
 
 from django.db import transaction
-from django.urls import register_converter
 
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status
@@ -219,31 +218,6 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
         return self.update(request, *args, **kwargs)
 
 
-class _ConceptDocSlugConverter:
-    """Path converter restricting ``{slug}`` to ``[a-z0-9-]+``.
-
-    ``vinta_schedule_api.urls`` builds ``DefaultRouter(use_regex_path=False)``,
-    which generates ``path()``-style routes (``<converter:kwarg>``) rather than
-    ``re_path()`` regexes. In that mode DRF's router prefers a viewset's
-    ``lookup_value_converter`` over ``lookup_value_regex`` (the latter is only
-    consulted when ``use_regex_path=True``). Registering this converter is what
-    actually enforces the lowercase-alnum-hyphen charset at the URL-resolution
-    layer — anything else (dots, slashes, percent-encoded traversal segments)
-    never reaches the view at all.
-    """
-
-    regex = "[a-z0-9-]+"
-
-    def to_python(self, value: str) -> str:
-        return value
-
-    def to_url(self, value: str) -> str:
-        return value
-
-
-register_converter(_ConceptDocSlugConverter, "docs_slug")
-
-
 @extend_schema(tags=["Docs"])
 class PublicApiDocsViewSet(ViewSet):
     """Public, read-only viewset serving the repo's concept documentation.
@@ -261,10 +235,11 @@ class PublicApiDocsViewSet(ViewSet):
     """
 
     lookup_field = "slug"
+    # Inert for routing (lookup_value_converter does that); kept so drf-spectacular emits the pattern.
     lookup_value_regex = "[a-z0-9-]+"
     lookup_value_converter = "docs_slug"
     permission_classes = (AllowAny,)
-    authentication_classes = ()
+    authentication_classes = []  # noqa: RUF012
     http_method_names = ("get", "head", "options")
 
     @extend_schema(

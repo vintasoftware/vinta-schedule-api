@@ -59,6 +59,11 @@ class TestExtractTitle:
 
         assert _extract_title(markdown, fallback_slug="my-doc-slug") == "My Doc Slug"
 
+    def test_ignores_heading_inside_fenced_code_block(self):
+        markdown = "```bash\n# install deps\n```\n\n# Real Title\n\nBody.\n"
+
+        assert _extract_title(markdown, fallback_slug="fallback") == "Real Title"
+
 
 class TestGetConceptDoc:
     def test_returns_markdown_byte_identical_to_file_on_disk(self):
@@ -80,6 +85,9 @@ class TestGetConceptDoc:
             "%2Fetc%2Fpasswd",
             "/etc/passwd",
             "../../pyproject",
+            "../../README",
+            "../../AGENTS",
+            "../../CODE_OF_CONDUCT",
         ],
     )
     def test_traversal_payloads_raise_not_found(self, slug):

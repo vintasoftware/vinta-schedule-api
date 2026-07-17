@@ -31,6 +31,7 @@ _ALLOWLIST: dict[str, Path] = {
 }
 
 _HEADING_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+_FENCED_CODE_RE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 
 
 def _extract_title(markdown: str, *, fallback_slug: str) -> str:
@@ -38,8 +39,13 @@ def _extract_title(markdown: str, *, fallback_slug: str) -> str:
 
     Falls back to a title-cased version of ``fallback_slug`` when the file has no
     heading at all — a doc without a heading should still be listable, not raise.
+
+    Strips fenced code blocks (``` ... ```) before searching to avoid matching
+    headings inside code examples (e.g. shell comments).
     """
-    match = _HEADING_RE.search(markdown)
+    # Remove fenced code blocks to avoid matching headings inside them
+    markdown_without_fences = _FENCED_CODE_RE.sub("", markdown)
+    match = _HEADING_RE.search(markdown_without_fences)
     if match is None:
         return fallback_slug.replace("-", " ").title()
     return match.group(1)

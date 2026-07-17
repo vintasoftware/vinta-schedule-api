@@ -68,6 +68,9 @@ class TestPublicApiDocsRetrieve:
             "/public-api-docs/..%2F..%2Fsettings/",
             "/public-api-docs/%2Fetc%2Fpasswd/",
             "/public-api-docs//etc/passwd/",
+            "/public-api-docs/../../README/",
+            "/public-api-docs/../../AGENTS/",
+            "/public-api-docs/../../CODE_OF_CONDUCT/",
         ],
     )
     def test_traversal_payloads_never_read_a_file_outside_allowlist(self, anonymous_client, path):
