@@ -74,13 +74,36 @@ Other fixes this phase: `_extract_title` now strips fenced code blocks before se
 
 **A note on one conductor misstep:** a NIT was pushed to change `authentication_classes` from `()` to `[]` for literal spec conformance, which forced a `# noqa: RUF012` suppression. That was the wrong trade and contradicted repo precedent (`legal/views.py` uses tuples; `calendar_integration/token_views.py:80` uses `tuple()`). Reverted in `da6a272`; ruff is clean without the suppression.
 
+### Phase 3 — Serve the webhook event catalog ✅
+
+- Base: `plan/public-api-docs-backend/phase-2`
+- Branch: `plan/public-api-docs-backend/phase-3`
+- Model: tier 2 → `claude-sonnet-5` (implementer; stepped up within tier 2 because the phase touches 6 files); reviewer `claude-sonnet-5`; fixer `claude-sonnet-5` + `claude-haiku-4-5`
+- Commits: `b703001` (endpoint + descriptions), `3ffc407` (dispatch fix + tests), `59b5e16` (description/serializer/schema cleanup)
+
+Summary:
+
+- `WEBHOOK_EVENT_DESCRIPTIONS` in `webhooks/constants.py` — one description per `WebhookEventType` member, authored against the real dispatch sites in `webhooks/services/webhook_calendar_side_effects.py` and `webhook_membership_side_effects.py`, not paraphrased from the labels.
+- `WebhookEventDocSerializer` + a `@action(detail=False, url_path="webhook-events")` on `PublicApiDocsViewSet`, one entry per member in enum declaration order. `detail=False` places it before the `{slug}` detail route (API Design 4.2 routing trap). `schema.yml` regenerated, tag `Docs`.
+- Load-bearing test iterates the enum (not a hardcoded list) asserting every member has a non-empty description; a reserved-slug test asserts `"webhook-events"` is not a concept allow-list key. Both verified by the conductor: injecting a fake undocumented eighth member fails the description test.
+
+**Reviewer BLOCKER — a description documented an event that could never fire.** `CALENDAR_EVENT_ATTENDEE_UPDATED` never dispatched: the handler defined `on_update_attendee_in_event` but the `@runtime_checkable` `OnUpdateAttendeeOnEventHandler` protocol requires `on_update_attendee_on_event`, so the `isinstance` dispatch silently failed. Proven at runtime (the service satisfied every *other* handler protocol but this one). **The user chose to fix the underlying bug** rather than just document the gap. `3ffc407` renames the method to match the protocol — a real behavior change (a subscribable webhook now fires for the first time) — pinned by a new `webhooks/tests/test_calendar_side_effects.py`: a protocol-satisfaction regression guard (proven by the conductor to fail against the old name) plus a dispatch test. This is a scope expansion beyond the plan; see **Manual follow-ups**.
+
+**Reviewer SHOULD-FIX — a second false description.** `CALENDAR_EVENT_DELETED` claimed a recurring occurrence "becomes a cancellation exception rather than a hard delete." The code at `calendar_event_service.py:1806-1821` creates the exception *and still* falls through to an unconditional `event.delete()` — the exception is additive, not a substitute. The in-code comment at line 1807 is itself misleading and was likely the source. Reworded to match reality.
+
+**A schema-hygiene catch the reviewer missed (conductor-found).** drf-spectacular publishes a serializer's class docstring as its OpenAPI component `description`. `WebhookEventDocSerializer`'s docstring carried a `# type: ignore[assignment]` / mypy rationale, which was being published into `schema.yml` — a file that syncs into the frontend repo and drives its codegen. Moved the mypy note to an inline comment on the `label` line (`59b5e16`); the public `WebhookEventDoc` description is now clean.
+
+Also: the serializer's `label` field uses an inline `# type: ignore[assignment]` (repo precedent: `public_api/mutations.py:222`, `legal/views.py:143`) rather than a `get_fields()` override the implementer first reached for, because DRF's `Field.label` collides with a class-body `label` field.
+
+- Verified by the conductor: 938 passed across `webhooks/tests/ public_api/tests/`; `check --deploy` clean; `makemigrations --check` clean; `schema.yml` diff scoped to the new endpoint + component.
+
 ## Current phase
 
-_None — Phase 2 integrating._
+_None — Phase 3 integrating; final phase._
 
 ## Remaining phases
 
-- **Phase 3** — Serve the webhook event catalog (tier 2 → `claude-haiku-4-5`); base: `plan/public-api-docs-backend/phase-2`
+_None._
 
 ## Deferred phases
 
@@ -90,3 +113,4 @@ None in this repo — the plan declares no feature flag and no cross-repo phase.
 
 1. **Phase 1 deploy step (human).** Append to `CORS_ALLOWED_ORIGINS` on Render — production: `https://schedule.vintasoftware.com`; staging: `https://schedule-staging.vintasoftware.com`. Verify the deployed value after editing: a typo fails open into a broken explorer, visible only in the browser console.
 2. **After Phase 3.** Run `amend-plan` against the frontend plan at `~/Workspaces/vinta-schedule-frontend-web/ai-plans/2026-07-16-PUBLIC_API_DOCS_IMPLEMENTATION_PLAN.md` to rewrite its Phase 4 to fetch `/public-api-docs/webhook-events/` instead of hand-authoring the event list.
+3. **Scope expansion in Phase 3 (`3ffc407`) — worth a heads-up beyond this plan.** Fixing the `on_update_attendee_in_event` → `on_update_attendee_on_event` typo means `CALENDAR_EVENT_ATTENDEE_UPDATED` webhooks now fire for the first time. Any external integration subscribed to that event type will begin receiving deliveries after this deploys — previously it was silently dead. This is a real behavior change riding in a docs plan; flag it in the deploy notes / client handoff so downstream consumers aren't surprised by newly-arriving events.
