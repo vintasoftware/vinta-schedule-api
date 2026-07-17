@@ -112,7 +112,7 @@ class WebhookCalendarEventSideEffectsService:
             payload=dict(self._serialize_attendee(event, attendance)),
         )
 
-    def on_update_attendee_in_event(
+    def on_update_attendee_on_event(
         self,
         actor: User | CalendarManagementToken | SystemUser | None,
         event: CalendarEventData,
