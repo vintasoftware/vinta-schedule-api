@@ -30,8 +30,9 @@ class TestWebhookEventType:
 class TestWebhookEventDescriptions:
     """Test suite locking in the webhook event catalog's description mapping.
 
-    Load-bearing: iterates the enum itself (never a hardcoded list of members) so a
-    new ``WebhookEventType`` member cannot ship without a description.
+    This is the important check here: it iterates the enum itself (never a hardcoded
+    list of members) so a new ``WebhookEventType`` member cannot ship without a
+    description.
     """
 
     def test_every_member_has_a_non_empty_description(self):
@@ -48,7 +49,7 @@ class TestWebhookEventDescriptions:
     def test_no_orphan_description_keys(self):
         """WEBHOOK_EVENT_DESCRIPTIONS must have no keys outside WebhookEventType members.
 
-        Guards against a rename leaving a stale, orphaned entry behind.
+        Prevents a rename from leaving a stale, orphaned entry behind.
         """
         member_values = set(WebhookEventType)
         assert set(WEBHOOK_EVENT_DESCRIPTIONS.keys()) <= member_values

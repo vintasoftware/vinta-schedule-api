@@ -15857,21 +15857,14 @@ components:
 
         Plain ``Serializer`` over a dict built from the enum and
         ``webhooks.constants.WEBHOOK_EVENT_DESCRIPTIONS`` — there is no model backing this.
-
-        ``label`` cannot be a declared class-body field: ``rest_framework.fields.Field``
-        itself carries a same-named ``label: StrOrPromise | None`` attribute (the field's
-        own display label), so a class-body ``label = serializers.CharField(...)``
-        statically overrides that attribute with an incompatible type. Adding it via
-        ``get_fields()`` sidesteps the collision while still emitting ``label`` in
-        ``.data`` exactly like a declared field would.
       properties:
         value:
           type: string
           readOnly: true
-        description:
+        label:
           type: string
           readOnly: true
-        label:
+        description:
           type: string
           readOnly: true
       required:

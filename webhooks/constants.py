@@ -35,10 +35,11 @@ WEBHOOK_EVENT_DESCRIPTIONS: dict[WebhookEventType, str] = {
         "shape as calendar_event_created."
     ),
     WebhookEventType.CALENDAR_EVENT_DELETED: (
-        "Fires after a calendar event (or a single occurrence of a recurring series, which "
-        "becomes a cancellation exception rather than a hard delete) is removed via "
-        "CalendarEventService.delete_event, once the transaction commits. The payload is a "
-        "snapshot of the event captured immediately before deletion, in the same shape as "
+        "Fires after a calendar event is removed via CalendarEventService.delete_event, once "
+        "the transaction commits. Deleting a single occurrence of a recurring series also "
+        "records a cancellation exception on the series so future occurrence generation skips "
+        "it, in addition to the occurrence's own row being deleted. The payload is a snapshot "
+        "of the event captured immediately before deletion, in the same shape as "
         "calendar_event_created."
     ),
     WebhookEventType.CALENDAR_EVENT_ATTENDEE_ADDED: (
@@ -54,10 +55,11 @@ WEBHOOK_EVENT_DESCRIPTIONS: dict[WebhookEventType, str] = {
         "user_id (null for external attendees), and the event they were removed from."
     ),
     WebhookEventType.CALENDAR_EVENT_ATTENDEE_UPDATED: (
-        "Fires when CalendarEventService.update_event finds an external attendee already on the "
-        "event and changes their contact details (email or name) while reconciling the attendee "
-        "list. The payload carries the updated attendee's email, name, status, user_id (null, "
-        "as this only applies to external attendees), and the event they belong to."
+        "Fires once per external attendee already on the event that CalendarEventService."
+        "update_event matches while reconciling the attendee list, overwriting their email and "
+        "name with the incoming values — even if those values are unchanged from before. The "
+        "payload carries the updated attendee's email, name, status, user_id (null, as this "
+        "only applies to external attendees), and the event they belong to."
     ),
     WebhookEventType.ORGANIZATION_MEMBER_CREATED: (
         "Fires after a new, active organization membership is created — covering an "

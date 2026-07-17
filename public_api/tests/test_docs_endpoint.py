@@ -103,7 +103,7 @@ class TestPublicApiDocsWebhookEvents:
         )
 
     def test_webhook_events_slug_does_not_collide_with_a_concept_doc(self):
-        """Guards the reserved-slug trap in API Design 4.2.
+        """Checks the reserved-slug trap in API Design 4.2.
 
         ``webhook-events`` is registered as a detail=False action ahead of the
         ``{slug}`` detail route. If a concept doc named ``webhook-events.md`` were ever

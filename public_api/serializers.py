@@ -254,22 +254,13 @@ class WebhookEventDocSerializer(serializers.Serializer):
 
     Plain ``Serializer`` over a dict built from the enum and
     ``webhooks.constants.WEBHOOK_EVENT_DESCRIPTIONS`` — there is no model backing this.
-
-    ``label`` cannot be a declared class-body field: ``rest_framework.fields.Field``
-    itself carries a same-named ``label: StrOrPromise | None`` attribute (the field's
-    own display label), so a class-body ``label = serializers.CharField(...)``
-    statically overrides that attribute with an incompatible type. Adding it via
-    ``get_fields()`` sidesteps the collision while still emitting ``label`` in
-    ``.data`` exactly like a declared field would.
     """
 
     value = serializers.CharField(read_only=True)
+    # ``label`` shadows ``rest_framework.fields.Field.label``, which the stubs type
+    # incompatibly, so mypy reads this as a bad override.
+    label = serializers.CharField(read_only=True)  # type: ignore[assignment]
     description = serializers.CharField(read_only=True)
-
-    def get_fields(self) -> dict[str, serializers.Field]:
-        fields = super().get_fields()
-        fields["label"] = serializers.CharField(read_only=True)
-        return fields
 
 
 class SystemUserTokenUpdateSerializer(serializers.Serializer):
