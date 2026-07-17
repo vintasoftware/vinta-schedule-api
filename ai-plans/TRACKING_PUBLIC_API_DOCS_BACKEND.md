@@ -52,13 +52,34 @@ Also reclaimed 17.1 GB of Docker build cache mid-phase after `No space left on d
 
 **This is a `prepare-worktree` bug affecting all ~18 worktrees in this repo, not something specific to this plan.** Any worktree that boots its DB stack while the main stack is up reproduces it. Worth fixing upstream in the skill.
 
+### Phase 2 — Serve concept docs over HTTP ✅
+
+- Base: `plan/public-api-docs-backend/phase-1`
+- Branch: `plan/public-api-docs-backend/phase-2`
+- Model: tier 3 → `claude-sonnet-5` (implementer); reviewer `claude-sonnet-5`; fixer `claude-haiku-4-5`
+- Commits: `f1b0fdb` (endpoint), `9cf4b1a` (reviewer fixes), `da6a272` (tuple revert)
+
+Summary:
+
+- `public_api/docs_content.py` globs `docs/concepts/*.md` once at import into a `slug -> Path` allow-list. `get_concept_doc` does `_ALLOWLIST.get(slug)` — a dict key lookup, never a path join — which is the phase's load-bearing security property.
+- `PublicApiDocsViewSet` is a plain `ViewSet` (no model, no queryset), `AllowAny`, no auth classes, tagged `Docs`, registered at `public-api-docs` via the `RouteDict` pattern. Modeled on `legal/views.py`'s `PolicyDocumentViewSet` per the plan.
+- Serializers are plain `Serializer` subclasses over dicts. `schema.yml` regenerated: +152 lines, only the new endpoints' surface.
+- Verified end-to-end by the conductor: all six docs list with real titles; `calendar-groups` markdown is byte-identical to disk; unauthenticated access works; every traversal payload 404s.
+
+**Deviation from the plan (accepted, verified).** The plan specifies `lookup_value_regex = "[a-z0-9-]+"`. That attribute is **inert for routing** here: `vinta_schedule_api/urls.py:28` builds `DefaultRouter(use_regex_path=False)`, which emits `path()`-style routes, and DRF only consults `lookup_value_regex` when `use_regex_path=True`. A `ConceptDocSlugConverter` (regex `[a-z0-9-]+`) is registered as the `docs_slug` path converter instead, and the resolved pattern is confirmed to be `public-api-docs/<docs_slug:slug>/`. `lookup_value_regex` is retained because drf-spectacular reads it to emit `pattern: ^[a-z0-9-]+$` into `schema.yml` (present at `schema.yml:10394`, `:10432`), with a comment at the attribute saying so.
+
+**Reviewer BLOCKER — the traversal tests were vacuous.** The original payloads (`../settings`, `%2Fetc%2Fpasswd`, `../../pyproject`, …) all map to files that do not exist (`../settings.md`, …), so a naive `Path(dir) / f"{slug}.md"` implementation — the exact shape the plan says reviewers must reject — would **also** 404 on every one of them. The suite would have passed straight through the regression it exists to prevent. `docs/concepts/` sits two levels below the repo root, so `../../README` resolves to a real file. Payloads `../../README`, `../../AGENTS`, `../../CODE_OF_CONDUCT` were added. Proven empirically by the conductor: with the naive path-join applied, **all 5 original payloads PASSED and all 3 new payloads FAILED**.
+
+Other fixes this phase: `_extract_title` now strips fenced code blocks before searching, so a doc leading with a shell comment in a ``` fence can't publish a silently-wrong title; the URL converter moved out of a `views.py` import-time side effect into `public_api/converters.py` + `apps.py:ready()`.
+
+**A note on one conductor misstep:** a NIT was pushed to change `authentication_classes` from `()` to `[]` for literal spec conformance, which forced a `# noqa: RUF012` suppression. That was the wrong trade and contradicted repo precedent (`legal/views.py` uses tuples; `calendar_integration/token_views.py:80` uses `tuple()`). Reverted in `da6a272`; ruff is clean without the suppression.
+
 ## Current phase
 
-_None — Phase 1 integrating._
+_None — Phase 2 integrating._
 
 ## Remaining phases
 
-- **Phase 2** — Serve concept docs over HTTP (tier 3 → `claude-sonnet-5`); base: `plan/public-api-docs-backend/phase-1`
 - **Phase 3** — Serve the webhook event catalog (tier 2 → `claude-haiku-4-5`); base: `plan/public-api-docs-backend/phase-2`
 
 ## Deferred phases
