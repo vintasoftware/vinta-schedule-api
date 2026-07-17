@@ -24,7 +24,9 @@ from public_api.serializers import (
     SystemUserTokenResponseSerializer,
     SystemUserTokenSerializer,
     SystemUserTokenUpdateSerializer,
+    WebhookEventDocSerializer,
 )
+from webhooks.constants import WEBHOOK_EVENT_DESCRIPTIONS, WebhookEventType
 
 
 logger = logging.getLogger(__name__)
@@ -268,4 +270,28 @@ class PublicApiDocsViewSet(ViewSet):
         """
         doc = get_concept_doc(slug or "")
         serializer = ConceptDocSerializer(doc)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="List the webhook event catalog",
+        responses={200: WebhookEventDocSerializer(many=True)},
+    )
+    @action(detail=False, methods=["get"], url_path="webhook-events")
+    def webhook_events(self, request: Request) -> Response:
+        """GET /public-api-docs/webhook-events/ — one entry per ``WebhookEventType`` member.
+
+        Returned in enum declaration order. Must stay ``detail=False`` so the router
+        registers it before the ``{slug}`` detail route — see the routing trap in the
+        plan's API Design 4.2: ``webhook-events`` is therefore a reserved slug that a
+        concept doc may never use.
+        """
+        docs = [
+            {
+                "value": member.value,
+                "label": member.label,
+                "description": WEBHOOK_EVENT_DESCRIPTIONS[member],
+            }
+            for member in WebhookEventType
+        ]
+        serializer = WebhookEventDocSerializer(docs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)

@@ -5,6 +5,9 @@ from django.conf import settings
 import pytest
 from rest_framework import status
 
+from public_api.docs_content import _ALLOWLIST
+from webhooks.constants import WebhookEventType
+
 
 CONCEPTS_DIR = Path(settings.BASE_DIR) / "docs" / "concepts"
 
@@ -77,3 +80,33 @@ class TestPublicApiDocsRetrieve:
         response = anonymous_client.get(path)
 
         assert response.status_code in (status.HTTP_404_NOT_FOUND, status.HTTP_400_BAD_REQUEST)
+
+
+@pytest.mark.django_db
+class TestPublicApiDocsWebhookEvents:
+    def test_returns_one_entry_per_member_in_declaration_order(self, anonymous_client):
+        response = anonymous_client.get("/public-api-docs/webhook-events/")
+
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        expected_values = [member.value for member in WebhookEventType]
+        assert [entry["value"] for entry in body] == expected_values
+        for entry in body:
+            assert set(entry.keys()) == {"value", "label", "description"}
+            assert entry["label"]
+            assert entry["description"]
+
+    def test_succeeds_unauthenticated(self, anonymous_client):
+        assert (
+            anonymous_client.get("/public-api-docs/webhook-events/").status_code
+            == status.HTTP_200_OK
+        )
+
+    def test_webhook_events_slug_does_not_collide_with_a_concept_doc(self):
+        """Checks the reserved-slug trap in API Design 4.2.
+
+        ``webhook-events`` is registered as a detail=False action ahead of the
+        ``{slug}`` detail route. If a concept doc named ``webhook-events.md`` were ever
+        added, it would be shadowed and unreachable — this test fails loudly instead.
+        """
+        assert "webhook-events" not in _ALLOWLIST

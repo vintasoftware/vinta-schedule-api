@@ -249,6 +249,20 @@ class ConceptDocSerializer(ConceptDocSummarySerializer):
     markdown = serializers.CharField(read_only=True)
 
 
+class WebhookEventDocSerializer(serializers.Serializer):
+    """Read-only catalog entry for a single ``WebhookEventType`` member.
+
+    Plain ``Serializer`` over a dict built from the enum and
+    ``webhooks.constants.WEBHOOK_EVENT_DESCRIPTIONS`` — there is no model backing this.
+    """
+
+    value = serializers.CharField(read_only=True)
+    # ``label`` shadows ``rest_framework.fields.Field.label``, which the stubs type
+    # incompatibly, so mypy reads this as a bad override.
+    label = serializers.CharField(read_only=True)  # type: ignore[assignment]
+    description = serializers.CharField(read_only=True)
+
+
 class SystemUserTokenUpdateSerializer(serializers.Serializer):
     """Input serializer for updating a public-API token's resource grants (Phase 15).
 

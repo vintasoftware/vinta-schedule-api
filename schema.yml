@@ -10444,6 +10444,62 @@ paths:
           description: ''
         '404':
           description: Unknown slug (including any traversal attempt)
+  /public-api-docs/webhook-events/:
+    get:
+      operationId: public_api_docs_webhook_events_list
+      description: |-
+        GET /public-api-docs/webhook-events/ — one entry per ``WebhookEventType`` member.
+
+        Returned in enum declaration order. Must stay ``detail=False`` so the router
+        registers it before the ``{slug}`` detail route — see the routing trap in the
+        plan's API Design 4.2: ``webhook-events`` is therefore a reserved slug that a
+        concept doc may never use.
+      summary: List the webhook event catalog
+      tags:
+      - Docs
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WebhookEventDoc'
+          description: ''
+  /public-api-docs/webhook-events{format}:
+    get:
+      operationId: public_api_docs_webhook_events_formatted_list
+      description: |-
+        GET /public-api-docs/webhook-events/ — one entry per ``WebhookEventType`` member.
+
+        Returned in enum declaration order. Must stay ``detail=False`` so the router
+        registers it before the ``{slug}`` detail route — see the routing trap in the
+        plan's API Design 4.2: ``webhook-events`` is therefore a reserved slug that a
+        concept doc may never use.
+      summary: List the webhook event catalog
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - Docs
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WebhookEventDoc'
+          description: ''
   /public-api-tokens/:
     get:
       operationId: public_api_tokens_list
@@ -15794,6 +15850,27 @@ components:
       - send_after
       - status
       - url
+    WebhookEventDoc:
+      type: object
+      description: |-
+        Read-only catalog entry for a single ``WebhookEventType`` member.
+
+        Plain ``Serializer`` over a dict built from the enum and
+        ``webhooks.constants.WEBHOOK_EVENT_DESCRIPTIONS`` — there is no model backing this.
+      properties:
+        value:
+          type: string
+          readOnly: true
+        label:
+          type: string
+          readOnly: true
+        description:
+          type: string
+          readOnly: true
+      required:
+      - description
+      - label
+      - value
     WebhookEventStatusEnum:
       enum:
       - pending
