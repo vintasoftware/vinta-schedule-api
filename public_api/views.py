@@ -239,7 +239,7 @@ class PublicApiDocsViewSet(ViewSet):
     lookup_value_regex = "[a-z0-9-]+"
     lookup_value_converter = "docs_slug"
     permission_classes = (AllowAny,)
-    authentication_classes = []  # noqa: RUF012
+    authentication_classes = ()
     http_method_names = ("get", "head", "options")
 
     @extend_schema(
