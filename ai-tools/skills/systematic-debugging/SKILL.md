@@ -15,7 +15,7 @@ A change that makes the symptom go away without an explanation of *why the sympt
 
 ## When to invoke
 
-- Test failure (red unit, scoped, or e2e suite).
+- Test failure (red unit or scoped suite).
 - Production incident or alert page.
 - Unexpected behaviour reported by a user, QA, or another engineer.
 - Performance regression (latency / throughput / memory).
@@ -78,9 +78,8 @@ Goal: state the cause in one sentence with a citation (file:line, log line, or t
 2. **Reproduce locally.**
    - Unit / integration: `docker compose run --rm api uv run pytest -n auto`; per-app via `docker compose run --rm api uv run pytest <app>/tests/ -n auto`
    - Single failing test in isolation: `docker compose run --rm api uv run pytest <new-test-path> -vs`
-   - Type / build gate: `docker compose run --rm api uv run python manage.py check --deploy`
+   - Type / build gate: `docker compose run --rm api uv run python manage.py check --deploy` plus full mypy via `docker compose run --rm api uv run mypy .`
    - Lint: `docker compose run --rm api uv run ruff check ./`
-
    If you cannot reproduce, gather more evidence (Phase 0 logs, traces, user repro steps). Do not propose a fix against a bug you cannot trigger.
 3. **Bisect recent changes.** `git log --oneline main..HEAD` plus `git log -p` on the suspect file. Check the deploy timeline from Phase 0 against commits.
 4. **Trace data flow at component boundaries.** For every layer the bad value crosses (request → handler → service → store → response), log the value entering and the value leaving. Find the layer where the value changes shape unexpectedly. That layer holds the bug.
@@ -124,9 +123,9 @@ Goal: ship the fix at the right level of abstraction with the right safety net.
    - `docker compose run --rm api uv run ruff check ./`
    - `docker compose run --rm api uv run python manage.py check --deploy`
    - `docker compose run --rm api uv run pytest -n auto`; per-app via `docker compose run --rm api uv run pytest <app>/tests/ -n auto`
-
-4. **Verify on the observability side after deploy.** The error fingerprint from Phase 0 should stop firing. If the platform supports it, mark the issue resolved in the source MCP tool so a regression re-opens it instead of creating a duplicate.
-5. **Document if the fix is non-obvious.** A comment is justified only when the *why* would surprise the next reader — a hidden invariant, a workaround for a known upstream bug, a constraint not visible from the call site. Don't narrate the change.
+4. **Route the fix diff through the shared review gate.** Invoke [review-phase](../review-phase/SKILL.md) — the same three-layer review (mechanical checks, plan/intent-compliance walkthrough, independent reviewer subagent) + fix loop that [implement-plan](../implement-plan/SKILL.md) and [amend-plan](../amend-plan/SKILL.md) use — passing the fix diff, the one-sentence root cause + the new failing-then-passing test as the "body" to walk against, and `WORKROOT` = the current checkout. A bug fix is not done until review-phase returns clean. (When this skill runs *inside* implement-plan's inner/outer loop, the enclosing phase's review-phase already covers this — don't double-review; the standalone invocation is for bugs debugged outside a plan.)
+5. **Verify on the observability side after deploy.** The error fingerprint from Phase 0 should stop firing. If the platform supports it, mark the issue resolved in the source MCP tool so a regression re-opens it instead of creating a duplicate.
+6. **Document if the fix is non-obvious.** A comment is justified only when the *why* would surprise the next reader — a hidden invariant, a workaround for a known upstream bug, a constraint not visible from the call site. Don't narrate the change.
 
 ## Stop conditions — count your attempts
 
@@ -156,7 +155,9 @@ These are not debugging — they are guessing with extra steps. Stop and re-ente
 
 When this skill runs inside [implement-plan](../implement-plan/SKILL.md) (the inner / outer test loop), the implementer agent invokes systematic-debugging on every red gate and reports the Phase-1 cause in its report. The orchestrator never overrides the Iron Law — a phase that can't name the cause is not allowed to land.
 
-For new test scaffolding, defer to the project's test conventions captured in [AGENTS.md](../../AGENTS.md). For env / config issues uncovered in Phase 0, route to the project's `add-env-var` skill if shipped (plan-feature, create-spec, create-qa-use-cases, implement-plan, amend-plan, open-pr-from-context, add-env-var, systematic-debugging, add-one-off-script, add-migration, add-model, create-rest-endpoint, create-graphql-public-query, create-postgres-view, create-postgres-function, run-one-off-script-django).
+For the review gate in Phase 4, this skill shares [review-phase](../review-phase/SKILL.md) with implement-plan and amend-plan — one review implementation across all three, so a bug fix meets the same three-layer bar as any planned phase.
+
+For new test scaffolding, defer to the project's test conventions captured in [AGENTS.md](../../AGENTS.md). For env / config issues uncovered in Phase 0, route to the project's `add-env-var` skill if shipped (plan-feature, create-spec, implement-plan, implement-phase, review-phase, integrate-phase-stacked, integrate-phase-modular, amend-plan, open-pr-from-context, prepare-worktree, add-env-var, systematic-debugging, add-one-off-script, run-one-off-script-django, deslop-comments, handoff, handoff-to-client, thermo-nuclear-code-quality-review, add-migration, add-model, create-rest-endpoint, create-graphql-public-query, create-postgres-view, create-postgres-function).
 
 ## Verification checklist (apply before claiming a bug fixed)
 
@@ -164,4 +165,5 @@ For new test scaffolding, defer to the project's test conventions captured in [A
 2. Root cause stated in one sentence in the PR description.
 3. New failing-then-passing test cited by file:line.
 4. Full local gate green: `docker compose run --rm api uv run ruff check ./` + `docker compose run --rm api uv run python manage.py check --deploy` + `docker compose run --rm api uv run pytest -n auto`.
-5. Observability source updated post-deploy (issue resolved / alert acknowledged) so a recurrence pages instead of silently re-opening.
+5. [review-phase](../review-phase/SKILL.md) run on the fix diff and returned clean (unless the fix landed inside an implement-plan phase already covered by its review-phase).
+6. Observability source updated post-deploy (issue resolved / alert acknowledged) so a recurrence pages instead of silently re-opening.

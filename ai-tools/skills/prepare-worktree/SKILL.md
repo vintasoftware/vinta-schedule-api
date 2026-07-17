@@ -119,8 +119,6 @@ Test artefact dirs (`coverage/`, `playwright-report/`) — same.
 
 ## Step 3 — Database fork (when `schema_change = true` or test DB collision is possible)
 
-> **This project (vinta_schedule_api): Postgres lives in docker compose, never on the host.** The dev + test databases are the `db` service (`postgres:alpine`) in `docker-compose.yml` — there is no host Postgres. Every DB operation below (create, clone, migrate, drop, psql) MUST run through compose: `docker compose exec db <pg-tool>` against the running server, or `docker compose run --rm api uv run python manage.py <cmd>` for Django-side work. Never call host `createdb` / `psql` / `pg_dump` — they will hit the wrong server or nothing at all. Because each worktree gets its own `COMPOSE_PROJECT_NAME` (Step 4), it also gets its **own isolated `db` container + volume** — that per-worktree container *is* the fork; data cloning is only needed when the feature wants the main checkout's existing rows.
-
 Two distinct database axes need handling:
 
 ### 3a — Dev / app database
@@ -134,8 +132,7 @@ Whatever the app reads + writes during local dev. Detect the connection string s
 For each detected DB, ask the user (`AskUserQuestion`) once:
 
 - **Fork the DB** — recommended when `schema_change = true` or when the plan's phases run destructive migrations. Strategy depends on the engine:
-  - **Postgres (server-based, host)** — *generic stacks only; for this repo see the compose note above.* `createdb -T <main_db> <main_db>_wt_<name>` (template-clone if rights allow; else `pg_dump <main_db> | psql <main_db>_wt_<name>` after `createdb`). Update the worktree's `DATABASE_URL` to point at the forked DB. Append `?application_name=wt-<name>` so the user can grep `pg_stat_activity`.
-  - **Postgres (this repo, docker compose `db` service)** — the per-worktree `COMPOSE_PROJECT_NAME` (Step 4) already gives the worktree its own empty `db` container + volume, so the common path is just **Stub the DB** below (own container + run migrations). To clone the main checkout's data instead, dump from main's stack and load into the worktree's: `docker compose -p <main_project> exec -T db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" | docker compose -p <repo>_<worktree-name> exec -T db psql -U "$POSTGRES_USER" "$POSTGRES_DB"` (both stacks up). Keep the worktree's `DATABASE_URL` host as the compose service name (`db`) — it resolves inside the worktree's own network.
+  - **Postgres (server-based)** — `createdb -T <main_db> <main_db>_wt_<name>` (template-clone if rights allow; else `pg_dump <main_db> | psql <main_db>_wt_<name>` after `createdb`). Update the worktree's `DATABASE_URL` to point at the forked DB. Append `?application_name=wt-<name>` so the user can grep `pg_stat_activity`.
   - **MySQL (server-based)** — `mysqldump <main_db> | mysql <main_db>_wt_<name>` after `CREATE DATABASE`.
   - **SQLite (file-based)** — `cp <main>/db.sqlite3 <worktree>/db.sqlite3`. Symlink would defeat the point.
   - **Mongo / Redis / Elasticsearch** — engine-specific clone, OR per-worktree DB name / key prefix (`REDIS_URL=redis://localhost:6379/<index>` with a free index; `MONGODB_URI=mongodb://localhost:27017/<db>_wt_<name>`).
@@ -155,19 +152,11 @@ A different beast — tests on the same engine but a different DB name (`<main_d
 - **Rails** — `DATABASE_URL` for the `test` env, `<main_db>_test_wt_<name>`.
 - **Docker-compose-based test DB** — see the **Docker / compose isolation** step below; per-worktree compose project name fixes it.
 
-> **This repo:** because each worktree owns a separate compose `db` container (Step 4), its test DB is already isolated — `docker compose run --rm api uv run pytest -n auto` inside the worktree creates/reuses the test DB inside *that* worktree's `db` container. No `conftest.py` override or per-worktree DB name is needed; just keep the worktree's `COMPOSE_PROJECT_NAME` exported. The generic per-server overrides below apply only to stacks that share one Postgres server across worktrees.
-
 If `test_infra_change = true` → fork the test DB unconditionally. If `false` and the user says "share is fine" → still flag the race risk; offer a one-line fix to switch later.
 
 ### 3c — Migrations against the forked DB
 
-When the plan has migrations: run them once now against the forked DB so subsequent agent runs in the worktree don't surprise the user. **In this repo, run them inside the worktree's compose stack against the compose `db` service** (with the worktree's `COMPOSE_PROJECT_NAME` exported so it hits the worktree's own container, not host or main):
-
-```bash
-docker compose run --rm api uv run python manage.py migrate
-```
-
-For other stacks, use the project's standard migration command (`pnpm migrate`, `alembic upgrade head`, `prisma migrate dev`, `knex migrate:latest`).
+When the plan has migrations: run them once now against the forked DB so subsequent agent runs in the worktree don't surprise the user. Use the project's standard migration command (`pnpm migrate`, `python manage.py migrate`, `alembic upgrade head`, `prisma migrate dev`, `knex migrate:latest`).
 
 Failure → surface the error, leave the DB un-migrated, ask the user how to proceed (skip, retry, drop and recreate the DB).
 
@@ -214,7 +203,7 @@ If the **Plan inspection** step inferred the plan doesn't touch any of these: sy
 
 Symlinking + threading the worktree path through prompts keeps *cooperative* agents in the worktree, but it's not a guarantee: a buggy agent (often a smaller model spawned for a phase) can resolve an absolute path back to the **main checkout** and silently write there. Those writes never reach the worktree's commit — they sit as uncommitted thrash in the main checkout, and the "missing" edits read as a silent agent failure. Prompt instructions don't stop it; they rely on the agent's goodwill.
 
-The deterministic, **harness-agnostic** fix is to confine the *process* (not the tool) at the OS filesystem layer: make the main checkout read-only for any command run inside the sandbox, regardless of which agent CLI issues the writes. The bundled [scripts/sandbox-run.sh](scripts/sandbox-run.sh) does this — `sandbox-exec` on macOS, `bwrap` (bubblewrap) on Linux.
+The deterministic fix is to confine the *process* (not the tool) at the OS filesystem layer: make the main checkout read-only for any command run inside the sandbox, regardless of which agent CLI issues the writes. The bundled [scripts/sandbox-run.sh](scripts/sandbox-run.sh) does this — `sandbox-exec` on macOS, `bwrap` (bubblewrap) on Linux. **This process-wrapping model works for runtimes that spawn subagents as subprocesses** (`codex exec`, a `claude -p` child, a custom runner). Runtimes that run subagents **in-process** — notably claude-code's Task tool, where there's no child command to wrap — use the harness-config guard in [In-process runtimes (claude-code)](#55a--in-process-runtimes-claude-code) instead.
 
 **Model: deny-main, allow-rest.** The whole filesystem stays writable EXCEPT the main checkout, with the worktree (and the shared `.vinta-ai-workflows` dir) punched back to writable — even though the worktree usually lives *under* the main checkout (`.claude/worktrees/<name>/`). This deliberately does **not** lock `HOME` / caches / `/tmp`, so package managers, build tools, and test runners behave exactly as unsandboxed. The only thing the cage blocks is a write to the main checkout's own tracked tree — which is exactly the bug.
 
@@ -246,6 +235,36 @@ Escape hatch: `VINTA_SANDBOX=off` makes the wrapper a transparent pass-through (
 **Sandbox-mode shared-state rule.** Because main is read-only inside the cage, any path the *run* writes must live in the worktree or in an `--allow`'d dir — never a symlink that resolves back into the main checkout. Two follow-ons:
 - The existing `deps_change=true` → copy/reinstall logic already gives the worktree its own writable `node_modules/` when a phase installs deps; non-churn phases keep the read-only symlink (agents shouldn't write deps anyway — correct).
 - The `.vinta-ai-workflows/` dir (summary YAMLs, prs-context) is shared/symlinked but **written** during a run, so it must be passed as an `--allow` path (or made a real writable dir in the worktree). Record which.
+
+### 5.5a — In-process runtimes (claude-code)
+
+`sandbox-run.sh` confines a **process**: it wraps the command that launches a subagent. That only works when the runtime spawns subagents as **subprocesses** (`codex exec …`, a `claude -p …` child, a custom runner) — you wrap that argv and the kernel blocks the child's main-checkout writes.
+
+**Claude Code runs subagents in-process.** Its Task tool shares the orchestrator's OS process and tool pipeline — there's no child launch command to wrap. The guard has to live in the harness's own config instead. Two complementary layers, both bundled here, both matching the same deny-main/allow-rest model:
+
+- **Layer A — `PreToolUse` write-guard hook** ([scripts/claude-worktree-write-guard.py](scripts/claude-worktree-write-guard.py)). A session-level `PreToolUse` hook fires for **every** tool call in the session — orchestrator **and** every in-process Task subagent — because they run through the same pipeline. This hook matches the file-editing tools (`Edit|Write|MultiEdit|NotebookEdit`), realpath-resolves the target, and blocks (exit 2 → the model gets the reason and retries) any write that escapes the worktree into the main checkout. Filesystem-only, **no network impact**. This is the load-bearing claude-code guard and the concrete form of implement-plan's "runtime pre-write guard hook" option.
+
+- **Layer B — Claude Code's native OS sandbox** (opt-in). Claude Code has adopted the same OS model `sandbox-run.sh` implements (`sandbox-exec` / `bwrap`), configured via `sandbox.filesystem.denyWrite` / `allowWrite` in `settings.json` instead of a wrapper, and it applies to **Bash run inside subagents** too. Turning it on closes the one gap Layer A leaves — a write issued through **Bash** (`echo > <main>/f`), which a file-tool hook can't see. **Caveat: enabling the native sandbox also turns on network isolation**, so `pnpm install` / `git push` break unless you allow-list the registry + git-remote hosts. Without Layer B, Bash-issued stray writes fall back to implement-plan's post-run `git -C <main> status` backstop (Layer 1).
+
+Generate both with [scripts/gen-claude-sandbox-settings.sh](scripts/gen-claude-sandbox-settings.sh):
+
+```bash
+# Layer A only (filesystem-only, no network config needed):
+scripts/gen-claude-sandbox-settings.sh --worktree <worktree-path> --main <main-checkout-root>
+
+# Layer A + B (also OS-block Bash writes; must allow-list network hosts):
+scripts/gen-claude-sandbox-settings.sh --worktree <worktree-path> --main <main-checkout-root> \
+  --os-sandbox --allow-domain <registry-host> --allow-domain <git-remote-host>
+```
+
+It writes `<worktree>/.claude/settings.json` (merging, not clobbering) with `<worktree>`, `<main>/.git` (git worktrees commit into the main repo's `.git` — **must** stay writable), and `.vinta-ai-workflows` punched back to writable.
+
+**Two deployment models — settings are read at session start:**
+
+1. **Worktree-rooted session (recommended).** Run the plan from inside the worktree (`cd <worktree> && claude`). The generated `<worktree>/.claude/settings.json` governs that session and all its Task subagents. As a bonus, claude-code's default working-directory boundary already discourages file writes above cwd, so this is belt-and-suspenders. Provision the worktree + settings **before** starting the plan session.
+2. **Config in the invocation's project root.** If the orchestrator already runs in the main checkout (implement-plan's default topology), the hook + sandbox must instead live in the main checkout's `settings.json` / `settings.local.json` **before** that session starts — the native `sandbox` block in particular is read at launch and won't retroactively cage an already-running session. Provision first, then start the plan; don't expect a mid-run `use_worktree` opt-in to enable the OS sandbox for the session that requested it.
+
+Record the achieved tier the same way as the subprocess path: `enforced` when Layer B is active (or Layer A alone if the team accepts hook-only), `none` when neither is wired.
 
 ## Step 6 — Write the summary file
 
@@ -290,9 +309,13 @@ state:
     cron_disabled: <bool>
   sandbox:
     tier: enforced | none          # from the Filesystem sandbox step's capability probe
-    launcher: sandbox-exec | bwrap | null   # null when tier=none
+    launcher: sandbox-exec | bwrap | claude-hook | claude-native-sandbox | null
+    # sandbox-exec / bwrap        → subprocess runtimes via scripts/sandbox-run.sh
+    # claude-hook                 → in-process (claude-code) Layer A hook only (file tools)
+    # claude-native-sandbox       → in-process (claude-code) Layer A hook + Layer B OS sandbox
+    # null                        → tier=none (no guard wired)
     deny: [<main-checkout-root>]   # subtree(s) made read-only inside the cage
-    allow: [<worktree-path>, <.vinta-ai-workflows-dir>]   # writable exceptions
+    allow: [<worktree-path>, <main-checkout-root>/.git, <.vinta-ai-workflows-dir>]  # writable exceptions
 notes: |
   <freeform — anything the user / agent should know>
 ```
@@ -360,7 +383,8 @@ Every step gated on user confirmation when the worktree has un-pushed branches.
 - **Every fork decision lands in `.vinta-ai-workflows/worktrees/<name>.yaml`.** Teardown reads it; humans grep it; agents resuming a stalled plan read it. No decision lives only in conversation memory.
 - **Worktree root governed by runtime conventions.** claude-code uses `.claude/worktrees/`; other harnesses use sibling dirs. Don't fight the harness — match it.
 - **Don't mutate the main checkout from this skill.** Every write goes to the worktree or to `.vinta-ai-workflows/`. Forking a Postgres DB is the one exception (the new DB lives in the same server) — document it loudly in the summary.
-- **Sandbox is the deterministic guard; the prompt is not.** When a sandbox tool exists, the [Filesystem sandbox](#step-55--filesystem-sandbox-os-level-write-guard) step's `sandbox-run.sh` makes the main checkout read-only for any spawned command — this is what actually *prevents* stray main-checkout writes across harnesses. Telling the agent "stay in the worktree" is best-effort only. Always probe + record the tier; never claim prevention when `tier=none`.
+- **Sandbox is the deterministic guard; the prompt is not.** When a sandbox tool exists, the [Filesystem sandbox](#step-55--filesystem-sandbox-os-level-write-guard) step's `sandbox-run.sh` makes the main checkout read-only for any spawned command — this is what actually *prevents* stray main-checkout writes for subprocess runtimes. For **in-process** runtimes (claude-code's Task tool) there's no subprocess to wrap: wire the `PreToolUse` hook (+ optional native OS sandbox) from [In-process runtimes (claude-code)](#55a--in-process-runtimes-claude-code) into the session's `settings.json` instead. Telling the agent "stay in the worktree" is best-effort only either way. Always probe + record the tier; never claim prevention when `tier=none`.
+- **`<main>/.git` stays writable in every model.** Git worktrees store their commits in the main repo's `.git`; a deny that also blocks `<main>/.git` breaks every commit made inside the worktree. `sandbox-run.sh` callers and the generated claude-code settings must both `--allow` / `allowWrite` `<main>/.git`.
 - **Deny-main, allow-rest — never allow-worktree-only.** Locking everything except the worktree breaks package managers / caches / `$HOME`. Lock only the main checkout subtree; re-allow the worktree (nested under it) and the written `.vinta-ai-workflows` dir. Don't tighten further without testing the project's real lint / test / build / migrate commands inside the cage.
 - **Worktree base = `origin/<default-branch>` by default.** `HEAD` only when the user explicitly confirms; record the choice in the summary.
 - **Refuse to provision a second worktree for the same branch.** Git enforces this — don't try to work around it.

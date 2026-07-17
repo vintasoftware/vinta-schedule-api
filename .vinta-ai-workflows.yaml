@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=./node_modules/vinta-ai-workflows/schemas/vinta-ai-workflows-config.v1.schema.json
 
 schema_version: 1
-vinta_ai_workflows_version: "0.2.0-alpha3"
-last_synced_at: "2026-06-23T00:00:00Z"
+vinta_ai_workflows_version: "0.2.0"
+last_synced_at: "2026-07-17T00:00:00Z"
 
 project:
   name: vinta_schedule_api
@@ -12,13 +12,15 @@ project:
   ai_plans_dir: ai-plans
   pr_template_paths: []
 
+# Container surface (`docker compose run --rm api ...`) — the one AGENTS.md points daily
+# app work at. The host surface (bare `uv run ...`) is what pre-commit and CI use.
 commands:
-  lint: "uv run ruff check ./"
-  format: "uv run ruff format ./"
-  build: "uv run python manage.py check --deploy"
-  test_unit: "uv run pytest -n auto"
-  test_unit_scoped: "uv run pytest <app>/tests/ -n auto"
-  test_unit_new_pattern: "uv run pytest <new-test-path> -vs"
+  lint: "docker compose run --rm api uv run ruff check ./"
+  format: "docker compose run --rm api uv run ruff format ./"
+  build: "docker compose run --rm api uv run python manage.py check --deploy"
+  test_unit: "docker compose run --rm api uv run pytest -n auto"
+  test_unit_scoped: "docker compose run --rm api uv run pytest <app>/tests/ -n auto"
+  test_unit_new_pattern: "docker compose run --rm api uv run pytest <new-test-path> -vs"
 
 policies:
   pr_creation: agents-create
@@ -54,11 +56,23 @@ foundation_skills:
   systematic-debugging: enabled
   add-one-off-script: enabled
   prepare-worktree: enabled
+  deslop-comments: enabled
+  handoff: enabled
+  thermo-nuclear-code-quality-review: enabled
+  handoff-to-client: enabled
 
 foundation_agents:
   implementer: enabled
   reviewer: enabled
   fixer: enabled
+
+# Tiers (1-4) into ai-tools/skills/plan-feature/resources/ai-models.yaml.
+# Unset key = that spawn uses the runtime default.
+agent_models:
+  reviewer: 3
+  fixer: 2
+  worktree_prep: 1
+  integrate: 1
 
 stacks:
   - django
@@ -71,6 +85,7 @@ run_options:
     pause_between_phases: false
     generate_inline_comments: false
     use_worktree: true
+    full_test_suite: false
   amend-plan:
     blast_radius_signal_threshold: 2
 
@@ -85,6 +100,13 @@ skills:
     s3_prefix: one-off-runs/
   systematic-debugging:
     observability_mcp_servers: []
+  handoff-to-client:
+    client_platforms:
+      - "Web SPA (React)"
+      - "Partner integrations"
+    api_style: "REST + GraphQL"
+    api_spec_path: "schema.yml (regenerate: make update_schema)"
+    output_dir: .vinta-ai-workflows/client-handoffs
   prepare-worktree:
     worktree_root: .claude/worktrees
     deps_strategy: symlink
