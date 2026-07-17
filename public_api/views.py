@@ -2,20 +2,24 @@ import logging
 
 from django.db import transaction
 
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
+from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.viewsets import GenericViewSet
+from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from organizations.models import get_active_organization_membership
 from organizations.permissions import IsOrganizationAdmin
 from public_api.constants import PROVIDER_SCOPED_RESOURCES
+from public_api.docs_content import get_concept_doc, list_concept_docs
 from public_api.models import ResourceAccess, SystemUser
 from public_api.serializers import (
+    ConceptDocSerializer,
+    ConceptDocSummarySerializer,
     SystemUserTokenCreateSerializer,
     SystemUserTokenResponseSerializer,
     SystemUserTokenSerializer,
@@ -212,3 +216,56 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
         """
         # For this endpoint, PATCH = PUT (full replacement, not merge)
         return self.update(request, *args, **kwargs)
+
+
+@extend_schema(tags=["Docs"])
+class PublicApiDocsViewSet(ViewSet):
+    """Public, read-only viewset serving the repo's concept documentation.
+
+    ``ConceptDoc`` content is not a model — it is markdown files read from a
+    bounded allow-list under ``docs/concepts/`` (see ``public_api.docs_content``).
+    This viewset intentionally does not build on the ``*VintaScheduleModelViewSet``
+    family, nor even ``ReadOnlyModelViewSet``: those bases assume a queryset and a
+    model, and there is neither here — only dicts. Mirrors the shape of
+    ``legal.views.PolicyDocumentViewSet`` (public, ``AllowAny``, read-only,
+    registered via the same ``RouteDict`` pattern), which is the closest existing
+    precedent for a public document-serving endpoint.
+
+    Unauthenticated by design: this is public documentation, not tenant data.
+    """
+
+    lookup_field = "slug"
+    # Inert for routing (lookup_value_converter does that); kept so drf-spectacular emits the pattern.
+    lookup_value_regex = "[a-z0-9-]+"
+    lookup_value_converter = "docs_slug"
+    permission_classes = (AllowAny,)
+    authentication_classes = ()
+    http_method_names = ("get", "head", "options")
+
+    @extend_schema(
+        summary="List the available concept docs",
+        responses={200: ConceptDocSummarySerializer(many=True)},
+    )
+    def list(self, request: Request) -> Response:
+        """GET /public-api-docs/ — one entry per allow-listed concept doc."""
+        serializer = ConceptDocSummarySerializer(list_concept_docs(), many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Retrieve a single concept doc's raw markdown",
+        responses={
+            200: ConceptDocSerializer,
+            404: OpenApiResponse(description="Unknown slug (including any traversal attempt)"),
+        },
+    )
+    def retrieve(self, request: Request, slug: str | None = None) -> Response:
+        """GET /public-api-docs/{slug}/ — raw markdown for one concept doc.
+
+        ``slug`` is looked up as a key of the allow-list built in
+        ``public_api.docs_content``; never joined into a filesystem path. Any
+        slug not a key of the allow-list — including path-traversal payloads —
+        404s via ``get_concept_doc``.
+        """
+        doc = get_concept_doc(slug or "")
+        serializer = ConceptDocSerializer(doc)
+        return Response(serializer.data, status=status.HTTP_200_OK)

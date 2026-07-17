@@ -227,6 +227,28 @@ class SystemUserTokenSerializer(serializers.ModelSerializer):
         return obj.scoped_to_membership_user_id
 
 
+class ConceptDocSummarySerializer(serializers.Serializer):
+    """Read-only manifest entry for a concept doc (list view).
+
+    Plain ``Serializer`` over a :class:`public_api.docs_content.ConceptDocSummary`
+    dict — there is no model backing this.
+    """
+
+    slug = serializers.CharField(read_only=True)
+    title = serializers.CharField(read_only=True)
+
+
+class ConceptDocSerializer(ConceptDocSummarySerializer):
+    """Read-only representation of a single concept doc's full content.
+
+    Plain ``Serializer`` over a :class:`public_api.docs_content.ConceptDoc` dict —
+    there is no model backing this. Returns raw markdown; the frontend owns
+    rendering and sanitization.
+    """
+
+    markdown = serializers.CharField(read_only=True)
+
+
 class SystemUserTokenUpdateSerializer(serializers.Serializer):
     """Input serializer for updating a public-API token's resource grants (Phase 15).
 

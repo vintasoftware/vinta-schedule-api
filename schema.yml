@@ -10331,6 +10331,119 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProfilePictureUploadParams'
           description: ''
+  /public-api-docs/:
+    get:
+      operationId: public_api_docs_list
+      description: GET /public-api-docs/ — one entry per allow-listed concept doc.
+      summary: List the available concept docs
+      tags:
+      - Docs
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ConceptDocSummary'
+          description: ''
+  /public-api-docs{format}:
+    get:
+      operationId: public_api_docs_formatted_list
+      description: GET /public-api-docs/ — one entry per allow-listed concept doc.
+      summary: List the available concept docs
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - Docs
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ConceptDocSummary'
+          description: ''
+  /public-api-docs/{slug}/:
+    get:
+      operationId: public_api_docs_retrieve
+      description: |-
+        GET /public-api-docs/{slug}/ — raw markdown for one concept doc.
+
+        ``slug`` is looked up as a key of the allow-list built in
+        ``public_api.docs_content``; never joined into a filesystem path. Any
+        slug not a key of the allow-list — including path-traversal payloads —
+        404s via ``get_concept_doc``.
+      summary: Retrieve a single concept doc's raw markdown
+      parameters:
+      - in: path
+        name: slug
+        schema:
+          type: string
+          pattern: ^[a-z0-9-]+$
+        required: true
+      tags:
+      - Docs
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConceptDoc'
+          description: ''
+        '404':
+          description: Unknown slug (including any traversal attempt)
+  /public-api-docs/{slug}{format}:
+    get:
+      operationId: public_api_docs_formatted_retrieve
+      description: |-
+        GET /public-api-docs/{slug}/ — raw markdown for one concept doc.
+
+        ``slug`` is looked up as a key of the allow-list built in
+        ``public_api.docs_content``; never joined into a filesystem path. Any
+        slug not a key of the allow-list — including path-traversal payloads —
+        404s via ``get_concept_doc``.
+      summary: Retrieve a single concept doc's raw markdown
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: slug
+        schema:
+          type: string
+          pattern: ^[a-z0-9-]+$
+        required: true
+      tags:
+      - Docs
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConceptDoc'
+          description: ''
+        '404':
+          description: Unknown slug (including any traversal attempt)
   /public-api-tokens/:
     get:
       operationId: public_api_tokens_list
@@ -13347,6 +13460,45 @@ components:
         * `resource` - Resource Calendar
         * `virtual` - Virtual Calendar
         * `bundle` - Bundle Calendar
+    ConceptDoc:
+      type: object
+      description: |-
+        Read-only representation of a single concept doc's full content.
+
+        Plain ``Serializer`` over a :class:`public_api.docs_content.ConceptDoc` dict —
+        there is no model backing this. Returns raw markdown; the frontend owns
+        rendering and sanitization.
+      properties:
+        slug:
+          type: string
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        markdown:
+          type: string
+          readOnly: true
+      required:
+      - markdown
+      - slug
+      - title
+    ConceptDocSummary:
+      type: object
+      description: |-
+        Read-only manifest entry for a concept doc (list view).
+
+        Plain ``Serializer`` over a :class:`public_api.docs_content.ConceptDocSummary`
+        dict — there is no model backing this.
+      properties:
+        slug:
+          type: string
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+      required:
+      - slug
+      - title
     ConsentCreate:
       type: object
       description: |-
