@@ -5,7 +5,7 @@ Phase 1 of the Public API Docs backend implementation plan.
 Guarantees:
 - Introspection is enabled on /graphql/ (so docs build-time schema fetch works).
 - CORS allows the configured docs origins to make cross-origin requests.
-- The authorization header is whitelisted for CORS preflight.
+- The authorization header is allowed for CORS preflight.
 - A wildcard or permissive regex is not set (tested by asserting unconfigured origins fail).
 """
 
@@ -147,13 +147,13 @@ class TestCORSPreflight:
             HTTP_ACCESS_CONTROL_REQUEST_HEADERS="authorization",
         )
 
-        # Preflight response status is OK (200 or 200-range), but the origin is NOT echoed.
-        # Some CORS implementations return 200 with no echo for disallowed origins;
-        # others may vary. The key test is: the requested origin must NOT appear in
-        # the response header.
+        # Preflight response status is OK, but the origin is NOT echoed.
+        # When an origin is not in CORS_ALLOWED_ORIGINS and CORS_ALLOW_ALL_ORIGINS is off,
+        # django-cors-headers sets no Access-Control-Allow-Origin header.
         allow_origin = response.get("Access-Control-Allow-Origin")
-        assert allow_origin != "https://evil.example.com", (
-            f"CORS security failure: Access-Control-Allow-Origin echoed an unconfigured origin. "
-            f"This suggests CORS_ALLOWED_ORIGINS is set to a wildcard or permissive regex. "
+        assert allow_origin is None, (
+            f"CORS security failure: Access-Control-Allow-Origin header must not be set for unconfigured origins. "
+            f"A non-None value indicates either an echo of an unconfigured origin or a wildcard, "
+            f"both of which are security failures given CORS_ALLOW_CREDENTIALS=True. "
             f"Got Allow-Origin: {allow_origin!r}"
         )
