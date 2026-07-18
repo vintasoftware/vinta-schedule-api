@@ -13,6 +13,7 @@ from payments.constants import (
     SubscriptionStatuses,
 )
 from payments.models import BillingPlan
+from payments.models import Payment as PaymentModel
 from payments.services.dataclasses import (
     BillingAddress as BillingAddressDataclass,
 )
@@ -142,6 +143,35 @@ def test_success_create_payment(payment_service, billing_profile):
     assert created_payment.payment_method == "credit_card"
     assert created_payment.description == "Test Payment"
     assert created_payment.billing_profile == billing_profile
+
+
+@pytest.mark.django_db
+def test_create_payment_raises_when_billing_profile_missing_contact_email(
+    payment_service, organization, billing_address
+):
+    """`_serialize_billing_profile` must raise a clear error rather than silently
+    send the payment gateway a null payer email."""
+    from payments.exceptions import BillingProfileContactEmailMissingError
+    from payments.models import BillingProfile as BillingProfileModel
+
+    billing_profile = BillingProfileModel.objects.create(
+        organization=organization,
+        contact_first_name="Ada",
+        contact_email="",
+        document_type="CPF",
+        document_number="12345678900",
+        billing_address=billing_address,
+    )
+
+    with pytest.raises(BillingProfileContactEmailMissingError):
+        payment_service.create_payment(
+            organization=billing_profile.organization,
+            currency="BRL",
+            amount=Decimal("100"),
+            description="Test Payment",
+            payment_method="credit_card",
+            payment_token="card_token_123",
+        )
 
 
 @pytest.mark.django_db
@@ -544,3 +574,57 @@ def test_success_receive_subscription_payment_update(
     assert result.status == "approved"
     assert result.description == "Payment approved"
     assert result.external_id == "update_123"
+
+
+@pytest.mark.django_db
+def test_receive_subscription_payment_update_without_billing_profile_returns_none(
+    payment_service, subscription_adapter, organization, billing_plan
+):
+    """A subscription whose organization has no `BillingProfile` must not raise
+    `RelatedObjectDoesNotExist` on the unauthenticated provider webhook path — it
+    should log a warning and return `None` instead of a 500."""
+    now = datetime.datetime.now(tz=datetime.UTC)
+    subscription = baker.make(
+        "payments.Subscription",
+        organization=organization,
+        plan=billing_plan,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
+        status=SubscriptionStatuses.ACTIVE,
+        external_id="sub_no_profile",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+    )
+
+    from payments.services.dataclasses import SubscriptionPayment
+
+    subscription_payment = SubscriptionPayment(
+        id=None,
+        value=Decimal("100"),
+        currency="USD",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+        external_id="payment_no_profile",
+        status=PaymentStatuses.APPROVED,
+        billing_profile=None,
+        payment_method="credit_card",
+        description="Subscription payment",
+        status_updates=[],
+        subscription_external_id=subscription.external_id,
+    )
+
+    status_update = PaymentStatusUpdateDataclass(
+        id=None,
+        status="approved",
+        description="Payment approved",
+        update_external_id="update_456",
+    )
+
+    subscription_adapter.receive_payment_update.return_value = (
+        subscription_payment,
+        status_update,
+    )
+
+    update_payload = {"id": "update_456", "type": "payment"}
+    result = payment_service.receive_subscription_payment_update(update_payload)
+
+    assert result is None
+    assert not PaymentModel.objects.filter(external_id="payment_no_profile").exists()

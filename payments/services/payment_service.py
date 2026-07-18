@@ -9,6 +9,7 @@ from dependency_injector.wiring import Provide, inject
 from organizations.models import Organization
 from payments.billing_constants import BillingInterval
 from payments.constants import PaymentStatuses, RefundStatuses, SubscriptionStatuses
+from payments.exceptions import BillingProfileContactEmailMissingError, MissingBillingProfileError
 from payments.models import BillingAddress as BillingAddressModel
 from payments.models import BillingPlan as BillingPlanModel
 from payments.models import BillingProfile as BillingProfileModel
@@ -97,15 +98,18 @@ class PaymentService[
         )
 
     def _serialize_billing_profile(self, billing_profile: BillingProfileModel) -> BillingProfile:
-        # Billing is owned by the organization, not a person: the payer identity the
-        # gateway sees is the organization's name. There is no per-organization
-        # email/phone to source here yet, so those stay unset.
+        # Billing is owned by the organization, not a person, but the gateway still
+        # requires a payer identity (MercadoPago hard-400s on a null payer email).
+        # `contact_*` on BillingProfile is the organization's designated billing
+        # contact, sourced explicitly rather than left null.
+        if not billing_profile.contact_email:
+            raise BillingProfileContactEmailMissingError
         return BillingProfile(
             pk=billing_profile.pk,
-            first_name=billing_profile.organization.name,
-            last_name=None,
-            email=None,
-            phone=None,
+            first_name=billing_profile.contact_first_name,
+            last_name=billing_profile.contact_last_name or None,
+            email=billing_profile.contact_email,
+            phone=billing_profile.contact_phone or None,
             document_type=billing_profile.document_type,
             document_number=billing_profile.document_number,
             billing_address=self._serialize_billing_address(billing_profile.billing_address),
@@ -236,9 +240,20 @@ class PaymentService[
         payment_external_id = subscription_payment_data.external_id
         payment = self.get_payment_by_external_id(payment_external_id)
         if not payment:
+            billing_profile = BillingProfileModel.objects.filter(
+                organization=subscription.organization
+            ).first()
+            if billing_profile is None:
+                logger.warning(
+                    "Cannot create payment for subscription %s: organization %s has no "
+                    "billing profile.",
+                    subscription.id,
+                    subscription.organization_id,
+                )
+                return None
             payment = PaymentModel.objects.create(
                 external_id=payment_external_id,
-                billing_profile=subscription.organization.billing_profile,
+                billing_profile=billing_profile,
                 value=subscription_payment_data.value,
                 currency=subscription_payment_data.currency,
                 status=subscription_payment_data.status,
@@ -255,7 +270,16 @@ class PaymentService[
         )
 
     def _serialize_subscription(self, subscription: SubscriptionModel) -> Subscription:
-        organization_billing_profile = subscription.organization.billing_profile
+        organization_billing_profile = BillingProfileModel.objects.filter(
+            organization=subscription.organization
+        ).first()
+        if organization_billing_profile is None:
+            logger.warning(
+                "Cannot serialize subscription %s: organization %s has no billing profile.",
+                subscription.id,
+                subscription.organization_id,
+            )
+            raise MissingBillingProfileError
         return Subscription(
             id=subscription.id,
             plan=self.subscription_plan_factory.make_plan_from_subscription(subscription),
@@ -282,10 +306,8 @@ class PaymentService[
         current_period_end: datetime.datetime,
         billing_interval: str = BillingInterval.MONTHLY,
     ) -> SubscriptionModel:
-        try:
-            _ = organization.billing_profile
-        except BillingProfileModel.DoesNotExist as e:
-            raise ValueError("Organization does not have a billing profile") from e
+        if not BillingProfileModel.objects.filter(organization=organization).exists():
+            raise MissingBillingProfileError
 
         subscription = SubscriptionModel.objects.create(
             organization=organization,

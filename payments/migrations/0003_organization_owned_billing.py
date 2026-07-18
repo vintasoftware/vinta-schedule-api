@@ -9,6 +9,16 @@
 # an `organization` FK), and Postgres will not let a column backing a live FK constraint
 # be dropped without first dropping the dependent constraints. The reverse path recreates
 # the prior (`user`-owned) schema in the same way.
+#
+# The `billing_profile` FK on `payments_payment` and the `subscription` FK on
+# `payments_subscriptionstatusupdate` are dropped for the same reason (they point at
+# `payments_billingprofile` / `payments_subscription`) and re-added below. Both source
+# tables are transitively empty (they FK to the equally-empty tables being rebuilt), so
+# dropping and re-adding these columns loses no data either. The re-`AddField` calls at
+# `payment.billing_profile` and `subscriptionstatusupdate.subscription` below use
+# `preserve_default=False` on a non-null column: if either table were ever non-empty,
+# this makes the migration fail loudly (an `IntegrityError` on the implied backfill)
+# rather than silently defaulting existing rows to `NULL` and losing the association.
 import django.db.models.deletion
 import django.utils.timezone
 import model_utils.fields
@@ -127,6 +137,10 @@ class Migration(migrations.Migration):
                         to="organizations.organization",
                     ),
                 ),
+                ("contact_first_name", models.CharField(max_length=255)),
+                ("contact_last_name", models.CharField(blank=True, max_length=255)),
+                ("contact_email", models.EmailField(max_length=254)),
+                ("contact_phone", models.CharField(blank=True, max_length=50)),
                 ("document_type", models.CharField(max_length=50)),
                 ("document_number", models.CharField(max_length=50)),
                 (
@@ -281,7 +295,10 @@ class Migration(migrations.Migration):
             preserve_default=False,
         ),
         # --- Genuine pre-existing bug: RefundStatusUpdate.status used PaymentStatuses
-        #     instead of RefundStatuses. ---
+        #     instead of RefundStatuses. `payments_refundstatusupdate` is empty in every
+        #     environment (it FKs to `payments_refund`, which FKs to the equally-empty
+        #     `payments_payment`), so there is no pre-existing row whose status value
+        #     would fall outside the new (narrower) `RefundStatuses` choices. ---
         migrations.AlterField(
             model_name="refundstatusupdate",
             name="status",

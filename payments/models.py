@@ -57,7 +57,7 @@ class BillingPlan(BaseModel):
 
     subscriptions: "RelatedManager[Subscription]"
 
-    class Meta:
+    class Meta(BaseModel.Meta):
         constraints: ClassVar = [
             UniqueConstraint(
                 fields=["is_default_for_new_organizations"],
@@ -77,6 +77,14 @@ class BillingProfile(BaseModel):
         on_delete=models.CASCADE,
         related_name="billing_profile",
     )
+    # Payer identity sent to the payment gateway. Distinct from the future
+    # `OrganizationMembership.is_billing_owner` (Phase 9), which is about who may
+    # *manage* billing — these fields are about what the gateway needs to charge
+    # the organization (e.g. MercadoPago rejects a payer with no email).
+    contact_first_name = models.CharField(max_length=255)
+    contact_last_name = models.CharField(max_length=255, blank=True)
+    contact_email = models.EmailField()
+    contact_phone = models.CharField(max_length=50, blank=True)
     document_type = models.CharField(max_length=50)
     document_number = models.CharField(max_length=50)
     billing_address = models.OneToOneField(
@@ -88,6 +96,19 @@ class BillingProfile(BaseModel):
 
 
 class Subscription(BaseModel):
+    """An organization's subscription to a ``BillingPlan``.
+
+    Two status concepts coexist here and share member names (``active``,
+    ``cancelled``, ``pending``) — do not conflate them:
+
+    - ``status`` (``SubscriptionStatuses``) mirrors the provider-reported state of
+      the subscription, fed by ``SubscriptionStatusUpdate`` rows as the gateway
+      reports them (e.g. MercadoPago's ``authorized`` / ``paused`` / ``cancelled``).
+    - ``billing_state`` (``BillingState``) is this app's internal billing
+      lifecycle (free / active / grace / restricted / cancelled) used to gate
+      access. It is derived from, but not identical to, ``status``.
+    """
+
     organization = models.OneToOneField(
         "organizations.Organization", on_delete=models.CASCADE, related_name="subscription"
     )

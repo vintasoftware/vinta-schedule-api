@@ -1,5 +1,6 @@
 import django_virtual_models as v
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 
 from payments.models import BillingAddress, BillingProfile, Subscription
 from payments.virtual_models import (
@@ -19,14 +20,12 @@ class SubscriptionSerializer(v.VirtualModelSerializer):
         virtual_model = SubscriptionVirtualModel
         fields = (
             "id",
-            "status",
             "billing_state",
             "current_period_start",
             "current_period_end",
         )
         read_only_fields = (
             "id",
-            "status",
             "billing_state",
             "current_period_start",
             "current_period_end",
@@ -68,6 +67,10 @@ class BillingProfileSerializer(v.VirtualModelSerializer):
         virtual_model = BillingProfileVirtualModel
         fields = (
             "id",
+            "contact_first_name",
+            "contact_last_name",
+            "contact_email",
+            "contact_phone",
             "document_type",
             "document_number",
             "billing_address",
@@ -84,10 +87,16 @@ class BillingProfileSerializer(v.VirtualModelSerializer):
         """
         Create a new BillingProfile and its related BillingAddress.
         """
+        organization = self.context["request"].organization
+        if organization is None:
+            raise PermissionDenied(
+                "An active organization is required to create a billing profile."
+            )
+
         billing_address_data = validated_data.pop("billing_address")
         billing_address = BillingAddress.objects.create(**billing_address_data)
         billing_profile = BillingProfile.objects.create(
-            organization=self.context["request"].organization,
+            organization=organization,
             billing_address=billing_address,
             **validated_data,
         )

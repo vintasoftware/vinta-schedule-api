@@ -1,10 +1,13 @@
 import datetime
 
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError
+
 import pytest
 from model_bakery import baker
 
 from organizations.models import Organization
-from payments.constants import PaymentProviders, RefundStatuses
+from payments.constants import PaymentProviders, PaymentStatuses, RefundStatuses
 from payments.models import (
     BillingAddress,
     BillingPlan,
@@ -38,6 +41,24 @@ def billing_profile(organization, billing_address):
 @pytest.fixture
 def billing_plan():
     return baker.make(BillingPlan)
+
+
+@pytest.mark.django_db
+class TestBillingPlan:
+    def test_only_one_default_plan_allowed(self):
+        """The `uniq_default_billing_plan` partial unique constraint enforces at
+        most one `is_default_for_new_organizations=True` row."""
+        baker.make(BillingPlan, is_default_for_new_organizations=True)
+
+        with pytest.raises(IntegrityError):
+            baker.make(BillingPlan, is_default_for_new_organizations=True)
+
+    def test_multiple_non_default_plans_allowed(self):
+        """The partial constraint only applies to `True` rows."""
+        baker.make(BillingPlan, is_default_for_new_organizations=False)
+        baker.make(BillingPlan, is_default_for_new_organizations=False)
+
+        assert BillingPlan.objects.filter(is_default_for_new_organizations=False).count() == 2
 
 
 @pytest.mark.django_db
@@ -113,3 +134,16 @@ class TestRefundStatusUpdate:
         field = RefundStatusUpdate._meta.get_field("status")
 
         assert set(field.choices) == set(RefundStatuses.choices)
+
+    def test_full_clean_rejects_payment_only_status(self, billing_profile):
+        """A `PaymentStatuses`-only value (e.g. `in_mediation`) is not a valid
+        `RefundStatuses` member and must fail `full_clean()`."""
+        payment = baker.make(Payment, billing_profile=billing_profile)
+        refund = baker.make(Refund, payment=payment)
+        status_update = RefundStatusUpdate(
+            refund=refund,
+            status=PaymentStatuses.IN_MEDIATION,
+        )
+
+        with pytest.raises(ValidationError):
+            status_update.full_clean()

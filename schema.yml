@@ -1007,7 +1007,7 @@ paths:
   /billing-profile/create_billing_profile/:
     post:
       operationId: billing_profile_create_billing_profile_create
-      description: Create a new billing profile for the authenticated user.
+      description: Create a new billing profile for the active organization.
       summary: Create billing profile
       parameters:
       - in: header
@@ -1047,7 +1047,7 @@ paths:
   /billing-profile/create_billing_profile{format}:
     post:
       operationId: billing_profile_create_billing_profile_formatted_create
-      description: Create a new billing profile for the authenticated user.
+      description: Create a new billing profile for the active organization.
       summary: Create billing profile
       parameters:
       - in: header
@@ -1094,7 +1094,7 @@ paths:
   /billing-profile/partial_update_billing_profile/:
     patch:
       operationId: billing_profile_partial_update_billing_profile_partial_update
-      description: Partially update the billing profile of the authenticated user.
+      description: Partially update the billing profile of the active organization.
       summary: Partially update billing profile
       parameters:
       - in: header
@@ -1133,7 +1133,7 @@ paths:
   /billing-profile/partial_update_billing_profile{format}:
     patch:
       operationId: billing_profile_partial_update_billing_profile_formatted_partial_update
-      description: Partially update the billing profile of the authenticated user.
+      description: Partially update the billing profile of the active organization.
       summary: Partially update billing profile
       parameters:
       - in: header
@@ -1179,7 +1179,7 @@ paths:
   /billing-profile/retrieve_billing_profile/:
     get:
       operationId: billing_profile_retrieve_billing_profile_retrieve
-      description: Retrieve the billing profile of the authenticated user.
+      description: Retrieve the billing profile of the active organization.
       summary: Retrieve billing profile
       parameters:
       - in: header
@@ -1207,7 +1207,7 @@ paths:
   /billing-profile/retrieve_billing_profile{format}:
     get:
       operationId: billing_profile_retrieve_billing_profile_formatted_retrieve
-      description: Retrieve the billing profile of the authenticated user.
+      description: Retrieve the billing profile of the active organization.
       summary: Retrieve billing profile
       parameters:
       - in: header
@@ -1242,7 +1242,7 @@ paths:
   /billing-profile/update_billing_profile/:
     put:
       operationId: billing_profile_update_billing_profile_update
-      description: Update the billing profile of the authenticated user.
+      description: Update the billing profile of the active organization.
       summary: Update billing profile
       parameters:
       - in: header
@@ -1282,7 +1282,7 @@ paths:
   /billing-profile/update_billing_profile{format}:
     put:
       operationId: billing_profile_update_billing_profile_formatted_update
-      description: Update the billing profile of the authenticated user.
+      description: Update the billing profile of the active organization.
       summary: Update billing profile
       parameters:
       - in: header
@@ -12909,6 +12909,19 @@ components:
         id:
           type: integer
           readOnly: true
+        contact_first_name:
+          type: string
+          maxLength: 255
+        contact_last_name:
+          type: string
+          maxLength: 255
+        contact_email:
+          type: string
+          format: email
+          maxLength: 254
+        contact_phone:
+          type: string
+          maxLength: 50
         document_type:
           type: string
           maxLength: 50
@@ -12927,6 +12940,8 @@ components:
           readOnly: true
       required:
       - billing_address
+      - contact_email
+      - contact_first_name
       - created
       - document_number
       - document_type
@@ -14769,6 +14784,19 @@ components:
         id:
           type: integer
           readOnly: true
+        contact_first_name:
+          type: string
+          maxLength: 255
+        contact_last_name:
+          type: string
+          maxLength: 255
+        contact_email:
+          type: string
+          format: email
+          maxLength: 254
+        contact_phone:
+          type: string
+          maxLength: 50
         document_type:
           type: string
           maxLength: 50
