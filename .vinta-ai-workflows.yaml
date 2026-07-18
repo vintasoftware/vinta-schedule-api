@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=./node_modules/vinta-ai-workflows/schemas/vinta-ai-workflows-config.v1.schema.json
 
 schema_version: 1
-vinta_ai_workflows_version: "0.2.0"
-last_synced_at: "2026-07-17T00:00:00Z"
+vinta_ai_workflows_version: "0.3.0"
+last_synced_at: "2026-07-18T00:00:00Z"
 
 project:
   name: vinta_schedule_api
@@ -113,3 +113,7 @@ skills:
     compose_network: per-worktree
     test_db_strategy: fork-on-schema-change
     summary_dir: .vinta-ai-workflows/worktrees
+    # Compose volume keys safe to keep SHARED across worktrees. Empty = fork every
+    # leaky (external/fixed-name) volume, which is the safe default. Never list a
+    # data volume here: dbdata and floci_data must always fork.
+    shared_volumes: []
