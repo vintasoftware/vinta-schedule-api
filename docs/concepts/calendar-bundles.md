@@ -26,17 +26,17 @@ the booking should be free of one canonical primary), prefer a
 ## Anatomy
 
 ```
-                                         ┌─────────────────────────────────────┐
-       BUNDLE Calendar                    │ ChildrenCalendarRelationship rows  │
+                                          ┌─────────────────────────────────────┐
+       BUNDLE Calendar                    │ ChildrenCalendarRelationship rows   │
    ─────────────────────────              │   bundle_calendar=<bundle>          │
    "Cardiology Procedure Suite"   ──────▶ │   child_calendar=<Dr. Lee>          │
-                                          │     is_primary=True                  │
+                                          │     is_primary=True                 │
                                           ├─────────────────────────────────────┤
                                           │   child_calendar=<Cath Lab 1>       │
-                                          │     is_primary=False                 │
+                                          │     is_primary=False                │
                                           ├─────────────────────────────────────┤
                                           │   child_calendar=<Cardiac Tech>     │
-                                          │     is_primary=False                 │
+                                          │     is_primary=False                │
                                           └─────────────────────────────────────┘
 ```
 

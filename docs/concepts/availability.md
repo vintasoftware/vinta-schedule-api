@@ -1,7 +1,4 @@
-# Availability — `AvailableTime` and `BlockedTime`
-
-> Source: [calendar_integration/models.py](../../calendar_integration/models.py) — `AvailableTime`, `BlockedTime`, `Calendar.manage_available_windows`.
-> Queryset: `CalendarQuerySet.only_calendars_available_in_ranges` in [calendar_integration/querysets.py](../../calendar_integration/querysets.py).
+# Availability
 
 A calendar's "is this slot bookable?" answer is computed from three
 sources:

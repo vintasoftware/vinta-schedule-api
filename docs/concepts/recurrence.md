@@ -1,8 +1,5 @@
 # Recurrence
 
-> Source: [calendar_integration/models.py](../../calendar_integration/models.py) — `RecurrenceRule`, `RecurringMixin`, `EventRecurrenceException`, `BlockedTimeRecurrenceException`, `AvailableTimeRecurrenceException`, `*BulkModification` models.
-> Helpers: [calendar_integration/recurrence_utils.py](../../calendar_integration/recurrence_utils.py).
-
 Most things people schedule are recurring: clinics run weekly, on-call
 shifts rotate, OR blocks repeat, conference rooms host the same meeting
 every Monday. Storing one row per occurrence would be wasteful and

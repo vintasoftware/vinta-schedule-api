@@ -1,6 +1,4 @@
-# Events, Attendances, and Resource Allocations
-
-> Source: [calendar_integration/models.py](../../calendar_integration/models.py) — `CalendarEvent`, `EventAttendance`, `ExternalAttendee`, `EventExternalAttendance`, `ResourceAllocation`.
+# Events
 
 A **`CalendarEvent`** is a booking. It always lives on exactly one
 `Calendar` (`calendar_fk`) and has a `start_time` / `end_time` plus an

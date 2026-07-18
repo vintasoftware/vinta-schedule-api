@@ -1,7 +1,5 @@
 # Calendars
 
-> Source: [calendar_integration/models.py](../../calendar_integration/models.py) — `Calendar`, `CalendarOwnership`, `ChildrenCalendarRelationship`.
-
 A **Calendar** is the smallest bookable unit in the system. Every event,
 blocked time, and available window hangs off exactly one `Calendar`. It is
 *also* the integration point with external providers (Google, Microsoft
