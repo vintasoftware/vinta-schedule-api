@@ -1,13 +1,16 @@
 import datetime
+import logging
 from dataclasses import asdict
 from decimal import Decimal
 from typing import Annotated
-from venv import logger
 
 from dependency_injector.wiring import Provide, inject
 
+from organizations.models import Organization
+from payments.billing_constants import BillingInterval
 from payments.constants import PaymentStatuses, RefundStatuses, SubscriptionStatuses
 from payments.models import BillingAddress as BillingAddressModel
+from payments.models import BillingPlan as BillingPlanModel
 from payments.models import BillingProfile as BillingProfileModel
 from payments.models import Payment as PaymentModel
 from payments.models import PaymentStatusUpdate as PaymentStatusUpdateModel
@@ -27,7 +30,9 @@ from payments.services.dataclasses import (
 from payments.services.payment_adapters.base import BasePaymentAdapter
 from payments.services.subscription_adapters.base import BaseSubscriptionAdapter
 from payments.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
-from users.models import User
+
+
+logger = logging.getLogger(__name__)
 
 
 class PaymentService[
@@ -48,7 +53,7 @@ class PaymentService[
 
     def create_payment(
         self,
-        user: User,
+        organization: Organization,
         currency: str,
         amount: Decimal,
         description: str,
@@ -56,9 +61,9 @@ class PaymentService[
         payment_token: str,
     ) -> PaymentModel:
         try:
-            billing_profile = user.billing_profile
+            billing_profile = organization.billing_profile
         except BillingProfileModel.DoesNotExist as e:
-            raise ValueError("User does not have a billing profile") from e
+            raise ValueError("Organization does not have a billing profile") from e
 
         payment = PaymentModel.objects.create(
             billing_profile=billing_profile,
@@ -92,12 +97,15 @@ class PaymentService[
         )
 
     def _serialize_billing_profile(self, billing_profile: BillingProfileModel) -> BillingProfile:
+        # Billing is owned by the organization, not a person: the payer identity the
+        # gateway sees is the organization's name. There is no per-organization
+        # email/phone to source here yet, so those stay unset.
         return BillingProfile(
             pk=billing_profile.pk,
-            first_name=billing_profile.user.profile.first_name,
-            last_name=billing_profile.user.profile.last_name,
-            email=billing_profile.user.email,
-            phone=billing_profile.user.phone_number,
+            first_name=billing_profile.organization.name,
+            last_name=None,
+            email=None,
+            phone=None,
             document_type=billing_profile.document_type,
             document_number=billing_profile.document_number,
             billing_address=self._serialize_billing_address(billing_profile.billing_address),
@@ -230,7 +238,7 @@ class PaymentService[
         if not payment:
             payment = PaymentModel.objects.create(
                 external_id=payment_external_id,
-                billing_profile=subscription.billing_profile,
+                billing_profile=subscription.organization.billing_profile,
                 value=subscription_payment_data.value,
                 currency=subscription_payment_data.currency,
                 status=subscription_payment_data.status,
@@ -247,14 +255,15 @@ class PaymentService[
         )
 
     def _serialize_subscription(self, subscription: SubscriptionModel) -> Subscription:
+        organization_billing_profile = subscription.organization.billing_profile
         return Subscription(
             id=subscription.id,
             plan=self.subscription_plan_factory.make_plan_from_subscription(subscription),
             status=subscription.status,
             external_id=subscription.external_id,
-            billing_profile=self._serialize_billing_profile(subscription.billing_profile),
-            start_date=subscription.start_date.strftime("%Y-%m-%d"),
-            end_date=subscription.end_date.strftime("%Y-%m-%d"),
+            billing_profile=self._serialize_billing_profile(organization_billing_profile),
+            start_date=subscription.current_period_start.strftime("%Y-%m-%d"),
+            end_date=subscription.current_period_end.strftime("%Y-%m-%d"),
         )
 
     def create_subscription_plan(self, plan: Plan) -> CreatedPlan:
@@ -267,20 +276,25 @@ class PaymentService[
 
     def create_subscription(
         self,
-        user: User,
-        start_date: datetime.date,
-        end_date: datetime.date,
+        organization: Organization,
+        plan: BillingPlanModel,
+        current_period_start: datetime.datetime,
+        current_period_end: datetime.datetime,
+        billing_interval: str = BillingInterval.MONTHLY,
     ) -> SubscriptionModel:
         try:
-            billing_profile = user.billing_profile
+            _ = organization.billing_profile
         except BillingProfileModel.DoesNotExist as e:
-            raise ValueError("User does not have a billing profile") from e
+            raise ValueError("Organization does not have a billing profile") from e
 
         subscription = SubscriptionModel.objects.create(
-            billing_profile=billing_profile,
-            start_date=start_date,
-            end_date=end_date,
+            organization=organization,
+            plan=plan,
+            billing_interval=billing_interval,
+            current_period_start=current_period_start,
+            current_period_end=current_period_end,
             status=SubscriptionStatuses.PENDING_SEND,
+            payment_provider=self.subscription_gateway.provider,
         )
 
         SubscriptionStatusUpdate.objects.create(

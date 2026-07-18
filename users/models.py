@@ -1,5 +1,3 @@
-from typing import TYPE_CHECKING
-
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.db import models
 from django.utils.translation import gettext_lazy as _
@@ -8,10 +6,6 @@ from common.models import BaseModel
 from s3direct_overrides.model_fields import S3DirectImageField
 
 from .managers import UserManager
-
-
-if TYPE_CHECKING:
-    from payments.models import BillingProfile
 
 
 class User(AbstractBaseUser, PermissionsMixin, BaseModel):
@@ -33,7 +27,6 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
 
     objects: UserManager = UserManager()
     profile: "Profile"
-    billing_profile: "BillingProfile"
 
     USERNAME_FIELD = "email"
 

@@ -4,17 +4,29 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 
+from organizations.models import Organization, OrganizationMembership
 from payments.models import BillingAddress, BillingProfile
-from users.models import Profile
+
+
+@pytest.fixture
+def organization():
+    return baker.make(Organization)
+
+
+@pytest.fixture
+def membership(user, organization):
+    return baker.make(
+        OrganizationMembership,
+        user=user,
+        organization=organization,
+        is_active=True,
+    )
 
 
 @pytest.mark.django_db
 class TestBillingProfileViewSet:
-    def test_retrieve_billing_profile_success(self, auth_client, user):
+    def test_retrieve_billing_profile_success(self, auth_client, membership, organization):
         """Test successfully retrieving a billing profile."""
-        # Create a profile for the user
-        _profile = baker.make(Profile, user=user, first_name="John", last_name="Doe")
-
         # Create billing address and profile
         billing_address = baker.make(
             BillingAddress,
@@ -29,7 +41,7 @@ class TestBillingProfileViewSet:
         )
         _billing_profile = baker.make(
             BillingProfile,
-            user=user,
+            organization=organization,
             document_type="SSN",
             document_number="123456789",
             billing_address=billing_address,
@@ -39,14 +51,22 @@ class TestBillingProfileViewSet:
         response = auth_client.get(url)
 
         assert response.status_code == status.HTTP_200_OK
-        assert response.data["id"] == user.pk
+        assert response.data["id"] == organization.pk
         assert response.data["document_type"] == "SSN"
         assert response.data["document_number"] == "123456789"
         assert response.data["billing_address"]["street_name"] == "Main Street"
         assert response.data["billing_address"]["city"] == "New York"
 
-    def test_retrieve_billing_profile_not_found(self, auth_client, user):
+    def test_retrieve_billing_profile_not_found(self, auth_client, membership):
         """Test retrieving billing profile when it doesn't exist."""
+        url = reverse("api:BillingProfile-retrieve")
+        response = auth_client.get(url)
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_retrieve_billing_profile_no_membership(self, auth_client):
+        """A user with no active organization membership cannot resolve a billing
+        profile at all — the active org resolves to None and the lookup 404s."""
         url = reverse("api:BillingProfile-retrieve")
         response = auth_client.get(url)
 
@@ -59,11 +79,32 @@ class TestBillingProfileViewSet:
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
-    def test_create_billing_profile_success(self, auth_client, user):
-        """Test successfully creating a billing profile."""
-        # Create a profile for the user
-        baker.make(Profile, user=user, first_name="John", last_name="Doe")
+    def test_retrieve_billing_profile_cross_organization_not_found(
+        self, auth_client, membership, organization
+    ):
+        """A member of org A cannot read org B's billing profile.
 
+        org A (the caller's org) has no billing profile of its own here; org B's
+        exists but the caller is never resolved into org B's context, so the
+        lookup 404s instead of leaking org B's data.
+        """
+        other_organization = baker.make(Organization)
+        other_billing_address = baker.make(BillingAddress)
+        baker.make(
+            BillingProfile,
+            organization=other_organization,
+            document_type="SSN",
+            document_number="999999999",
+            billing_address=other_billing_address,
+        )
+
+        url = reverse("api:BillingProfile-retrieve")
+        response = auth_client.get(url)
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_create_billing_profile_success(self, auth_client, membership, organization):
+        """Test successfully creating a billing profile."""
         url = reverse("api:BillingProfile-create")
         data = {
             "document_type": "SSN",
@@ -83,22 +124,19 @@ class TestBillingProfileViewSet:
         response = auth_client.post(url, data, format="json")
 
         assert response.status_code == status.HTTP_201_CREATED
-        assert response.data["id"] == user.pk
+        assert response.data["id"] == organization.pk
         assert response.data["document_type"] == "SSN"
         assert response.data["document_number"] == "123456789"
         assert response.data["billing_address"]["street_name"] == "Main Street"
 
         # Verify the billing profile was created in the database
-        billing_profile = BillingProfile.objects.get(user=user)
+        billing_profile = BillingProfile.objects.get(organization=organization)
         assert billing_profile.document_type == "SSN"
         assert billing_profile.document_number == "123456789"
         assert billing_profile.billing_address.street_name == "Main Street"
 
-    def test_create_billing_profile_invalid_data(self, auth_client, user):
+    def test_create_billing_profile_invalid_data(self, auth_client, membership):
         """Test creating billing profile with invalid data."""
-        # Create a profile for the user
-        baker.make(Profile, user=user, first_name="John", last_name="Doe")
-
         url = reverse("api:BillingProfile-create")
         data = {
             "document_type": "",  # Empty required field
@@ -132,11 +170,8 @@ class TestBillingProfileViewSet:
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
-    def test_update_billing_profile_success(self, auth_client, user):
+    def test_update_billing_profile_success(self, auth_client, membership, organization):
         """Test successfully updating a billing profile with PUT."""
-        # Create a profile for the user
-        baker.make(Profile, user=user, first_name="John", last_name="Doe")
-
         # Create existing billing address and profile
         billing_address = baker.make(
             BillingAddress,
@@ -149,7 +184,7 @@ class TestBillingProfileViewSet:
         )
         billing_profile = baker.make(
             BillingProfile,
-            user=user,
+            organization=organization,
             document_type="DL",
             document_number="OLD123",
             billing_address=billing_address,
@@ -187,7 +222,7 @@ class TestBillingProfileViewSet:
         assert billing_address.street_name == "New Street"
         assert billing_address.city == "New City"
 
-    def test_update_billing_profile_not_found(self, auth_client, user):
+    def test_update_billing_profile_not_found(self, auth_client, membership):
         """Test updating billing profile when it doesn't exist."""
         url = reverse("api:BillingProfile-update")
         data = {
@@ -207,11 +242,8 @@ class TestBillingProfileViewSet:
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_partial_update_billing_profile_success(self, auth_client, user):
+    def test_partial_update_billing_profile_success(self, auth_client, membership, organization):
         """Test successfully partially updating a billing profile with PATCH."""
-        # Create a profile for the user
-        baker.make(Profile, user=user, first_name="John", last_name="Doe")
-
         # Create existing billing address and profile
         billing_address = baker.make(
             BillingAddress,
@@ -224,7 +256,7 @@ class TestBillingProfileViewSet:
         )
         billing_profile = baker.make(
             BillingProfile,
-            user=user,
+            organization=organization,
             document_type="DL",
             document_number="OLD123",
             billing_address=billing_address,
@@ -251,11 +283,10 @@ class TestBillingProfileViewSet:
         assert billing_address.street_name == "Old Street"
         assert billing_address.city == "Updated City"
 
-    def test_partial_update_billing_profile_address_only(self, auth_client, user):
+    def test_partial_update_billing_profile_address_only(
+        self, auth_client, membership, organization
+    ):
         """Test partially updating only the billing address."""
-        # Create a profile for the user
-        baker.make(Profile, user=user, first_name="John", last_name="Doe")
-
         # Create existing billing address and profile
         billing_address = baker.make(
             BillingAddress,
@@ -268,7 +299,7 @@ class TestBillingProfileViewSet:
         )
         _billing_profile = baker.make(
             BillingProfile,
-            user=user,
+            organization=organization,
             document_type="DL",
             document_number="OLD123",
             billing_address=billing_address,
@@ -291,7 +322,7 @@ class TestBillingProfileViewSet:
             response.data["billing_address"]["neighborhood"] == "New Neighborhood"
         )  # Should be updated
 
-    def test_partial_update_billing_profile_not_found(self, auth_client, user):
+    def test_partial_update_billing_profile_not_found(self, auth_client, membership):
         """Test partially updating billing profile when it doesn't exist."""
         url = reverse("api:BillingProfile-partial_update")
         data = {"document_number": "NEW123"}
@@ -316,11 +347,8 @@ class TestBillingProfileViewSet:
                 f"Failed for {endpoint_name}"
             )
 
-    def test_billing_profile_relationships(self, auth_client, user):
-        """Test that billing profile correctly relates to user and billing address."""
-        # Create a profile for the user
-        _profile = baker.make(Profile, user=user, first_name="John", last_name="Doe")
-
+    def test_billing_profile_relationships(self, organization):
+        """Test that billing profile correctly relates to the organization and address."""
         # Create billing address and profile
         billing_address = baker.make(
             BillingAddress,
@@ -333,25 +361,22 @@ class TestBillingProfileViewSet:
         )
         billing_profile = baker.make(
             BillingProfile,
-            user=user,
+            organization=organization,
             document_type="SSN",
             document_number="123456789",
             billing_address=billing_address,
         )
 
         # Test that the billing profile is correctly linked
-        assert billing_profile.user == user
+        assert billing_profile.organization == organization
         assert billing_profile.billing_address == billing_address
         assert billing_address.billing_profile == billing_profile
 
-        # Test that we can access the billing profile through the user
-        assert user.billing_profile == billing_profile
+        # Test that we can access the billing profile through the organization
+        assert organization.billing_profile == billing_profile
 
-    def test_create_billing_profile_with_minimal_address_data(self, auth_client, user):
+    def test_create_billing_profile_with_minimal_address_data(self, auth_client, membership):
         """Test creating billing profile with minimal required address data."""
-        # Create a profile for the user
-        baker.make(Profile, user=user, first_name="John", last_name="Doe")
-
         url = reverse("api:BillingProfile-create")
         data = {
             "document_type": "ID",

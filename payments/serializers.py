@@ -20,14 +20,16 @@ class SubscriptionSerializer(v.VirtualModelSerializer):
         fields = (
             "id",
             "status",
-            "start_date",
-            "end_date",
+            "billing_state",
+            "current_period_start",
+            "current_period_end",
         )
         read_only_fields = (
             "id",
             "status",
-            "start_date",
-            "end_date",
+            "billing_state",
+            "current_period_start",
+            "current_period_end",
         )
 
 
@@ -58,7 +60,7 @@ class BillingProfileSerializer(v.VirtualModelSerializer):
     Serializer for BillingProfile virtual model.
     """
 
-    id = serializers.IntegerField(source="user_id", read_only=True)  # noqa: A003
+    id = serializers.IntegerField(source="organization_id", read_only=True)  # noqa: A003
     billing_address = BillingAddressSerializer()
 
     class Meta:
@@ -85,7 +87,9 @@ class BillingProfileSerializer(v.VirtualModelSerializer):
         billing_address_data = validated_data.pop("billing_address")
         billing_address = BillingAddress.objects.create(**billing_address_data)
         billing_profile = BillingProfile.objects.create(
-            user=self.context["request"].user, billing_address=billing_address, **validated_data
+            organization=self.context["request"].organization,
+            billing_address=billing_address,
+            **validated_data,
         )
         return billing_profile
 

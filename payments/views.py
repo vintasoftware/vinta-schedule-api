@@ -10,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
+from common.utils.view_utils import TenantScopedViewMixin
 from payments.models import BillingProfile
 from payments.serializers import BillingProfileSerializer
 
@@ -72,6 +73,7 @@ class PaymentsViewSet(ViewSet):
 
 
 class BillingProfileViewSet(
+    TenantScopedViewMixin,
     GenericVirtualModelViewMixin,
     GenericViewSet,
 ):
@@ -82,7 +84,9 @@ class BillingProfileViewSet(
     permission_classes = (IsAuthenticated,)
 
     def get_billing_profile(self):
-        return get_object_or_404(self.get_queryset(), pk=self.request.user.pk)
+        organization = self.request.organization  # type: ignore[attr-defined]
+        organization_pk = organization.pk if organization is not None else None
+        return get_object_or_404(self.get_queryset(), pk=organization_pk)
 
     @extend_schema(
         summary="Retrieve billing profile",

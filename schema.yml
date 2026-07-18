@@ -1009,6 +1009,17 @@ paths:
       operationId: billing_profile_create_billing_profile_create
       description: Create a new billing profile for the authenticated user.
       summary: Create billing profile
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       tags:
       - billing-profile
       requestBody:
@@ -1039,6 +1050,16 @@ paths:
       description: Create a new billing profile for the authenticated user.
       summary: Create billing profile
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -1075,6 +1096,17 @@ paths:
       operationId: billing_profile_partial_update_billing_profile_partial_update
       description: Partially update the billing profile of the authenticated user.
       summary: Partially update billing profile
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       tags:
       - billing-profile
       requestBody:
@@ -1104,6 +1136,16 @@ paths:
       description: Partially update the billing profile of the authenticated user.
       summary: Partially update billing profile
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -1139,6 +1181,17 @@ paths:
       operationId: billing_profile_retrieve_billing_profile_retrieve
       description: Retrieve the billing profile of the authenticated user.
       summary: Retrieve billing profile
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       tags:
       - billing-profile
       security:
@@ -1157,6 +1210,16 @@ paths:
       description: Retrieve the billing profile of the authenticated user.
       summary: Retrieve billing profile
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -1181,6 +1244,17 @@ paths:
       operationId: billing_profile_update_billing_profile_update
       description: Update the billing profile of the authenticated user.
       summary: Update billing profile
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       tags:
       - billing-profile
       requestBody:
@@ -1211,6 +1285,16 @@ paths:
       description: Update the billing profile of the authenticated user.
       summary: Update billing profile
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
