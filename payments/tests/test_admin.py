@@ -17,7 +17,7 @@ from payments.admin import (
     SubscriptionEntitlementInline,
     SubscriptionPlanLimitInline,
 )
-from payments.billing_constants import LimitedResource
+from payments.billing_constants import Entitlement, LimitedResource
 from payments.models import Subscription
 from payments.services.subscription_service import SubscriptionService
 
@@ -74,12 +74,64 @@ class TestSubscriptionAdminSaveFormsetLimits:
         assert changed_row.is_overridden is True
         assert unchanged_row.is_overridden is False
 
+    def test_unchecking_is_overridden_alone_actually_clears_it(self, rf, superuser):
+        """Phase 4 verification review BLOCKER: the previous ``save_formset`` was
+        documented as letting an admin clear ``is_overridden`` by unchecking the
+        box, but always re-stamped it ``True`` because unchecking the box makes
+        ``form.has_changed()`` true, landing the row in ``formset.save(commit=False)``.
+        This proves the fix: a save where ``is_overridden`` is the *only* changed
+        field must leave the new (cleared) value in place.
+        """
+        org = baker.make(Organization, parent=None)
+        subscription = SubscriptionService().create_subscription_for_organization(org)
+        overridden_row = subscription.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        overridden_row.is_overridden = True
+        overridden_row.save(update_fields=["is_overridden"])
+        other_row = subscription.limits.exclude(pk=overridden_row.pk).first()
+        assert other_row is not None
+
+        admin_instance = SubscriptionAdmin(Subscription, AdminSite())
+        inline = SubscriptionPlanLimitInline(Subscription, AdminSite())
+        request = rf.post(f"/admin/payments/subscription/{subscription.pk}/change/")
+        request.user = superuser
+        formset_class = inline.get_formset(request, subscription)
+
+        data = {
+            "limits-TOTAL_FORMS": "2",
+            "limits-INITIAL_FORMS": "2",
+            "limits-MIN_NUM_FORMS": "0",
+            "limits-MAX_NUM_FORMS": "1000",
+            "limits-0-id": str(overridden_row.pk),
+            "limits-0-subscription": str(subscription.pk),
+            "limits-0-resource_key": overridden_row.resource_key,
+            "limits-0-limit_value": (
+                "" if overridden_row.limit_value is None else str(overridden_row.limit_value)
+            ),
+            "limits-0-kind": overridden_row.kind,
+            # is_overridden intentionally omitted: an unchecked checkbox is not
+            # submitted, which is how the admin clears it.
+            "limits-1-id": str(other_row.pk),
+            "limits-1-subscription": str(subscription.pk),
+            "limits-1-resource_key": other_row.resource_key,
+            "limits-1-limit_value": (
+                "" if other_row.limit_value is None else str(other_row.limit_value)
+            ),
+            "limits-1-kind": other_row.kind,
+        }
+        formset = formset_class(data, instance=subscription, prefix="limits")
+        assert formset.is_valid(), formset.errors
+
+        admin_instance.save_formset(request, form=None, formset=formset, change=True)
+
+        overridden_row.refresh_from_db()
+        other_row.refresh_from_db()
+        assert overridden_row.is_overridden is False
+        assert other_row.is_overridden is False
+
 
 @pytest.mark.django_db
 class TestSubscriptionAdminSaveFormsetEntitlements:
     def test_only_the_changed_row_is_marked_overridden(self, rf, superuser):
-        from payments.billing_constants import Entitlement
-
         org = baker.make(Organization, parent=None)
         subscription = SubscriptionService().create_subscription_for_organization(org)
         changed_row = subscription.entitlements.get(

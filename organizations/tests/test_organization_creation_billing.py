@@ -23,6 +23,8 @@ real objects — no mocked subscription creation — since a missed hook here is
 exactly the kind of thing that leaves half the organizations plan-less.
 """
 
+from datetime import UTC, datetime, timedelta
+
 from django.contrib.auth import get_user_model
 from django.test import Client as DjangoClient
 from django.urls import reverse
@@ -31,7 +33,7 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationInvitation, OrganizationRole
 from organizations.services import OrganizationService
 from payments.exceptions import BillingRootCycleError
 from payments.models import Subscription
@@ -80,13 +82,8 @@ class TestProvisionTenantForUserGetsASubscription:
         """Joining an *existing* org via a pending invitation creates a membership
         only — it must not attempt (and does not need) to place a plan, since the
         org already has one from when it was created."""
-        from datetime import UTC, datetime, timedelta
-
-        from organizations.models import OrganizationInvitation, OrganizationRole
-        from organizations.services import OrganizationService as _OrganizationService
-
         creator = baker.make(get_user_model(), email="org-owner@example.com")
-        organization = _OrganizationService().create_organization(
+        organization = OrganizationService().create_organization(
             creator=creator, name="Existing Org"
         )
         existing_subscription = Subscription.objects.get(organization=organization)
@@ -99,7 +96,7 @@ class TestProvisionTenantForUserGetsASubscription:
             expires_at=datetime.now(tz=UTC) + timedelta(days=7),
         )
 
-        membership = _OrganizationService().provision_tenant_for_user(user=user)
+        membership = OrganizationService().provision_tenant_for_user(user=user)
 
         assert membership is not None
         assert membership.organization_id == organization.id
@@ -119,6 +116,11 @@ class TestResellerGraphQLMutationOrganizationCreation:
         return system_user, token
 
     def test_child_organization_gets_no_subscription_but_resolves_to_root(self):
+        # Imported locally, not hoisted: `container` is a module attribute set
+        # during app startup (`di_core/containers.py`), not a stable binding —
+        # `from di_core.containers import container` at module import time
+        # captures whatever the attribute was at collection, before app startup
+        # has necessarily run.
         from di_core.containers import container
 
         reseller_org = baker.make(Organization, name="Reseller Org", can_invite_organizations=True)
@@ -223,6 +225,8 @@ class TestResolveBillingRootTreeShapes:
 @pytest.mark.django_db
 class TestNoPlanlessOrganization:
     def test_every_root_organization_has_a_subscription_after_the_four_paths(self, user):
+        # See test_child_organization_gets_no_subscription_but_resolves_to_root
+        # for why this import is not hoisted.
         from di_core.containers import container
 
         # Path 1: REST.

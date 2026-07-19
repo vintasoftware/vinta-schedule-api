@@ -428,7 +428,7 @@ Tests:
 
 **Reusable skills**: `add-model`, `add-migration`.
 
-Acceptance: `Organization.objects.filter(parent__isnull=True, subscription__isnull=True).count() == 0`, and an org created through any of the three paths is on the default plan.
+Acceptance: `Organization.objects.filter(billing_root_filter(), subscription__isnull=True).count() == 0` (`billing_root_filter` from `payments.services.subscription_service` — a nested reseller is its own billing root too, not just a parent-less organization), and an org created through any of the three paths is on the default plan.
 
 ---
 

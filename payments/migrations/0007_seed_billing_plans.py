@@ -121,9 +121,9 @@ def unseed_billing_plans(apps, schema_editor):
     phase (3) on its own, since organizations are not placed on a plan until
     Phase 4. From Phase 4 (`payments.0009`) onward, `Subscription.plan` is
     `on_delete=PROTECT`, so reversing the full chain to before this migration
-    requires reversing `0008` first — its own reverse deletes exactly the
+    requires reversing `0009` first — its own reverse deletes exactly the
     `Subscription` rows *it* created (tagged `meta.backfilled_by`), which is what
-    keeps this delete free of a `ProtectedError`. Reversing `0006` directly while
+    keeps this delete free of a `ProtectedError`. Reversing `0007` directly while
     any organically-created (non-backfilled) `Subscription` still references
     `unlimited` or `free` still raises `ProtectedError`, by design."""
     BillingPlan = apps.get_model("payments", "BillingPlan")

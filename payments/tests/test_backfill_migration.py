@@ -58,9 +58,9 @@ class TestBackfillUnlimitedSubscriptionsMigration:
             assert subscription.plan.slug != "free"
 
     def test_backfilled_subscriptions_are_stamped_for_a_safe_reverse(self):
-        """`Subscription.plan` is `on_delete=PROTECT`, so `payments.0006`'s
+        """`Subscription.plan` is `on_delete=PROTECT`, so `payments.0007`'s
         reverse (deleting the seeded plans) would raise `ProtectedError` unless
-        `0008`'s reverse can identify and delete exactly the rows it created —
+        `0009`'s reverse can identify and delete exactly the rows it created —
         the `meta.backfilled_by` stamp is what makes that possible (BLOCKER 5,
         Phase 4 review)."""
         org = baker.make(Organization, parent=None)
@@ -142,6 +142,22 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         assert Subscription.objects.filter(organization=org).count() == 1
         first_subscription.refresh_from_db()
         assert first_subscription.plan.slug == "free"
+
+    def test_keyset_loop_runs_more_than_one_batch(self, monkeypatch):
+        """No other test exercises the keyset-paginated `while` loop across more
+        than one batch (`BATCH_SIZE = 500`, Phase 4 verification review NIT).
+        Shrinking `BATCH_SIZE` to 2 against 5 organizations forces at least three
+        iterations and verifies every organization is still backfilled exactly
+        once."""
+        monkeypatch.setattr(migration_module, "BATCH_SIZE", 2)
+        orgs = [baker.make(Organization, parent=None) for _ in range(5)]
+
+        backfill_unlimited_subscriptions(apps, None)
+
+        for org in orgs:
+            subscription = Subscription.objects.get(organization=org)
+            assert subscription.plan.slug == "unlimited"
+        assert Subscription.objects.filter(organization__in=orgs).count() == len(orgs)
 
     def test_missing_unlimited_plan_raises_instead_of_silently_no_opping(self):
         """BLOCKER 2, Phase 4 review: a missing seeded plan means a corrupted or

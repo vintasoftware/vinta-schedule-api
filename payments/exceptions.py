@@ -69,7 +69,7 @@ class BillingRootCycleError(PaymentError):
 
 class MissingSeedBillingPlanError(PaymentError):
     """Raised when a ``BillingPlan`` slug a migration/backfill depends on (e.g. the
-    ``unlimited`` plan seeded by ``payments.0006``) is missing at runtime.
+    ``unlimited`` plan seeded by ``payments.0007``) is missing at runtime.
 
     A missing seeded plan means a corrupted or out-of-order deploy — this must
     fail loudly rather than silently leave every organization plan-less with no

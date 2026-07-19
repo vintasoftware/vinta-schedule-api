@@ -54,7 +54,7 @@ def backfill_unlimited_subscriptions(apps, schema_editor):
     try:
         unlimited_plan = BillingPlan.objects.get(slug=UNLIMITED_PLAN_SLUG)
     except BillingPlan.DoesNotExist as exc:
-        # The Phase 3 seed migration (0006) should already have created this. A
+        # The Phase 3 seed migration (0007) should already have created this. A
         # missing seed plan means a corrupted or out-of-order deploy: every
         # organization would otherwise stay plan-less permanently with no signal
         # and no re-run path (the reverse is not a delete). Fail loudly instead.
@@ -139,10 +139,10 @@ def delete_backfilled_subscriptions(apps, schema_editor):
     on reverse would destroy that legitimate state along with the backfilled one.
     The `meta` stamp is what makes the two distinguishable.
 
-    This is also what keeps `payments.0006`'s reverse (which deletes the seeded
+    This is also what keeps `payments.0007`'s reverse (which deletes the seeded
     `BillingPlan` rows) from raising `ProtectedError`: `Subscription.plan` is
     `on_delete=PROTECT`, so any `Subscription` still referencing `unlimited` or
-    `free` blocks that delete. Reversing the full chain (`0008` before `0006`)
+    `free` blocks that delete. Reversing the full chain (`0009` before `0007`)
     clears exactly the rows this migration is responsible for first.
     `SubscriptionPlanLimit` / `SubscriptionEntitlement` rows cascade-delete with
     their `Subscription`.

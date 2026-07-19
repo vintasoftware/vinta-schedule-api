@@ -143,8 +143,13 @@ class SubscriptionService:
                     "payment_provider": PaymentProviders.MERCADOPAGO,
                 },
             )
-            if created:
+            # Also sync when an existing Subscription has no limit/entitlement
+            # rows yet (e.g. one created via SubscriptionAdmin with empty
+            # inlines, or payment_service.create_subscription) — otherwise it
+            # is returned silently untouched with no limits to enforce.
+            if created or not subscription.limits.exists():
                 self._sync_limits(subscription, plan)
+            if created or not subscription.entitlements.exists():
                 self._sync_entitlements(subscription, plan)
         return subscription
 
@@ -162,6 +167,7 @@ class SubscriptionService:
             raise NoDefaultBillingPlanError()
         return plan
 
+    @transaction.atomic
     def change_plan(self, subscription: Subscription, plan: BillingPlan) -> Subscription:
         """Move ``subscription`` onto ``plan`` and re-copy its limits/entitlements.
 
@@ -169,6 +175,10 @@ class SubscriptionService:
         are refreshed from the new plan's catalog rows. Rows an admin hand-edited
         (``is_overridden=True``) are left untouched — the support lever for a stuck
         organization must survive a plan change.
+
+        Atomic: a ``save`` + two ``bulk_create`` + two ``delete`` run as one unit
+        so a mid-way failure cannot leave the subscription on the new plan with
+        half-synced limits/entitlements.
         """
         subscription.plan = plan
         subscription.save(update_fields=["plan"])

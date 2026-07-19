@@ -16,6 +16,7 @@ from model_bakery import baker
 
 from organizations.models import Organization
 from payments.models import Subscription
+from payments.services.subscription_service import SubscriptionService
 
 
 User = get_user_model()
@@ -56,8 +57,6 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
         self, admin_client
     ):
         organization = baker.make(Organization, name="Existing Org", parent=None)
-        from payments.services.subscription_service import SubscriptionService
-
         SubscriptionService().create_subscription_for_organization(organization)
         change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
 
@@ -72,6 +71,37 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
 
         assert response.status_code == 302
         assert Subscription.objects.filter(organization=organization).count() == 1
+
+    def test_toggling_can_invite_organizations_on_an_existing_child_creates_a_subscription(
+        self, admin_client
+    ):
+        """A GraphQL-created reseller child correctly has no ``Subscription`` of
+        its own (it pools against its root's). Flipping ``can_invite_organizations``
+        on via admin makes it its own billing root (``is_billing_root``), and
+        ``save_model`` must provision a ``Subscription`` for it on that same save
+        — not just on creation (Phase 4 verification review BLOCKER).
+        """
+        root = baker.make(Organization, name="Root", parent=None, can_invite_organizations=True)
+        SubscriptionService().create_subscription_for_organization(root)
+        child = baker.make(Organization, name="Child", parent=root, can_invite_organizations=False)
+        assert not Subscription.objects.filter(organization=child).exists()
+
+        change_url = reverse("admin:organizations_organization_change", args=[child.pk])
+        response = admin_client.post(
+            change_url,
+            data={
+                "name": child.name,
+                "parent": root.pk,
+                "should_sync_rooms": "",
+                "external_event_update_policy": "change_request",
+                "can_invite_organizations": "on",
+            },
+        )
+
+        assert response.status_code == 302
+        child.refresh_from_db()
+        assert child.can_invite_organizations is True
+        assert Subscription.objects.filter(organization=child).exists()
 
 
 @pytest.mark.django_db

@@ -1,4 +1,3 @@
-import logging
 from typing import Annotated, Any
 
 from django import forms
@@ -9,9 +8,6 @@ from dependency_injector.wiring import Provide, inject
 
 from organizations.models import Organization, OrganizationBranding
 from payments.services.subscription_service import SubscriptionService
-
-
-logger = logging.getLogger(__name__)
 
 
 class OrganizationAdminForm(forms.ModelForm):
@@ -74,6 +70,13 @@ class OrganizationAdmin(admin.ModelAdmin):
     newly created organization on the default billing plan the same way
     ``OrganizationService.create_organization`` does, so an org created here is
     never left plan-less.
+
+    ``can_invite_organizations`` is also toggleable on an existing organization via
+    the "Reseller Capability" fieldset below, and flipping it on turns that org
+    into its own billing root (``is_billing_root``). ``save_model`` therefore calls
+    ``create_subscription_for_organization`` on every save, not just creation — it
+    is idempotent (``get_or_create``) and already a no-op for non-roots, so it is
+    safe to call unconditionally (Phase 4 verification review BLOCKER).
     """
 
     form = OrganizationAdminForm
@@ -135,24 +138,24 @@ class OrganizationAdmin(admin.ModelAdmin):
             SubscriptionService | None, Provide["subscription_service"]
         ] = None,
     ) -> None:
-        """Persist ``obj`` and, for a newly created organization, place it on the
-        default billing plan — every organization always has exactly one active
-        plan, from creation; there is no plan-less state.
+        """Persist ``obj`` and ensure it is on the default billing plan if it is a
+        billing root — every organization that is its own billing root always has
+        exactly one active plan; there is no plan-less state.
 
-        No-op for edits to an existing organization, and (via
-        ``create_subscription_for_organization`` itself) for a reseller child
-        that pools against its billing root's subscription instead.
+        Called on both create and edit: editing an existing organization can flip
+        ``can_invite_organizations`` on, which turns it into a billing root
+        (``is_billing_root``) that needs a ``Subscription`` it didn't have before.
+        ``create_subscription_for_organization`` is idempotent and already a no-op
+        for reseller children that pool against their billing root's subscription,
+        so calling it unconditionally is correct on both paths.
         """
         super().save_model(request, obj, form, change)
-        if change:
-            return
         if subscription_service is None:
-            logger.error(
-                "OrganizationAdmin.save_model: subscription_service not injected "
-                "(DI not wired?) — organization %s created with no Subscription.",
-                obj.pk,
+            raise RuntimeError(
+                f"OrganizationAdmin.save_model: subscription_service not injected "
+                f"(DI not wired?) — organization {obj.pk} saved with no Subscription "
+                f"guarantee."
             )
-            return
         subscription_service.create_subscription_for_organization(obj)
 
 

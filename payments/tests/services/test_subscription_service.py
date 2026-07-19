@@ -163,18 +163,31 @@ class TestCreateSubscriptionForOrganization:
         with pytest.raises(NoDefaultBillingPlanError):
             service.create_subscription_for_organization(org)
 
-    def test_concurrent_creation_is_idempotent_via_get_or_create(self, service, plan):
-        """Simulates the race: two callers both see no existing `Subscription` and
-        both call `create_subscription_for_organization`. Must not raise
-        `IntegrityError` on the `organization` `OneToOneField` (SHOULD-FIX 3,
-        Phase 4 review)."""
+    def test_syncs_limits_and_entitlements_for_an_existing_subscription_with_none(
+        self, service, plan
+    ):
+        """A `Subscription` that already exists but has no `SubscriptionPlanLimit`
+        / `SubscriptionEntitlement` rows (e.g. created via `SubscriptionAdmin`
+        with empty inlines, or `payment_service.create_subscription`) must not be
+        returned silently untouched (SHOULD-FIX 1, Phase 4 verification review)."""
         org = baker.make(Organization, parent=None)
+        subscription = baker.make(
+            Subscription,
+            organization=org,
+            plan=plan,
+            billing_state=BillingState.FREE,
+        )
+        assert not subscription.limits.exists()
+        assert not subscription.entitlements.exists()
 
-        first = service.create_subscription_for_organization(org, plan=plan)
-        second = service.create_subscription_for_organization(org, plan=plan)
+        result = service.create_subscription_for_organization(org, plan=plan)
 
-        assert first.pk == second.pk
-        assert Subscription.objects.filter(organization=org).count() == 1
+        assert result is not None
+        assert result.pk == subscription.pk
+        limit = result.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        assert limit.limit_value == 5
+        entitlement = result.entitlements.get(entitlement_key=Entitlement.PARTNER_API)
+        assert entitlement.is_enabled is True
 
     def test_idempotent_returns_existing_subscription(self, service, plan):
         org = baker.make(Organization, parent=None)
