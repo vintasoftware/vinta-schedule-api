@@ -91,6 +91,9 @@ def backfill_unlimited_subscriptions(apps, schema_editor):
                     billing_interval="monthly",
                     current_period_start=now,
                     current_period_end=period_end,
+                    # Placeholder: `unlimited` is $0 and never touches a gateway.
+                    # Mirrors the same placeholder in
+                    # SubscriptionService.create_subscription_for_organization.
                     payment_provider="mercadopago",
                     meta={BACKFILL_META_KEY: BACKFILL_META_VALUE},
                 )
@@ -149,7 +152,6 @@ def delete_backfilled_subscriptions(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("payments", "0007_subscriptionentitlement_subscriptionplanlimit"),
         ("organizations", "0016_organizationmembership_is_billing_owner"),
