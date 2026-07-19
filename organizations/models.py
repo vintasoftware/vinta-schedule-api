@@ -240,6 +240,17 @@ class OrganizationMembership(BaseModel):
             "read unchanged."
         ),
     )
+    is_billing_owner = models.BooleanField(
+        default=False,
+        db_default=False,
+        db_index=True,
+        help_text=(
+            "Whether this membership may manage the organization's billing (change "
+            "plan, purchase add-ons, manage payment method) in addition to admins. "
+            "The permission that reads this flag (IsBillingOwnerOrAdmin) lands in a "
+            "later phase; this field only marks the membership."
+        ),
+    )
 
     # Composite primary key on (user, organization) — a membership's identity is the
     # (user, org) pair. The implicit ``id`` BigAutoField is dropped in the Phase 7b

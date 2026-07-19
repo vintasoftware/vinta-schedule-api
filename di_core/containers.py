@@ -41,6 +41,7 @@ from payments.services.subscription_adapters.stripe_subscription_adapter import 
     StripeSubscriptionAdapter,
 )
 from payments.services.subscription_plan_factory.billing_plan_factory import BillingPlanFactory
+from payments.services.subscription_service import SubscriptionService
 from public_api.services import PublicAPIAuthService
 from vintasend_django_sms_template_renderer.services.notification_template_renderers.django_sms_template_renderer import (
     DjangoTemplatedSMSRenderer,
@@ -115,6 +116,10 @@ class AppContainer(containers.DeclarativeContainer):
         subscription_gateway=subscription_gateway,
         payment_provider_registry=payment_provider_registry,
         subscription_provider_registry=subscription_provider_registry,
+    )
+
+    subscription_service = providers.Factory(
+        SubscriptionService,
     )
 
     notification_service = providers.Singleton(
@@ -207,6 +212,7 @@ class AppContainer(containers.DeclarativeContainer):
         calendar_service=calendar_service,
         webhook_membership_side_effects_service=webhook_membership_side_effects_service,
         audit_service=audit_service,
+        subscription_service=subscription_service,
     )
 
     public_api_auth_service = providers.Factory(

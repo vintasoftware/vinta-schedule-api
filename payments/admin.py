@@ -12,6 +12,7 @@ from payments.models import (
     Refund,
     RefundStatusUpdate,
     Subscription,
+    SubscriptionPlanLimit,
     SubscriptionStatusUpdate,
 )
 
@@ -63,6 +64,19 @@ class BillingProfileAdmin(admin.ModelAdmin):
     readonly_fields = ("created", "modified")
 
 
+class SubscriptionPlanLimitInline(admin.TabularInline):
+    """Editable per-subscription limit copy — the support lever for a stuck
+    organization. Any row an admin touches here is stamped ``is_overridden=True``
+    on save (see ``SubscriptionAdmin.save_formset``) so it survives the next plan
+    change untouched, which is what makes this the intended enforcement bypass
+    instead of a code-level one."""
+
+    model = SubscriptionPlanLimit
+    extra = 0
+    fields = ("resource_key", "limit_value", "kind", "overage_unit_price", "is_overridden")
+    readonly_fields = ("is_overridden",)
+
+
 @admin.register(Subscription)
 class SubscriptionAdmin(admin.ModelAdmin):
     list_display = (
@@ -78,6 +92,24 @@ class SubscriptionAdmin(admin.ModelAdmin):
     list_filter = ("status", "billing_state", "billing_interval", "payment_provider")
     search_fields = ("organization__name", "external_id")
     readonly_fields = ("created", "modified")
+    inlines = (SubscriptionPlanLimitInline,)
+
+    def save_formset(self, request, form, formset, change):
+        """`SubscriptionPlanLimit` rows an admin creates or edits here are
+        hand-edited by definition — mark them `is_overridden=True` so a later plan
+        change (`SubscriptionService.change_plan`) leaves them untouched. Rows the
+        admin merely viewed without changing are not returned by
+        `formset.save(commit=False)` and are left alone."""
+        if formset.model is SubscriptionPlanLimit:
+            instances = formset.save(commit=False)
+            for instance in instances:
+                instance.is_overridden = True
+                instance.save()
+            for obj in formset.deleted_objects:
+                obj.delete()
+            formset.save_m2m()
+        else:
+            super().save_formset(request, form, formset, change)
 
 
 @admin.register(Payment)

@@ -41,6 +41,7 @@ from organizations.models import (
     OrganizationMembership,
     OrganizationRole,
 )
+from payments.services.subscription_service import SubscriptionService
 from users.models import User
 from webhooks.services.webhook_membership_side_effects import WebhookMembershipSideEffectsService
 
@@ -59,11 +60,13 @@ class OrganizationService:
             Provide["webhook_membership_side_effects_service"],
         ],
         audit_service: Annotated[AuditService, Provide["audit_service"]],
+        subscription_service: Annotated[SubscriptionService, Provide["subscription_service"]],
     ):
         self.calendar_service = calendar_service
         self.notification_service = notification_service
         self.webhook_membership_side_effects_service = webhook_membership_side_effects_service
         self.audit_service = audit_service
+        self.subscription_service = subscription_service
 
     def create_organization(
         self,
@@ -87,6 +90,11 @@ class OrganizationService:
         if external_event_update_policy is not None:
             create_kwargs["external_event_update_policy"] = external_event_update_policy
         self.organization = Organization.objects.create(**create_kwargs)
+        # Every organization always has exactly one active plan, from creation —
+        # there is no plan-less state (billing plans and limits plan, objective 2).
+        # A no-op for a reseller child (parent set): it pools against its root's
+        # subscription instead. See SubscriptionService.create_subscription_for_organization.
+        self.subscription_service.create_subscription_for_organization(self.organization)
         # The creator of the organization is its first admin — every org must
         # have at least one admin, and no one else exists yet to promote them.
         admin_membership = OrganizationMembership.objects.create(
