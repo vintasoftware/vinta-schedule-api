@@ -123,7 +123,7 @@ def unseed_billing_plans(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("payments", "0005_planentitlement_planlimit"),
+        ("payments", "0006_planentitlement_planlimit"),
     ]
 
     operations = [

@@ -33,5 +33,10 @@ class BillingPlanFactory(BaseSubscriptionPlanFactory):
             # TODO(phase-9): providers commonly reject billing_day > 28 for monthly recurrence;
             # validate or clamp before this reaches a real provider call.
             billing_day=subscription.current_period_start.day,
+            # Required since the Stripe adapter landed: `Plan` no longer defaults to
+            # a monthly cadence, because that silently made annual plans impossible.
+            # Sourced from the subscription rather than the catalog plan — the same
+            # plan can be sold monthly or annually.
+            billing_interval=subscription.billing_interval,
             external_id=subscription.plan_external_id,
         )

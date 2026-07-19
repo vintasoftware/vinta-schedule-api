@@ -1,4 +1,4 @@
-"""Verifies the `0006_seed_billing_plans` data migration's end state.
+"""Verifies the `0007_seed_billing_plans` data migration's end state.
 
 The test DB is fully migrated before any test runs (pytest-django), so asserting
 against `BillingPlan.objects` here is asserting against what the seed migration
@@ -79,7 +79,7 @@ class TestPlanSeedMigration:
         from django.apps import apps
 
         # Get the seeding function from the migration module
-        migration_module = importlib.import_module("payments.migrations.0006_seed_billing_plans")
+        migration_module = importlib.import_module("payments.migrations.0007_seed_billing_plans")
         seed_billing_plans = migration_module.seed_billing_plans
 
         plan = BillingPlan.objects.get(slug="unlimited")

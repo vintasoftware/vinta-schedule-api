@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('payments', '0004_providerwebhookevent'),
+        ('payments', '0005_alter_payment_payment_provider_and_more'),
     ]
 
     operations = [
