@@ -10,6 +10,7 @@ from django.test import override_settings
 
 import pytest
 
+from payments.billing_constants import BillingInterval
 from payments.constants import PaymentProviders, PaymentStatuses
 from payments.exceptions import ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import (
@@ -96,6 +97,7 @@ def mock_plan():
     plan.value = Decimal("99.90")
     plan.currency = "BRL"
     plan.billing_day = 15
+    plan.billing_interval = BillingInterval.MONTHLY
     return plan
 
 
@@ -109,6 +111,7 @@ def mock_created_plan():
     plan.value = Decimal("99.90")
     plan.currency = "BRL"
     plan.billing_day = 15
+    plan.billing_interval = BillingInterval.MONTHLY
     return plan
 
 
@@ -169,6 +172,19 @@ def test_create_subscription_plan(adapter, mock_plan):
         },
     }
     adapter.sdk.plan().create.assert_called_once_with(expected_plan_data)
+
+
+def test_create_subscription_plan_annual_interval(adapter, mock_plan):
+    """MercadoPago's `frequency_type` has no `"years"` option — an annual plan
+    must be expressed as 12 months, not `frequency=1, frequency_type="years"`."""
+    mock_plan.billing_interval = BillingInterval.ANNUAL
+    adapter.sdk.plan().create.return_value = {"response": {"id": "mp-plan-456"}}
+
+    adapter.create_subscription_plan(mock_plan)
+
+    call_args = adapter.sdk.plan().create.call_args[0][0]
+    assert call_args["auto_recurring"]["frequency"] == 12
+    assert call_args["auto_recurring"]["frequency_type"] == "months"
 
 
 def test_update_subscription_plan(adapter, mock_plan):
@@ -311,6 +327,57 @@ def test_get_subscription_external_id_from_update_missing_data(adapter):
 
     result = adapter.get_subscription_external_id_from_update(update_payload)
     assert result is None
+
+
+def test_receive_payment_update_sources_subscription_id_from_hook_not_hardcoded_path(adapter):
+    """Pins `BaseSubscriptionAdapter.receive_payment_update` (the template
+    method) against `get_subscription_external_id_from_update` (the per-adapter
+    hook) for MercadoPago specifically, end to end. The base method used to read
+    a hardcoded `payload["data"]["id"]` path directly instead of calling this
+    hook at all (see git history), so nothing previously proved the hook-based
+    flow resolves to the *same* subscription id the hardcoded path did for
+    MercadoPago's actual notification shape — this pins that equivalence rather
+    than assuming it from the hook's own unit test alone."""
+    adapter.sdk.preapproval().get.return_value = {"response": {"last_payment_id": "payment-456"}}
+    adapter.sdk.payment().get.return_value = {
+        "response": {
+            "id": "payment-456",
+            "transaction_amount": "99.90",
+            "currency_id": "BRL",
+            "status": "approved",
+            "status_detail": "accredited",
+            "payment_method_id": "visa",
+            "description": "Subscription payment",
+            "payer": {
+                "email": "test@example.com",
+                "first_name": "John",
+                "last_name": "Doe",
+                "identification": {"type": "CPF", "number": "12345678901"},
+                "address": {
+                    "street_name": "Test Street",
+                    "street_number": "123",
+                    "neighborhood": "Test Neighborhood",
+                    "city": "Test City",
+                    "federal_unit": "Test State",
+                    "country": "BR",
+                    "zip_code": "12345-678",
+                },
+            },
+        }
+    }
+    # Same shape as the deleted `_get_required_subscription_external_id_from_update`
+    # hardcoded read (`payload["data"]["id"]`).
+    update_payload = {
+        "type": "subscription_authorized_payment",
+        "data": {"id": "mp-subscription-456"},
+    }
+
+    result = adapter.receive_payment_update(update_payload)
+
+    assert result is not None
+    subscription_payment, _status_update = result
+    assert subscription_payment.subscription_external_id == "mp-subscription-456"
+    adapter.sdk.preapproval().get.assert_called_with("mp-subscription-456")
 
 
 def test_get_update_id(adapter):

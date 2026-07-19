@@ -8,6 +8,7 @@ from django.urls import reverse
 
 import mercadopago
 
+from payments.billing_constants import BillingInterval
 from payments.constants import PaymentProviders, PaymentStatuses
 from payments.exceptions import ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import (
@@ -46,21 +47,38 @@ SUBSCRIPTION_STATUS_MAPPING: MappingProxyType[str, str] = MappingProxyType(
 )
 
 
+def _auto_recurring_frequency(billing_interval: str) -> tuple[int, str]:
+    """Map our internal billing cadence onto MercadoPago's `auto_recurring` fields.
+
+    MercadoPago's `frequency_type` only accepts `"days"` or `"months"` — there is
+    no `"years"` option — so an annual plan is expressed as 12 months rather than
+    `frequency=1, frequency_type="years"`.
+    """
+    if billing_interval == BillingInterval.ANNUAL:
+        return 12, "months"
+    return 1, "months"
+
+
 class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
     provider = PaymentProviders.MERCADOPAGO
+    #: MercadoPago's `x-signature` HMAC covers only `data.id` + `x-request-id` +
+    #: `ts` — never the request body as a whole. See
+    #: `payments.services.mercadopago_signature.verify_mercadopago_signature`.
+    verifies_full_body = False
 
     def __init__(self, access_token: str, webhook_secret: str = ""):
         self.sdk = mercadopago.SDK(access_token)
         self.webhook_secret = webhook_secret
 
     def create_subscription_plan(self, plan: Plan) -> str:
+        frequency, frequency_type = _auto_recurring_frequency(plan.billing_interval)
         response = self.sdk.plan().create(
             {
                 "reason": plan.name,
                 "external_reference": plan.id,
                 "auto_recurring": {
-                    "frequency": 1,
-                    "frequency_type": "months",
+                    "frequency": frequency,
+                    "frequency_type": frequency_type,
                     "transaction_amount": str(plan.value),
                     "currency_id": plan.currency,
                     "billing_day": plan.billing_day,
@@ -82,14 +100,15 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
         return response["response"]["id"]
 
     def update_subscription_plan(self, external_id: str, plan: Plan) -> str:
+        frequency, frequency_type = _auto_recurring_frequency(plan.billing_interval)
         response = self.sdk.plan().update(
             external_id,
             {
                 "reason": plan.name,
                 "external_reference": plan.id,
                 "auto_recurring": {
-                    "frequency": 1,
-                    "frequency_type": "months",
+                    "frequency": frequency,
+                    "frequency_type": frequency_type,
                     "transaction_amount": str(plan.value),
                     "currency_id": plan.currency,
                     "billing_day": plan.billing_day,
@@ -168,14 +187,15 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
         )
 
     def update_plan(self, plan: CreatedPlan) -> CreatedPlan:
+        frequency, frequency_type = _auto_recurring_frequency(plan.billing_interval)
         self.sdk.plan().update(
             plan.external_id,
             {
                 "reason": plan.name,
                 "external_reference": plan.id,
                 "auto_recurring": {
-                    "frequency": 1,
-                    "frequency_type": "months",
+                    "frequency": frequency,
+                    "frequency_type": frequency_type,
                     "transaction_amount": str(plan.value),
                     "currency_id": plan.currency,
                     "billing_day": plan.billing_day,

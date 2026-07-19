@@ -4,6 +4,7 @@ from django.utils.translation import gettext as _
 
 class PaymentProviders(TextChoices):
     MERCADOPAGO = ("mercadopago", "MercadoPago")
+    STRIPE = ("stripe", "Stripe")
 
 
 class PaymentStatuses(TextChoices):

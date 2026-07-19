@@ -10,7 +10,7 @@ import mercadopago.config
 
 from payments.constants import PaymentProviders, PaymentStatuses, RefundStatuses
 from payments.exceptions import ProviderWebhookEventIdMissingError
-from payments.services.dataclasses import Refund
+from payments.services.dataclasses import Refund, RefundResult
 from payments.services.mercadopago_signature import verify_mercadopago_signature
 from payments.services.payment_adapters.base import BasePaymentAdapter, Payment, PaymentStatusUpdate
 
@@ -61,6 +61,10 @@ REFUND_STATUS_MAPPING: dict[str, str] = {
 
 class MercadoPagoPaymentAdapter(BasePaymentAdapter):
     provider = PaymentProviders.MERCADOPAGO
+    #: MercadoPago's `x-signature` HMAC covers only `data.id` + `x-request-id` +
+    #: `ts` — never the request body as a whole. See
+    #: `payments.services.mercadopago_signature.verify_mercadopago_signature`.
+    verifies_full_body = False
 
     def __init__(self, access_token: str, webhook_secret: str = ""):
         self.sdk = mercadopago.SDK(access_token)
@@ -114,13 +118,25 @@ class MercadoPagoPaymentAdapter(BasePaymentAdapter):
         result = self.sdk.payment().create(payment_data, request_options)
         return result["response"]["id"]
 
-    def refund(self, refund: Refund) -> str:
+    def refund(self, refund: Refund) -> RefundResult:
         request_options = mercadopago.config.RequestOptions()
         request_options.custom_headers = {"x-idempotency-key": {refund.id}}
         response = self.sdk.refund().create(
             refund.payment.external_id, {"amount": str(refund.value)}, request_options
         )
-        return response["response"]["id"]
+        # MercadoPago's create-refund response already carries the refund's
+        # status (see https://www.mercadopago.com/developers/en/reference/.../create-refund/post)
+        # — no need to force a second round trip through `check_refund_status`
+        # just to learn what this response already told us.
+        original_status = response["response"].get("status")
+        mapped_status = REFUND_STATUS_MAPPING.get(original_status, RefundStatuses.UNKNOWN)
+        if mapped_status == RefundStatuses.UNKNOWN:
+            logger.error(
+                "Unknown refund status: refund_id=%s original_status=%s",
+                refund.id,
+                original_status,
+            )
+        return RefundResult(external_id=response["response"]["id"], status=mapped_status)
 
     def check_status(
         self, payment_external_id: str, update_id: str | None = None
@@ -159,17 +175,38 @@ class MercadoPagoPaymentAdapter(BasePaymentAdapter):
             return None
         return super().receive_update(update_payload)
 
-    def check_refund_status(self, refund_external_id: str) -> str:
-        refund_payload = self.sdk.payment().get(refund_external_id)
-        original_status = refund_payload["response"]["status"]
-        internal_status = REFUND_STATUS_MAPPING.get(original_status, RefundStatuses.UNKNOWN)
-        if internal_status == RefundStatuses.UNKNOWN:
+    def check_refund_status(self, refund: Refund) -> str:
+        """
+        MercadoPago has no single-refund-by-id endpoint — only "list refunds for
+        a payment" (see `Refund.list_all` in the `mercadopago` SDK) — so, unlike
+        `check_status` for payments, this requires the *payment's* external id
+        (`refund.payment.external_id`), not just the refund's own id.
+        """
+        if not refund.external_id:
             logger.error(
-                "Unknown refund status: refund_external_id=%s original_status=%s",
-                refund_external_id,
-                original_status,
+                "Cannot check refund status without an external_id: refund_id=%s", refund.id
             )
-        return internal_status
+            return RefundStatuses.UNKNOWN
+
+        refunds_payload = self.sdk.refund().list_all(refund.payment.external_id)
+        for item in refunds_payload.get("response", []):
+            if str(item.get("id")) == str(refund.external_id):
+                original_status = item.get("status")
+                mapped_status = REFUND_STATUS_MAPPING.get(original_status, RefundStatuses.UNKNOWN)
+                if mapped_status == RefundStatuses.UNKNOWN:
+                    logger.error(
+                        "Unknown refund status: refund_external_id=%s original_status=%s",
+                        refund.external_id,
+                        original_status,
+                    )
+                return mapped_status
+
+        logger.error(
+            "Refund not found in provider's refund list: refund_external_id=%s payment_external_id=%s",
+            refund.external_id,
+            refund.payment.external_id,
+        )
+        return RefundStatuses.UNKNOWN
 
     def verify_signature(self, raw_body: bytes, headers: Mapping[str, str]) -> bool:
         return verify_mercadopago_signature(raw_body, headers, self.webhook_secret) is not None

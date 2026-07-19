@@ -1,4 +1,5 @@
 from organizations.models import SubscriptionPlan
+from payments.billing_constants import BillingInterval
 from payments.models import Subscription
 from payments.services.dataclasses import CreatedPlan, Plan
 from payments.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
@@ -20,6 +21,7 @@ class OrganizationSubscriptionPlanFactory(BaseSubscriptionPlanFactory):
             "value": subscription_plan.value,
             "currency": "BRL",
             "billing_day": subscription_plan.billing_day,
+            "billing_interval": BillingInterval.MONTHLY,
         }
 
         if not subscription_plan.plan_external_id:

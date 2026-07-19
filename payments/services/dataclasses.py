@@ -48,6 +48,12 @@ class Plan:
     value: Decimal
     currency: str
     billing_day: int
+    # Required, not defaulted: MercadoPago's `create_subscription_plan` used to
+    # hardcode a monthly cadence, which silently made annual plans impossible.
+    # Stripe's `Price` objects require an explicit `recurring.interval` at
+    # creation time, which surfaced the gap — both adapters now read this instead
+    # of assuming monthly. One of `payments.billing_constants.BillingInterval`.
+    billing_interval: str
 
 
 @dataclass
@@ -97,9 +103,33 @@ class Refund:
     payment: Payment
     value: Decimal
     currency: str
+    # `None` when constructing a `Refund` to *request* a new refund (the provider
+    # is what assigns this). Required when constructing one to *poll* an existing
+    # refund's status via `check_refund_status` — MercadoPago has no
+    # single-refund-by-id lookup, only a list-by-payment one, so the id (and the
+    # parent payment's own external id, via `payment.external_id`) must both be
+    # available at that point.
+    external_id: str | None = None
 
     def __str__(self):
         return f"{self.id} {self.payment} - {self.value} - {self.currency}"
+
+
+@dataclass
+class RefundResult:
+    """The immediate result of requesting a refund from the provider.
+
+    Both MercadoPago and Stripe return the refund's status synchronously in the
+    same response body that carries its id — there is no reason to force a
+    second round trip (``check_refund_status``) just to learn a status the
+    create-refund response already carried. ``check_refund_status`` still exists
+    for later reconciliation (an async pending -> succeeded/failed transition, or
+    a scheduled cycle-close sweep); it is simply no longer the *only* way to
+    learn a refund's status.
+    """
+
+    external_id: str
+    status: str
 
 
 @dataclass

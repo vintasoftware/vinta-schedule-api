@@ -33,9 +33,13 @@ from organizations.organization_subscription_plan_factory import OrganizationSub
 from organizations.services import OrganizationService
 from payments.constants import PaymentProviders
 from payments.services.payment_adapters.mercadopago_payment_adapter import MercadoPagoPaymentAdapter
+from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
 from payments.services.payment_service import PaymentService
 from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
     MercadoPagoSubscriptionAdapter,
+)
+from payments.services.subscription_adapters.stripe_subscription_adapter import (
+    StripeSubscriptionAdapter,
 )
 from public_api.services import PublicAPIAuthService
 from vintasend_django_sms_template_renderer.services.notification_template_renderers.django_sms_template_renderer import (
@@ -68,18 +72,35 @@ class AppContainer(containers.DeclarativeContainer):
         webhook_secret=config.MERCADOPAGO_WEBHOOK_SECRET,
     )
 
+    #: Registered so the `payment_provider_registry`/`subscription_provider_registry`
+    #: `provider` URL kwarg can select Stripe, and so the adapter conformance
+    #: suite can exercise it — no organization is routed onto Stripe yet (that's
+    #: Phase 9's job).
+    stripe_payment_gateway = providers.Factory(
+        StripePaymentAdapter,
+        api_key=config.STRIPE_SECRET_KEY,
+        webhook_secret=config.STRIPE_WEBHOOK_SECRET,
+    )
+    stripe_subscription_gateway = providers.Factory(
+        StripeSubscriptionAdapter,
+        api_key=config.STRIPE_SECRET_KEY,
+        webhook_secret=config.STRIPE_WEBHOOK_SECRET,
+    )
+
     #: Selects the payment/subscription adapter by provider slug (the `provider`
-    #: URL kwarg on the payment webhook views). Only MercadoPago is registered so
-    #: far; a future provider (e.g. Stripe) registers here rather than the webhook
-    #: views or `PaymentService` hardcoding a single provider.
+    #: URL kwarg on the payment webhook views). A future provider registers here
+    #: rather than the webhook views or `PaymentService` hardcoding a single
+    #: provider.
     payment_provider_registry = providers.Dict(
         {
             PaymentProviders.MERCADOPAGO: payment_gateway,
+            PaymentProviders.STRIPE: stripe_payment_gateway,
         }
     )
     subscription_provider_registry = providers.Dict(
         {
             PaymentProviders.MERCADOPAGO: subscription_gateway,
+            PaymentProviders.STRIPE: stripe_subscription_gateway,
         }
     )
 

@@ -200,7 +200,7 @@ class PaymentService[
             description="Refund created in the database, will send to payment gateway",
         )
         try:
-            refund.external_id = self.payment_gateway.refund(
+            refund_result = self.payment_gateway.refund(
                 Refund(
                     id=refund.id,
                     value=refund.value,
@@ -208,10 +208,16 @@ class PaymentService[
                     payment=self._serialize_payment(refund.payment),
                 )
             )
+            refund.external_id = refund_result.external_id
+            refund.status = refund_result.status
             RefundStatusUpdate.objects.create(
                 refund=refund,
-                status=RefundStatuses.PENDING,
-                description="Refund created in the payment gateway, waiting for processing",
+                status=refund_result.status,
+                # The status comes straight off the provider's create-refund
+                # response (see `RefundResult`), not a subsequent
+                # `check_refund_status` poll — both MercadoPago and Stripe return
+                # it synchronously alongside the new refund's id.
+                description=f"Refund created in the payment gateway with status {refund_result.status}",
             )
         except Exception as e:  # noqa: BLE001
             logger.exception(e)
@@ -230,7 +236,15 @@ class PaymentService[
         return self.payment_gateway.check_status(payment.external_id)
 
     def check_refund_status(self, refund: RefundModel) -> None:
-        refund.status = self.payment_gateway.check_refund_status(refund.external_id)
+        refund.status = self.payment_gateway.check_refund_status(
+            Refund(
+                id=refund.id,
+                value=refund.value,
+                currency=refund.currency,
+                payment=self._serialize_payment(refund.payment),
+                external_id=refund.external_id,
+            )
+        )
         refund.save()
 
     def get_payment_by_external_id(self, external_id: str) -> PaymentModel | None:
@@ -343,6 +357,14 @@ class PaymentService[
         ``verify_payment_webhook_signature`` — the idempotency ledger key is
         derived from them (signed material), never from ``payload`` alone, which
         may contain unsigned fields an attacker can vary across replays.
+
+        ``mark_processed`` only runs when ``receive_payment_update`` actually
+        returns a result. A ``None`` result — whether because the event is
+        irrelevant or because something failed to resolve (e.g. a since-fixed
+        adapter bug) — leaves the ledger row unprocessed, per
+        ``ProviderWebhookEventManager.get_or_create_pending``'s contract: an
+        unprocessed row is exactly what allows a provider redelivery of the same
+        event to be retried instead of being permanently burned.
         """
         adapter = self.get_payment_adapter(provider)
         event_id = adapter.get_event_id(raw_body, headers, payload)
@@ -357,7 +379,8 @@ class PaymentService[
                 return None
 
             result = self.receive_payment_update(payload, provider=provider)
-            ProviderWebhookEventModel.objects.mark_processed(event)
+            if result is not None:
+                ProviderWebhookEventModel.objects.mark_processed(event)
         return result
 
     def handle_subscription_payment_webhook(
@@ -374,6 +397,10 @@ class PaymentService[
         ``verify_subscription_webhook_signature`` — the idempotency ledger key is
         derived from them (signed material), never from ``payload`` alone, which
         may contain unsigned fields an attacker can vary across replays.
+
+        ``mark_processed`` only runs when ``receive_subscription_payment_update``
+        actually returns a result — see ``handle_payment_webhook``'s docstring for
+        why a ``None`` result must not permanently burn the delivery.
         """
         adapter = self.get_subscription_adapter(provider)
         event_id = adapter.get_event_id(raw_body, headers, payload)
@@ -388,7 +415,8 @@ class PaymentService[
                 return None
 
             result = self.receive_subscription_payment_update(payload, provider=provider)
-            ProviderWebhookEventModel.objects.mark_processed(event)
+            if result is not None:
+                ProviderWebhookEventModel.objects.mark_processed(event)
         return result
 
     def _serialize_subscription(self, subscription: SubscriptionModel) -> Subscription:

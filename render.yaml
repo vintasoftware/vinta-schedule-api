@@ -176,6 +176,12 @@ envVarGroups:
       # Shared secret used to verify MercadoPago's `x-signature` webhook header.
       - key: MERCADOPAGO_WEBHOOK_SECRET
         sync: false
+      # Stripe secret API key. No organization is routed onto Stripe yet.
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      # Shared secret used to verify Stripe's `Stripe-Signature` webhook header.
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
 
   # AWS S3 + CloudFront storage. Values come from the Terragrunt/Scalr stack
   # under infrastructure/ — see `terragrunt output`. Secrets are sync:false so

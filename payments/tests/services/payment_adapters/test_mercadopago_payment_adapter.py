@@ -12,7 +12,7 @@ import pytest
 
 from payments.constants import PaymentProviders, PaymentStatuses, RefundStatuses
 from payments.exceptions import ProviderWebhookEventIdMissingError
-from payments.services.dataclasses import Refund
+from payments.services.dataclasses import Refund, RefundResult
 from payments.services.payment_adapters.base import Payment, PaymentStatusUpdate
 from payments.services.payment_adapters.mercadopago_payment_adapter import (
     PAYMENT_STATUS_MAPPING,
@@ -180,21 +180,48 @@ def test_process_missing_site_domain(adapter, mock_payment):
     "payments.services.payment_adapters.mercadopago_payment_adapter.mercadopago.config.RequestOptions"
 )
 def test_refund_success(mock_request_options, adapter, mock_refund):
-    """Test successful refund processing."""
+    """Test successful refund processing.
+
+    MercadoPago's create-refund response carries the refund's status
+    synchronously alongside its id — the adapter returns both in one
+    `RefundResult` rather than forcing a second `check_refund_status` round trip
+    just to learn what this response already said.
+    """
     # Setup mocks
     mock_options = Mock()
     mock_request_options.return_value = mock_options
 
-    adapter.sdk.refund().create.return_value = {"response": {"id": "refund-456"}}
+    adapter.sdk.refund().create.return_value = {
+        "response": {"id": "refund-456", "status": "approved"}
+    }
 
     # Execute
     result = adapter.refund(mock_refund)
 
     # Verify
-    assert result == "refund-456"
+    assert result == RefundResult(external_id="refund-456", status=RefundStatuses.APPROVED)
     mock_options.custom_headers = {"x-idempotency-key": {"refund-123"}}
     adapter.sdk.refund().create.assert_called_once_with(
         "mp-payment-456", {"amount": "50.25"}, mock_options
+    )
+
+
+@patch(
+    "payments.services.payment_adapters.mercadopago_payment_adapter.mercadopago.config.RequestOptions"
+)
+@patch("payments.services.payment_adapters.mercadopago_payment_adapter.logger")
+def test_refund_unknown_status_logs_no_pii(mock_logger, mock_request_options, adapter, mock_refund):
+    adapter.sdk.refund().create.return_value = {
+        "response": {"id": "refund-456", "status": "some_new_mp_status"}
+    }
+
+    result = adapter.refund(mock_refund)
+
+    assert result.status == RefundStatuses.UNKNOWN
+    mock_logger.error.assert_called_once_with(
+        "Unknown refund status: refund_id=%s original_status=%s",
+        mock_refund.id,
+        "some_new_mp_status",
     )
 
 
@@ -323,38 +350,59 @@ def test_receive_update_invalid_action(adapter):
     assert result is None
 
 
-@patch("payments.services.payment_adapters.mercadopago_payment_adapter.logger")
-def test_check_refund_status_success(mock_logger, adapter):
-    """Test successful refund status check."""
-    adapter.sdk.payment().get.return_value = {"response": {"status": "approved"}}
+def test_check_refund_status_success(adapter, mock_refund):
+    """MercadoPago has no single-refund-by-id lookup — only "list refunds for a
+    payment" — so this reads the parent payment's external id off
+    `refund.payment.external_id`, not just the refund's own id."""
+    mock_refund.external_id = "refund-456"
+    adapter.sdk.refund().list_all.return_value = {
+        "response": [{"id": "refund-456", "status": "approved"}]
+    }
 
-    with patch.dict(
-        "payments.services.payment_adapters.mercadopago_payment_adapter.REFUND_STATUS_MAPPING",
-        {"approved": RefundStatuses.APPROVED},
-    ):
-        result = adapter.check_refund_status("refund-456")
+    result = adapter.check_refund_status(mock_refund)
 
     assert result == RefundStatuses.APPROVED
-    adapter.sdk.payment().get.assert_called_once_with("refund-456")
+    adapter.sdk.refund().list_all.assert_called_once_with("mp-payment-456")
 
 
 @patch("payments.services.payment_adapters.mercadopago_payment_adapter.logger")
-def test_check_refund_status_unknown(mock_logger, adapter):
+def test_check_refund_status_unknown(mock_logger, adapter, mock_refund):
     """Test refund status check with unknown status."""
-    refund_payload = {"response": {"status": "unknown_status"}}
-    adapter.sdk.payment().get.return_value = refund_payload
+    mock_refund.external_id = "refund-456"
+    adapter.sdk.refund().list_all.return_value = {
+        "response": [{"id": "refund-456", "status": "unknown_status"}]
+    }
 
-    result = adapter.check_refund_status("refund-456")
+    result = adapter.check_refund_status(mock_refund)
 
     assert result == RefundStatuses.UNKNOWN
-    # Logs the id + status only — never `json.dumps(refund_payload)`, which would
-    # leak payer PII (email, name, document number, billing address) once the
-    # payload carries a real MercadoPago response.
+    # Logs the id + status only — never the raw list response, which would leak
+    # payer PII once the payload carries a real MercadoPago response.
     mock_logger.error.assert_called_once_with(
         "Unknown refund status: refund_external_id=%s original_status=%s",
         "refund-456",
         "unknown_status",
     )
+
+
+def test_check_refund_status_not_found_in_list(adapter, mock_refund):
+    """A refund id absent from the provider's own list must not be silently
+    reported as some default status."""
+    mock_refund.external_id = "refund-456"
+    adapter.sdk.refund().list_all.return_value = {"response": []}
+
+    result = adapter.check_refund_status(mock_refund)
+
+    assert result == RefundStatuses.UNKNOWN
+
+
+def test_check_refund_status_without_external_id(adapter, mock_refund):
+    """Cannot poll a refund that was never assigned a provider id."""
+    mock_refund.external_id = None
+
+    result = adapter.check_refund_status(mock_refund)
+
+    assert result == RefundStatuses.UNKNOWN
 
 
 def test_payment_methods_mapping_usage(adapter, mock_payment):
