@@ -5,12 +5,15 @@ from unittest.mock import MagicMock
 import pytest
 from model_bakery import baker
 
+from organizations.models import Organization
 from payments.constants import (
     PaymentProviders,
     PaymentStatuses,
     RefundStatuses,
     SubscriptionStatuses,
 )
+from payments.models import BillingPlan
+from payments.models import Payment as PaymentModel
 from payments.services.dataclasses import (
     BillingAddress as BillingAddressDataclass,
 )
@@ -56,6 +59,11 @@ class MockSubscriptionPlanFactory(BaseSubscriptionPlanFactory):
 
 
 @pytest.fixture
+def organization():
+    return baker.make(Organization)
+
+
+@pytest.fixture
 def billing_address():
     return baker.make(
         "payments.BillingAddress",
@@ -69,14 +77,19 @@ def billing_address():
 
 
 @pytest.fixture
-def billing_profile(user, billing_address):
+def billing_profile(organization, billing_address):
     return baker.make(
         "payments.BillingProfile",
-        user=user,
+        organization=organization,
         document_type="CPF",
         document_number="12345678900",
         billing_address=billing_address,
     )
+
+
+@pytest.fixture
+def billing_plan():
+    return baker.make(BillingPlan)
 
 
 @pytest.fixture
@@ -113,7 +126,7 @@ def test_success_create_payment(payment_service, billing_profile):
     payment_service.payment_gateway.process.return_value = "payment_12345"
 
     created_payment = payment_service.create_payment(
-        user=billing_profile.user,
+        organization=billing_profile.organization,
         currency="BRL",
         amount=Decimal("100"),
         description="Test Payment",
@@ -130,6 +143,35 @@ def test_success_create_payment(payment_service, billing_profile):
     assert created_payment.payment_method == "credit_card"
     assert created_payment.description == "Test Payment"
     assert created_payment.billing_profile == billing_profile
+
+
+@pytest.mark.django_db
+def test_create_payment_raises_when_billing_profile_missing_contact_email(
+    payment_service, organization, billing_address
+):
+    """`_serialize_billing_profile` must raise a clear error rather than silently
+    send the payment gateway a null payer email."""
+    from payments.exceptions import BillingProfileContactEmailMissingError
+    from payments.models import BillingProfile as BillingProfileModel
+
+    billing_profile = BillingProfileModel.objects.create(
+        organization=organization,
+        contact_first_name="Ada",
+        contact_email="",
+        document_type="CPF",
+        document_number="12345678900",
+        billing_address=billing_address,
+    )
+
+    with pytest.raises(BillingProfileContactEmailMissingError):
+        payment_service.create_payment(
+            organization=billing_profile.organization,
+            currency="BRL",
+            amount=Decimal("100"),
+            description="Test Payment",
+            payment_method="credit_card",
+            payment_token="card_token_123",
+        )
 
 
 @pytest.mark.django_db
@@ -374,29 +416,35 @@ def test_success_update_subscription_plan(payment_service, subscription_adapter)
 
 
 @pytest.mark.django_db
-def test_success_create_subscription(payment_service, subscription_adapter, billing_profile):
+def test_success_create_subscription(
+    payment_service, subscription_adapter, billing_profile, billing_plan
+):
     # Create a subscription
     now = datetime.datetime.now(tz=datetime.UTC)
 
     # Create subscription
     created_subscription = payment_service.create_subscription(
-        user=billing_profile.user,
-        start_date=now.date(),
-        end_date=(now + datetime.timedelta(days=30)).date(),
+        organization=billing_profile.organization,
+        plan=billing_plan,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
     )
     assert created_subscription.pk is not None
     assert created_subscription.status == SubscriptionStatuses.PENDING_SEND
 
 
 @pytest.mark.django_db
-def test_success_process_subscription(payment_service, subscription_adapter, billing_profile):
+def test_success_process_subscription(
+    payment_service, subscription_adapter, billing_profile, billing_plan
+):
     # Create a subscription
     now = datetime.datetime.now(tz=datetime.UTC)
 
     created_subscription = payment_service.create_subscription(
-        user=billing_profile.user,
-        start_date=now.date(),
-        end_date=(now + datetime.timedelta(days=30)).date(),
+        organization=billing_profile.organization,
+        plan=billing_plan,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
     )
 
     # Set up mock for create_subscription method
@@ -420,16 +468,20 @@ def test_success_process_subscription(payment_service, subscription_adapter, bil
 
 
 @pytest.mark.django_db
-def test_success_cancel_subscription(payment_service, subscription_adapter, billing_profile):
+def test_success_cancel_subscription(
+    payment_service, subscription_adapter, billing_profile, billing_plan
+):
     # Create a subscription
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
         "payments.Subscription",
-        billing_profile=billing_profile,
-        start_date=now.date(),
-        end_date=(now + datetime.timedelta(days=30)).date(),
+        organization=billing_profile.organization,
+        plan=billing_plan,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
         status=SubscriptionStatuses.ACTIVE,
         external_id="sub_12345",
+        payment_provider=PaymentProviders.MERCADOPAGO,
     )
 
     # Cancel subscription
@@ -447,17 +499,19 @@ def test_success_cancel_subscription(payment_service, subscription_adapter, bill
 
 @pytest.mark.django_db
 def test_success_receive_subscription_payment_update(
-    payment_service, subscription_adapter, billing_profile, billing_address, user
+    payment_service, subscription_adapter, billing_profile, billing_address, billing_plan, user
 ):
     # Create a subscription
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
         "payments.Subscription",
-        billing_profile=billing_profile,
-        start_date=now.date(),
-        end_date=(now + datetime.timedelta(days=30)).date(),
+        organization=billing_profile.organization,
+        plan=billing_plan,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
         status=SubscriptionStatuses.ACTIVE,
         external_id="sub_12345",
+        payment_provider=PaymentProviders.MERCADOPAGO,
     )
 
     # Set up mock for receive_payment_update method
@@ -520,3 +574,57 @@ def test_success_receive_subscription_payment_update(
     assert result.status == "approved"
     assert result.description == "Payment approved"
     assert result.external_id == "update_123"
+
+
+@pytest.mark.django_db
+def test_receive_subscription_payment_update_without_billing_profile_returns_none(
+    payment_service, subscription_adapter, organization, billing_plan
+):
+    """A subscription whose organization has no `BillingProfile` must not raise
+    `RelatedObjectDoesNotExist` on the unauthenticated provider webhook path — it
+    should log a warning and return `None` instead of a 500."""
+    now = datetime.datetime.now(tz=datetime.UTC)
+    subscription = baker.make(
+        "payments.Subscription",
+        organization=organization,
+        plan=billing_plan,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
+        status=SubscriptionStatuses.ACTIVE,
+        external_id="sub_no_profile",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+    )
+
+    from payments.services.dataclasses import SubscriptionPayment
+
+    subscription_payment = SubscriptionPayment(
+        id=None,
+        value=Decimal("100"),
+        currency="USD",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+        external_id="payment_no_profile",
+        status=PaymentStatuses.APPROVED,
+        billing_profile=None,
+        payment_method="credit_card",
+        description="Subscription payment",
+        status_updates=[],
+        subscription_external_id=subscription.external_id,
+    )
+
+    status_update = PaymentStatusUpdateDataclass(
+        id=None,
+        status="approved",
+        description="Payment approved",
+        update_external_id="update_456",
+    )
+
+    subscription_adapter.receive_payment_update.return_value = (
+        subscription_payment,
+        status_update,
+    )
+
+    update_payload = {"id": "update_456", "type": "payment"}
+    result = payment_service.receive_subscription_payment_update(update_payload)
+
+    assert result is None
+    assert not PaymentModel.objects.filter(external_id="payment_no_profile").exists()

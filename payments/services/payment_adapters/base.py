@@ -1,6 +1,6 @@
 import json
+import logging
 from abc import abstractmethod
-from venv import logger
 
 from payments.exceptions import PaymentExternalIdMissingInNotificationError
 from payments.services.dataclasses import (
@@ -8,6 +8,9 @@ from payments.services.dataclasses import (
     PaymentStatusUpdate,
     Refund,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class BasePaymentAdapter:

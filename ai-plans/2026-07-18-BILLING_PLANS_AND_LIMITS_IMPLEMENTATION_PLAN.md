@@ -61,7 +61,13 @@ organization = models.OneToOneField(
     on_delete=models.CASCADE,
     related_name="billing_profile",
 )
+contact_first_name = models.CharField(max_length=255)
+contact_last_name = models.CharField(max_length=255, blank=True)
+contact_email = models.EmailField()
+contact_phone = models.CharField(max_length=50, blank=True)
 ```
+
+`contact_first_name` and `contact_email` are required; `contact_last_name` and `contact_phone` are optional. These four fields carry the payer identity the payment gateway needs (MercadoPago hard-400s on a null payer email) now that billing is organization-owned rather than user-owned — there is no longer a `User` to source a name/email/phone from. This is distinct from the `is_billing_owner` membership flag described under **Data Model Changes** and gated in Phase 9, which governs who may *manage* billing rather than what identity is sent to the gateway.
 
 The `user` property on `Payment` (@payments/models.py:103) and `BillingAddress` (@payments/models.py:39) become `organization`. `BillingProfileSerializer` (@payments/serializers.py:56) and its `create`/`update` overrides at lines 81 and 92 resolve the organization from `request.organization` rather than `request.user`.
 

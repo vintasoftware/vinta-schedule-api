@@ -1,15 +1,19 @@
 from typing import TYPE_CHECKING, Annotated
 
+from django.db.models import QuerySet
 from django.shortcuts import get_object_or_404
 
 from dependency_injector.wiring import Provide, inject
 from django_virtual_models.generic_views import GenericVirtualModelViewMixin
 from drf_spectacular.utils import extend_schema
+from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
+from common.utils.view_utils import TenantScopedViewMixin
+from organizations.permissions import IsOrganizationAdmin
 from payments.models import BillingProfile
 from payments.serializers import BillingProfileSerializer
 
@@ -72,6 +76,7 @@ class PaymentsViewSet(ViewSet):
 
 
 class BillingProfileViewSet(
+    TenantScopedViewMixin,
     GenericVirtualModelViewMixin,
     GenericViewSet,
 ):
@@ -81,12 +86,39 @@ class BillingProfileViewSet(
     lookup_field = "pk"
     permission_classes = (IsAuthenticated,)
 
+    #: Writes touch the organization's tax document number and payer identity, not
+    #: just "my own" data, so they are gated to org admins. Reads stay open to any
+    #: authenticated member (IsAuthenticated, above).
+    write_actions = (
+        "create_billing_profile",
+        "update_billing_profile",
+        "partial_update_billing_profile",
+    )
+
+    def get_permissions(self):
+        if self.action in self.write_actions:
+            return [IsAuthenticated(), IsOrganizationAdmin()]
+        return super().get_permissions()
+
+    def get_queryset(self) -> QuerySet[BillingProfile]:
+        # Chain the organization filter on top of the virtual-model-optimized base
+        # queryset (GenericVirtualModelViewMixin.get_queryset()) rather than
+        # constructing a fresh queryset, so scoping doesn't undo the serializer's
+        # select_related/prefetch optimization.
+        queryset = super().get_queryset()
+        organization = self.request.organization  # type: ignore[attr-defined]
+        if organization is None:
+            return queryset.none()
+        return queryset.filter(organization=organization)
+
     def get_billing_profile(self):
-        return get_object_or_404(self.get_queryset(), pk=self.request.user.pk)
+        organization = self.request.organization  # type: ignore[attr-defined]
+        organization_pk = organization.pk if organization is not None else None
+        return get_object_or_404(self.get_queryset(), pk=organization_pk)
 
     @extend_schema(
         summary="Retrieve billing profile",
-        description="Retrieve the billing profile of the authenticated user.",
+        description="Retrieve the billing profile of the active organization.",
         responses={200: BillingProfileSerializer},
     )
     @action(
@@ -103,7 +135,7 @@ class BillingProfileViewSet(
 
     @extend_schema(
         summary="Create billing profile",
-        description="Create a new billing profile for the authenticated user.",
+        description="Create a new billing profile for the active organization.",
         responses={201: BillingProfileSerializer},
     )
     @action(
@@ -113,6 +145,12 @@ class BillingProfileViewSet(
         url_name="create",
     )
     def create_billing_profile(self, request, *args, **kwargs):
+        if self.get_queryset().exists():
+            return Response(
+                {"detail": "A billing profile already exists for this organization."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         billing_profile = serializer.save()
@@ -124,7 +162,7 @@ class BillingProfileViewSet(
 
     @extend_schema(
         summary="Update billing profile",
-        description="Update the billing profile of the authenticated user.",
+        description="Update the billing profile of the active organization.",
         responses={200: BillingProfileSerializer},
     )
     @action(
@@ -143,7 +181,7 @@ class BillingProfileViewSet(
 
     @extend_schema(
         summary="Partially update billing profile",
-        description="Partially update the billing profile of the authenticated user.",
+        description="Partially update the billing profile of the active organization.",
         responses={200: BillingProfileSerializer},
     )
     @action(
