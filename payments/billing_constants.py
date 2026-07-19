@@ -21,3 +21,15 @@ class BillingInterval(TextChoices):
 
     MONTHLY = ("monthly", _("Monthly"))
     ANNUAL = ("annual", _("Annual"))
+
+
+class ProviderWebhookRoute(TextChoices):
+    """Which inbound webhook endpoint received a ``ProviderWebhookEvent``.
+
+    Scopes the idempotency ledger's uniqueness alongside ``provider`` and
+    ``external_event_id`` — a provider's event-id numbering is not guaranteed to be
+    disjoint between its payment and subscription-payment notification streams.
+    """
+
+    PAYMENT_UPDATE = ("payment_update", _("Payment update"))
+    SUBSCRIPTION_PAYMENT_UPDATE = ("subscription_payment_update", _("Subscription payment update"))

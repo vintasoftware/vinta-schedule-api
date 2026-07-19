@@ -1,3 +1,4 @@
+import logging
 from typing import TYPE_CHECKING, Annotated
 
 from django.db.models import QuerySet
@@ -8,12 +9,13 @@ from django_virtual_models.generic_views import GenericVirtualModelViewMixin
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.permissions import IsOrganizationAdmin
+from payments.exceptions import ProviderWebhookEventIdMissingError, UnknownPaymentProviderError
 from payments.models import BillingProfile
 from payments.serializers import BillingProfileSerializer
 
@@ -22,12 +24,45 @@ if TYPE_CHECKING:
     from payments.services.payment_service import PaymentService
 
 
+logger = logging.getLogger(__name__)
+
+
 class PaymentsViewSet(ViewSet):
+    """Inbound provider webhooks.
+
+    These are called by the payment provider, not by a logged-in user of this
+    app — there is no session/JWT to authenticate against, so DRF's default
+    authentication/permission stack is explicitly disabled here. Authenticity is
+    instead established per-request via the provider's own signature scheme
+    (``PaymentService.verify_payment_webhook_signature`` /
+    ``verify_subscription_webhook_signature``), and every verified delivery is
+    recorded in ``ProviderWebhookEvent`` so a provider redelivery of the same event
+    (at-least-once delivery is standard for webhooks) is only ever processed once.
+    """
+
+    authentication_classes = ()
+    permission_classes = (AllowAny,)
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        payment_service: Annotated["PaymentService", Provide["payment_service"]],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.payment_service = payment_service
+
     @extend_schema(
         summary="Receive payment updates",
-        description="This endpoint is used to receive payment updates from MercadoPago.",
+        description="This endpoint is used to receive payment updates from a payment provider.",
         request=None,
-        responses={200: {"description": "Payment update received."}},
+        responses={
+            200: {"description": "Payment update received."},
+            400: {"description": "Malformed payload."},
+            403: {"description": "Invalid or missing signature."},
+            404: {"description": "Unknown payment provider."},
+        },
     )
     @action(
         methods=["post"],
@@ -36,24 +71,55 @@ class PaymentsViewSet(ViewSet):
         url_path="payment-update/<str:provider>",
         url_name="payment-update",
     )
-    @inject
-    def payment_update(
-        self,
-        request,
-        payment_service: Annotated["PaymentService", Provide["payment_service"]],
-    ):
+    def payment_update(self, request, *args, **kwargs):
         """
         Handle payment updates.
         """
-        # This method should be implemented to handle payment updates
-        payment_service.receive_payment_update(request.data)
+        provider = kwargs.get("provider", "")
+
+        # `request.body` must be captured before `request.data` — Django raises
+        # `RawPostDataException` if the raw stream was already consumed by DRF's
+        # parser, and the signature must be checked against the literal bytes the
+        # provider sent, not a re-serialization of the parsed payload.
+        raw_body = request.body
+        headers = dict(request.headers)
+
+        try:
+            signature_valid = self.payment_service.verify_payment_webhook_signature(
+                provider, raw_body, headers
+            )
+        except UnknownPaymentProviderError:
+            return Response(
+                {"detail": f"Unknown payment provider: {provider!r}."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if not signature_valid:
+            logger.warning("Rejected payment webhook with invalid signature: provider=%s", provider)
+            return Response({"detail": "Invalid signature."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            self.payment_service.handle_payment_webhook(provider, request.data)
+        except ProviderWebhookEventIdMissingError:
+            return Response(
+                {"detail": "Payload is missing the notification id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         return Response({"message": "Payment update received."})
 
     @extend_schema(
         summary="Receive subscription payment updates",
-        description="This endpoint is used to receive subscription payment updates from MercadoPago.",
+        description=(
+            "This endpoint is used to receive subscription payment updates from a payment provider."
+        ),
         request=None,
-        responses={200: {"description": "Subscription payment update received."}},
+        responses={
+            200: {"description": "Subscription payment update received."},
+            400: {"description": "Malformed payload."},
+            403: {"description": "Invalid or missing signature."},
+            404: {"description": "Unknown payment provider."},
+        },
     )
     @action(
         methods=["post"],
@@ -61,18 +127,42 @@ class PaymentsViewSet(ViewSet):
         url_path="subscription-payment-update/<str:provider>",
         url_name="subscription-payment-update",
     )
-    @inject
-    def subscription_payment_update(
-        self,
-        request,
-        payment_service: Annotated["PaymentService", Provide["payment_service"]],
-    ):
+    def subscription_payment_update(self, request, *args, **kwargs):
         """
-        Handle payment updates.
+        Handle subscription payment updates.
         """
-        # This method should be implemented to handle payment updates
-        payment_service.receive_subscription_payment_update(request.data)
-        return Response({"message": "Payment update received."})
+        provider = kwargs.get("provider", "")
+
+        # See the comment in `payment_update` — order matters here too.
+        raw_body = request.body
+        headers = dict(request.headers)
+
+        try:
+            signature_valid = self.payment_service.verify_subscription_webhook_signature(
+                provider, raw_body, headers
+            )
+        except UnknownPaymentProviderError:
+            return Response(
+                {"detail": f"Unknown payment provider: {provider!r}."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if not signature_valid:
+            logger.warning(
+                "Rejected subscription payment webhook with invalid signature: provider=%s",
+                provider,
+            )
+            return Response({"detail": "Invalid signature."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            self.payment_service.handle_subscription_payment_webhook(provider, request.data)
+        except ProviderWebhookEventIdMissingError:
+            return Response(
+                {"detail": "Payload is missing the notification id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({"message": "Subscription payment update received."})
 
 
 class BillingProfileViewSet(

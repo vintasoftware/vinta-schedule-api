@@ -1,5 +1,6 @@
 import json
 import logging
+from collections.abc import Mapping
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -8,25 +9,62 @@ from django.urls import reverse
 import mercadopago
 import mercadopago.config
 
-from payments.constants import PaymentProviders, RefundStatuses
+from payments.constants import PaymentProviders, PaymentStatuses, RefundStatuses
 from payments.services.dataclasses import Refund
+from payments.services.mercadopago_signature import verify_mercadopago_signature
 from payments.services.payment_adapters.base import BasePaymentAdapter, Payment, PaymentStatusUpdate
 
 
 logger = logging.getLogger(__name__)
 
 
-PAYMENT_METHODS_MAPPING: dict[str, str] = {}
-DOCUMENT_TYPES_MAPPING: dict[str, str] = {}
-PAYMENT_STATUS_MAPPING: dict[str, str] = {}
-REFUND_STATUS_MAPPING: dict[str, str] = {}
+# Our internal `payment_method` / `document_type` values are already stored using
+# MercadoPago's own vocabulary (there is currently no other provider to alias
+# from/to), so these are close to identity maps. They exist as a translation seam
+# for the day a second naming convention (e.g. a future provider-agnostic form
+# value) needs to land on MercadoPago's specific codes.
+PAYMENT_METHODS_MAPPING: dict[str, str] = {
+    "visa": "visa",
+    "master": "master",
+    "amex": "amex",
+    "diners": "diners",
+    "elo": "elo",
+    "pix": "pix",
+    "boleto": "bolbradesco",
+}
+DOCUMENT_TYPES_MAPPING: dict[str, str] = {
+    "CPF": "CPF",
+    "CNPJ": "CNPJ",
+    "DNI": "DNI",
+    "CI": "CI",
+    "RUT": "RUT",
+    "OTHER": "OTHER",
+}
+# MercadoPago payment statuses: https://www.mercadopago.com/developers/en/docs/checkout-api/payment-management/status
+PAYMENT_STATUS_MAPPING: dict[str, str] = {
+    "pending": PaymentStatuses.PENDING,
+    "approved": PaymentStatuses.APPROVED,
+    "authorized": PaymentStatuses.APPROVED,
+    "in_process": PaymentStatuses.IN_PROCESS,
+    "in_mediation": PaymentStatuses.IN_MEDIATION,
+    "rejected": PaymentStatuses.REJECTED,
+    "cancelled": PaymentStatuses.CANCELLED,
+    "refunded": PaymentStatuses.REFUNDED,
+    "charged_back": PaymentStatuses.CHARGED_BACK,
+}
+REFUND_STATUS_MAPPING: dict[str, str] = {
+    "pending": RefundStatuses.PENDING,
+    "approved": RefundStatuses.APPROVED,
+    "rejected": RefundStatuses.REJECTED,
+}
 
 
 class MercadoPagoPaymentAdapter(BasePaymentAdapter):
     provider = PaymentProviders.MERCADOPAGO
 
-    def __init__(self, access_token: str):
+    def __init__(self, access_token: str, webhook_secret: str = ""):
         self.sdk = mercadopago.SDK(access_token)
+        self.webhook_secret = webhook_secret
 
     def process(self, payment: Payment, payment_token: str) -> str:
         request_options = mercadopago.config.RequestOptions()
@@ -88,9 +126,13 @@ class MercadoPagoPaymentAdapter(BasePaymentAdapter):
         self, payment_external_id: str, update_id: str | None = None
     ) -> PaymentStatusUpdate:
         response = self.sdk.payment().get(payment_external_id)
+        original_status = response["response"]["status"]
+        mapped_status = PAYMENT_STATUS_MAPPING.get(original_status, PaymentStatuses.UNKNOWN)
+        if mapped_status == PaymentStatuses.UNKNOWN:
+            logger.error("Unknown payment status: %s", json.dumps(response))
         return PaymentStatusUpdate(
             id=None,
-            status=response["response"]["status"],
+            status=mapped_status,
             description=response["response"]["status_detail"],
             update_external_id=update_id,
         )
@@ -116,3 +158,6 @@ class MercadoPagoPaymentAdapter(BasePaymentAdapter):
         if internal_status == RefundStatuses.UNKNOWN:
             logger.error("Unknown refund status: %s", json.dumps(refund_payload))
         return internal_status
+
+    def verify_signature(self, raw_body: bytes, headers: Mapping[str, str]) -> bool:
+        return verify_mercadopago_signature(raw_body, headers, self.webhook_secret)

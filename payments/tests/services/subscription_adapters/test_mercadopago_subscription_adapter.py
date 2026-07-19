@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import json
 from decimal import Decimal
 from unittest.mock import Mock, patch
 
@@ -6,7 +9,8 @@ from django.test import override_settings
 
 import pytest
 
-from payments.constants import PaymentProviders
+from payments.constants import PaymentProviders, PaymentStatuses
+from payments.exceptions import ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import (
     BillingAddress,
     BillingProfile,
@@ -19,6 +23,25 @@ from payments.services.dataclasses import (
 from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
     MercadoPagoSubscriptionAdapter,
 )
+
+
+WEBHOOK_SECRET = "test-webhook-secret"
+
+
+def build_signed_request(
+    data_id: str, secret: str = WEBHOOK_SECRET, request_id: str = "req-123", ts: str = "1700000000"
+) -> tuple[bytes, dict[str, str]]:
+    """Build a raw body + headers pair signed the way MercadoPago signs webhooks."""
+    raw_body = json.dumps(
+        {"type": "subscription_authorized_payment", "data": {"id": data_id}}
+    ).encode()
+    manifest = f"id:{data_id.lower()};request-id:{request_id};ts:{ts};"
+    signature = hmac.new(secret.encode(), manifest.encode(), hashlib.sha256).hexdigest()
+    headers = {
+        "x-signature": f"ts={ts},v1={signature}",
+        "x-request-id": request_id,
+    }
+    return raw_body, headers
 
 
 @pytest.fixture
@@ -95,7 +118,7 @@ def adapter():
     with patch(
         "payments.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
     ) as mock_sdk:
-        adapter = MercadoPagoSubscriptionAdapter("test-access-token")
+        adapter = MercadoPagoSubscriptionAdapter("test-access-token", webhook_secret=WEBHOOK_SECRET)
         adapter.sdk = mock_sdk.return_value
         return adapter
 
@@ -450,3 +473,66 @@ def test_get_payment_external_id_from_subscription_payload_missing_payment_id(ad
 
     result = adapter.get_payment_external_id_from_subscription_payload(subscription_payload)
     assert result is None
+
+
+def test_create_status_update_from_payment_payload_maps_known_status(adapter):
+    """SUBSCRIPTION_STATUS_MAPPING is actually wired into create_status_update_from_payment_payload."""
+    payment_payload = {
+        "response": {"id": "payment-456", "status": "authorized", "status_detail": "accredited"}
+    }
+
+    result = adapter.create_status_update_from_payment_payload(payment_payload)
+
+    assert result.status == PaymentStatuses.APPROVED
+
+
+def test_create_status_update_from_payment_payload_maps_unknown_status(adapter):
+    """An unrecognized provider status maps to UNKNOWN instead of being written raw."""
+    payment_payload = {
+        "response": {"id": "payment-456", "status": "some_new_mp_status", "status_detail": "??"}
+    }
+
+    result = adapter.create_status_update_from_payment_payload(payment_payload)
+
+    assert result.status == PaymentStatuses.UNKNOWN
+
+
+def test_get_event_id_returns_top_level_id(adapter):
+    payload = {"id": "notif-789", "data": {"id": "subscription-123"}}
+
+    assert adapter.get_event_id(payload) == "notif-789"
+
+
+def test_get_event_id_raises_when_missing(adapter):
+    payload = {"data": {"id": "subscription-123"}}
+
+    with pytest.raises(ProviderWebhookEventIdMissingError):
+        adapter.get_event_id(payload)
+
+
+def test_verify_signature_accepts_correctly_signed_body(adapter):
+    raw_body, headers = build_signed_request(data_id="subscription-123")
+
+    assert adapter.verify_signature(raw_body, headers) is True
+
+
+def test_verify_signature_rejects_tampered_body(adapter):
+    """The signature covers `data.id`; a tampered id must fail even though the
+    tampered body still parses to a well-formed, similar-looking payload."""
+    raw_body, headers = build_signed_request(data_id="subscription-123")
+    tampered_body = raw_body.replace(b"subscription-123", b"subscription-999")
+
+    assert adapter.verify_signature(tampered_body, headers) is False
+
+
+def test_verify_signature_rejects_missing_signature_header(adapter):
+    raw_body = json.dumps({"data": {"id": "subscription-123"}}).encode()
+
+    assert adapter.verify_signature(raw_body, {}) is False
+
+
+def test_verify_signature_rejects_when_secret_not_configured(adapter):
+    adapter.webhook_secret = ""
+    raw_body, headers = build_signed_request(data_id="subscription-123")
+
+    assert adapter.verify_signature(raw_body, headers) is False

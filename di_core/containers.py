@@ -31,6 +31,7 @@ from notifications.notification_template_renderers.django_in_app_renderer import
 )
 from organizations.organization_subscription_plan_factory import OrganizationSubscriptionPlanFactory
 from organizations.services import OrganizationService
+from payments.constants import PaymentProviders
 from payments.services.payment_adapters.mercadopago_payment_adapter import MercadoPagoPaymentAdapter
 from payments.services.payment_service import PaymentService
 from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
@@ -59,10 +60,27 @@ class AppContainer(containers.DeclarativeContainer):
     payment_gateway = providers.Factory(
         MercadoPagoPaymentAdapter,
         access_token=config.MERCADOPAGO_ACCESS_TOKEN,
+        webhook_secret=config.MERCADOPAGO_WEBHOOK_SECRET,
     )
     subscription_gateway = providers.Factory(
         MercadoPagoSubscriptionAdapter,
         access_token=config.MERCADOPAGO_ACCESS_TOKEN,
+        webhook_secret=config.MERCADOPAGO_WEBHOOK_SECRET,
+    )
+
+    #: Selects the payment/subscription adapter by provider slug (the `provider`
+    #: URL kwarg on the payment webhook views). Only MercadoPago is registered so
+    #: far; a future provider (e.g. Stripe) registers here rather than the webhook
+    #: views or `PaymentService` hardcoding a single provider.
+    payment_provider_registry = providers.Dict(
+        {
+            PaymentProviders.MERCADOPAGO: payment_gateway,
+        }
+    )
+    subscription_provider_registry = providers.Dict(
+        {
+            PaymentProviders.MERCADOPAGO: subscription_gateway,
+        }
     )
 
     subscription_plan_factory = providers.Factory(
@@ -74,6 +92,8 @@ class AppContainer(containers.DeclarativeContainer):
         subscription_plan_factory=subscription_plan_factory,
         payment_gateway=payment_gateway,
         subscription_gateway=subscription_gateway,
+        payment_provider_registry=payment_provider_registry,
+        subscription_provider_registry=subscription_provider_registry,
     )
 
     notification_service = providers.Singleton(

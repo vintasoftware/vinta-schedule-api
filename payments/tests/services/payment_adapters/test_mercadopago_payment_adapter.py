@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 from decimal import Decimal
 from unittest.mock import Mock, patch
@@ -7,12 +9,30 @@ from django.test import override_settings
 
 import pytest
 
-from payments.constants import PaymentProviders, RefundStatuses
+from payments.constants import PaymentProviders, PaymentStatuses, RefundStatuses
+from payments.exceptions import ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import Refund
 from payments.services.payment_adapters.base import Payment, PaymentStatusUpdate
 from payments.services.payment_adapters.mercadopago_payment_adapter import (
     MercadoPagoPaymentAdapter,
 )
+
+
+WEBHOOK_SECRET = "test-webhook-secret"
+
+
+def build_signed_request(
+    data_id: str, secret: str = WEBHOOK_SECRET, request_id: str = "req-123", ts: str = "1700000000"
+) -> tuple[bytes, dict[str, str]]:
+    """Build a raw body + headers pair signed the way MercadoPago signs webhooks."""
+    raw_body = json.dumps({"action": "payment.update", "data": {"id": data_id}}).encode()
+    manifest = f"id:{data_id.lower()};request-id:{request_id};ts:{ts};"
+    signature = hmac.new(secret.encode(), manifest.encode(), hashlib.sha256).hexdigest()
+    headers = {
+        "x-signature": f"ts={ts},v1={signature}",
+        "x-request-id": request_id,
+    }
+    return raw_body, headers
 
 
 @pytest.fixture
@@ -71,7 +91,7 @@ def adapter():
     with patch(
         "payments.services.payment_adapters.mercadopago_payment_adapter.mercadopago.SDK"
     ) as mock_sdk:
-        adapter = MercadoPagoPaymentAdapter("test-access-token")
+        adapter = MercadoPagoPaymentAdapter("test-access-token", webhook_secret=WEBHOOK_SECRET)
         adapter.sdk = mock_sdk.return_value
         return adapter
 
@@ -332,3 +352,76 @@ def test_document_types_mapping_usage(adapter, mock_payment):
                     # Verify the mapped document type was used
                     call_args = adapter.sdk.payment().create.call_args[0][0]
                     assert call_args["payer"]["identification"]["type"] == "cpf_mapped"
+
+
+def test_check_status_maps_known_status(adapter):
+    """PAYMENT_STATUS_MAPPING is actually wired into check_status."""
+    adapter.sdk.payment().get.return_value = {
+        "response": {"status": "authorized", "status_detail": "accredited"}
+    }
+
+    result = adapter.check_status("mp-payment-456")
+
+    assert result.status == PaymentStatuses.APPROVED
+
+
+@patch("payments.services.payment_adapters.mercadopago_payment_adapter.logger")
+def test_check_status_maps_unknown_status_and_logs(mock_logger, adapter):
+    """An unrecognized provider status maps to UNKNOWN instead of being written raw."""
+    response = {"response": {"status": "some_new_mp_status", "status_detail": "??"}}
+    adapter.sdk.payment().get.return_value = response
+
+    result = adapter.check_status("mp-payment-456")
+
+    assert result.status == PaymentStatuses.UNKNOWN
+    mock_logger.error.assert_called_once_with("Unknown payment status: %s", json.dumps(response))
+
+
+def test_get_event_id_returns_top_level_id(adapter):
+    """get_event_id (base class default) reuses the notification's top-level id."""
+    payload = {"id": "notif-789", "data": {"id": "mp-payment-456"}}
+
+    assert adapter.get_event_id(payload) == "notif-789"
+
+
+def test_get_event_id_raises_when_missing(adapter):
+    payload = {"data": {"id": "mp-payment-456"}}
+
+    with pytest.raises(ProviderWebhookEventIdMissingError):
+        adapter.get_event_id(payload)
+
+
+def test_verify_signature_accepts_correctly_signed_body(adapter):
+    raw_body, headers = build_signed_request(data_id="mp-payment-456")
+
+    assert adapter.verify_signature(raw_body, headers) is True
+
+
+def test_verify_signature_rejects_tampered_body(adapter):
+    """The signature covers `data.id`; a tampered id must fail even though the
+    tampered body still parses to a well-formed, similar-looking payload."""
+    raw_body, headers = build_signed_request(data_id="mp-payment-456")
+    tampered_body = raw_body.replace(b"mp-payment-456", b"mp-payment-999")
+
+    assert adapter.verify_signature(tampered_body, headers) is False
+
+
+def test_verify_signature_rejects_missing_signature_header(adapter):
+    raw_body = json.dumps({"data": {"id": "mp-payment-456"}}).encode()
+
+    assert adapter.verify_signature(raw_body, {}) is False
+
+
+def test_verify_signature_rejects_when_secret_not_configured(adapter):
+    adapter.webhook_secret = ""
+    raw_body, headers = build_signed_request(data_id="mp-payment-456")
+
+    assert adapter.verify_signature(raw_body, headers) is False
+
+
+def test_verify_signature_is_case_insensitive_to_header_names(adapter):
+    """MercadoPago's own client casing (`X-Signature`) must be accepted."""
+    raw_body, headers = build_signed_request(data_id="mp-payment-456")
+    upper_headers = {k.upper(): v for k, v in headers.items()}
+
+    assert adapter.verify_signature(raw_body, upper_headers) is True

@@ -1,5 +1,6 @@
 import datetime
 import logging
+from collections.abc import Mapping
 from dataclasses import asdict
 from decimal import Decimal
 from typing import Annotated
@@ -7,14 +8,24 @@ from typing import Annotated
 from dependency_injector.wiring import Provide, inject
 
 from organizations.models import Organization
-from payments.billing_constants import BillingInterval
-from payments.constants import PaymentStatuses, RefundStatuses, SubscriptionStatuses
-from payments.exceptions import BillingProfileContactEmailMissingError, MissingBillingProfileError
+from payments.billing_constants import BillingInterval, ProviderWebhookRoute
+from payments.constants import (
+    PaymentProviders,
+    PaymentStatuses,
+    RefundStatuses,
+    SubscriptionStatuses,
+)
+from payments.exceptions import (
+    BillingProfileContactEmailMissingError,
+    MissingBillingProfileError,
+    UnknownPaymentProviderError,
+)
 from payments.models import BillingAddress as BillingAddressModel
 from payments.models import BillingPlan as BillingPlanModel
 from payments.models import BillingProfile as BillingProfileModel
 from payments.models import Payment as PaymentModel
 from payments.models import PaymentStatusUpdate as PaymentStatusUpdateModel
+from payments.models import ProviderWebhookEvent as ProviderWebhookEventModel
 from payments.models import Refund as RefundModel
 from payments.models import RefundStatusUpdate, SubscriptionStatusUpdate
 from payments.models import Subscription as SubscriptionModel
@@ -47,10 +58,32 @@ class PaymentService[
         subscription_plan_factory: SubscriptionPlanFactory,
         payment_gateway: Annotated[PaymentAdapter, Provide["payment_gateway"]],
         subscription_gateway: Annotated[SubscriptionAdapter, Provide["subscription_gateway"]],
+        payment_provider_registry: Annotated[
+            dict[str, PaymentAdapter], Provide["payment_provider_registry"]
+        ],
+        subscription_provider_registry: Annotated[
+            dict[str, SubscriptionAdapter], Provide["subscription_provider_registry"]
+        ],
     ):
         self.payment_gateway = payment_gateway
         self.subscription_gateway = subscription_gateway
         self.subscription_plan_factory = subscription_plan_factory
+        self.payment_provider_registry = payment_provider_registry
+        self.subscription_provider_registry = subscription_provider_registry
+
+    def get_payment_adapter(self, provider: str) -> PaymentAdapter:
+        """Resolve the payment adapter registered for *provider* (a URL kwarg slug)."""
+        try:
+            return self.payment_provider_registry[provider]
+        except KeyError as e:
+            raise UnknownPaymentProviderError(provider) from e
+
+    def get_subscription_adapter(self, provider: str) -> SubscriptionAdapter:
+        """Resolve the subscription adapter registered for *provider* (a URL kwarg slug)."""
+        try:
+            return self.subscription_provider_registry[provider]
+        except KeyError as e:
+            raise UnknownPaymentProviderError(provider) from e
 
     def create_payment(
         self,
@@ -202,8 +235,11 @@ class PaymentService[
     def get_payment_by_external_id(self, external_id: str) -> PaymentModel | None:
         return PaymentModel.objects.filter(external_id=external_id).first()
 
-    def receive_payment_update(self, update_payload: dict) -> PaymentStatusUpdateModel | None:
-        update_data = self.payment_gateway.receive_update(update_payload)
+    def receive_payment_update(
+        self, update_payload: dict, provider: str = PaymentProviders.MERCADOPAGO
+    ) -> PaymentStatusUpdateModel | None:
+        adapter = self.get_payment_adapter(provider)
+        update_data = adapter.receive_update(update_payload)
         if not update_data:
             return None
         payment_external_id, payment_status_update_data = update_data
@@ -223,9 +259,10 @@ class PaymentService[
         return SubscriptionModel.objects.filter(external_id=external_id).first()
 
     def receive_subscription_payment_update(
-        self, update_payload: dict
+        self, update_payload: dict, provider: str = PaymentProviders.MERCADOPAGO
     ) -> PaymentStatusUpdateModel | None:
-        update_data = self.subscription_gateway.receive_payment_update(update_payload)
+        adapter = self.get_subscription_adapter(provider)
+        update_data = adapter.receive_payment_update(update_payload)
 
         if not update_data:
             return None
@@ -268,6 +305,78 @@ class PaymentService[
             external_id=payment_status_update_data.update_external_id or "",
             payment=payment,
         )
+
+    def verify_payment_webhook_signature(
+        self, provider: str, raw_body: bytes, headers: Mapping[str, str]
+    ) -> bool:
+        """Verify an inbound ``payment-update`` webhook against *raw_body*.
+
+        ``raw_body`` must be the literal bytes the provider sent (see
+        ``BasePaymentAdapter.verify_signature``) — callers must capture
+        ``request.body`` before touching ``request.data``.
+        """
+        return self.get_payment_adapter(provider).verify_signature(raw_body, headers)
+
+    def verify_subscription_webhook_signature(
+        self, provider: str, raw_body: bytes, headers: Mapping[str, str]
+    ) -> bool:
+        """Verify an inbound ``subscription-payment-update`` webhook against *raw_body*.
+
+        ``raw_body`` must be the literal bytes the provider sent (see
+        ``BaseSubscriptionAdapter.verify_signature``) — callers must capture
+        ``request.body`` before touching ``request.data``.
+        """
+        return self.get_subscription_adapter(provider).verify_signature(raw_body, headers)
+
+    def handle_payment_webhook(
+        self, provider: str, payload: dict
+    ) -> PaymentStatusUpdateModel | None:
+        """Idempotently process an inbound ``payment-update`` webhook notification.
+
+        Callers must call ``verify_payment_webhook_signature`` first — this method
+        does not re-verify authenticity, only idempotency + dispatch. Safe to call
+        more than once with the same provider event: a redelivery of an
+        already-processed event is a no-op.
+        """
+        adapter = self.get_payment_adapter(provider)
+        event_id = adapter.get_event_id(payload)
+        event, is_new_delivery = ProviderWebhookEventModel.objects.get_or_create_pending(
+            provider=provider,
+            route=ProviderWebhookRoute.PAYMENT_UPDATE,
+            external_event_id=event_id,
+            payload=payload,
+        )
+        if not is_new_delivery:
+            return None
+
+        result = self.receive_payment_update(payload, provider=provider)
+        ProviderWebhookEventModel.objects.mark_processed(event)
+        return result
+
+    def handle_subscription_payment_webhook(
+        self, provider: str, payload: dict
+    ) -> PaymentStatusUpdateModel | None:
+        """Idempotently process an inbound ``subscription-payment-update`` webhook.
+
+        Callers must call ``verify_subscription_webhook_signature`` first — this
+        method does not re-verify authenticity, only idempotency + dispatch. Safe to
+        call more than once with the same provider event: a redelivery of an
+        already-processed event is a no-op.
+        """
+        adapter = self.get_subscription_adapter(provider)
+        event_id = adapter.get_event_id(payload)
+        event, is_new_delivery = ProviderWebhookEventModel.objects.get_or_create_pending(
+            provider=provider,
+            route=ProviderWebhookRoute.SUBSCRIPTION_PAYMENT_UPDATE,
+            external_event_id=event_id,
+            payload=payload,
+        )
+        if not is_new_delivery:
+            return None
+
+        result = self.receive_subscription_payment_update(payload, provider=provider)
+        ProviderWebhookEventModel.objects.mark_processed(event)
+        return result
 
     def _serialize_subscription(self, subscription: SubscriptionModel) -> Subscription:
         organization_billing_profile = BillingProfileModel.objects.filter(

@@ -499,6 +499,12 @@ SES_CONFIGURATION_SET = "all-emails"
 
 
 MERCADOPAGO_ACCESS_TOKEN = config("MERCADOPAGO_ACCESS_TOKEN", default="")
+# Shared secret used to verify MercadoPago's `x-signature` webhook header. Empty
+# by default (matches MERCADOPAGO_ACCESS_TOKEN's dev-time fallback), but an empty
+# secret makes every webhook signature check fail closed (see
+# payments.services.mercadopago_signature.verify_mercadopago_signature) rather
+# than skip verification.
+MERCADOPAGO_WEBHOOK_SECRET = config("MERCADOPAGO_WEBHOOK_SECRET", default="")
 
 SALT_KEY = config("SALT_KEY")
 
