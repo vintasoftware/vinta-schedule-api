@@ -68,6 +68,7 @@ class OrganizationService:
         self.audit_service = audit_service
         self.subscription_service = subscription_service
 
+    @transaction.atomic()
     def create_organization(
         self,
         creator: User,
@@ -82,6 +83,13 @@ class OrganizationService:
         :param external_event_update_policy: Policy for inbound external provider
             edits/deletions. When ``None`` the model's default is used.
         :return: Created Organization instance.
+
+        Wrapped in its own transaction (rather than relying on the caller's) so the
+        "no plan-less state" invariant does not depend on the call site: under
+        ``ATOMIC_REQUESTS`` the DRF/view caller already wraps this, but a
+        management command, shell, or Celery task calling this directly would
+        otherwise be able to commit the ``Organization`` row and then fail on
+        subscription creation, leaving a plan-less organization behind.
         """
         create_kwargs: dict = {
             "name": name,

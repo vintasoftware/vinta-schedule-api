@@ -440,7 +440,7 @@ Acceptance: `Organization.objects.filter(parent__isnull=True, subscription__isnu
 
 Changes:
 1. New `payments/services/entitlement_service.py`:
-   - `resolve_billing_root(organization)` — cycle-guarded parent walk.
+   - `resolve_billing_root(organization)` — **already lands in Phase 4**, in `payments/services/subscription_service.py`, alongside `is_billing_root(organization)` and `billing_root_filter()` (the single "is a billing root" predicate, used by the Phase 4 backfill migration and the creation-path service). Phase 5 imports it from there rather than re-implementing it here — this bullet is stale as an implementation instruction (kept for traceability to the original phase split) but not as a dependency: `entitlement_service.py` still needs `resolve_billing_root` in scope, just via `from payments.services.subscription_service import resolve_billing_root`.
    - `get_effective_limit(organization, resource_key)` — the subscription's `SubscriptionPlanLimit` plus active `SubscriptionAddOn` quantity. NULL stays NULL (unlimited).
    - `get_current_usage(organization, resource_key)` — point-in-time count summed across the **whole reseller subtree**, one counter function per `LimitedResource` member, registered in a dict keyed by resource.
    - `check_limit(organization, resource_key, delta=1, lock=False)` → `LimitCheckResult`. With `lock=True`, takes `SELECT ... FOR UPDATE` on the root `Subscription` row.

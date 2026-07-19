@@ -1,7 +1,7 @@
 """Every organization always has exactly one active plan, from creation — no
 plan-less state (billing plans and limits plan, Phase 4).
 
-There are exactly three organization-creation paths in the codebase:
+There are exactly four organization-creation paths in the codebase:
 
 1. ``OrganizationService.create_organization`` — the REST funnel
    (``organizations/serializers.py``'s ``OrganizationSerializer.create``) and the
@@ -13,14 +13,18 @@ There are exactly three organization-creation paths in the codebase:
    raw ``Organization.objects.create(...)`` that bypasses ``OrganizationService``
    entirely. Its child always has ``parent`` set, so it correctly resolves to its
    root's subscription rather than getting one of its own.
+4. Django admin (``organizations.admin.OrganizationAdmin``) — a fourth, previously
+   unhooked path (Phase 4 review BLOCKER 4). ``save_model`` now places a newly
+   created organization on the default plan the same way path 1 does.
 
-This file drives all three (plus the reseller-child no-subscription case and a
-cyclic-tree termination case) against real objects — no mocked subscription
-creation — since a missed hook here is exactly the kind of thing that leaves half
-the organizations plan-less.
+This file drives all four (plus the reseller-child no-subscription case, a
+nested-reseller-is-its-own-billing-root case, and a cyclic-tree case) against
+real objects — no mocked subscription creation — since a missed hook here is
+exactly the kind of thing that leaves half the organizations plan-less.
 """
 
 from django.contrib.auth import get_user_model
+from django.test import Client as DjangoClient
 from django.urls import reverse
 
 import pytest
@@ -29,8 +33,14 @@ from rest_framework.test import APIClient
 
 from organizations.models import Organization
 from organizations.services import OrganizationService
+from payments.exceptions import BillingRootCycleError
 from payments.models import Subscription
-from payments.services.subscription_service import resolve_billing_root
+from payments.services.subscription_service import (
+    SubscriptionService,
+    billing_root_filter,
+    is_billing_root,
+    resolve_billing_root,
+)
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
 
@@ -145,6 +155,27 @@ class TestResellerGraphQLMutationOrganizationCreation:
 
 
 @pytest.mark.django_db
+class TestReseleverMutationSubscriptionHookIsDefenseInDepth:
+    """``public_api.mutations.create_organization`` always creates its child with
+    ``parent=acting_org`` and ``can_invite_organizations=False``, so its
+    ``create_subscription_for_organization(child_org)`` call is a no-op under
+    every input the mutation can currently produce (see the inline comment at
+    the call site). This is not dead code, though: the exact same call would
+    correctly place a subscription on a hypothetical future child that somehow
+    ended up a billing root (parent-less, or itself a reseller) — proven here
+    directly against ``SubscriptionService``, which is what the mutation calls.
+    """
+
+    def test_would_place_a_subscription_on_a_hypothetical_billing_root_child(self):
+        would_be_child = baker.make(Organization, parent=None, can_invite_organizations=False)
+
+        subscription = SubscriptionService().create_subscription_for_organization(would_be_child)
+
+        assert subscription is not None
+        assert subscription.organization == would_be_child
+
+
+@pytest.mark.django_db
 class TestResolveBillingRootTreeShapes:
     def test_three_level_reseller_tree_resolves_to_root(self):
         root = baker.make(Organization, can_invite_organizations=True)
@@ -155,20 +186,43 @@ class TestResolveBillingRootTreeShapes:
         assert resolve_billing_root(mid) == root
         assert resolve_billing_root(root) == root
 
-    def test_cyclic_parent_chain_terminates_instead_of_recursing_forever(self):
+    def test_nested_reseller_is_its_own_billing_root(self):
+        """A nested reseller (``can_invite_organizations=True`` with a ``parent``
+        set) is its own billing root — it does not pool against its parent's
+        subscription, unlike a plain child (BLOCKER 1, Phase 4 review)."""
+        root = baker.make(Organization, parent=None, can_invite_organizations=True)
+        mid = baker.make(Organization, parent=root, can_invite_organizations=True)
+        leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
+
+        assert is_billing_root(mid) is True
+        assert resolve_billing_root(mid) == mid
+        assert resolve_billing_root(leaf) == mid
+
+        SubscriptionService().create_subscription_for_organization(root)
+        mid_subscription = SubscriptionService().create_subscription_for_organization(mid)
+
+        assert mid_subscription is not None
+        assert mid_subscription.organization == mid
+        assert not Subscription.objects.filter(organization=leaf).exists()
+
+    def test_cyclic_parent_chain_raises_billing_root_cycle_error(self):
         org_a = baker.make(Organization, can_invite_organizations=False)
         org_b = baker.make(Organization, parent=org_a, can_invite_organizations=False)
         org_a.parent = org_b
         org_a.save(update_fields=["parent"])
 
-        # Must return without raising RecursionError / hanging.
-        result = resolve_billing_root(org_a)
-        assert result.pk in (org_a.pk, org_b.pk)
+        # Must raise a named error rather than returning an arbitrary node from
+        # the cycle (BLOCKER 3, Phase 4 review) — the previous assertion
+        # (`result.pk in (org_a.pk, org_b.pk)`) passed while the invariant was
+        # broken: every organization on the cycle was left without a resolvable
+        # billing root.
+        with pytest.raises(BillingRootCycleError):
+            resolve_billing_root(org_a)
 
 
 @pytest.mark.django_db
 class TestNoPlanlessOrganization:
-    def test_every_root_organization_has_a_subscription_after_the_three_paths(self, user):
+    def test_every_root_organization_has_a_subscription_after_the_four_paths(self, user):
         from di_core.containers import container
 
         # Path 1: REST.
@@ -182,16 +236,29 @@ class TestNoPlanlessOrganization:
             user=signup_user, organization_name="Signup Org 2"
         )
 
+        # Path 4: Django admin. Also how the reseller root below is created --
+        # can_invite_organizations is "DB/Django-admin only, never exposed via
+        # any API" (organizations/models.py), so admin is the only real path
+        # that can produce one. Exercising it here (rather than baker.make +
+        # manually creating its subscription) is what makes this test exercise
+        # OrganizationAdmin.save_model's hook instead of asserting a tautology.
+        superuser = baker.make(
+            get_user_model(), email="admin2@example.com", is_staff=True, is_superuser=True
+        )
+        admin_client = DjangoClient()
+        admin_client.force_login(superuser)
+        admin_client.post(
+            reverse("admin:organizations_organization_add"),
+            data={
+                "name": "Reseller Org 2",
+                "should_sync_rooms": "",
+                "external_event_update_policy": "change_request",
+                "can_invite_organizations": "on",
+            },
+        )
+        reseller_org = Organization.objects.get(name="Reseller Org 2")
+
         # Path 3: reseller GraphQL mutation.
-        reseller_org = baker.make(
-            Organization, name="Reseller Org 2", can_invite_organizations=True
-        )
-        # The reseller root itself must also hold a subscription — created here
-        # directly via baker.make (bypassing all three real paths), so place one
-        # explicitly the way OrganizationService would have.
-        OrganizationService().subscription_service.create_subscription_for_organization(
-            reseller_org
-        )
         auth_service = PublicAPIAuthService()
         system_user, token = auth_service.create_system_user(
             integration_name="test_integration", organization=reseller_org
@@ -211,5 +278,6 @@ class TestNoPlanlessOrganization:
             )
 
         assert (
-            Organization.objects.filter(parent__isnull=True, subscription__isnull=True).count() == 0
+            Organization.objects.filter(billing_root_filter(), subscription__isnull=True).count()
+            == 0
         )

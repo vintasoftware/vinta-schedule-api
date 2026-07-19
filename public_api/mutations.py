@@ -908,8 +908,14 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # Every organization always has exactly one active plan — there is no
         # plan-less state. This raw insert bypasses OrganizationService entirely, so
         # unlike the REST/signup paths this hook has to be called explicitly here.
-        # A no-op in practice: child_org.parent is set, so it pools against
-        # acting_org's (its billing root's) subscription instead of getting its own.
+        # It is a no-op today: assert_org_can_invite above guarantees acting_org is
+        # a billing root, and child_org is always created with parent=acting_org and
+        # can_invite_organizations=False, so it never satisfies is_billing_root
+        # (see payments.services.subscription_service) and always pools against
+        # acting_org's subscription instead of getting its own. Kept as
+        # defence-in-depth: if this mutation body is ever changed to create a
+        # parent-less or reseller child, this call is what stops it from ending up
+        # plan-less rather than a second, disconnected invariant to keep in sync.
         deps = get_mutation_dependencies()
         deps.subscription_service.create_subscription_for_organization(child_org)
 

@@ -243,12 +243,15 @@ class OrganizationMembership(BaseModel):
     is_billing_owner = models.BooleanField(
         default=False,
         db_default=False,
-        db_index=True,
         help_text=(
             "Whether this membership may manage the organization's billing (change "
             "plan, purchase add-ons, manage payment method) in addition to admins. "
             "The permission that reads this flag (IsBillingOwnerOrAdmin) lands in a "
-            "later phase; this field only marks the membership."
+            "later phase; this field only marks the membership. No db_index yet "
+            "(Phase 4 review finding 10) — nothing reads this field until Phase 9, "
+            "and a boolean index on this table takes a SHARE lock for no present "
+            "benefit. Add it (via AddIndexConcurrently in a non-atomic migration, "
+            "given table size) alongside the phase that starts querying it."
         ),
     )
 

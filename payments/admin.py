@@ -12,6 +12,7 @@ from payments.models import (
     Refund,
     RefundStatusUpdate,
     Subscription,
+    SubscriptionEntitlement,
     SubscriptionPlanLimit,
     SubscriptionStatusUpdate,
 )
@@ -69,12 +70,32 @@ class SubscriptionPlanLimitInline(admin.TabularInline):
     organization. Any row an admin touches here is stamped ``is_overridden=True``
     on save (see ``SubscriptionAdmin.save_formset``) so it survives the next plan
     change untouched, which is what makes this the intended enforcement bypass
-    instead of a code-level one."""
+    instead of a code-level one.
+
+    ``is_overridden`` itself is editable (not in ``readonly_fields``): a support
+    grant is meant to be temporary, and the only way to clear it — put the row
+    back under normal plan-change control — is to uncheck it here. Any row an
+    admin touches, including one where the only change is unchecking this box, is
+    still re-stamped ``True`` by ``save_formset`` on that same save; clearing it
+    requires a follow-up save where the row is otherwise left alone (or a direct
+    edit clearing it without changing anything else, if ``save_formset`` is ever
+    changed to distinguish that case).
+    """
 
     model = SubscriptionPlanLimit
     extra = 0
     fields = ("resource_key", "limit_value", "kind", "overage_unit_price", "is_overridden")
-    readonly_fields = ("is_overridden",)
+
+
+class SubscriptionEntitlementInline(admin.TabularInline):
+    """Editable per-subscription entitlement copy — same support-lever semantics
+    as ``SubscriptionPlanLimitInline``. Without this, a stuck entitlement (e.g. an
+    org that needs ``PARTNER_API`` enabled ahead of a plan change) had no support
+    lever at all, unlike limits."""
+
+    model = SubscriptionEntitlement
+    extra = 0
+    fields = ("entitlement_key", "is_enabled", "is_overridden")
 
 
 @admin.register(Subscription)
@@ -92,15 +113,15 @@ class SubscriptionAdmin(admin.ModelAdmin):
     list_filter = ("status", "billing_state", "billing_interval", "payment_provider")
     search_fields = ("organization__name", "external_id")
     readonly_fields = ("created", "modified")
-    inlines = (SubscriptionPlanLimitInline,)
+    inlines = (SubscriptionPlanLimitInline, SubscriptionEntitlementInline)
 
     def save_formset(self, request, form, formset, change):
-        """`SubscriptionPlanLimit` rows an admin creates or edits here are
-        hand-edited by definition — mark them `is_overridden=True` so a later plan
-        change (`SubscriptionService.change_plan`) leaves them untouched. Rows the
-        admin merely viewed without changing are not returned by
-        `formset.save(commit=False)` and are left alone."""
-        if formset.model is SubscriptionPlanLimit:
+        """`SubscriptionPlanLimit` / `SubscriptionEntitlement` rows an admin
+        creates or edits here are hand-edited by definition — mark them
+        `is_overridden=True` so a later plan change (`SubscriptionService.change_plan`)
+        leaves them untouched. Rows the admin merely viewed without changing are
+        not returned by `formset.save(commit=False)` and are left alone."""
+        if formset.model in (SubscriptionPlanLimit, SubscriptionEntitlement):
             instances = formset.save(commit=False)
             for instance in instances:
                 instance.is_overridden = True
