@@ -50,7 +50,7 @@ def seed_billing_plans(apps, schema_editor):
     PlanLimit = apps.get_model("payments", "PlanLimit")
     PlanEntitlement = apps.get_model("payments", "PlanEntitlement")
 
-    unlimited_plan, _created = BillingPlan.objects.get_or_create(
+    unlimited_plan, _created = BillingPlan.objects.update_or_create(
         slug=UNLIMITED_PLAN_SLUG,
         defaults={
             "name": "Unlimited",
@@ -63,7 +63,7 @@ def seed_billing_plans(apps, schema_editor):
         },
     )
     for resource_key in LimitedResource.values:
-        PlanLimit.objects.get_or_create(
+        PlanLimit.objects.update_or_create(
             plan=unlimited_plan,
             resource_key=resource_key,
             defaults={
@@ -75,13 +75,13 @@ def seed_billing_plans(apps, schema_editor):
             },
         )
     for entitlement_key in Entitlement.values:
-        PlanEntitlement.objects.get_or_create(
+        PlanEntitlement.objects.update_or_create(
             plan=unlimited_plan,
             entitlement_key=entitlement_key,
             defaults={"is_enabled": True},
         )
 
-    free_plan, _created = BillingPlan.objects.get_or_create(
+    free_plan, _created = BillingPlan.objects.update_or_create(
         slug=FREE_PLAN_SLUG,
         defaults={
             "name": "Free",
@@ -94,7 +94,7 @@ def seed_billing_plans(apps, schema_editor):
         },
     )
     for resource_key, values in FREE_PLAN_LIMITS.items():
-        PlanLimit.objects.get_or_create(
+        PlanLimit.objects.update_or_create(
             plan=free_plan,
             resource_key=resource_key,
             defaults={
@@ -106,7 +106,7 @@ def seed_billing_plans(apps, schema_editor):
             },
         )
     for entitlement_key, is_enabled in FREE_PLAN_ENTITLEMENTS.items():
-        PlanEntitlement.objects.get_or_create(
+        PlanEntitlement.objects.update_or_create(
             plan=free_plan,
             entitlement_key=entitlement_key,
             defaults={"is_enabled": is_enabled},
@@ -122,7 +122,6 @@ def unseed_billing_plans(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("payments", "0005_planentitlement_planlimit"),
     ]

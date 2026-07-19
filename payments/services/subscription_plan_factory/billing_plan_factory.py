@@ -30,6 +30,8 @@ class BillingPlanFactory(BaseSubscriptionPlanFactory):
             # The day-of-month the provider bills on. Derived from when the current
             # period started rather than stored separately — `Subscription` carries
             # no standalone `billing_day` field.
+            # TODO(phase-9): providers commonly reject billing_day > 28 for monthly recurrence;
+            # validate or clamp before this reaches a real provider call.
             billing_day=subscription.current_period_start.day,
             external_id=subscription.plan_external_id,
         )

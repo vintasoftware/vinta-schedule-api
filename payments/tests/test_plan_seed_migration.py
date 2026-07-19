@@ -8,6 +8,8 @@ later phase is caught here if its `unlimited` row goes missing, per the plan's
 "no feature flag / unlimited is the rollback plan" guiding decision.
 """
 
+import importlib
+
 import pytest
 
 from payments.billing_constants import Entitlement, LimitedResource, LimitKind
@@ -68,3 +70,39 @@ class TestPlanSeedMigration:
 
     def test_only_one_default_plan_across_the_seeded_catalog(self):
         assert BillingPlan.objects.filter(is_default_for_new_organizations=True).count() == 1
+
+    def test_seeding_converges_and_updates_existing_plans(self):
+        """If a plan with slug `unlimited` already exists with wrong values (from a
+        partial deploy, manual fix, or earlier test run), the seed migration must
+        converge — updating the existing plan's fields to their canonical values.
+        The same applies to PlanLimit and PlanEntitlement rows."""
+        from django.apps import apps
+
+        # Get the seeding function from the migration module
+        migration_module = importlib.import_module("payments.migrations.0006_seed_billing_plans")
+        seed_billing_plans = migration_module.seed_billing_plans
+
+        plan = BillingPlan.objects.get(slug="unlimited")
+
+        # Simulate a partial deploy or manual correction that left the plan
+        # in an incorrect state.
+        plan.is_default_for_new_organizations = False
+        plan.is_active = False
+        plan.save()
+
+        # Also corrupt a PlanLimit row to verify it converges too.
+        limit = plan.limits.get(resource_key=LimitedResource.EVENT_OCCURRENCES)
+        limit.kind = LimitKind.PREPAID  # Should be POSTPAID
+        limit.save()
+
+        # Re-run the seeding function; it should converge to the canonical state.
+        seed_billing_plans(apps, None)
+
+        # Assert the plan was corrected.
+        plan.refresh_from_db()
+        assert plan.is_active is True
+        assert plan.is_default_for_new_organizations is True
+
+        # Assert the PlanLimit was corrected.
+        limit.refresh_from_db()
+        assert limit.kind == LimitKind.POSTPAID
