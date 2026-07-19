@@ -19,7 +19,6 @@ from organizations.models import (
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
-    OrganizationTier,
 )
 
 
@@ -48,13 +47,6 @@ class OrganizationTestFactory:
             OrganizationMembership,
             user=user,
             organization=organization,
-        )
-
-    @staticmethod
-    def create_organization_tier(name="Basic"):
-        return baker.make(
-            OrganizationTier,
-            name=name,
         )
 
     @staticmethod
@@ -87,11 +79,6 @@ def organization_with_membership(user):
     organization = OrganizationTestFactory.create_organization()
     OrganizationTestFactory.create_organization_membership(user, organization)
     return organization
-
-
-@pytest.fixture
-def organization_tier():
-    return OrganizationTestFactory.create_organization_tier()
 
 
 @pytest.mark.django_db

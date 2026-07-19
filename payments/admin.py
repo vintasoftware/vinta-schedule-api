@@ -6,6 +6,8 @@ from payments.models import (
     BillingProfile,
     Payment,
     PaymentStatusUpdate,
+    PlanEntitlement,
+    PlanLimit,
     ProviderWebhookEvent,
     Refund,
     RefundStatusUpdate,
@@ -14,13 +16,22 @@ from payments.models import (
 )
 
 
+class PlanLimitInline(admin.TabularInline):
+    model = PlanLimit
+    extra = 0
+    fields = ("resource_key", "limit_value", "kind", "overage_unit_price")
+
+
+class PlanEntitlementInline(admin.TabularInline):
+    model = PlanEntitlement
+    extra = 0
+    fields = ("entitlement_key", "is_enabled")
+
+
 @admin.register(BillingPlan)
 class BillingPlanAdmin(admin.ModelAdmin):
-    """Admin interface for the catalog ``BillingPlan``.
-
-    Phase 1 only carries the plan's own fields; ``PlanLimit`` / ``PlanEntitlement``
-    inlines and catalog seeding land in a later phase.
-    """
+    """Admin interface for the catalog ``BillingPlan``, with its ``PlanLimit`` /
+    ``PlanEntitlement`` rows editable inline."""
 
     list_display = (
         "id",
@@ -35,6 +46,7 @@ class BillingPlanAdmin(admin.ModelAdmin):
     search_fields = ("slug", "name")
     ordering = ("slug",)
     readonly_fields = ("created", "modified")
+    inlines = (PlanLimitInline, PlanEntitlementInline)
 
 
 @admin.register(BillingAddress)
