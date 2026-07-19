@@ -41,6 +41,7 @@ OPEN (exit 0) on malformed input or its own errors — it is a safety net layere
 under the OS sandbox and the post-run backstop, never the sole gate, and must
 never wedge a run by denying on a parsing hiccup.
 """
+
 import json
 import os
 import sys
@@ -70,9 +71,11 @@ def parse_args(argv):
     i = 0
     while i < len(argv):
         if argv[i] == "--deny" and i + 1 < len(argv):
-            deny.append(argv[i + 1]); i += 2
+            deny.append(argv[i + 1])
+            i += 2
         elif argv[i] == "--allow" and i + 1 < len(argv):
-            allow.append(argv[i + 1]); i += 2
+            allow.append(argv[i + 1])
+            i += 2
         else:
             i += 1
     return deny, allow
@@ -86,8 +89,11 @@ def main():
 
     try:
         event = json.load(sys.stdin)
-    except Exception:
-        return 0  # fail open — never wedge a run on a parse error
+    except Exception:  # noqa: BLE001 - deliberate: this guard must fail open
+        # Never wedge a run on a malformed event. Narrowing this to
+        # JSONDecodeError would let a UnicodeDecodeError or a stdin OSError
+        # crash the guard, which is the exact failure this catch prevents.
+        return 0
 
     if event.get("tool_name") not in GUARDED_TOOLS:
         return 0
