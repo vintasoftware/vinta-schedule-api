@@ -119,7 +119,7 @@ def unseed_billing_plans(apps, schema_editor):
 
     Safe only if no `Subscription` still references these plans — true at this
     phase (3) on its own, since organizations are not placed on a plan until
-    Phase 4. From Phase 4 (`payments.0008`) onward, `Subscription.plan` is
+    Phase 4. From Phase 4 (`payments.0009`) onward, `Subscription.plan` is
     `on_delete=PROTECT`, so reversing the full chain to before this migration
     requires reversing `0008` first — its own reverse deletes exactly the
     `Subscription` rows *it* created (tagged `meta.backfilled_by`), which is what

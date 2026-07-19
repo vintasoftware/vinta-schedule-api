@@ -29,7 +29,7 @@ def is_billing_root(organization: Organization) -> bool:
     The single predicate for "is a billing root", used everywhere that decision
     is made: here, by ``resolve_billing_root``'s cycle-guarded walk;
     ``SubscriptionService.create_subscription_for_organization``; the
-    ``payments.0008`` backfill migration (as the ``Q``-object form,
+    ``payments.0009`` backfill migration (as the ``Q``-object form,
     ``billing_root_filter``); and the "no plan-less state" acceptance query. Keep
     all of those in sync with this definition if it ever changes.
 

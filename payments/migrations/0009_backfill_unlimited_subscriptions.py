@@ -39,7 +39,7 @@ UNLIMITED_PLAN_SLUG = "unlimited"
 # Stamped onto every `Subscription` this migration creates so its reverse can
 # delete exactly those rows and no others — see `delete_backfilled_subscriptions`.
 BACKFILL_META_KEY = "backfilled_by"
-BACKFILL_META_VALUE = "payments.0008"
+BACKFILL_META_VALUE = "payments.0009"
 
 
 def backfill_unlimited_subscriptions(apps, schema_editor):
@@ -153,7 +153,7 @@ def delete_backfilled_subscriptions(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("payments", "0007_subscriptionentitlement_subscriptionplanlimit"),
+        ("payments", "0008_subscriptionentitlement_subscriptionplanlimit"),
         ("organizations", "0016_organizationmembership_is_billing_owner"),
     ]
 

@@ -1,4 +1,4 @@
-"""Verifies the ``0008_backfill_unlimited_subscriptions`` data migration's end
+"""Verifies the ``0009_backfill_unlimited_subscriptions`` data migration's end
 state — every pre-existing billing-root organization is on ``unlimited``
 afterward, never ``free`` (objective 6: no organization is blocked as a
 consequence of the rollout itself).
@@ -39,7 +39,7 @@ from payments.models import BillingPlan, Subscription
 
 
 migration_module = importlib.import_module(
-    "payments.migrations.0008_backfill_unlimited_subscriptions"
+    "payments.migrations.0009_backfill_unlimited_subscriptions"
 )
 backfill_unlimited_subscriptions = migration_module.backfill_unlimited_subscriptions
 
@@ -68,7 +68,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         backfill_unlimited_subscriptions(apps, None)
 
         subscription = Subscription.objects.get(organization=org)
-        assert subscription.meta.get("backfilled_by") == "payments.0008"
+        assert subscription.meta.get("backfilled_by") == "payments.0009"
 
     def test_reverse_deletes_only_the_subscriptions_it_backfilled(self):
         """An organically-created (non-backfilled) `unlimited` subscription — the
