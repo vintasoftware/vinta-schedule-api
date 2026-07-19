@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import time
 from decimal import Decimal
 from unittest.mock import Mock, patch
 
@@ -14,6 +15,8 @@ from payments.exceptions import ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import Refund
 from payments.services.payment_adapters.base import Payment, PaymentStatusUpdate
 from payments.services.payment_adapters.mercadopago_payment_adapter import (
+    PAYMENT_STATUS_MAPPING,
+    REFUND_STATUS_MAPPING,
     MercadoPagoPaymentAdapter,
 )
 
@@ -22,9 +25,19 @@ WEBHOOK_SECRET = "test-webhook-secret"
 
 
 def build_signed_request(
-    data_id: str, secret: str = WEBHOOK_SECRET, request_id: str = "req-123", ts: str = "1700000000"
+    data_id: str,
+    secret: str = WEBHOOK_SECRET,
+    request_id: str = "req-123",
+    ts: str | None = None,
 ) -> tuple[bytes, dict[str, str]]:
-    """Build a raw body + headers pair signed the way MercadoPago signs webhooks."""
+    """Build a raw body + headers pair signed the way MercadoPago signs webhooks.
+
+    ``ts`` defaults to "now" — the signature tolerance window rejects a stale
+    ``ts`` (see ``test_verify_signature_rejects_stale_timestamp``), so tests that
+    aren't specifically exercising that behavior must sign with a fresh timestamp.
+    """
+    if ts is None:
+        ts = str(int(time.time()))
     raw_body = json.dumps({"action": "payment.update", "data": {"id": data_id}}).encode()
     manifest = f"id:{data_id.lower()};request-id:{request_id};ts:{ts};"
     signature = hmac.new(secret.encode(), manifest.encode(), hashlib.sha256).hexdigest()
@@ -186,22 +199,49 @@ def test_refund_success(mock_request_options, adapter, mock_refund):
 
 
 def test_check_status(adapter):
-    """Test payment status checking."""
+    """Test payment status checking.
+
+    `update_external_id` is sourced from the authenticated API response's own
+    `id`, not the (unsigned, caller-supplied) `update_id` argument — see
+    `test_check_status_ignores_unsigned_update_id_argument`.
+    """
     # Setup mock
     adapter.sdk.payment().get.return_value = {
-        "response": {"status": "approved", "status_detail": "accredited"}
+        "response": {
+            "id": "mp-payment-456",
+            "status": "approved",
+            "status_detail": "accredited",
+        }
     }
 
     # Execute
-    result = adapter.check_status("mp-payment-456", "update-123")
+    result = adapter.check_status("mp-payment-456")
 
     # Verify
     assert isinstance(result, PaymentStatusUpdate)
     assert result.id is None
     assert result.status == "approved"
     assert result.description == "accredited"
-    assert result.update_external_id == "update-123"
+    assert result.update_external_id == "mp-payment-456"
     adapter.sdk.payment().get.assert_called_once_with("mp-payment-456")
+
+
+def test_check_status_ignores_unsigned_update_id_argument(adapter):
+    """The `update_id` argument is never trusted for `update_external_id` — it
+    would otherwise let an attacker replaying a captured valid signature stamp an
+    arbitrary external id onto a `PaymentStatusUpdate` (see the module docstring on
+    `MercadoPagoWebhookSignature`)."""
+    adapter.sdk.payment().get.return_value = {
+        "response": {
+            "id": "mp-payment-456",
+            "status": "approved",
+            "status_detail": "accredited",
+        }
+    }
+
+    result = adapter.check_status("mp-payment-456", update_id="attacker-supplied-id")
+
+    assert result.update_external_id == "mp-payment-456"
 
 
 def test_get_payment_external_id_from_update(adapter):
@@ -254,7 +294,9 @@ def test_receive_update_valid_payment_update(mock_check_status, adapter):
     result = adapter.receive_update(update_payload)
 
     assert result == ("mp-payment-456", mock_status_update)
-    mock_check_status.assert_called_once_with("mp-payment-456", "update-123")
+    # The payload's top-level "id" is unsigned and no longer threaded through to
+    # `check_status` — see `test_check_status_ignores_unsigned_update_id_argument`.
+    mock_check_status.assert_called_once_with("mp-payment-456")
 
 
 def test_receive_update_invalid_type(adapter):
@@ -305,8 +347,13 @@ def test_check_refund_status_unknown(mock_logger, adapter):
     result = adapter.check_refund_status("refund-456")
 
     assert result == RefundStatuses.UNKNOWN
+    # Logs the id + status only — never `json.dumps(refund_payload)`, which would
+    # leak payer PII (email, name, document number, billing address) once the
+    # payload carries a real MercadoPago response.
     mock_logger.error.assert_called_once_with(
-        "Unknown refund status: %s", json.dumps(refund_payload)
+        "Unknown refund status: refund_external_id=%s original_status=%s",
+        "refund-456",
+        "unknown_status",
     )
 
 
@@ -368,27 +415,54 @@ def test_check_status_maps_known_status(adapter):
 @patch("payments.services.payment_adapters.mercadopago_payment_adapter.logger")
 def test_check_status_maps_unknown_status_and_logs(mock_logger, adapter):
     """An unrecognized provider status maps to UNKNOWN instead of being written raw."""
-    response = {"response": {"status": "some_new_mp_status", "status_detail": "??"}}
+    response = {
+        "response": {"id": "mp-payment-456", "status": "some_new_mp_status", "status_detail": "??"}
+    }
     adapter.sdk.payment().get.return_value = response
 
     result = adapter.check_status("mp-payment-456")
 
     assert result.status == PaymentStatuses.UNKNOWN
-    mock_logger.error.assert_called_once_with("Unknown payment status: %s", json.dumps(response))
+    # Logs the id + status only — never `json.dumps(response)`, which would leak
+    # payer PII (email, name, document number, billing address).
+    mock_logger.error.assert_called_once_with(
+        "Unknown payment status: payment_external_id=%s original_status=%s",
+        "mp-payment-456",
+        "some_new_mp_status",
+    )
 
 
-def test_get_event_id_returns_top_level_id(adapter):
-    """get_event_id (base class default) reuses the notification's top-level id."""
-    payload = {"id": "notif-789", "data": {"id": "mp-payment-456"}}
+def test_get_event_id_derives_key_from_signed_material(adapter):
+    """`get_event_id` no longer trusts the payload's unsigned top-level `id` — the
+    ledger key is built entirely from the verified manifest (`data.id` +
+    `x-request-id` + `ts`), matching `verify_signature`'s own source of truth."""
+    ts = str(int(time.time()))
+    raw_body, headers = build_signed_request(data_id="mp-payment-456", request_id="req-123", ts=ts)
 
-    assert adapter.get_event_id(payload) == "notif-789"
+    event_id = adapter.get_event_id(raw_body, headers, payload={"id": "attacker-controlled"})
+
+    assert event_id == f"mp-payment-456:req-123:{ts}"
 
 
-def test_get_event_id_raises_when_missing(adapter):
-    payload = {"data": {"id": "mp-payment-456"}}
+def test_get_event_id_ignores_payload_id_entirely(adapter):
+    """Two deliveries with the same signed manifest but different (attacker-varied)
+    top-level payload ids must resolve to the *same* ledger key — otherwise a
+    single captured valid signature lets an attacker force unbounded reprocessing
+    by mutating only the unsigned `id` field on each replay."""
+    raw_body, headers = build_signed_request(data_id="mp-payment-456")
+
+    event_id_1 = adapter.get_event_id(raw_body, headers, payload={"id": "notif-1"})
+    event_id_2 = adapter.get_event_id(raw_body, headers, payload={"id": "notif-2-different"})
+
+    assert event_id_1 == event_id_2
+
+
+def test_get_event_id_raises_when_signature_invalid(adapter):
+    raw_body, headers = build_signed_request(data_id="mp-payment-456")
+    tampered_body = raw_body.replace(b"mp-payment-456", b"mp-payment-999")
 
     with pytest.raises(ProviderWebhookEventIdMissingError):
-        adapter.get_event_id(payload)
+        adapter.get_event_id(tampered_body, headers, payload={"data": {"id": "mp-payment-456"}})
 
 
 def test_verify_signature_accepts_correctly_signed_body(adapter):
@@ -425,3 +499,34 @@ def test_verify_signature_is_case_insensitive_to_header_names(adapter):
     upper_headers = {k.upper(): v for k, v in headers.items()}
 
     assert adapter.verify_signature(raw_body, upper_headers) is True
+
+
+def test_verify_signature_rejects_stale_timestamp(adapter):
+    """A `ts` outside the tolerance window must be rejected even though the HMAC
+    itself is perfectly valid — otherwise a single captured `(x-signature,
+    x-request-id)` pair verifies forever."""
+    stale_ts = str(int(time.time()) - 3600)  # 1h old, tolerance default is 300s
+    raw_body, headers = build_signed_request(data_id="mp-payment-456", ts=stale_ts)
+
+    assert adapter.verify_signature(raw_body, headers) is False
+
+
+def test_verify_signature_rejects_non_integer_timestamp(adapter):
+    """A non-integer `ts` must be rejected, not crash the request."""
+    raw_body, headers = build_signed_request(data_id="mp-payment-456", ts="not-a-number")
+
+    assert adapter.verify_signature(raw_body, headers) is False
+
+
+@pytest.mark.parametrize("mapped_status", PAYMENT_STATUS_MAPPING.values())
+def test_payment_status_mapping_values_are_valid_payment_statuses(mapped_status):
+    """Every `PAYMENT_STATUS_MAPPING` value must be writeable to the
+    `choices`-constrained `Payment.status` column."""
+    assert mapped_status in PaymentStatuses.values
+
+
+@pytest.mark.parametrize("mapped_status", REFUND_STATUS_MAPPING.values())
+def test_refund_status_mapping_values_are_valid_refund_statuses(mapped_status):
+    """Every `REFUND_STATUS_MAPPING` value must be writeable to the
+    `choices`-constrained `Refund.status` column."""
+    assert mapped_status in RefundStatuses.values

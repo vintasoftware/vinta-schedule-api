@@ -1,4 +1,3 @@
-import json
 import logging
 from collections.abc import Mapping
 from types import MappingProxyType
@@ -10,6 +9,7 @@ from django.urls import reverse
 import mercadopago
 
 from payments.constants import PaymentProviders, PaymentStatuses
+from payments.exceptions import ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import (
     BillingAddress,
     BillingProfile,
@@ -244,13 +244,19 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
     def create_status_update_from_payment_payload(
         self, payment_payload: dict
     ) -> PaymentStatusUpdate:
-        update_id = self.get_update_id(payment_payload)
+        # `payment_payload` is the SDK's payment-get API response (`{"response":
+        # {...}}`), which has no top-level "id" — `get_update_id` (which reads
+        # `payload["id"]`) never matches anything here, so it always returned None.
         original_status = payment_payload["response"]["status"]
         mapped_status = SUBSCRIPTION_STATUS_MAPPING.get(original_status, PaymentStatuses.UNKNOWN)
         if mapped_status == PaymentStatuses.UNKNOWN:
-            logger.error("Unknown subscription payment status: %s", json.dumps(payment_payload))
+            logger.error(
+                "Unknown subscription payment status: payment_external_id=%s original_status=%s",
+                payment_payload["response"].get("id"),
+                original_status,
+            )
         return PaymentStatusUpdate(
-            id=int(update_id) if update_id else None,
+            id=None,
             status=mapped_status,
             description=payment_payload["response"]["status_detail"],
             update_external_id=payment_payload["response"]["id"],
@@ -268,4 +274,16 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
         return subscription_payload.get("response", {}).get("last_payment_id")
 
     def verify_signature(self, raw_body: bytes, headers: Mapping[str, str]) -> bool:
-        return verify_mercadopago_signature(raw_body, headers, self.webhook_secret)
+        return verify_mercadopago_signature(raw_body, headers, self.webhook_secret) is not None
+
+    def get_event_id(self, raw_body: bytes, headers: Mapping[str, str], payload: dict) -> str:
+        """MercadoPago's HMAC never covers the notification payload's top-level
+        ``id`` (only ``data.id`` + ``x-request-id`` + ``ts``), so it cannot be used
+        as the idempotency ledger key — an attacker can vary it freely across
+        replays of one captured valid signature. Derive the key entirely from the
+        verified manifest instead.
+        """
+        manifest = verify_mercadopago_signature(raw_body, headers, self.webhook_secret)
+        if manifest is None:
+            raise ProviderWebhookEventIdMissingError
+        return manifest.event_id

@@ -11,6 +11,7 @@ from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from common.utils.view_utils import TenantScopedViewMixin
@@ -42,6 +43,13 @@ class PaymentsViewSet(ViewSet):
 
     authentication_classes = ()
     permission_classes = (AllowAny,)
+    #: Unauthenticated + each delivery triggers an outbound provider API call
+    #: (`check_status`/`get_payment_payload`) — bound abuse with a generous
+    #: per-IP rate rather than leaving these fully unthrottled. Provider retry
+    #: volume for a single event is low, so this should never affect legitimate
+    #: deliveries.
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "payment-webhook"
 
     @inject
     def __init__(
@@ -68,6 +76,10 @@ class PaymentsViewSet(ViewSet):
         methods=["post"],
         detail=True,
         # add the provider to the URL path
+        # `detail=True`'s `pk` is a correlation aid only (matches the payment id in
+        # the `notification_url` we hand MercadoPago at payment-creation time) — it
+        # is not used to authenticate or look up anything here. Do not change the
+        # route: it is already baked into every `notification_url` sent so far.
         url_path="payment-update/<str:provider>",
         url_name="payment-update",
     )
@@ -99,7 +111,7 @@ class PaymentsViewSet(ViewSet):
             return Response({"detail": "Invalid signature."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
-            self.payment_service.handle_payment_webhook(provider, request.data)
+            self.payment_service.handle_payment_webhook(provider, raw_body, headers, request.data)
         except ProviderWebhookEventIdMissingError:
             return Response(
                 {"detail": "Payload is missing the notification id."},
@@ -155,7 +167,9 @@ class PaymentsViewSet(ViewSet):
             return Response({"detail": "Invalid signature."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
-            self.payment_service.handle_subscription_payment_webhook(provider, request.data)
+            self.payment_service.handle_subscription_payment_webhook(
+                provider, raw_body, headers, request.data
+            )
         except ProviderWebhookEventIdMissingError:
             return Response(
                 {"detail": "Payload is missing the notification id."},

@@ -104,15 +104,19 @@ class BasePaymentAdapter:
         """
         raise NotImplementedError
 
-    def get_event_id(self, payload: dict) -> str:
+    def get_event_id(self, raw_body: bytes, headers: Mapping[str, str], payload: dict) -> str:
         """
         Stable identifier for this specific webhook delivery, used as the
         idempotency ledger key so a provider redelivery of the same event is only
         ever processed once.
 
         Defaults to the provider's own top-level notification id (``get_update_id``).
-        Override when a provider's notification has no such id and a composite key
-        must be derived instead.
+        Override when the provider's signature does not cover that id — deriving
+        the ledger key from unsigned payload material lets an attacker replay a
+        single captured valid signature under an unbounded number of distinct
+        "new" event ids. ``raw_body``/``headers`` are passed through specifically
+        so an override can re-derive the key from signed material instead (see
+        ``MercadoPagoPaymentAdapter.get_event_id``).
         """
         event_id = self.get_update_id(payload)
         if not event_id:
@@ -135,8 +139,12 @@ class BasePaymentAdapter:
             )
             return None
         payment_external_id = self._get_required_payment_external_id_from_update(update_payload)
-        update_id = self.get_update_id(update_payload)
-        latest_status_update = self.check_status(payment_external_id, update_id)
+        # `update_id` used to be sourced from the unsigned notification payload here
+        # and persisted downstream as `PaymentStatusUpdateModel.external_id` — but
+        # MercadoPago's signature never covers that field, so an attacker replaying
+        # one valid signature could stamp an arbitrary external id. `check_status`
+        # now sources it from the authenticated API response instead.
+        latest_status_update = self.check_status(payment_external_id)
         if not latest_status_update:
             return None
 

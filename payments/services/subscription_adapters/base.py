@@ -118,15 +118,19 @@ class BaseSubscriptionAdapter:
         """
         raise NotImplementedError
 
-    def get_event_id(self, payload: dict) -> str:
+    def get_event_id(self, raw_body: bytes, headers: Mapping[str, str], payload: dict) -> str:
         """
         Stable identifier for this specific webhook delivery, used as the
         idempotency ledger key so a provider redelivery of the same event is only
         ever processed once.
 
         Defaults to the provider's own top-level notification id (``get_update_id``).
-        Override when a provider's notification has no such id and a composite key
-        must be derived instead.
+        Override when the provider's signature does not cover that id — deriving
+        the ledger key from unsigned payload material lets an attacker replay a
+        single captured valid signature under an unbounded number of distinct
+        "new" event ids. ``raw_body``/``headers`` are passed through specifically
+        so an override can re-derive the key from signed material instead (see
+        ``MercadoPagoSubscriptionAdapter.get_event_id``).
         """
         event_id = self.get_update_id(payload)
         if not event_id:

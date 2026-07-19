@@ -49,15 +49,21 @@ class ProviderWebhookEventManager(Manager):
         both for a brand-new row and for an existing-but-unprocessed row (a previous
         delivery that crashed mid-processing), so a retry after a partial failure is
         allowed to run the handler again instead of being silently dropped forever.
+
+        Must be called inside ``transaction.atomic()``: the row is locked with
+        ``select_for_update()`` before ``is_new_delivery`` is decided, so a
+        concurrent redelivery of the same event blocks on the lock instead of both
+        deliveries racing past the check and double-processing.
         """
         event: ProviderWebhookEvent
-        event, created = self.get_queryset().get_or_create(
+        event, _created = self.get_queryset().get_or_create(
             provider=provider,
             route=route,
             external_event_id=external_event_id,
             defaults={"payload": payload},
         )
-        is_new_delivery = created or event.processed_at is None
+        event = self.get_queryset().select_for_update().get(pk=event.pk)
+        is_new_delivery = event.processed_at is None
         return event, is_new_delivery
 
     def mark_processed(self, event: ProviderWebhookEvent) -> None:

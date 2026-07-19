@@ -5,12 +5,13 @@ from dataclasses import asdict
 from decimal import Decimal
 from typing import Annotated
 
+from django.db import transaction
+
 from dependency_injector.wiring import Provide, inject
 
 from organizations.models import Organization
 from payments.billing_constants import BillingInterval, ProviderWebhookRoute
 from payments.constants import (
-    PaymentProviders,
     PaymentStatuses,
     RefundStatuses,
     SubscriptionStatuses,
@@ -236,7 +237,7 @@ class PaymentService[
         return PaymentModel.objects.filter(external_id=external_id).first()
 
     def receive_payment_update(
-        self, update_payload: dict, provider: str = PaymentProviders.MERCADOPAGO
+        self, update_payload: dict, provider: str
     ) -> PaymentStatusUpdateModel | None:
         adapter = self.get_payment_adapter(provider)
         update_data = adapter.receive_update(update_payload)
@@ -259,7 +260,7 @@ class PaymentService[
         return SubscriptionModel.objects.filter(external_id=external_id).first()
 
     def receive_subscription_payment_update(
-        self, update_payload: dict, provider: str = PaymentProviders.MERCADOPAGO
+        self, update_payload: dict, provider: str
     ) -> PaymentStatusUpdateModel | None:
         adapter = self.get_subscription_adapter(provider)
         update_data = adapter.receive_payment_update(update_payload)
@@ -329,7 +330,7 @@ class PaymentService[
         return self.get_subscription_adapter(provider).verify_signature(raw_body, headers)
 
     def handle_payment_webhook(
-        self, provider: str, payload: dict
+        self, provider: str, raw_body: bytes, headers: Mapping[str, str], payload: dict
     ) -> PaymentStatusUpdateModel | None:
         """Idempotently process an inbound ``payment-update`` webhook notification.
 
@@ -337,24 +338,30 @@ class PaymentService[
         does not re-verify authenticity, only idempotency + dispatch. Safe to call
         more than once with the same provider event: a redelivery of an
         already-processed event is a no-op.
+
+        ``raw_body``/``headers`` must be the same values already verified by
+        ``verify_payment_webhook_signature`` — the idempotency ledger key is
+        derived from them (signed material), never from ``payload`` alone, which
+        may contain unsigned fields an attacker can vary across replays.
         """
         adapter = self.get_payment_adapter(provider)
-        event_id = adapter.get_event_id(payload)
-        event, is_new_delivery = ProviderWebhookEventModel.objects.get_or_create_pending(
-            provider=provider,
-            route=ProviderWebhookRoute.PAYMENT_UPDATE,
-            external_event_id=event_id,
-            payload=payload,
-        )
-        if not is_new_delivery:
-            return None
+        event_id = adapter.get_event_id(raw_body, headers, payload)
+        with transaction.atomic():
+            event, is_new_delivery = ProviderWebhookEventModel.objects.get_or_create_pending(
+                provider=provider,
+                route=ProviderWebhookRoute.PAYMENT_UPDATE,
+                external_event_id=event_id,
+                payload=payload,
+            )
+            if not is_new_delivery:
+                return None
 
-        result = self.receive_payment_update(payload, provider=provider)
-        ProviderWebhookEventModel.objects.mark_processed(event)
+            result = self.receive_payment_update(payload, provider=provider)
+            ProviderWebhookEventModel.objects.mark_processed(event)
         return result
 
     def handle_subscription_payment_webhook(
-        self, provider: str, payload: dict
+        self, provider: str, raw_body: bytes, headers: Mapping[str, str], payload: dict
     ) -> PaymentStatusUpdateModel | None:
         """Idempotently process an inbound ``subscription-payment-update`` webhook.
 
@@ -362,20 +369,26 @@ class PaymentService[
         method does not re-verify authenticity, only idempotency + dispatch. Safe to
         call more than once with the same provider event: a redelivery of an
         already-processed event is a no-op.
+
+        ``raw_body``/``headers`` must be the same values already verified by
+        ``verify_subscription_webhook_signature`` — the idempotency ledger key is
+        derived from them (signed material), never from ``payload`` alone, which
+        may contain unsigned fields an attacker can vary across replays.
         """
         adapter = self.get_subscription_adapter(provider)
-        event_id = adapter.get_event_id(payload)
-        event, is_new_delivery = ProviderWebhookEventModel.objects.get_or_create_pending(
-            provider=provider,
-            route=ProviderWebhookRoute.SUBSCRIPTION_PAYMENT_UPDATE,
-            external_event_id=event_id,
-            payload=payload,
-        )
-        if not is_new_delivery:
-            return None
+        event_id = adapter.get_event_id(raw_body, headers, payload)
+        with transaction.atomic():
+            event, is_new_delivery = ProviderWebhookEventModel.objects.get_or_create_pending(
+                provider=provider,
+                route=ProviderWebhookRoute.SUBSCRIPTION_PAYMENT_UPDATE,
+                external_event_id=event_id,
+                payload=payload,
+            )
+            if not is_new_delivery:
+                return None
 
-        result = self.receive_subscription_payment_update(payload, provider=provider)
-        ProviderWebhookEventModel.objects.mark_processed(event)
+            result = self.receive_subscription_payment_update(payload, provider=provider)
+            ProviderWebhookEventModel.objects.mark_processed(event)
         return result
 
     def _serialize_subscription(self, subscription: SubscriptionModel) -> Subscription:

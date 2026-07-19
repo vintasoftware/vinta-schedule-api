@@ -1,4 +1,3 @@
-import json
 import logging
 from collections.abc import Mapping
 
@@ -10,6 +9,7 @@ import mercadopago
 import mercadopago.config
 
 from payments.constants import PaymentProviders, PaymentStatuses, RefundStatuses
+from payments.exceptions import ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import Refund
 from payments.services.mercadopago_signature import verify_mercadopago_signature
 from payments.services.payment_adapters.base import BasePaymentAdapter, Payment, PaymentStatusUpdate
@@ -129,12 +129,20 @@ class MercadoPagoPaymentAdapter(BasePaymentAdapter):
         original_status = response["response"]["status"]
         mapped_status = PAYMENT_STATUS_MAPPING.get(original_status, PaymentStatuses.UNKNOWN)
         if mapped_status == PaymentStatuses.UNKNOWN:
-            logger.error("Unknown payment status: %s", json.dumps(response))
+            logger.error(
+                "Unknown payment status: payment_external_id=%s original_status=%s",
+                payment_external_id,
+                original_status,
+            )
         return PaymentStatusUpdate(
             id=None,
             status=mapped_status,
             description=response["response"]["status_detail"],
-            update_external_id=update_id,
+            # Sourced from the authenticated API response, not the caller-supplied
+            # `update_id` — the webhook notification's own top-level id is never
+            # covered by MercadoPago's signature and must not be persisted as an
+            # external id (see `get_event_id` below).
+            update_external_id=response["response"].get("id"),
         )
 
     def get_payment_external_id_from_update(self, update_payload: dict) -> str | None:
@@ -156,8 +164,24 @@ class MercadoPagoPaymentAdapter(BasePaymentAdapter):
         original_status = refund_payload["response"]["status"]
         internal_status = REFUND_STATUS_MAPPING.get(original_status, RefundStatuses.UNKNOWN)
         if internal_status == RefundStatuses.UNKNOWN:
-            logger.error("Unknown refund status: %s", json.dumps(refund_payload))
+            logger.error(
+                "Unknown refund status: refund_external_id=%s original_status=%s",
+                refund_external_id,
+                original_status,
+            )
         return internal_status
 
     def verify_signature(self, raw_body: bytes, headers: Mapping[str, str]) -> bool:
-        return verify_mercadopago_signature(raw_body, headers, self.webhook_secret)
+        return verify_mercadopago_signature(raw_body, headers, self.webhook_secret) is not None
+
+    def get_event_id(self, raw_body: bytes, headers: Mapping[str, str], payload: dict) -> str:
+        """MercadoPago's HMAC never covers the notification payload's top-level
+        ``id`` (only ``data.id`` + ``x-request-id`` + ``ts``), so it cannot be used
+        as the idempotency ledger key — an attacker can vary it freely across
+        replays of one captured valid signature. Derive the key entirely from the
+        verified manifest instead.
+        """
+        manifest = verify_mercadopago_signature(raw_body, headers, self.webhook_secret)
+        if manifest is None:
+            raise ProviderWebhookEventIdMissingError
+        return manifest.event_id

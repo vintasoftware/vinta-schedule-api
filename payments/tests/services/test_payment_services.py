@@ -343,7 +343,9 @@ def test_success_receive_payment_update(payment_service, payment_adapter, billin
 
     # Receive payment update
     update_payload = {"type": "payment", "data": {"id": payment_external_id}}
-    result = payment_service.receive_payment_update(update_payload)
+    result = payment_service.receive_payment_update(
+        update_payload, provider=PaymentProviders.MERCADOPAGO
+    )
 
     # Verify receive_update was called with the correct arguments
     payment_adapter.receive_update.assert_called_once_with(update_payload)
@@ -565,7 +567,9 @@ def test_success_receive_subscription_payment_update(
 
     # Receive subscription payment update
     update_payload = {"id": "update_123", "type": "payment"}
-    result = payment_service.receive_subscription_payment_update(update_payload)
+    result = payment_service.receive_subscription_payment_update(
+        update_payload, provider=PaymentProviders.MERCADOPAGO
+    )
 
     # Verify receive_payment_update was called with the correct arguments
     subscription_adapter.receive_payment_update.assert_called_once_with(update_payload)
@@ -625,7 +629,9 @@ def test_receive_subscription_payment_update_without_billing_profile_returns_non
     )
 
     update_payload = {"id": "update_456", "type": "payment"}
-    result = payment_service.receive_subscription_payment_update(update_payload)
+    result = payment_service.receive_subscription_payment_update(
+        update_payload, provider=PaymentProviders.MERCADOPAGO
+    )
 
     assert result is None
     assert not PaymentModel.objects.filter(external_id="payment_no_profile").exists()
@@ -679,9 +685,15 @@ def test_handle_payment_webhook_is_idempotent(payment_service, payment_adapter, 
         ),
     )
     payload = {"type": "payment", "action": "payment.update", "id": "notif-1"}
+    raw_body = b"{}"
+    headers: dict[str, str] = {}
 
-    first = payment_service.handle_payment_webhook(PaymentProviders.MERCADOPAGO, payload)
-    second = payment_service.handle_payment_webhook(PaymentProviders.MERCADOPAGO, payload)
+    first = payment_service.handle_payment_webhook(
+        PaymentProviders.MERCADOPAGO, raw_body, headers, payload
+    )
+    second = payment_service.handle_payment_webhook(
+        PaymentProviders.MERCADOPAGO, raw_body, headers, payload
+    )
 
     assert first is not None
     assert second is None  # short-circuited: already processed
@@ -697,12 +709,14 @@ def test_handle_subscription_payment_webhook_is_idempotent(payment_service, subs
     subscription_adapter.get_event_id.return_value = "notif-2"
     subscription_adapter.receive_payment_update.return_value = None
     payload = {"type": "subscription_authorized_payment", "id": "notif-2"}
+    raw_body = b"{}"
+    headers: dict[str, str] = {}
 
     first = payment_service.handle_subscription_payment_webhook(
-        PaymentProviders.MERCADOPAGO, payload
+        PaymentProviders.MERCADOPAGO, raw_body, headers, payload
     )
     second = payment_service.handle_subscription_payment_webhook(
-        PaymentProviders.MERCADOPAGO, payload
+        PaymentProviders.MERCADOPAGO, raw_body, headers, payload
     )
 
     assert first is None
