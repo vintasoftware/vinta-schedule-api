@@ -3,14 +3,12 @@ import logging
 from abc import abstractmethod
 from collections.abc import Mapping
 
-from payments.exceptions import (
-    PaymentExternalIdMissingInNotificationError,
-    ProviderWebhookEventIdMissingError,
-)
+from payments.exceptions import ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import (
     Payment,
     PaymentStatusUpdate,
     Refund,
+    RefundResult,
 )
 
 
@@ -19,6 +17,18 @@ logger = logging.getLogger(__name__)
 
 class BasePaymentAdapter:
     provider: str
+
+    #: Whether ``verify_signature`` authenticates the literal request body bytes
+    #: end to end (e.g. Stripe's ``Stripe-Signature`` covers
+    #: ``{timestamp}.{raw_body}`` in full) or only a narrower manifest carved out
+    #: of specific fields (e.g. MercadoPago's ``x-signature`` covers only
+    #: ``data.id`` + ``x-request-id`` + ``ts``, never the body as a whole). This is
+    #: load-bearing, not decorative: a passing ``verify_signature`` does **not** by
+    #: itself imply every field in the parsed payload is trustworthy — that only
+    #: holds when this is ``True``. Every concrete adapter must set this
+    #: explicitly rather than lean on a base default, so the answer is never left
+    #: to tribal knowledge about a specific provider's signing scheme.
+    verifies_full_body: bool
 
     class Meta:
         abstract = True
@@ -44,11 +54,17 @@ class BasePaymentAdapter:
         raise NotImplementedError
 
     @abstractmethod
-    def refund(self, refund: Refund) -> str:
+    def refund(self, refund: Refund) -> RefundResult:
         """
         Request a refund for a payment.
-        :param payment: Payment object
-        :return: The external_id of the refund
+
+        :param refund: Refund object. ``refund.external_id`` is not yet set at
+            this point — assigning it is what this call does.
+        :return: A ``RefundResult`` carrying both the provider's external id and
+            the refund's initial status. MercadoPago and Stripe both return the
+            status synchronously in the same response body that carries the id,
+            so callers get an accurate initial status without a forced second
+            round trip through ``check_refund_status``.
         """
         raise NotImplementedError
 
@@ -61,14 +77,6 @@ class BasePaymentAdapter:
         """
         raise NotImplementedError
 
-    def _get_required_payment_external_id_from_update(self, update_payload: dict) -> str:
-        payment_external_id = update_payload.get("data", {}).get("id")
-        if not payment_external_id:
-            raise PaymentExternalIdMissingInNotificationError(
-                "Payment external id not found in update payload"
-            )
-        return payment_external_id
-
     @abstractmethod
     def get_update_id(self, update_payload: dict) -> str | None:
         """
@@ -79,11 +87,20 @@ class BasePaymentAdapter:
         raise NotImplementedError
 
     @abstractmethod
-    def check_refund_status(self, refund_external_id: str) -> str:
+    def check_refund_status(self, refund: Refund) -> str:
         """
-        Check the status of a refund.
-        :param refund: External ID of the refund
-        :return: The status of the refund
+        Poll the provider for a refund's current status — for later
+        reconciliation (an async pending -> succeeded/failed transition, or a
+        scheduled cycle-close sweep), not the only way to learn a refund's
+        initial status (see ``refund``).
+
+        :param refund: Refund object with ``external_id`` set (from a prior
+            ``refund()`` call) and ``payment.external_id`` populated.
+            MercadoPago has no single-refund-by-id lookup — its status must be
+            read off the list of refunds for the parent payment — so both ids
+            are required to support every provider without a fragile
+            provider-specific side channel.
+        :return: The status of the refund.
         """
         raise NotImplementedError
 
@@ -126,19 +143,23 @@ class BasePaymentAdapter:
     def receive_update(self, update_payload: dict) -> tuple[str, PaymentStatusUpdate] | None:
         """
         Receive a payment status update. This method is supposed to be called by a webhook.
-        :param payment: Payment object
         :param update_payload: Payment status update payload
         :return: Payment external ID and PaymentStatusUpdate object
+
+        Sources the payment id from ``get_payment_external_id_from_update`` — the
+        per-adapter hook, not a hardcoded ``payload["data"]["id"]`` lookup. That
+        hardcoded shape only ever matched MercadoPago's notifications; Stripe's
+        equivalent id lives at ``payload["data"]["object"]["id"]``. Each adapter's
+        own ``get_payment_external_id_from_update`` already knows its provider's
+        shape, so this template method defers to it instead of assuming one.
         """
-        try:
-            payment_external_id = self.get_payment_external_id_from_update(update_payload)
-        except PaymentExternalIdMissingInNotificationError:
+        payment_external_id = self.get_payment_external_id_from_update(update_payload)
+        if not payment_external_id:
             logger.error(
                 "Payment external id not found in update payload. payload: %s",
                 json.dumps(update_payload),
             )
             return None
-        payment_external_id = self._get_required_payment_external_id_from_update(update_payload)
         # `update_id` used to be sourced from the unsigned notification payload here
         # and persisted downstream as `PaymentStatusUpdateModel.external_id` — but
         # MercadoPago's signature never covers that field, so an attacker replaying

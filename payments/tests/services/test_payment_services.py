@@ -6,6 +6,7 @@ import pytest
 from model_bakery import baker
 
 from organizations.models import Organization
+from payments.billing_constants import BillingInterval
 from payments.constants import (
     PaymentProviders,
     PaymentStatuses,
@@ -23,6 +24,7 @@ from payments.services.dataclasses import (
 )
 from payments.services.dataclasses import (
     CreatedPlan,
+    RefundResult,
 )
 from payments.services.dataclasses import (
     Payment as PaymentDataclass,
@@ -55,6 +57,7 @@ class MockSubscriptionPlanFactory(BaseSubscriptionPlanFactory):
             value=Decimal("100"),
             currency="USD",
             billing_day=1,
+            billing_interval=BillingInterval.MONTHLY,
             external_id="external_123",
         )
 
@@ -260,7 +263,9 @@ def test_success_create_refund(payment_service, payment_adapter, billing_profile
 
     # Set up mock for request_refund method
     external_refund_id = "refund_12345"
-    payment_adapter.refund.return_value = external_refund_id
+    payment_adapter.refund.return_value = RefundResult(
+        external_id=external_refund_id, status=RefundStatuses.PENDING
+    )
 
     # Create refund
     created_refund = payment_service.create_refund(
@@ -274,8 +279,11 @@ def test_success_create_refund(payment_service, payment_adapter, billing_profile
     refund_arg = payment_adapter.refund.call_args[0][0]
     assert isinstance(refund_arg, RefundDataclass)
 
-    # Verify refund was updated correctly
+    # Verify refund was updated correctly — the status comes straight off the
+    # provider's create-refund response (`RefundResult`), not a follow-up
+    # `check_refund_status` poll.
     assert created_refund.external_id == external_refund_id
+    assert created_refund.status == RefundStatuses.PENDING
 
 
 @pytest.mark.django_db
@@ -308,8 +316,14 @@ def test_success_check_refund_status(payment_service, payment_adapter, billing_p
     # Check refund status
     payment_service.check_refund_status(refund)
 
-    # Verify check_refund_status was called with the correct arguments
-    payment_adapter.check_refund_status.assert_called_once_with(refund.external_id)
+    # Verify check_refund_status was called with a `Refund` dataclass carrying
+    # both the refund's own external id and the parent payment's — MercadoPago
+    # has no single-refund-by-id lookup, only a list-by-payment one.
+    payment_adapter.check_refund_status.assert_called_once()
+    refund_arg = payment_adapter.check_refund_status.call_args[0][0]
+    assert isinstance(refund_arg, RefundDataclass)
+    assert refund_arg.external_id == refund.external_id
+    assert refund_arg.payment.external_id == payment.external_id
 
     # Verify refund status was updated
     refund.refresh_from_db()
@@ -367,6 +381,7 @@ def test_success_create_subscription_plan(payment_service, subscription_adapter)
         value=Decimal("100"),
         currency="USD",
         billing_day=1,
+        billing_interval=BillingInterval.MONTHLY,
     )
 
     # Set up mock for create_subscription_plan method
@@ -398,6 +413,7 @@ def test_success_update_subscription_plan(payment_service, subscription_adapter)
         value=Decimal("150"),
         currency="USD",
         billing_day=15,
+        billing_interval=BillingInterval.MONTHLY,
     )
 
     # Set up mock for update_subscription_plan method

@@ -200,7 +200,7 @@ class PaymentService[
             description="Refund created in the database, will send to payment gateway",
         )
         try:
-            refund.external_id = self.payment_gateway.refund(
+            refund_result = self.payment_gateway.refund(
                 Refund(
                     id=refund.id,
                     value=refund.value,
@@ -208,10 +208,16 @@ class PaymentService[
                     payment=self._serialize_payment(refund.payment),
                 )
             )
+            refund.external_id = refund_result.external_id
+            refund.status = refund_result.status
             RefundStatusUpdate.objects.create(
                 refund=refund,
-                status=RefundStatuses.PENDING,
-                description="Refund created in the payment gateway, waiting for processing",
+                status=refund_result.status,
+                # The status comes straight off the provider's create-refund
+                # response (see `RefundResult`), not a subsequent
+                # `check_refund_status` poll — both MercadoPago and Stripe return
+                # it synchronously alongside the new refund's id.
+                description=f"Refund created in the payment gateway with status {refund_result.status}",
             )
         except Exception as e:  # noqa: BLE001
             logger.exception(e)
@@ -230,7 +236,15 @@ class PaymentService[
         return self.payment_gateway.check_status(payment.external_id)
 
     def check_refund_status(self, refund: RefundModel) -> None:
-        refund.status = self.payment_gateway.check_refund_status(refund.external_id)
+        refund.status = self.payment_gateway.check_refund_status(
+            Refund(
+                id=refund.id,
+                value=refund.value,
+                currency=refund.currency,
+                payment=self._serialize_payment(refund.payment),
+                external_id=refund.external_id,
+            )
+        )
         refund.save()
 
     def get_payment_by_external_id(self, external_id: str) -> PaymentModel | None:

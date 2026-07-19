@@ -513,10 +513,20 @@ MERCADOPAGO_ACCESS_TOKEN = config("MERCADOPAGO_ACCESS_TOKEN", default="")
 # than skip verification.
 MERCADOPAGO_WEBHOOK_SECRET = config("MERCADOPAGO_WEBHOOK_SECRET", default="")
 
+# Secret API key used to authenticate outbound calls to Stripe. No organization is
+# routed onto Stripe yet (Phase 9), so an empty default is safe in every
+# environment until then.
+STRIPE_SECRET_KEY = config("STRIPE_SECRET_KEY", default="")
+# Shared secret used to verify Stripe's `Stripe-Signature` webhook header. Empty
+# by default, matching MERCADOPAGO_WEBHOOK_SECRET's fail-closed convention (see
+# payments.services.stripe_signature.verify_stripe_event) rather than skip
+# verification.
+STRIPE_WEBHOOK_SECRET = config("STRIPE_WEBHOOK_SECRET", default="")
+
 # How far a webhook's signed `ts` may drift from "now" before it is rejected as
 # stale (see payments.services.mercadopago_signature.verify_mercadopago_signature).
-# Default matches Stripe's own convention; Phase 2b's Stripe adapter reuses this
-# same setting rather than defining its own tolerance window.
+# Default matches Stripe's own convention; the Stripe adapter reuses this same
+# setting rather than defining its own tolerance window.
 WEBHOOK_SIGNATURE_TOLERANCE_SECONDS = 300
 
 SALT_KEY = config("SALT_KEY")

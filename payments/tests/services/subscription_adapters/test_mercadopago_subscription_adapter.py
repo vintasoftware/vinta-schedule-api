@@ -10,6 +10,7 @@ from django.test import override_settings
 
 import pytest
 
+from payments.billing_constants import BillingInterval
 from payments.constants import PaymentProviders, PaymentStatuses
 from payments.exceptions import ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import (
@@ -96,6 +97,7 @@ def mock_plan():
     plan.value = Decimal("99.90")
     plan.currency = "BRL"
     plan.billing_day = 15
+    plan.billing_interval = BillingInterval.MONTHLY
     return plan
 
 
@@ -109,6 +111,7 @@ def mock_created_plan():
     plan.value = Decimal("99.90")
     plan.currency = "BRL"
     plan.billing_day = 15
+    plan.billing_interval = BillingInterval.MONTHLY
     return plan
 
 
@@ -169,6 +172,19 @@ def test_create_subscription_plan(adapter, mock_plan):
         },
     }
     adapter.sdk.plan().create.assert_called_once_with(expected_plan_data)
+
+
+def test_create_subscription_plan_annual_interval(adapter, mock_plan):
+    """MercadoPago's `frequency_type` has no `"years"` option — an annual plan
+    must be expressed as 12 months, not `frequency=1, frequency_type="years"`."""
+    mock_plan.billing_interval = BillingInterval.ANNUAL
+    adapter.sdk.plan().create.return_value = {"response": {"id": "mp-plan-456"}}
+
+    adapter.create_subscription_plan(mock_plan)
+
+    call_args = adapter.sdk.plan().create.call_args[0][0]
+    assert call_args["auto_recurring"]["frequency"] == 12
+    assert call_args["auto_recurring"]["frequency_type"] == "months"
 
 
 def test_update_subscription_plan(adapter, mock_plan):

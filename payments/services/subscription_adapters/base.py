@@ -3,10 +3,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import Mapping
 
-from payments.exceptions import (
-    PaymentExternalIdMissingInNotificationError,
-    ProviderWebhookEventIdMissingError,
-)
+from payments.exceptions import ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import (
     CreatedPlan,
     PaymentStatusUpdate,
@@ -21,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 class BaseSubscriptionAdapter:
     provider: str
+
+    #: See ``BasePaymentAdapter.verifies_full_body`` — same contract, same
+    #: reasoning. A payment provider that also handles subscriptions signs its
+    #: subscription-payment webhooks with the same scheme as its payment
+    #: webhooks in every provider this codebase integrates with so far, but the
+    #: two adapters are declared independently rather than assumed to match.
+    verifies_full_body: bool
 
     class Meta:
         abstract = True
@@ -53,14 +57,6 @@ class BaseSubscriptionAdapter:
         :return: External ID
         """
         raise NotImplementedError
-
-    def _get_required_subscription_external_id_from_update(self, update_payload: dict) -> str:
-        payment_external_id = update_payload.get("data", {}).get("id")
-        if not payment_external_id:
-            raise PaymentExternalIdMissingInNotificationError(
-                "Payment external id not found in update payload"
-            )
-        return payment_external_id
 
     @abstractmethod
     def get_update_id(self, update_payload: dict) -> str | None:
@@ -140,16 +136,22 @@ class BaseSubscriptionAdapter:
     def receive_payment_update(
         self, update_payload: dict
     ) -> tuple[SubscriptionPayment, PaymentStatusUpdate] | None:
+        """
+        Sources the subscription id from ``get_subscription_external_id_from_update``
+        — the per-adapter hook, not a hardcoded ``payload["data"]["id"]`` lookup.
+        That hardcoded shape only ever matched MercadoPago's notifications;
+        Stripe's equivalent id is not at a fixed path (it depends on the event
+        type — a subscription event vs. an invoice event). Each adapter's own
+        ``get_subscription_external_id_from_update`` already knows its provider's
+        shape, so this template method defers to it instead of assuming one.
+        """
         if not self.is_payment_update(update_payload):
             return None
 
-        try:
-            subscription_external_id = self._get_required_subscription_external_id_from_update(
-                update_payload
-            )
-        except PaymentExternalIdMissingInNotificationError:
+        subscription_external_id = self.get_subscription_external_id_from_update(update_payload)
+        if not subscription_external_id:
             logger.error(
-                "Payment external id not found in update payload. payload: %s",
+                "Subscription external id not found in update payload. payload: %s",
                 json.dumps(update_payload),
             )
             return None
