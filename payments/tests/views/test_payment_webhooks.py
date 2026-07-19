@@ -342,7 +342,12 @@ class TestSubscriptionPaymentUpdateWebhook:
 
     def test_valid_signature_with_no_linked_payment_is_a_no_op(self, webhook_client):
         """The preapproval payload has no linked payment yet — the handler no-ops,
-        but the delivery must still be authenticated and recorded exactly once."""
+        but the delivery must still be authenticated and recorded. It is not
+        marked `processed_at` — `receive_payment_update` returning `None` must
+        not permanently burn the ledger row (see
+        `PaymentService.handle_subscription_payment_webhook`'s docstring): a
+        provider redelivery of the same event is safe to retry rather than
+        being silently dropped forever."""
         response = webhook_client.post(
             subscription_payment_update_url(),
             data=self._payload(),
@@ -352,7 +357,7 @@ class TestSubscriptionPaymentUpdateWebhook:
 
         assert response.status_code == status.HTTP_200_OK
         assert ProviderWebhookEvent.objects.count() == 1
-        assert ProviderWebhookEvent.objects.get().processed_at is not None
+        assert ProviderWebhookEvent.objects.get().processed_at is None
 
     def test_duplicate_delivery_is_idempotent(self, webhook_client):
         payload = self._payload()

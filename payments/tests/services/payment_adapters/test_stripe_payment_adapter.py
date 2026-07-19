@@ -115,10 +115,15 @@ def test_process_success(mock_payment_intent, adapter, mock_payment):
 
 @patch("payments.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
 def test_check_status_maps_known_status(mock_payment_intent, adapter):
+    """`intent` is a bare `Mock()` (no `spec`) — setting `.get` does nothing to
+    `getattr(intent, "last_payment_error", None)`, the attribute the adapter
+    actually reads. Without `last_payment_error` explicitly set, an unspecced
+    `Mock`'s attribute access returns a truthy child `Mock`, silently taking the
+    "has an error" branch and never asserting `description`."""
     intent = Mock()
     intent.status = "succeeded"
     intent.id = "pi_456"
-    intent.get.return_value = None
+    intent.last_payment_error = None
     mock_payment_intent.retrieve.return_value = intent
 
     result = adapter.check_status("pi_456")
@@ -126,6 +131,7 @@ def test_check_status_maps_known_status(mock_payment_intent, adapter):
     assert isinstance(result, PaymentStatusUpdate)
     assert result.status == PaymentStatuses.APPROVED
     assert result.update_external_id == "pi_456"
+    assert result.description == "succeeded"
     mock_payment_intent.retrieve.assert_called_once_with("pi_456", api_key="sk_test_123")
 
 
@@ -135,7 +141,7 @@ def test_check_status_maps_unknown_status_and_logs(mock_payment_intent, mock_log
     intent = Mock()
     intent.status = "some_new_stripe_status"
     intent.id = "pi_456"
-    intent.get.return_value = None
+    intent.last_payment_error = None
     mock_payment_intent.retrieve.return_value = intent
 
     result = adapter.check_status("pi_456")
@@ -146,6 +152,22 @@ def test_check_status_maps_unknown_status_and_logs(mock_payment_intent, mock_log
         "pi_456",
         "some_new_stripe_status",
     )
+
+
+@patch("payments.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
+def test_check_status_uses_last_payment_error_message_as_description(mock_payment_intent, adapter):
+    """When `last_payment_error` is present, its `message` — not the raw
+    status — becomes `description`."""
+    intent = Mock()
+    intent.status = "requires_payment_method"
+    intent.id = "pi_456"
+    intent.last_payment_error = {"message": "card_declined"}
+    mock_payment_intent.retrieve.return_value = intent
+
+    result = adapter.check_status("pi_456")
+
+    assert result.status == PaymentStatuses.PENDING
+    assert result.description == "card_declined"
 
 
 @patch("payments.services.payment_adapters.stripe_payment_adapter.stripe.Refund")

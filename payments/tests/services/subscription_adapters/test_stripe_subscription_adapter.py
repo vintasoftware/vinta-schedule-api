@@ -32,11 +32,27 @@ def build_signed_request(
     secret: str = WEBHOOK_SECRET,
     ts: str | None = None,
 ) -> tuple[bytes, dict[str, str]]:
-    """Build a raw body + headers pair signed the way Stripe signs webhooks."""
+    """Build a raw body + headers pair signed the way Stripe signs webhooks.
+
+    ``object_payload`` defaults to the ``2026-06-24.dahlia``-shaped invoice: the
+    subscription id lives at ``parent.subscription_details.subscription``, not
+    the removed ``subscription`` field (see
+    ``StripeSubscriptionAdapter.get_subscription_external_id_from_update``'s
+    docstring). Derived from introspecting the installed `stripe==15.3.1` SDK's
+    ``Invoice``/``Invoice.Parent``/``Invoice.Parent.SubscriptionDetails``
+    ``__annotations__``.
+    """
     if ts is None:
         ts = str(int(time.time()))
     if object_payload is None:
-        object_payload = {"id": "in_123", "object": "invoice", "subscription": "sub_123"}
+        object_payload = {
+            "id": "in_123",
+            "object": "invoice",
+            "parent": {
+                "type": "subscription_details",
+                "subscription_details": {"subscription": "sub_123"},
+            },
+        }
     raw_body = json.dumps(
         {"id": event_id, "object": "event", "type": event_type, "data": {"object": object_payload}}
     ).encode()
@@ -226,6 +242,29 @@ def test_cancel_subscription_success(mock_subscription_resource, adapter, mock_s
     mock_subscription_resource.cancel.assert_called_once_with("sub_456", api_key="sk_test_123")
 
 
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Subscription")
+def test_update_subscription_payment_token_success(
+    mock_subscription_resource, adapter, mock_subscription
+):
+    """`default_payment_method` is a genuine `Subscription` field (confirmed via
+    `'default_payment_method' in stripe.Subscription.__annotations__` == `True`)
+    — same field name `create_subscription` already sets."""
+    adapter.update_subscription_payment_token(mock_subscription, "pm_new_token")
+
+    mock_subscription_resource.modify.assert_called_once_with(
+        "sub_456", default_payment_method="pm_new_token", api_key="sk_test_123"
+    )
+
+
+def test_update_subscription_payment_token_without_external_id(adapter, mock_subscription):
+    mock_subscription.external_id = None
+
+    from payments.exceptions import PaymentAdapterError
+
+    with pytest.raises(PaymentAdapterError):
+        adapter.update_subscription_payment_token(mock_subscription, "pm_new_token")
+
+
 def test_get_subscription_external_id_from_update_subscription_event(adapter):
     payload = {
         "type": "customer.subscription.updated",
@@ -236,12 +275,46 @@ def test_get_subscription_external_id_from_update_subscription_event(adapter):
 
 
 def test_get_subscription_external_id_from_update_invoice_event(adapter):
+    """`2026-06-24.dahlia`-shaped invoice: `Invoice.subscription` was removed —
+    the id lives at `parent.subscription_details.subscription`. Shape derived
+    from introspecting `stripe.Invoice.__annotations__` /
+    `stripe.Invoice.Parent.__annotations__` /
+    `stripe.Invoice.Parent.SubscriptionDetails.__annotations__` on the pinned
+    `stripe==15.3.1` SDK."""
+    payload = {
+        "type": "invoice.paid",
+        "data": {
+            "object": {
+                "id": "in_123",
+                "parent": {
+                    "type": "subscription_details",
+                    "subscription_details": {"subscription": "sub_456"},
+                },
+            }
+        },
+    }
+
+    assert adapter.get_subscription_external_id_from_update(payload) == "sub_456"
+
+
+def test_get_subscription_external_id_from_update_invoice_event_legacy_fallback(adapter):
+    """Pre-dahlia payloads (or any future delivery lacking `parent`) fall back to
+    the bare `subscription` field rather than returning `None`."""
     payload = {
         "type": "invoice.paid",
         "data": {"object": {"id": "in_123", "subscription": "sub_456"}},
     }
 
     assert adapter.get_subscription_external_id_from_update(payload) == "sub_456"
+
+
+def test_get_subscription_external_id_from_update_invoice_event_missing_subscription(adapter):
+    payload = {
+        "type": "invoice.paid",
+        "data": {"object": {"id": "in_123"}},
+    }
+
+    assert adapter.get_subscription_external_id_from_update(payload) is None
 
 
 def test_get_subscription_external_id_from_update_irrelevant_event(adapter):
@@ -270,19 +343,46 @@ def test_get_payment_payload(mock_payment_intent, adapter):
 
 @patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Subscription")
 def test_get_subscription_payload(mock_subscription_resource, adapter):
+    """`latest_invoice.payment_intent` is not a valid expand path under the
+    pinned `2026-06-24.dahlia` API version — `Invoice.payment_intent` was
+    removed (confirmed via `'payment_intent' in stripe.Invoice.__annotations__`
+    == `False`) and Stripe rejects an unknown expand path with
+    `invalid_request_error`. `latest_invoice.payments` is the replacement:
+    `Invoice.payments` is a valid, `Optional[ListObject["InvoicePayment"]]`
+    field per `stripe.Invoice.__annotations__`."""
     mock_subscription_resource.retrieve.return_value = Mock(to_dict=lambda: {"id": "sub_456"})
 
     result = adapter.get_subscription_payload("sub_456")
 
     assert result == {"id": "sub_456"}
     mock_subscription_resource.retrieve.assert_called_once_with(
-        "sub_456", expand=["latest_invoice.payment_intent"], api_key="sk_test_123"
+        "sub_456", expand=["latest_invoice.payments"], api_key="sk_test_123"
     )
 
 
 def test_get_payment_external_id_from_subscription_payload_expanded(adapter):
+    """Shape derived from introspecting `stripe.InvoicePayment.__annotations__`
+    (`payment: InvoicePayment.Payment`) and
+    `stripe.InvoicePayment.Payment.__annotations__`
+    (`payment_intent: Union[str, PaymentIntent, None]`) on the pinned
+    `stripe==15.3.1` SDK — `latest_invoice.payments.data[0].payment.payment_intent`,
+    not the removed `latest_invoice.payment_intent`."""
     subscription_payload = {
-        "latest_invoice": {"payment_intent": {"id": "pi_456", "object": "payment_intent"}}
+        "latest_invoice": {
+            "payments": {
+                "object": "list",
+                "data": [
+                    {
+                        "id": "inpay_123",
+                        "object": "invoice_payment",
+                        "payment": {
+                            "type": "payment_intent",
+                            "payment_intent": {"id": "pi_456", "object": "payment_intent"},
+                        },
+                    }
+                ],
+            }
+        }
     }
 
     result = adapter.get_payment_external_id_from_subscription_payload(subscription_payload)
@@ -291,7 +391,23 @@ def test_get_payment_external_id_from_subscription_payload_expanded(adapter):
 
 
 def test_get_payment_external_id_from_subscription_payload_unexpanded_id(adapter):
-    subscription_payload = {"latest_invoice": {"payment_intent": "pi_789"}}
+    """`InvoicePayment.Payment.payment_intent` is a bare id string unless
+    further expanded — which `get_subscription_payload` never asks for, since
+    only the id is needed."""
+    subscription_payload = {
+        "latest_invoice": {
+            "payments": {
+                "object": "list",
+                "data": [
+                    {
+                        "id": "inpay_123",
+                        "object": "invoice_payment",
+                        "payment": {"type": "payment_intent", "payment_intent": "pi_789"},
+                    }
+                ],
+            }
+        }
+    }
 
     result = adapter.get_payment_external_id_from_subscription_payload(subscription_payload)
 
@@ -302,7 +418,23 @@ def test_get_payment_external_id_from_subscription_payload_missing_invoice(adapt
     assert adapter.get_payment_external_id_from_subscription_payload({}) is None
 
 
+def test_get_payment_external_id_from_subscription_payload_no_payments_yet(adapter):
+    """An invoice that hasn't been paid yet has an empty `payments.data` list —
+    must return `None`, not raise an `IndexError`."""
+    subscription_payload = {"latest_invoice": {"payments": {"object": "list", "data": []}}}
+
+    assert adapter.get_payment_external_id_from_subscription_payload(subscription_payload) is None
+
+
 def test_create_subscription_payment_from_payment_payload(adapter):
+    """`PaymentIntent.charges` was removed from the API (confirmed via
+    `'charges' in stripe.PaymentIntent.__annotations__` == `False`), so
+    `billing_profile` is now always an explicitly empty `BillingProfile` — see
+    `_billing_profile_from_payment_intent_payload`'s docstring.
+    `PaymentService.receive_subscription_payment_update` never reads it (it
+    sources billing info from the subscription's own organization), so this is
+    a shape requirement, not a functional regression.
+    """
     payment_payload = {
         "id": "pi_456",
         "amount": 9990,
@@ -310,25 +442,6 @@ def test_create_subscription_payment_from_payment_payload(adapter):
         "status": "succeeded",
         "payment_method_types": ["card"],
         "description": "Subscription payment",
-        "charges": {
-            "data": [
-                {
-                    "billing_details": {
-                        "name": "Jane Doe",
-                        "email": "jane@example.com",
-                        "phone": "+15551234567",
-                        "address": {
-                            "line1": "123 Main St",
-                            "line2": "Apt 4",
-                            "city": "Springfield",
-                            "state": "IL",
-                            "country": "US",
-                            "postal_code": "62704",
-                        },
-                    }
-                }
-            ]
-        },
     }
 
     result = adapter.create_subscription_payment_from_payment_payload("sub_456", payment_payload)
@@ -339,24 +452,10 @@ def test_create_subscription_payment_from_payment_payload(adapter):
     assert result.currency == "USD"
     assert result.payment_provider == PaymentProviders.STRIPE
     assert result.status == "succeeded"
-    assert result.billing_profile.email == "jane@example.com"
-    assert result.billing_profile.first_name == "Jane"
-    assert result.billing_profile.last_name == "Doe"
-
-
-def test_create_subscription_payment_from_payment_payload_no_charges(adapter):
-    """Must not blow up when the payment intent has no charge data yet."""
-    payment_payload = {
-        "id": "pi_456",
-        "amount": 9990,
-        "currency": "usd",
-        "status": "requires_payment_method",
-    }
-
-    result = adapter.create_subscription_payment_from_payment_payload("sub_456", payment_payload)
-
     assert result.billing_profile is not None
     assert result.billing_profile.email is None
+    assert result.billing_profile.first_name is None
+    assert result.billing_profile.last_name is None
 
 
 def test_create_status_update_from_payment_payload_maps_known_status(adapter):

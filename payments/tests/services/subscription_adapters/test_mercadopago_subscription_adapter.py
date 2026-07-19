@@ -329,6 +329,57 @@ def test_get_subscription_external_id_from_update_missing_data(adapter):
     assert result is None
 
 
+def test_receive_payment_update_sources_subscription_id_from_hook_not_hardcoded_path(adapter):
+    """Pins `BaseSubscriptionAdapter.receive_payment_update` (the template
+    method) against `get_subscription_external_id_from_update` (the per-adapter
+    hook) for MercadoPago specifically, end to end. The base method used to read
+    a hardcoded `payload["data"]["id"]` path directly instead of calling this
+    hook at all (see git history), so nothing previously proved the hook-based
+    flow resolves to the *same* subscription id the hardcoded path did for
+    MercadoPago's actual notification shape — this pins that equivalence rather
+    than assuming it from the hook's own unit test alone."""
+    adapter.sdk.preapproval().get.return_value = {"response": {"last_payment_id": "payment-456"}}
+    adapter.sdk.payment().get.return_value = {
+        "response": {
+            "id": "payment-456",
+            "transaction_amount": "99.90",
+            "currency_id": "BRL",
+            "status": "approved",
+            "status_detail": "accredited",
+            "payment_method_id": "visa",
+            "description": "Subscription payment",
+            "payer": {
+                "email": "test@example.com",
+                "first_name": "John",
+                "last_name": "Doe",
+                "identification": {"type": "CPF", "number": "12345678901"},
+                "address": {
+                    "street_name": "Test Street",
+                    "street_number": "123",
+                    "neighborhood": "Test Neighborhood",
+                    "city": "Test City",
+                    "federal_unit": "Test State",
+                    "country": "BR",
+                    "zip_code": "12345-678",
+                },
+            },
+        }
+    }
+    # Same shape as the deleted `_get_required_subscription_external_id_from_update`
+    # hardcoded read (`payload["data"]["id"]`).
+    update_payload = {
+        "type": "subscription_authorized_payment",
+        "data": {"id": "mp-subscription-456"},
+    }
+
+    result = adapter.receive_payment_update(update_payload)
+
+    assert result is not None
+    subscription_payment, _status_update = result
+    assert subscription_payment.subscription_external_id == "mp-subscription-456"
+    adapter.sdk.preapproval().get.assert_called_with("mp-subscription-456")
+
+
 def test_get_update_id(adapter):
     """Test extracting update ID from payload."""
     update_payload = {"id": "update-123", "other_field": "value"}

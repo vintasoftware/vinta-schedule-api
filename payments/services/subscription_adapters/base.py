@@ -50,6 +50,19 @@ class BaseSubscriptionAdapter:
         raise NotImplementedError
 
     @abstractmethod
+    def update_subscription_payment_token(
+        self, subscription: Subscription, payment_token: str
+    ) -> None:
+        """
+        Update the payment method backing an active subscription without
+        disrupting its current billing cycle (e.g. the payer's card expired or
+        was replaced).
+        :param subscription: Subscription object
+        :param payment_token: New payment token
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def get_subscription_external_id_from_update(self, update_payload: dict) -> str | None:
         """
         Get the external ID from a payment status update payload.
@@ -120,14 +133,27 @@ class BaseSubscriptionAdapter:
         idempotency ledger key so a provider redelivery of the same event is only
         ever processed once.
 
-        Defaults to the provider's own top-level notification id (``get_update_id``).
-        Override when the provider's signature does not cover that id — deriving
-        the ledger key from unsigned payload material lets an attacker replay a
-        single captured valid signature under an unbounded number of distinct
-        "new" event ids. ``raw_body``/``headers`` are passed through specifically
-        so an override can re-derive the key from signed material instead (see
-        ``MercadoPagoSubscriptionAdapter.get_event_id``).
+        Defaults to the provider's own top-level notification id (``get_update_id``),
+        sourced from ``payload`` — which is only safe to trust when
+        ``verifies_full_body`` is ``True`` (the provider's signature covers the
+        entire request body, ``payload`` included). A provider whose signature
+        only covers a narrow manifest (``verifies_full_body = False``) must
+        override this to re-derive the key from signed material instead (see
+        ``MercadoPagoSubscriptionAdapter.get_event_id``) — inheriting this
+        default would let an attacker replay a single captured valid signature
+        under an unbounded number of distinct "new" event ids. This is enforced
+        here rather than left to convention: ``verifies_full_body`` would
+        otherwise be purely documentary, and a future narrow-manifest adapter
+        that forgets to override ``get_event_id`` would get a false green light
+        instead of a failure. ``raw_body``/``headers`` are passed through so an
+        override can re-derive the key from signed material.
         """
+        if not self.verifies_full_body:
+            raise NotImplementedError(
+                f"{type(self).__name__} must override get_event_id: "
+                "verifies_full_body is False, so this default get_update_id(payload)"
+                "-based implementation cannot be trusted as an idempotency ledger key."
+            )
         event_id = self.get_update_id(payload)
         if not event_id:
             raise ProviderWebhookEventIdMissingError

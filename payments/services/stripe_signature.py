@@ -31,16 +31,20 @@ def verify_stripe_event(
     verifies that signature and parses the body into a trustworthy ``Event``
     object in one atomic step.
 
-    Callers must build the idempotency ledger key (and read any other
-    signature-sensitive field) off the ``Event`` object this function returns —
-    never off an independently-parsed copy of the same bytes (e.g. DRF's
-    ``request.data``). Even though the raw bytes are signed, a second, separately
-    parsed copy is a different code path than the one actually verified here;
-    relying on "the two parses should agree" is an assumption, not a guarantee,
-    and it can silently stop holding (a different parser, a future DRF version, a
-    proxy that rewrites the body) without anything failing loudly. The verified
-    ``Event`` is the only value this codebase treats as ground truth for a Stripe
-    webhook delivery.
+    Callers must build the idempotency ledger key off the ``Event`` object this
+    function returns — never off an independently-parsed copy of the same bytes
+    (e.g. DRF's ``request.data``). The ledger key is the one field where this
+    matters: even though the raw bytes are signed, a second, separately parsed
+    copy is a different code path than the one actually verified here, and it is
+    the only value an attacker gets to weaponize into an unbounded number of
+    distinct "new" idempotency keys for one captured valid signature (see
+    ``BasePaymentAdapter.get_event_id``'s docstring). ``PaymentService``'s
+    lookups off ``payload`` (e.g. a payment/subscription id used to re-fetch the
+    authoritative record from the provider's own API) do not carry that same
+    risk — a subtly-wrong id there just fails to resolve or fetches a different,
+    still-provider-authenticated record, so this function does not mandate every
+    field extraction be routed through the verified ``Event``, only the ledger
+    key.
 
     :param raw_body: The raw, unparsed HTTP request body.
     :param headers: The HTTP request headers (case-insensitive lookup).

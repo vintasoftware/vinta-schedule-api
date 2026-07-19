@@ -18,7 +18,7 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-#: Stripe's convention (Phase 2b reuses this same setting) — how far a webhook's
+#: Stripe's convention (reused here for the same setting) — how far a webhook's
 #: signed ``ts`` may drift from "now" before it is rejected as stale. Without this,
 #: a single captured (signature, body) pair verifies forever, turning one leaked
 #: webhook delivery into a permanent forgery capability.

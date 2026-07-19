@@ -357,6 +357,14 @@ class PaymentService[
         ``verify_payment_webhook_signature`` — the idempotency ledger key is
         derived from them (signed material), never from ``payload`` alone, which
         may contain unsigned fields an attacker can vary across replays.
+
+        ``mark_processed`` only runs when ``receive_payment_update`` actually
+        returns a result. A ``None`` result — whether because the event is
+        irrelevant or because something failed to resolve (e.g. a since-fixed
+        adapter bug) — leaves the ledger row unprocessed, per
+        ``ProviderWebhookEventManager.get_or_create_pending``'s contract: an
+        unprocessed row is exactly what allows a provider redelivery of the same
+        event to be retried instead of being permanently burned.
         """
         adapter = self.get_payment_adapter(provider)
         event_id = adapter.get_event_id(raw_body, headers, payload)
@@ -371,7 +379,8 @@ class PaymentService[
                 return None
 
             result = self.receive_payment_update(payload, provider=provider)
-            ProviderWebhookEventModel.objects.mark_processed(event)
+            if result is not None:
+                ProviderWebhookEventModel.objects.mark_processed(event)
         return result
 
     def handle_subscription_payment_webhook(
@@ -388,6 +397,10 @@ class PaymentService[
         ``verify_subscription_webhook_signature`` — the idempotency ledger key is
         derived from them (signed material), never from ``payload`` alone, which
         may contain unsigned fields an attacker can vary across replays.
+
+        ``mark_processed`` only runs when ``receive_subscription_payment_update``
+        actually returns a result — see ``handle_payment_webhook``'s docstring for
+        why a ``None`` result must not permanently burn the delivery.
         """
         adapter = self.get_subscription_adapter(provider)
         event_id = adapter.get_event_id(raw_body, headers, payload)
@@ -402,7 +415,8 @@ class PaymentService[
                 return None
 
             result = self.receive_subscription_payment_update(payload, provider=provider)
-            ProviderWebhookEventModel.objects.mark_processed(event)
+            if result is not None:
+                ProviderWebhookEventModel.objects.mark_processed(event)
         return result
 
     def _serialize_subscription(self, subscription: SubscriptionModel) -> Subscription:

@@ -287,6 +287,78 @@ def test_success_create_refund(payment_service, payment_adapter, billing_profile
 
 
 @pytest.mark.django_db
+def test_create_refund_persists_unknown_status_from_provider(
+    payment_service, payment_adapter, billing_profile
+):
+    """`refund.status` is written straight from the provider response — an
+    unmapped/unrecognized status must persist as `RefundStatuses.UNKNOWN`
+    (not silently coerced into something else), and the corresponding
+    `RefundStatusUpdate` row must record it too."""
+    payment = baker.make(
+        "payments.Payment",
+        billing_profile=billing_profile,
+        value=Decimal("100"),
+        currency="USD",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+        status=PaymentStatuses.APPROVED,
+        payment_method="credit_card",
+        description="Test Payment",
+        external_id="ext_12345",
+    )
+
+    external_refund_id = "refund_unknown_1"
+    payment_adapter.refund.return_value = RefundResult(
+        external_id=external_refund_id, status=RefundStatuses.UNKNOWN
+    )
+
+    created_refund = payment_service.create_refund(
+        payment_id=payment.pk,
+        value=Decimal("100"),
+        currency="USD",
+    )
+
+    assert created_refund.external_id == external_refund_id
+    assert created_refund.status == RefundStatuses.UNKNOWN
+    latest_status_update = created_refund.status_updates.latest("id")
+    assert latest_status_update.status == RefundStatuses.UNKNOWN
+
+
+@pytest.mark.django_db
+def test_create_refund_persists_failed_status_from_provider(
+    payment_service, payment_adapter, billing_profile
+):
+    """A provider-reported `failed` refund status must persist as-is, not be
+    silently downgraded to `UNKNOWN` or left at `PENDING_SEND`."""
+    payment = baker.make(
+        "payments.Payment",
+        billing_profile=billing_profile,
+        value=Decimal("100"),
+        currency="USD",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+        status=PaymentStatuses.APPROVED,
+        payment_method="credit_card",
+        description="Test Payment",
+        external_id="ext_12345",
+    )
+
+    external_refund_id = "refund_failed_1"
+    payment_adapter.refund.return_value = RefundResult(
+        external_id=external_refund_id, status=RefundStatuses.FAILED
+    )
+
+    created_refund = payment_service.create_refund(
+        payment_id=payment.pk,
+        value=Decimal("100"),
+        currency="USD",
+    )
+
+    assert created_refund.external_id == external_refund_id
+    assert created_refund.status == RefundStatuses.FAILED
+    latest_status_update = created_refund.status_updates.latest("id")
+    assert latest_status_update.status == RefundStatuses.FAILED
+
+
+@pytest.mark.django_db
 def test_success_check_refund_status(payment_service, payment_adapter, billing_profile):
     # Create payment and refund
     payment = baker.make(
@@ -721,10 +793,143 @@ def test_handle_payment_webhook_is_idempotent(payment_service, payment_adapter, 
 
 
 @pytest.mark.django_db
-def test_handle_subscription_payment_webhook_is_idempotent(payment_service, subscription_adapter):
+def test_handle_subscription_payment_webhook_is_idempotent(
+    payment_service, subscription_adapter, billing_profile, billing_address, billing_plan, user
+):
+    """A redelivery of the same provider event runs the handler at most once —
+    once the event has actually been processed (a non-`None` result)."""
+    now = datetime.datetime.now(tz=datetime.UTC)
+    subscription = baker.make(
+        "payments.Subscription",
+        organization=billing_profile.organization,
+        plan=billing_plan,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
+        status=SubscriptionStatuses.ACTIVE,
+        external_id="sub_12345",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+    )
+    from payments.services.dataclasses import SubscriptionPayment
+
+    subscription_payment = SubscriptionPayment(
+        id=None,
+        value=Decimal("100"),
+        currency="USD",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+        external_id="payment_12345",
+        status=PaymentStatuses.APPROVED,
+        billing_profile=BillingProfileDataclass(
+            pk=billing_profile.pk,
+            first_name=user.profile.first_name,
+            last_name=user.profile.last_name,
+            email=user.email,
+            phone=user.phone_number,
+            document_type=billing_profile.document_type,
+            document_number=billing_profile.document_number,
+            billing_address=BillingAddressDataclass(
+                id=billing_address.id,
+                street_name=billing_address.street_name,
+                street_number=billing_address.street_number,
+                neighborhood=billing_address.neighborhood,
+                address_line_2=billing_address.address_line_2,
+                city=billing_address.city,
+                state=billing_address.state,
+                country=billing_address.country,
+                zip_code=billing_address.zip_code,
+            ),
+        ),
+        payment_method="credit_card",
+        description="Subscription payment",
+        status_updates=[],
+        subscription_external_id=subscription.external_id,
+    )
     subscription_adapter.get_event_id.return_value = "notif-2"
-    subscription_adapter.receive_payment_update.return_value = None
+    subscription_adapter.receive_payment_update.return_value = (
+        subscription_payment,
+        PaymentStatusUpdateDataclass(
+            id=None, status="approved", description="ok", update_external_id="notif-2"
+        ),
+    )
     payload = {"type": "subscription_authorized_payment", "id": "notif-2"}
+    raw_body = b"{}"
+    headers: dict[str, str] = {}
+
+    first = payment_service.handle_subscription_payment_webhook(
+        PaymentProviders.MERCADOPAGO, raw_body, headers, payload
+    )
+    second = payment_service.handle_subscription_payment_webhook(
+        PaymentProviders.MERCADOPAGO, raw_body, headers, payload
+    )
+
+    assert first is not None
+    assert second is None  # short-circuited: already processed
+    assert subscription_adapter.receive_payment_update.call_count == 1
+    assert ProviderWebhookEvent.objects.count() == 1
+    assert ProviderWebhookEvent.objects.get().processed_at is not None
+
+
+@pytest.mark.django_db
+def test_handle_payment_webhook_none_result_does_not_burn_the_delivery(
+    payment_service, payment_adapter, billing_profile
+):
+    """A `None` result from `receive_payment_update` — e.g. from an adapter bug —
+    must not be recorded as `mark_processed`, so a provider redelivery of the
+    same event can still be processed once the underlying issue is fixed. Old
+    behavior (`PaymentExternalIdMissingInNotificationError` raised outside any
+    handler) 500'd the view and rolled the whole `ProviderWebhookEvent` row back
+    via `transaction.atomic()` — allowing exactly this kind of retry. The `None`
+    return path must preserve that property instead of silently swallowing it."""
+    payment = baker.make(
+        "payments.Payment",
+        billing_profile=billing_profile,
+        value=Decimal("100"),
+        currency="USD",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+        status=PaymentStatuses.PENDING,
+        payment_method="credit_card",
+        external_id="ext_99999",
+    )
+    payment_adapter.get_event_id.return_value = "notif-3"
+    payload = {"type": "payment", "action": "payment.update", "id": "notif-3"}
+    raw_body = b"{}"
+    headers: dict[str, str] = {}
+
+    payment_adapter.receive_update.return_value = None
+    first = payment_service.handle_payment_webhook(
+        PaymentProviders.MERCADOPAGO, raw_body, headers, payload
+    )
+
+    assert first is None
+    event = ProviderWebhookEvent.objects.get()
+    assert event.processed_at is None
+
+    # Redelivery of the same event, now that the (hypothetical) bug is fixed.
+    payment_adapter.receive_update.return_value = (
+        "ext_99999",
+        PaymentStatusUpdateDataclass(
+            id=None, status="approved", description="ok", update_external_id="notif-3"
+        ),
+    )
+    second = payment_service.handle_payment_webhook(
+        PaymentProviders.MERCADOPAGO, raw_body, headers, payload
+    )
+
+    assert second is not None
+    assert payment_adapter.receive_update.call_count == 2
+    assert ProviderWebhookEvent.objects.count() == 1
+    event.refresh_from_db()
+    assert event.processed_at is not None
+    payment.refresh_from_db()
+    assert payment.status_updates.count() == 1
+
+
+@pytest.mark.django_db
+def test_handle_subscription_payment_webhook_none_result_does_not_burn_the_delivery(
+    payment_service, subscription_adapter
+):
+    subscription_adapter.get_event_id.return_value = "notif-4"
+    subscription_adapter.receive_payment_update.return_value = None
+    payload = {"type": "subscription_authorized_payment", "id": "notif-4"}
     raw_body = b"{}"
     headers: dict[str, str] = {}
 
@@ -737,5 +942,6 @@ def test_handle_subscription_payment_webhook_is_idempotent(payment_service, subs
 
     assert first is None
     assert second is None
-    assert subscription_adapter.receive_payment_update.call_count == 1
+    # Not marked processed either time — still retriable, not call-count-limited.
+    assert subscription_adapter.receive_payment_update.call_count == 2
     assert ProviderWebhookEvent.objects.count() == 1

@@ -70,31 +70,31 @@ def _billing_profile_from_payment_intent_payload(payment_payload: dict) -> Billi
     billing profile from the subscription's own organization instead — so this
     exists purely to satisfy the dataclass's shape, not because anything
     downstream depends on its accuracy.
+
+    `PaymentIntent.charges` (the field this used to reconstruct billing details
+    from) was removed from the API; the replacement, `latest_charge`, is an
+    expandable id/`Charge` union that `get_payment_payload` never asks to be
+    expanded purely to populate a value nothing downstream reads. Rather than
+    add an expand solely for that, this returns an explicitly empty profile.
     """
-    charges = payment_payload.get("charges") or {}
-    charge_list = charges.get("data") or [] if isinstance(charges, dict) else []
-    billing_details = (charge_list[0].get("billing_details") or {}) if charge_list else {}
-    address = billing_details.get("address") or {}
-    full_name = billing_details.get("name") or ""
-    first_name, _, last_name = full_name.partition(" ")
     return BillingProfile(
         pk=None,
-        first_name=first_name or None,
-        last_name=last_name or None,
-        email=billing_details.get("email"),
-        phone=billing_details.get("phone"),
+        first_name=None,
+        last_name=None,
+        email=None,
+        phone=None,
         document_type=None,
         document_number=None,
         billing_address=BillingAddress(
             id=None,
-            street_name=address.get("line1") or "",
+            street_name="",
             street_number="",
             neighborhood=None,
-            address_line_2=address.get("line2") or "",
-            city=address.get("city") or "",
-            state=address.get("state") or "",
-            country=address.get("country") or "",
-            zip_code=address.get("postal_code") or "",
+            address_line_2="",
+            city="",
+            state="",
+            country="",
+            zip_code="",
         ),
     )
 
@@ -196,21 +196,42 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         new_external_id = self.update_subscription_plan(plan.external_id, plan)
         return replace(plan, external_id=new_external_id)
 
+    def update_subscription_payment_token(
+        self, subscription: Subscription, payment_token: str
+    ) -> None:
+        if not subscription.external_id:
+            raise PaymentAdapterError(
+                f"Cannot update payment token for subscription {subscription.id} "
+                "with no external_id"
+            )
+        stripe.Subscription.modify(
+            subscription.external_id,
+            default_payment_method=payment_token,
+            api_key=self.api_key,
+        )
+
     def get_subscription_external_id_from_update(self, update_payload: dict) -> str | None:
         """
         Unlike MercadoPago's fixed `data.id` path, the subscription id's location
         in a Stripe webhook payload depends on the event type: a
         `customer.subscription.*` event's `data.object` *is* the subscription
         (so its own `id` is what we want), while an `invoice.*` event's
-        `data.object` is an invoice that only *references* its subscription via
-        a `subscription` field.
+        `data.object` is an invoice that only *references* its subscription.
+
+        As of the pinned `2026-06-24.dahlia` API version, `Invoice.subscription`
+        no longer exists — the id lives at `parent.subscription_details.subscription`
+        (`Invoice.parent` is only populated for invoices that came from a
+        subscription; `type` is `"subscription_details"` in that case). The bare
+        `subscription` field is still read as a fallback for any pre-dahlia
+        payload this might ever see.
         """
         event_type = update_payload.get("type", "")
         obj = update_payload.get("data", {}).get("object", {})
         if event_type.startswith(SUBSCRIPTION_EVENT_TYPE_PREFIX):
             return obj.get("id")
         if event_type.startswith(INVOICE_EVENT_TYPE_PREFIX):
-            return obj.get("subscription")
+            subscription_details = (obj.get("parent") or {}).get("subscription_details") or {}
+            return subscription_details.get("subscription") or obj.get("subscription")
         return None
 
     def get_update_id(self, update_payload: dict) -> str | None:
@@ -264,9 +285,18 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         return update_payload.get("type") in RELEVANT_SUBSCRIPTION_PAYMENT_EVENT_TYPES
 
     def get_subscription_payload(self, subscription_external_id: str) -> dict:
+        """
+        `Invoice.payment_intent` no longer exists as of the pinned
+        `2026-06-24.dahlia` API version — expanding it raises
+        `invalid_request_error`. The PaymentIntent id is reached instead via
+        `Invoice.payments` (a list of `InvoicePayment`s, itself only populated
+        when expanded) -> `InvoicePayment.payment.payment_intent`. Only the id
+        is needed (see `get_payment_external_id_from_subscription_payload`), so
+        the payment_intent sub-field itself is left unexpanded.
+        """
         subscription = stripe.Subscription.retrieve(
             subscription_external_id,
-            expand=["latest_invoice.payment_intent"],
+            expand=["latest_invoice.payments"],
             api_key=self.api_key,
         )
         return subscription.to_dict()
@@ -277,7 +307,12 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         latest_invoice = subscription_payload.get("latest_invoice")
         if not isinstance(latest_invoice, dict):
             return None
-        payment_intent = latest_invoice.get("payment_intent")
+        payments = latest_invoice.get("payments") or {}
+        payment_entries = payments.get("data") or [] if isinstance(payments, dict) else []
+        if not payment_entries:
+            return None
+        payment = payment_entries[0].get("payment") or {}
+        payment_intent = payment.get("payment_intent")
         if isinstance(payment_intent, dict):
             return payment_intent.get("id")
         return payment_intent
