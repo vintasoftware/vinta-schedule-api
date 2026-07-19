@@ -81,29 +81,12 @@ class ExternalEventUpdatePolicy(models.TextChoices):
     FORBIDDEN = "forbidden", "Updates are forbidden"
 
 
-class OrganizationTier(BaseModel):
-    """
-    Represents a tier for a calendar organization.
-    """
-
-    name = models.CharField(max_length=255)
-
-    def __str__(self):
-        return self.name
-
-
 class Organization(BaseModel):
     """
     Represents a calendar organization.
     """
 
     name = models.CharField(max_length=255)
-    tier = models.ForeignKey(
-        OrganizationTier,
-        on_delete=models.CASCADE,
-        related_name="organizations",
-        null=True,
-    )
     should_sync_rooms = models.BooleanField(
         default=False, help_text="Whether to sync rooms for this organization."
     )
@@ -167,30 +150,6 @@ class Organization(BaseModel):
             seen.add(org.pk)
             org = org.parent
         return None
-
-
-class SubscriptionPlan(BaseModel):
-    """
-    Represents a subscription plan for a calendar organization.
-    """
-
-    value = models.DecimalField(max_digits=10, decimal_places=2)
-    currency = models.CharField(max_length=3)
-    billing_day = models.IntegerField()
-    tier = models.ForeignKey(
-        OrganizationTier,
-        on_delete=models.CASCADE,
-        related_name="subscription_plans",
-    )
-    organization = models.ForeignKey(
-        Organization,
-        on_delete=models.CASCADE,
-        related_name="subscription_plans",
-    )
-    is_active = models.BooleanField(default=True)
-
-    def __str__(self):
-        return self.name
 
 
 class OrganizationForeignKey(TenantSafeForeignKey):

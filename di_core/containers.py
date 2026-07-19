@@ -29,7 +29,6 @@ from notifications.notification_adapters.django_in_app import DjangoInAppNotific
 from notifications.notification_template_renderers.django_in_app_renderer import (
     DjangoTemplatedInAppRenderer,
 )
-from organizations.organization_subscription_plan_factory import OrganizationSubscriptionPlanFactory
 from organizations.services import OrganizationService
 from payments.constants import PaymentProviders
 from payments.services.payment_adapters.mercadopago_payment_adapter import MercadoPagoPaymentAdapter
@@ -41,6 +40,7 @@ from payments.services.subscription_adapters.mercadopago_subscription_adapter im
 from payments.services.subscription_adapters.stripe_subscription_adapter import (
     StripeSubscriptionAdapter,
 )
+from payments.services.subscription_plan_factory.billing_plan_factory import BillingPlanFactory
 from public_api.services import PublicAPIAuthService
 from vintasend_django_sms_template_renderer.services.notification_template_renderers.django_sms_template_renderer import (
     DjangoTemplatedSMSRenderer,
@@ -105,7 +105,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     subscription_plan_factory = providers.Factory(
-        OrganizationSubscriptionPlanFactory,
+        BillingPlanFactory,
     )
 
     payment_service = providers.Factory(

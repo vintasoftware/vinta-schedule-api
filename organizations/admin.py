@@ -38,7 +38,6 @@ class OrganizationAdmin(admin.ModelAdmin):
                     "id",
                     "name",
                     "parent",
-                    "tier",
                     "should_sync_rooms",
                     "external_event_update_policy",
                     "created",

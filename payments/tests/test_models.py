@@ -47,18 +47,24 @@ def billing_plan():
 class TestBillingPlan:
     def test_only_one_default_plan_allowed(self):
         """The `uniq_default_billing_plan` partial unique constraint enforces at
-        most one `is_default_for_new_organizations=True` row."""
-        baker.make(BillingPlan, is_default_for_new_organizations=True)
+        most one `is_default_for_new_organizations=True` row. The plan catalog seed
+        migration already put `unlimited` in that slot, so a second default row must
+        be rejected without this test creating the first one itself."""
+        assert BillingPlan.objects.filter(is_default_for_new_organizations=True).exists()
 
         with pytest.raises(IntegrityError):
             baker.make(BillingPlan, is_default_for_new_organizations=True)
 
     def test_multiple_non_default_plans_allowed(self):
         """The partial constraint only applies to `True` rows."""
+        before = BillingPlan.objects.filter(is_default_for_new_organizations=False).count()
+
         baker.make(BillingPlan, is_default_for_new_organizations=False)
         baker.make(BillingPlan, is_default_for_new_organizations=False)
 
-        assert BillingPlan.objects.filter(is_default_for_new_organizations=False).count() == 2
+        assert (
+            BillingPlan.objects.filter(is_default_for_new_organizations=False).count() == before + 2
+        )
 
 
 @pytest.mark.django_db

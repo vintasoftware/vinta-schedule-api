@@ -4,7 +4,14 @@ from django.db import models
 from django.db.models import Q, UniqueConstraint
 
 from common.models import BaseModel
-from payments.billing_constants import BillingInterval, BillingState, ProviderWebhookRoute
+from payments.billing_constants import (
+    BillingInterval,
+    BillingState,
+    Entitlement,
+    LimitedResource,
+    LimitKind,
+    ProviderWebhookRoute,
+)
 from payments.constants import (
     PaymentProviders,
     PaymentStatuses,
@@ -41,10 +48,12 @@ class BillingAddress(BaseModel):
 class BillingPlan(BaseModel):
     """Catalog plan that a ``Subscription`` is sold against.
 
-    This is a minimal forward reference: only the fields needed for
-    ``Subscription.plan`` to resolve to a real model exist here. The full
-    catalog — ``PlanLimit``, ``PlanEntitlement``, plan seeding, and admin
-    inlines — lands in a later phase (plan catalog, limits, and entitlements).
+    Carries its ``PlanLimit`` / ``PlanEntitlement`` rows (the plan catalog proper).
+    There is no feature flag for the limits/entitlements rollout: the ``unlimited``
+    plan — every ``PlanLimit.limit_value`` NULL, every ``PlanEntitlement`` enabled —
+    *is* the kill switch. Catalog edits here never propagate to an already-sold
+    subscription; see ``SubscriptionPlanLimit`` (a later phase) for the
+    per-subscription copy.
     """
 
     slug = models.SlugField(max_length=100, unique=True)
@@ -57,6 +66,8 @@ class BillingPlan(BaseModel):
     grace_period_days = models.PositiveIntegerField(null=True, blank=True)
 
     subscriptions: "RelatedManager[Subscription]"
+    limits: "RelatedManager[PlanLimit]"
+    entitlements: "RelatedManager[PlanEntitlement]"
 
     class Meta(BaseModel.Meta):
         constraints: ClassVar = [
@@ -69,6 +80,51 @@ class BillingPlan(BaseModel):
 
     def __str__(self):
         return self.name
+
+
+class PlanLimit(BaseModel):
+    """A single resource ceiling on a ``BillingPlan``.
+
+    ``limit_value=NULL`` means no ceiling (unlimited) — never treat NULL as zero.
+    ``kind`` mirrors ``LimitedResource``'s own prepaid/postpaid split so an
+    effective-limit resolution does not have to cross-reference the choices class.
+    """
+
+    plan = models.ForeignKey(BillingPlan, on_delete=models.CASCADE, related_name="limits")
+    resource_key = models.CharField(max_length=100, choices=LimitedResource)
+    limit_value = models.PositiveIntegerField(null=True, blank=True)
+    kind = models.CharField(max_length=20, choices=LimitKind)
+    overage_unit_price = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+
+    class Meta(BaseModel.Meta):
+        constraints: ClassVar = [
+            UniqueConstraint(
+                fields=["plan", "resource_key"],
+                name="uniq_plan_limit_resource",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.plan} - {self.resource_key} - {self.limit_value}"
+
+
+class PlanEntitlement(BaseModel):
+    """A single boolean feature gate on a ``BillingPlan``."""
+
+    plan = models.ForeignKey(BillingPlan, on_delete=models.CASCADE, related_name="entitlements")
+    entitlement_key = models.CharField(max_length=100, choices=Entitlement)
+    is_enabled = models.BooleanField(default=False)
+
+    class Meta(BaseModel.Meta):
+        constraints: ClassVar = [
+            UniqueConstraint(
+                fields=["plan", "entitlement_key"],
+                name="uniq_plan_entitlement_key",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.plan} - {self.entitlement_key} - {self.is_enabled}"
 
 
 class BillingProfile(BaseModel):

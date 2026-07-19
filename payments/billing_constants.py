@@ -33,3 +33,40 @@ class ProviderWebhookRoute(TextChoices):
 
     PAYMENT_UPDATE = ("payment_update", _("Payment update"))
     SUBSCRIPTION_PAYMENT_UPDATE = ("subscription_payment_update", _("Subscription payment update"))
+
+
+class LimitedResource(TextChoices):
+    """The closed set of resources a ``BillingPlan`` can put a ceiling on.
+
+    Adding a member here is the only way a new resource enters the limits system —
+    the ``unlimited`` plan seed enumerates this class dynamically (see the seed data
+    migration + ``test_plan_seed_migration.py``) so a new member can never be silently
+    missing a ``PlanLimit`` row on the rollback plan.
+    """
+
+    ORGANIZATION_MEMBERS = ("organization_members", _("Organization members"))
+    RESOURCE_CALENDARS = ("resource_calendars", _("Resource calendars"))
+    CALENDAR_GROUPS = ("calendar_groups", _("Calendar groups"))
+    BUNDLE_CALENDARS = ("bundle_calendars", _("Bundle calendars"))
+    AVAILABILITY_WINDOWS = ("availability_windows", _("Availability windows"))
+    WEBHOOK_SUBSCRIPTIONS = ("webhook_subscriptions", _("Webhook subscriptions"))
+    PUBLIC_API_SYSTEM_USERS = ("public_api_system_users", _("Public API system users"))
+    EVENT_OCCURRENCES = ("event_occurrences", _("Event occurrences"))
+
+
+class LimitKind(TextChoices):
+    """Whether a ``LimitedResource`` is capped up front or metered and billed after
+    the fact."""
+
+    PREPAID = ("prepaid", _("Prepaid"))
+    POSTPAID = ("postpaid", _("Postpaid"))
+
+
+class Entitlement(TextChoices):
+    """The closed set of boolean feature gates a ``BillingPlan`` can grant."""
+
+    EXTERNAL_CALENDAR_GOOGLE = ("external_calendar_google", _("Google Calendar sync"))
+    EXTERNAL_CALENDAR_MICROSOFT = ("external_calendar_microsoft", _("Microsoft Calendar sync"))
+    PARTNER_API = ("partner_api", _("Partner / public API access"))
+    WHITE_LABEL_BRANDING = ("white_label_branding", _("White-label branding"))
+    ADVANCED_SCHEDULING = ("advanced_scheduling", _("Advanced scheduling"))
