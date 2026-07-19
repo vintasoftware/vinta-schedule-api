@@ -12,7 +12,8 @@ from payments.constants import (
     RefundStatuses,
     SubscriptionStatuses,
 )
-from payments.models import BillingPlan
+from payments.exceptions import UnknownPaymentProviderError
+from payments.models import BillingPlan, ProviderWebhookEvent
 from payments.models import Payment as PaymentModel
 from payments.services.dataclasses import (
     BillingAddress as BillingAddressDataclass,
@@ -342,7 +343,9 @@ def test_success_receive_payment_update(payment_service, payment_adapter, billin
 
     # Receive payment update
     update_payload = {"type": "payment", "data": {"id": payment_external_id}}
-    result = payment_service.receive_payment_update(update_payload)
+    result = payment_service.receive_payment_update(
+        update_payload, provider=PaymentProviders.MERCADOPAGO
+    )
 
     # Verify receive_update was called with the correct arguments
     payment_adapter.receive_update.assert_called_once_with(update_payload)
@@ -564,7 +567,9 @@ def test_success_receive_subscription_payment_update(
 
     # Receive subscription payment update
     update_payload = {"id": "update_123", "type": "payment"}
-    result = payment_service.receive_subscription_payment_update(update_payload)
+    result = payment_service.receive_subscription_payment_update(
+        update_payload, provider=PaymentProviders.MERCADOPAGO
+    )
 
     # Verify receive_payment_update was called with the correct arguments
     subscription_adapter.receive_payment_update.assert_called_once_with(update_payload)
@@ -624,7 +629,97 @@ def test_receive_subscription_payment_update_without_billing_profile_returns_non
     )
 
     update_payload = {"id": "update_456", "type": "payment"}
-    result = payment_service.receive_subscription_payment_update(update_payload)
+    result = payment_service.receive_subscription_payment_update(
+        update_payload, provider=PaymentProviders.MERCADOPAGO
+    )
 
     assert result is None
     assert not PaymentModel.objects.filter(external_id="payment_no_profile").exists()
+
+
+@pytest.mark.django_db
+def test_get_payment_adapter_returns_registered_provider(payment_service, payment_adapter):
+    assert payment_service.get_payment_adapter(PaymentProviders.MERCADOPAGO) is payment_adapter
+
+
+@pytest.mark.django_db
+def test_get_payment_adapter_raises_for_unknown_provider(payment_service):
+    with pytest.raises(UnknownPaymentProviderError):
+        payment_service.get_payment_adapter("some-unregistered-provider")
+
+
+@pytest.mark.django_db
+def test_get_subscription_adapter_returns_registered_provider(
+    payment_service, subscription_adapter
+):
+    assert (
+        payment_service.get_subscription_adapter(PaymentProviders.MERCADOPAGO)
+        is subscription_adapter
+    )
+
+
+@pytest.mark.django_db
+def test_get_subscription_adapter_raises_for_unknown_provider(payment_service):
+    with pytest.raises(UnknownPaymentProviderError):
+        payment_service.get_subscription_adapter("some-unregistered-provider")
+
+
+@pytest.mark.django_db
+def test_handle_payment_webhook_is_idempotent(payment_service, payment_adapter, billing_profile):
+    """A redelivery of the same provider event runs the handler at most once."""
+    payment = baker.make(
+        "payments.Payment",
+        billing_profile=billing_profile,
+        value=Decimal("100"),
+        currency="USD",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+        status=PaymentStatuses.PENDING,
+        payment_method="credit_card",
+        external_id="ext_12345",
+    )
+    payment_adapter.get_event_id.return_value = "notif-1"
+    payment_adapter.receive_update.return_value = (
+        "ext_12345",
+        PaymentStatusUpdateDataclass(
+            id=None, status="approved", description="ok", update_external_id="notif-1"
+        ),
+    )
+    payload = {"type": "payment", "action": "payment.update", "id": "notif-1"}
+    raw_body = b"{}"
+    headers: dict[str, str] = {}
+
+    first = payment_service.handle_payment_webhook(
+        PaymentProviders.MERCADOPAGO, raw_body, headers, payload
+    )
+    second = payment_service.handle_payment_webhook(
+        PaymentProviders.MERCADOPAGO, raw_body, headers, payload
+    )
+
+    assert first is not None
+    assert second is None  # short-circuited: already processed
+    assert payment_adapter.receive_update.call_count == 1
+    assert ProviderWebhookEvent.objects.count() == 1
+    assert ProviderWebhookEvent.objects.get().processed_at is not None
+    payment.refresh_from_db()
+    assert payment.status_updates.count() == 1
+
+
+@pytest.mark.django_db
+def test_handle_subscription_payment_webhook_is_idempotent(payment_service, subscription_adapter):
+    subscription_adapter.get_event_id.return_value = "notif-2"
+    subscription_adapter.receive_payment_update.return_value = None
+    payload = {"type": "subscription_authorized_payment", "id": "notif-2"}
+    raw_body = b"{}"
+    headers: dict[str, str] = {}
+
+    first = payment_service.handle_subscription_payment_webhook(
+        PaymentProviders.MERCADOPAGO, raw_body, headers, payload
+    )
+    second = payment_service.handle_subscription_payment_webhook(
+        PaymentProviders.MERCADOPAGO, raw_body, headers, payload
+    )
+
+    assert first is None
+    assert second is None
+    assert subscription_adapter.receive_payment_update.call_count == 1
+    assert ProviderWebhookEvent.objects.count() == 1

@@ -1,3 +1,7 @@
+import hashlib
+import hmac
+import json
+import time
 from decimal import Decimal
 from unittest.mock import Mock, patch
 
@@ -6,7 +10,8 @@ from django.test import override_settings
 
 import pytest
 
-from payments.constants import PaymentProviders
+from payments.constants import PaymentProviders, PaymentStatuses
+from payments.exceptions import ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import (
     BillingAddress,
     BillingProfile,
@@ -17,8 +22,38 @@ from payments.services.dataclasses import (
     SubscriptionPayment,
 )
 from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
+    SUBSCRIPTION_STATUS_MAPPING,
     MercadoPagoSubscriptionAdapter,
 )
+
+
+WEBHOOK_SECRET = "test-webhook-secret"
+
+
+def build_signed_request(
+    data_id: str,
+    secret: str = WEBHOOK_SECRET,
+    request_id: str = "req-123",
+    ts: str | None = None,
+) -> tuple[bytes, dict[str, str]]:
+    """Build a raw body + headers pair signed the way MercadoPago signs webhooks.
+
+    ``ts`` defaults to "now" — the signature tolerance window rejects a stale
+    ``ts``, so tests that aren't specifically exercising that behavior must sign
+    with a fresh timestamp.
+    """
+    if ts is None:
+        ts = str(int(time.time()))
+    raw_body = json.dumps(
+        {"type": "subscription_authorized_payment", "data": {"id": data_id}}
+    ).encode()
+    manifest = f"id:{data_id.lower()};request-id:{request_id};ts:{ts};"
+    signature = hmac.new(secret.encode(), manifest.encode(), hashlib.sha256).hexdigest()
+    headers = {
+        "x-signature": f"ts={ts},v1={signature}",
+        "x-request-id": request_id,
+    }
+    return raw_body, headers
 
 
 @pytest.fixture
@@ -95,7 +130,7 @@ def adapter():
     with patch(
         "payments.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
     ) as mock_sdk:
-        adapter = MercadoPagoSubscriptionAdapter("test-access-token")
+        adapter = MercadoPagoSubscriptionAdapter("test-access-token", webhook_secret=WEBHOOK_SECRET)
         adapter.sdk = mock_sdk.return_value
         return adapter
 
@@ -371,7 +406,14 @@ def test_create_subscription_payment_from_payment_payload(adapter):
 
 
 def test_create_status_update_from_payment_payload(adapter):
-    """Test creating status update from payment payload."""
+    """Test creating status update from payment payload.
+
+    A top-level "id" on the payload (this is the SDK's payment-get API response
+    shape, `{"response": {...}}` — it never actually carries a top-level "id" in
+    practice, but this proves it's ignored even when present) must not leak into
+    `PaymentStatusUpdate.id` — see the dead-branch note on
+    `create_status_update_from_payment_payload`.
+    """
     payment_payload = {
         "id": "123",
         "response": {"id": "payment-456", "status": "approved", "status_detail": "accredited"},
@@ -380,7 +422,7 @@ def test_create_status_update_from_payment_payload(adapter):
     result = adapter.create_status_update_from_payment_payload(payment_payload)
 
     assert isinstance(result, PaymentStatusUpdate)
-    assert result.id == 123
+    assert result.id is None
     assert result.status == "approved"
     assert result.description == "accredited"
     assert result.update_external_id == "payment-456"
@@ -450,3 +492,121 @@ def test_get_payment_external_id_from_subscription_payload_missing_payment_id(ad
 
     result = adapter.get_payment_external_id_from_subscription_payload(subscription_payload)
     assert result is None
+
+
+def test_create_status_update_from_payment_payload_maps_known_status(adapter):
+    """SUBSCRIPTION_STATUS_MAPPING is actually wired into create_status_update_from_payment_payload."""
+    payment_payload = {
+        "response": {"id": "payment-456", "status": "authorized", "status_detail": "accredited"}
+    }
+
+    result = adapter.create_status_update_from_payment_payload(payment_payload)
+
+    assert result.status == PaymentStatuses.APPROVED
+
+
+def test_create_status_update_from_payment_payload_maps_unknown_status(adapter):
+    """An unrecognized provider status maps to UNKNOWN instead of being written raw."""
+    payment_payload = {
+        "response": {"id": "payment-456", "status": "some_new_mp_status", "status_detail": "??"}
+    }
+
+    result = adapter.create_status_update_from_payment_payload(payment_payload)
+
+    assert result.status == PaymentStatuses.UNKNOWN
+
+
+@patch("payments.services.subscription_adapters.mercadopago_subscription_adapter.logger")
+def test_create_status_update_from_payment_payload_unknown_status_logs_no_pii(mock_logger, adapter):
+    """Logs the id + status only — never `json.dumps(payment_payload)`, which would
+    leak payer PII (email, name, document number, billing address)."""
+    payment_payload = {
+        "response": {"id": "payment-456", "status": "some_new_mp_status", "status_detail": "??"}
+    }
+
+    adapter.create_status_update_from_payment_payload(payment_payload)
+
+    mock_logger.error.assert_called_once_with(
+        "Unknown subscription payment status: payment_external_id=%s original_status=%s",
+        "payment-456",
+        "some_new_mp_status",
+    )
+
+
+@pytest.mark.parametrize("mapped_status", SUBSCRIPTION_STATUS_MAPPING.values())
+def test_subscription_status_mapping_values_are_valid_payment_statuses(mapped_status):
+    """Every `SUBSCRIPTION_STATUS_MAPPING` value must be writeable to the
+    `choices`-constrained `Payment.status` column (this maps the underlying
+    payment attached to a subscription charge, hence `PaymentStatuses`)."""
+    assert mapped_status in PaymentStatuses.values
+
+
+def test_get_event_id_derives_key_from_signed_material(adapter):
+    """`get_event_id` no longer trusts the payload's unsigned top-level `id` — the
+    ledger key is built entirely from the verified manifest (`data.id` +
+    `x-request-id` + `ts`), matching `verify_signature`'s own source of truth."""
+    ts = str(int(time.time()))
+    raw_body, headers = build_signed_request(
+        data_id="subscription-123", request_id="req-123", ts=ts
+    )
+
+    event_id = adapter.get_event_id(raw_body, headers, payload={"id": "attacker-controlled"})
+
+    assert event_id == f"subscription-123:req-123:{ts}"
+
+
+def test_get_event_id_ignores_payload_id_entirely(adapter):
+    """Two deliveries with the same signed manifest but different (attacker-varied)
+    top-level payload ids must resolve to the *same* ledger key."""
+    raw_body, headers = build_signed_request(data_id="subscription-123")
+
+    event_id_1 = adapter.get_event_id(raw_body, headers, payload={"id": "notif-1"})
+    event_id_2 = adapter.get_event_id(raw_body, headers, payload={"id": "notif-2-different"})
+
+    assert event_id_1 == event_id_2
+
+
+def test_get_event_id_raises_when_signature_invalid(adapter):
+    raw_body, headers = build_signed_request(data_id="subscription-123")
+    tampered_body = raw_body.replace(b"subscription-123", b"subscription-999")
+
+    with pytest.raises(ProviderWebhookEventIdMissingError):
+        adapter.get_event_id(tampered_body, headers, payload={"data": {"id": "subscription-123"}})
+
+
+def test_verify_signature_accepts_correctly_signed_body(adapter):
+    raw_body, headers = build_signed_request(data_id="subscription-123")
+
+    assert adapter.verify_signature(raw_body, headers) is True
+
+
+def test_verify_signature_rejects_tampered_body(adapter):
+    """The signature covers `data.id`; a tampered id must fail even though the
+    tampered body still parses to a well-formed, similar-looking payload."""
+    raw_body, headers = build_signed_request(data_id="subscription-123")
+    tampered_body = raw_body.replace(b"subscription-123", b"subscription-999")
+
+    assert adapter.verify_signature(tampered_body, headers) is False
+
+
+def test_verify_signature_rejects_missing_signature_header(adapter):
+    raw_body = json.dumps({"data": {"id": "subscription-123"}}).encode()
+
+    assert adapter.verify_signature(raw_body, {}) is False
+
+
+def test_verify_signature_rejects_when_secret_not_configured(adapter):
+    adapter.webhook_secret = ""
+    raw_body, headers = build_signed_request(data_id="subscription-123")
+
+    assert adapter.verify_signature(raw_body, headers) is False
+
+
+def test_verify_signature_rejects_stale_timestamp(adapter):
+    """A `ts` outside the tolerance window must be rejected even though the HMAC
+    itself is perfectly valid — otherwise a single captured `(x-signature,
+    x-request-id)` pair verifies forever."""
+    stale_ts = str(int(time.time()) - 3600)  # 1h old, tolerance default is 300s
+    raw_body, headers = build_signed_request(data_id="subscription-123", ts=stale_ts)
+
+    assert adapter.verify_signature(raw_body, headers) is False

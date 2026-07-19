@@ -173,6 +173,9 @@ envVarGroups:
       # environment's messaging profile.
       - key: ACCOUNT_PHONE_VERIFICATION_ENABLED
         value: false
+      # Shared secret used to verify MercadoPago's `x-signature` webhook header.
+      - key: MERCADOPAGO_WEBHOOK_SECRET
+        sync: false
 
   # AWS S3 + CloudFront storage. Values come from the Terragrunt/Scalr stack
   # under infrastructure/ — see `terragrunt output`. Secrets are sync:false so

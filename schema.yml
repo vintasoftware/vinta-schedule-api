@@ -9630,7 +9630,8 @@ paths:
   /payments/{id}/payment-update/{provider}/:
     post:
       operationId: payments_payment_update_create
-      description: This endpoint is used to receive payment updates from MercadoPago.
+      description: This endpoint is used to receive payment updates from a payment
+        provider.
       summary: Receive payment updates
       parameters:
       - in: path
@@ -9646,8 +9647,7 @@ paths:
       tags:
       - payments
       security:
-      - jwtAuth: []
-      - cookieAuth: []
+      - {}
       responses:
         '200':
           content:
@@ -9655,10 +9655,29 @@ paths:
               schema:
                 description: Payment update received.
           description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Malformed payload.
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                description: Invalid or missing signature.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Unknown payment provider.
+          description: ''
   /payments/{id}/payment-update/{provider}{format}:
     post:
       operationId: payments_payment_update_formatted_create
-      description: This endpoint is used to receive payment updates from MercadoPago.
+      description: This endpoint is used to receive payment updates from a payment
+        provider.
       summary: Receive payment updates
       parameters:
       - in: path
@@ -9681,20 +9700,37 @@ paths:
       tags:
       - payments
       security:
-      - jwtAuth: []
-      - cookieAuth: []
+      - {}
       responses:
         '200':
           content:
             application/json:
               schema:
                 description: Payment update received.
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Malformed payload.
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                description: Invalid or missing signature.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Unknown payment provider.
           description: ''
   /payments/{id}/subscription-payment-update/{provider}/:
     post:
       operationId: payments_subscription_payment_update_create
       description: This endpoint is used to receive subscription payment updates from
-        MercadoPago.
+        a payment provider.
       summary: Receive subscription payment updates
       parameters:
       - in: path
@@ -9710,8 +9746,7 @@ paths:
       tags:
       - payments
       security:
-      - jwtAuth: []
-      - cookieAuth: []
+      - {}
       responses:
         '200':
           content:
@@ -9719,11 +9754,29 @@ paths:
               schema:
                 description: Subscription payment update received.
           description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Malformed payload.
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                description: Invalid or missing signature.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Unknown payment provider.
+          description: ''
   /payments/{id}/subscription-payment-update/{provider}{format}:
     post:
       operationId: payments_subscription_payment_update_formatted_create
       description: This endpoint is used to receive subscription payment updates from
-        MercadoPago.
+        a payment provider.
       summary: Receive subscription payment updates
       parameters:
       - in: path
@@ -9746,14 +9799,31 @@ paths:
       tags:
       - payments
       security:
-      - jwtAuth: []
-      - cookieAuth: []
+      - {}
       responses:
         '200':
           content:
             application/json:
               schema:
                 description: Subscription payment update received.
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Malformed payload.
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                description: Invalid or missing signature.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Unknown payment provider.
           description: ''
   /policy-documents/:
     get:

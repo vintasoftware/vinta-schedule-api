@@ -47,19 +47,48 @@ Implementer per-phase from the plan's `**Suggested AI model**:` line. Others fro
 
 ## Completed phases
 
-_None yet._
+### Phase 1 — Move billing ownership to the organization ✅
+
+- **Status**: merged-ready, PR open
+- **Models**: implementer Tier 3 (Sonnet), reviewer Tier 4 (Opus), fixer Tier 2→Sonnet (stepped up, >3 files)
+- **Branch**: `plan/billing-plans-and-limits/phase-1` · **Base**: `main`
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/189
+- **Commits** (after rebase onto `3755e03`): `26b6be3` tracking, `a89a9a2` implementation, `51aa7a5` review fixes
+
+Summary:
+
+`BillingProfile` moved from a `User` primary key to an `Organization` one — the spec's named one-way door, landed before any money can flow. `Subscription` gained real `organization`, `plan`, `billing_state`, `billing_interval`, period, grace, `plan_external_id`, and `payment_provider` fields. The dead seam was repaired: the phantom `membership` annotation and the `AttributeError`-raising `Subscription.plan` property are gone, `RefundStatusUpdate` uses `RefundStatuses` with a working `__str__`, and both `from venv import logger` imports are fixed.
+
+Review raised **three BLOCKERs**, all fixed:
+1. The payer dataclass emitted a null `payer.email`, which MercadoPago hard-400s — every payment path would have failed against the live gateway while the suite stayed green, because nothing tested the serialized payload.
+2. An unguarded reverse 1:1 (`subscription.organization.billing_profile`) would 500-loop the unauthenticated provider webhook once Phase 4 gives every org a subscription while most have no billing profile. **A Phase 1 change that only detonates on Phase 4 data** — Phase 1's own tests could not have caught it.
+3. `request.organization` is `None` for a user with zero memberships → `IntegrityError` → 500 on write. A genuine regression this phase introduced.
+
+Also: the cross-organization isolation test was vacuous (passed because no profile existed; would have passed against the old user-keyed code) and was replaced with real isolation, active-org-header switching, and non-member-org cases.
+
+**Decisions taken during the phase:**
+- Added `contact_first_name`/`contact_last_name`/`contact_email`/`contact_phone` to `BillingProfile` (user decision). Provider-payload identity, deliberately distinct from `is_billing_owner`, which is about permissions. Landed here because the table was already being recreated — later would cost a second migration. Plan's **Data Model Changes** amended.
+- Write actions gated on `IsOrganizationAdmin`. This phase widened the resource from "a user's own billing data" to "the organization's tax document number", so any member could read/overwrite it. `IsBillingOwnerOrAdmin` remains Phase 9's job.
+- Minimal `BillingPlan` pulled forward from Phase 3 (`Subscription.plan` cannot reference a nonexistent model). Phase 3 extends additively — no destructive redo. Its DB constraint ships with a test.
+- `Subscription` carries both `status` (provider-reported) and `billing_state` (internal lifecycle). Boundary documented in the model docstring; `status` dropped from the serializer.
+
+**Verification** (orchestrator re-ran every gate independently, not relayed): full suite **3693 passed** (baseline 3679), ruff clean, mypy at the exact 322-error baseline with zero in `payments/`, `makemigrations --check` clean, migration verified reversible *after* the fixer edited `0003` in place.
+
+**Carried forward — needs human action:**
+- ⚠️ **Client-breaking**: billing-profile `id` changes source from `user_id` to `organization_id`. Same name and type, so **no schema diff** — a client that persisted the old id silently reads a different entity. Needs `handoff-to-client` before merge.
+- ⚠️ **Verify in each environment** that `payments_billingprofile` and `payments_subscription` are empty before this deploys. The emptiness claim came from reading migrations and grepping for writes; nobody queried a live database. The migration fails loudly rather than losing rows, but confirm by hand.
+- `MissingBillingProfileError`'s default message still says "User does not have a billing profile" — stale post-Phase-1 wording, cosmetic.
 
 ## Current phase
 
-**Phase 1 — Move billing ownership to the organization** (implementer Tier 3, reviewer Tier 4)
+**Phase 2 — Authenticate provider webhooks and make them idempotent** (implementer Tier 3, reviewer Tier 4)
 
-Base: `plan-billing-plans-and-limits` · Branch: `plan/billing-plans-and-limits/phase-1`
+Base: `plan/billing-plans-and-limits/phase-1` · Branch: `plan/billing-plans-and-limits/phase-2`
 
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |
 |---|---|---|---|---|
-| 2 | Authenticate provider webhooks and make them idempotent | 3 | 4 | — |
 | 2b | Stripe adapter behind the provider abstraction *(parallel track)* | 3 | — | — |
 | 3 | Plan catalog, limits, and entitlements | 3 | — | — |
 | 4 | Place every organization on a plan | 3 | 4 | — |

@@ -1,3 +1,5 @@
+import logging
+from collections.abc import Mapping
 from types import MappingProxyType
 
 from django.conf import settings
@@ -6,7 +8,8 @@ from django.urls import reverse
 
 import mercadopago
 
-from payments.constants import PaymentProviders
+from payments.constants import PaymentProviders, PaymentStatuses
+from payments.exceptions import ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import (
     BillingAddress,
     BillingProfile,
@@ -16,17 +19,39 @@ from payments.services.dataclasses import (
     Subscription,
     SubscriptionPayment,
 )
+from payments.services.mercadopago_signature import verify_mercadopago_signature
 from payments.services.subscription_adapters.base import BaseSubscriptionAdapter
 
 
-SUBSCRIPTION_STATUS_MAPPING: MappingProxyType[str, str] = MappingProxyType({})
+logger = logging.getLogger(__name__)
+
+
+# `create_status_update_from_payment_payload` processes the underlying MercadoPago
+# *payment* attached to a subscription charge, so despite the name this maps onto
+# `PaymentStatuses` (the same enum `PAYMENT_STATUS_MAPPING` in the payment adapter
+# targets) rather than `SubscriptionStatuses`.
+# https://www.mercadopago.com/developers/en/docs/checkout-api/payment-management/status
+SUBSCRIPTION_STATUS_MAPPING: MappingProxyType[str, str] = MappingProxyType(
+    {
+        "pending": PaymentStatuses.PENDING,
+        "approved": PaymentStatuses.APPROVED,
+        "authorized": PaymentStatuses.APPROVED,
+        "in_process": PaymentStatuses.IN_PROCESS,
+        "in_mediation": PaymentStatuses.IN_MEDIATION,
+        "rejected": PaymentStatuses.REJECTED,
+        "cancelled": PaymentStatuses.CANCELLED,
+        "refunded": PaymentStatuses.REFUNDED,
+        "charged_back": PaymentStatuses.CHARGED_BACK,
+    }
+)
 
 
 class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
     provider = PaymentProviders.MERCADOPAGO
 
-    def __init__(self, access_token: str):
+    def __init__(self, access_token: str, webhook_secret: str = ""):
         self.sdk = mercadopago.SDK(access_token)
+        self.webhook_secret = webhook_secret
 
     def create_subscription_plan(self, plan: Plan) -> str:
         response = self.sdk.plan().create(
@@ -219,10 +244,20 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
     def create_status_update_from_payment_payload(
         self, payment_payload: dict
     ) -> PaymentStatusUpdate:
-        update_id = self.get_update_id(payment_payload)
+        # `payment_payload` is the SDK's payment-get API response (`{"response":
+        # {...}}`), which has no top-level "id" — `get_update_id` (which reads
+        # `payload["id"]`) never matches anything here, so it always returned None.
+        original_status = payment_payload["response"]["status"]
+        mapped_status = SUBSCRIPTION_STATUS_MAPPING.get(original_status, PaymentStatuses.UNKNOWN)
+        if mapped_status == PaymentStatuses.UNKNOWN:
+            logger.error(
+                "Unknown subscription payment status: payment_external_id=%s original_status=%s",
+                payment_payload["response"].get("id"),
+                original_status,
+            )
         return PaymentStatusUpdate(
-            id=int(update_id) if update_id else None,
-            status=payment_payload["response"]["status"],
+            id=None,
+            status=mapped_status,
             description=payment_payload["response"]["status_detail"],
             update_external_id=payment_payload["response"]["id"],
         )
@@ -237,3 +272,18 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
         self, subscription_payload: dict
     ) -> str | None:
         return subscription_payload.get("response", {}).get("last_payment_id")
+
+    def verify_signature(self, raw_body: bytes, headers: Mapping[str, str]) -> bool:
+        return verify_mercadopago_signature(raw_body, headers, self.webhook_secret) is not None
+
+    def get_event_id(self, raw_body: bytes, headers: Mapping[str, str], payload: dict) -> str:
+        """MercadoPago's HMAC never covers the notification payload's top-level
+        ``id`` (only ``data.id`` + ``x-request-id`` + ``ts``), so it cannot be used
+        as the idempotency ledger key — an attacker can vary it freely across
+        replays of one captured valid signature. Derive the key entirely from the
+        verified manifest instead.
+        """
+        manifest = verify_mercadopago_signature(raw_body, headers, self.webhook_secret)
+        if manifest is None:
+            raise ProviderWebhookEventIdMissingError
+        return manifest.event_id

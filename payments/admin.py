@@ -6,6 +6,7 @@ from payments.models import (
     BillingProfile,
     Payment,
     PaymentStatusUpdate,
+    ProviderWebhookEvent,
     Refund,
     RefundStatusUpdate,
     Subscription,
@@ -109,3 +110,13 @@ class RefundStatusUpdateAdmin(admin.ModelAdmin):
     list_display = ("id", "refund", "status", "created")
     list_filter = ("status",)
     readonly_fields = ("created", "modified")
+
+
+@admin.register(ProviderWebhookEvent)
+class ProviderWebhookEventAdmin(admin.ModelAdmin):
+    """Read-only operational visibility into the webhook idempotency ledger."""
+
+    list_display = ("id", "provider", "route", "external_event_id", "processed_at", "created")
+    list_filter = ("provider", "route")
+    search_fields = ("external_event_id",)
+    readonly_fields = ("created", "modified", "provider", "route", "external_event_id", "payload")

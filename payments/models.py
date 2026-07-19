@@ -4,13 +4,14 @@ from django.db import models
 from django.db.models import Q, UniqueConstraint
 
 from common.models import BaseModel
-from payments.billing_constants import BillingInterval, BillingState
+from payments.billing_constants import BillingInterval, BillingState, ProviderWebhookRoute
 from payments.constants import (
     PaymentProviders,
     PaymentStatuses,
     RefundStatuses,
     SubscriptionStatuses,
 )
+from payments.managers import ProviderWebhookEventManager
 
 
 if TYPE_CHECKING:
@@ -204,3 +205,38 @@ class RefundStatusUpdate(BaseModel):
 
     def __str__(self):
         return f"{self.id} {self.refund} - {self.status} - {self.created.isoformat()}"
+
+
+class ProviderWebhookEvent(BaseModel):
+    """Idempotency ledger for inbound payment-provider webhook notifications.
+
+    Not tenant-scoped: a webhook notification arrives before we know which
+    organization it resolves to (see the billing plans and limits plan's Data Model
+    Changes — cross-organization billing reads are the reason these models stay
+    plain-FK rather than ``OrganizationModel``). ``(provider, route,
+    external_event_id)`` uniquely identifies one delivery attempt at the provider;
+    ``processed_at`` is set only once the corresponding domain update
+    (payment/subscription status) has actually been applied, so a row that exists
+    with ``processed_at=None`` means a previous delivery was recorded but crashed
+    before finishing — the next delivery for the same event is allowed to retry
+    rather than being silently dropped.
+    """
+
+    provider = models.CharField(max_length=50, choices=PaymentProviders)
+    route = models.CharField(max_length=50, choices=ProviderWebhookRoute)
+    external_event_id = models.CharField(max_length=255)
+    payload = models.JSONField(default=dict, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    objects: ClassVar[ProviderWebhookEventManager] = ProviderWebhookEventManager()
+
+    class Meta(BaseModel.Meta):
+        constraints: ClassVar = [
+            UniqueConstraint(
+                fields=["provider", "route", "external_event_id"],
+                name="uniq_provider_webhook_event",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.provider} - {self.route} - {self.external_event_id}"

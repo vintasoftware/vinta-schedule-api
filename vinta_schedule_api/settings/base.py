@@ -145,6 +145,13 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_FILTER_BACKENDS": ("django_filters.rest_framework.DjangoFilterBackend",),
     "DEFAULT_SCHEMA_CLASS": "common.openapi.TenantScopedAutoSchema",
+    # Scoped (not project-wide) throttles. `payment-webhook` covers the
+    # unauthenticated inbound provider webhook endpoints (payments/views.py) — a
+    # generous per-IP rate since it only needs to bound abuse, not normal provider
+    # retry volume.
+    "DEFAULT_THROTTLE_RATES": {
+        "payment-webhook": "60/min",
+    },
 }
 
 LANGUAGE_CODE = "en-us"
@@ -499,6 +506,18 @@ SES_CONFIGURATION_SET = "all-emails"
 
 
 MERCADOPAGO_ACCESS_TOKEN = config("MERCADOPAGO_ACCESS_TOKEN", default="")
+# Shared secret used to verify MercadoPago's `x-signature` webhook header. Empty
+# by default (matches MERCADOPAGO_ACCESS_TOKEN's dev-time fallback), but an empty
+# secret makes every webhook signature check fail closed (see
+# payments.services.mercadopago_signature.verify_mercadopago_signature) rather
+# than skip verification.
+MERCADOPAGO_WEBHOOK_SECRET = config("MERCADOPAGO_WEBHOOK_SECRET", default="")
+
+# How far a webhook's signed `ts` may drift from "now" before it is rejected as
+# stale (see payments.services.mercadopago_signature.verify_mercadopago_signature).
+# Default matches Stripe's own convention; Phase 2b's Stripe adapter reuses this
+# same setting rather than defining its own tolerance window.
+WEBHOOK_SIGNATURE_TOLERANCE_SECONDS = 300
 
 SALT_KEY = config("SALT_KEY")
 
