@@ -251,13 +251,20 @@ Also: `resolve_branding` had to be **split** rather than gated — it also backs
 - `SystemUserAdmin`'s changelist raises `ImproperlyConfigured: QuerySet must be filtered by 'organization'` — pre-existing, unrelated.
 - The `@inject` sweep above.
 
-## Current phase
+### Phase 7 — Meter event occurrences ✅
 
-**Phase 7 — Meter event occurrences** (implementer Tier 4, reviewer Tier 4)
+- **Status**: reviewed clean, gates green, PR open
+- **Models**: implementer Tier 4; reviewer Tier 4; fixer Tier 4
+- **Branch**: `plan/billing-plans-and-limits/phase-7` · **Base**: `main` (rebased — 6b/6c merged mid-run)
+- **Commits**: `64ea614` implementation, `ec758f1` BLOCKER fixes, `a05ddb9` mechanism correction
 
-Base: `plan/billing-plans-and-limits/phase-6c` · Branch: `plan/billing-plans-and-limits/phase-7`
+**Gates** (re-run independently, credentials cleared to match CI): suite **4262 passed** (base 4237; +25); `mypy` **305 / 57**, zero new errors by set diff against 6c; `ruff` clean (500 files); `makemigrations --check` clean; migration `0011` reverses.
 
-Third unreviewed phase in the stack — **user decision at the 6c checkpoint was to continue**. Phases 6b (#196) and 6c (#197) are open and not yet human-reviewed; a change required by either forces a rebase of 7 and everything above it.
+One suite failure, investigated and **not** a Phase 7 regression: `test_without_the_lock_the_net_zero_race_overshoots` is a **Phase 6b** test — the negative control asserting the race overshoots when the lock is removed. It passed 3/3 in isolation and failed once under full parallel load. A control that asserts a race *reproduces* is inherently timing-dependent, so it will intermittently redden CI. **Recorded against #196; worth making deterministic or marking `flaky`.**
+
+**Gate-integrity note (mine, not the phase's).** I reported a `mypy` regression to 315/58 that did not exist. Re-verification — three runs, one with `.mypy_cache` removed, plus a direct error-set diff — returned 305/57 with zero new errors. The 315 run was an outlier under container contention. **Corroborate a gate delta with a second run before acting on it**; the same contention produced three non-reproducible phantom test failures in another run this phase.
+
+**A fabricated mechanism was caught and retracted.** The fixer claimed `truncate_parent` decrements COUNT by one. Reading `RecurrenceRuleSplitter` showed the arithmetic correct (`count=None` + `until` for the parent; `5-1=4` for the continuation). Challenged for persisted state rather than reasoning, it replied: *"My 'decrements COUNT by one' claim was fabricated — I saw COUNT=4 in the persisted parent and wrote a plausible-sounding cause instead of finding the real one."* The real cause is the pk-aliasing defect below.
 
 ⚠️ **The spec's highest-severity risk.** A double-count here is silent revenue drift or overcharging, and it is invisible until a customer disputes a bill. The unique constraint on `(organization, event_id, occurrence_start)` is what makes re-running a window harmless; `is_within_allowance` and `unit_price` are stamped at meter time so a later limit change cannot retroactively reprice already-metered occurrences.
 
@@ -301,13 +308,24 @@ Two things make this worse than the bound previously accepted:
 1. **It does not need an already-metered window.** A single fresh sweep over-bills 8/5. The first-occurrence hazard cannot do this.
 2. **Reconciliation is blind to it.** The recompute reads the same calendar, which also says eight, so it reports a clean period. In the already-metered case it reports `drift == 1` against a 4-row over-bill — an operator would materially underestimate it.
 
-**It is an upstream recurrence defect, not a metering one.** `get_calendar_events_expanded` returns the same eight events, so the calendar genuinely contains them and the meter is faithful to what it is shown. The fix belongs in `CalendarEventService.create_recurring_event_bulk_modification`, and Phase 8 must not enforce a post-paid ceiling until it lands — a customer would be blocked on usage that never happened.
+**It is an upstream recurrence defect, not a metering one.** `get_calendar_events_expanded` returns the same eight events, so the calendar genuinely contains them and the meter is faithful to what it is shown. The fix belongs in `CalendarEventService.create_recurring_event_bulk_modification`.
+
+**Where this gates, precisely.** An earlier draft of this note said "Phase 8 must not enforce the post-paid ceiling until it lands." That is stricter than necessary and would stall the plan. Phase 8's guard is **inert on every current organization**: `unlimited` carries a NULL `event_occurrences` limit, and `check_postpaid_allowance` returns headroom for a NULL ceiling, so no code path can block on an over-counted number today. The real gate is the first moment a non-NULL `event_occurrences` limit reaches a live organization — **Phase 14**, already deferred, and **Phase 13**'s overage charge, which converts the same over-count into money. Both must wait for the recurrence fix. Phase 8 ships.
+
+## Current phase
+
+**Phase 8 — Enforce the post-paid allowance** (implementer Tier 3)
+
+Base: `plan/billing-plans-and-limits/phase-7` · Branch: `plan/billing-plans-and-limits/phase-8`
+
+Six entry points plus one fan-out case, against the pattern Phase 6 established. The fan-out count must be **`1 + n_internal_children`** — the number fixed by the bundle-booking decision recorded under Phase 7, not re-derived. The plan's own wording ("one row per member calendar") is looser than that decision and must not be followed literally: a bundle over five Google calendars creates one `CalendarEvent` and four `BlockedTime` rows, and `BlockedTime` is not billable anywhere in this plan.
+
+**Watch for the plan's recurring failure shape** — two predicates that must mean the same thing, written separately. Here the risk is concrete and named: the guard's headroom count and `MeteringService.expand_occurrence_identities` must agree on what one booking costs, or an organization is blocked on a number it will never be billed. Derive the guard's count from the meter's expansion rather than reimplementing it.
 
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |
 |---|---|---|---|---|
-| 7 | Meter event occurrences | 4 | 4 | — |
 | 8 | Enforce the post-paid allowance | 3 | — | — |
 | 9 | Upgrade, add-on purchase, and proration | 3 | 4 | — |
 | 10 | Grace, dunning, and the restricted transition | 3 | — | — |
