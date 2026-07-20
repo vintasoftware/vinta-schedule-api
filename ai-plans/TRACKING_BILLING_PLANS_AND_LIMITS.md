@@ -157,21 +157,43 @@ One NIT was **declined with evidence**: moving `from di_core.containers import c
 
 **Final gates** (re-run independently by the orchestrator, not relayed): suite **4054 passed** (round 2: 4051; round 1: 4039; original: 4016; `origin/main` baseline 3969); `mypy` **305 errors / 57 files** — *below* the 308/58 baseline, with **zero `type: ignore` / `noqa` added across all four commits**; `ruff check` + `format --check` clean (479 files); `makemigrations --check` clean — **no migration in the whole phase after `0010`**; `check --deploy` unchanged at 5 pre-existing dev-settings warnings; main checkout clean; no AI co-author trailers.
 
+### Phase 6a — Enforce pre-paid limits: seats and invitations ✅
+
+- **Status**: reviewed clean (2 review rounds), PR open
+- **Models**: implementer Tier 3; reviewer Tier 4 both rounds; fixer Tier 2→3 (stepped up for scope)
+- **Branch**: `plan/billing-plans-and-limits/phase-6a` · **Base**: `main`
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/195
+- **Commits**: `463015b` implementation, `e0360c0` round 1, `46f0c67` tracking, `c4524d8` round 2
+
+Developed stacked on phase-5; **#194 merged mid-review**, so the PR targets `main`. `main` held only the merge commit beyond this branch (empty content diff), so no rebase was needed.
+
+The first phase that can block a real user. Guards `invite_user_to_organization`, `accept_invitation`, the invite branch of `provision_tenant_for_user`, and `reactivate` (moved into `OrganizationService.reactivate_membership` — the plan puts enforcement in the service layer, and the viewset version had no `bypass_limits`). `OverLimitError` renders byte-identically through REST and GraphQL, asserted by comparing the two responses to each other.
+
+**Two BLOCKERs, one of each failure mode** — and both lived outside the code the phase set out to change:
+
+1. **Seat limits wedged signup with a 500.** The guard on `provision_tenant_for_user` was correct, but its two callers are allauth adapters, and **allauth headless mounts as plain Django views, not DRF** — so `common/exception_handlers` never ran. Under `ATOMIC_REQUESTS` the 500 rolled back the email-verification write too, so the address stayed unverified and every retry failed identically; social signup rolled back the whole user row. Both adapters now fall through to the membership-less gated branch they already use for uninvited users, with the invitation left pending so the user is recoverable.
+2. **Resending an invitation was a false block.** The guard counted the invitation being resent, so an org at its exact ceiling could never resend — in precisely the state where it matters (seats just filled, one invite never arrived). The implementer had recorded this as an accepted corner case; review disagreed and was right. The exclusion machinery already existed one method over.
+
+**A reviewer finding that was wrong, and the fixer caught it.** Round 2 reported the same outside-the-transaction bug in `provision_tenant_for_user` that was real in `accept_invitation`. It does not exist there — that method carries a method-level `@transaction.atomic()` the other lacks. The fixer stash-tested it, found its new test green against pre-fix code, applied the harmless clarifying move anyway, and said plainly the test is not a regression guard. Recorded because **reviewer output needs verifying too, not just implementer output.**
+
+Also fixed: `accept_invitation` marked the invitation accepted outside its transaction (a window where a seat double-counts, permanently if that write fails); an invitation-write `IntegrityError` was reported to users as "you already have a membership"; three endpoints that can return 402 did not declare it; and the unlimited-path query budget was loose enough to absorb the next regression (now pinned to an exact count).
+
+**Gates** (re-run independently): suite **4094 passed** (phase-5 base 4054; +40); `mypy` **305 / 57** at baseline with **zero suppressions added**; `ruff` clean; `makemigrations --check` clean (no model changes); `schema.yml` verified in sync by regenerating to an empty diff. Each guard confirmed by deletion; the concurrency test races genuinely with a working negative control.
+
 ## Current phase
 
-**Phase 6a — Enforce pre-paid limits: seats and invitations** (implementer Tier 3)
+**Phase 6b — Enforce pre-paid limits: calendars, groups, bundles, availability** (implementer Tier 3, reviewer Tier 4)
 
-Base: `plan/billing-plans-and-limits/phase-5` · Branch: `plan/billing-plans-and-limits/phase-6a`
+Base: `plan/billing-plans-and-limits/phase-6a` · Branch: `plan/billing-plans-and-limits/phase-6b`
 
-Stacked on phase-5 rather than `main`, because phase-5 is still open as [PR #194](https://github.com/vintasoftware/vinta-schedule-api/pull/194). Phases 3 and 4 could target `main` only because their predecessors had already merged; that no longer holds. If #194 merges before 6a is integrated, rebase 6a onto `main` so its PR diff shows only 6a's work.
+Stacked on 6a, which is open as [PR #195](https://github.com/vintasoftware/vinta-schedule-api/pull/195). If #195 merges before 6b is integrated, retarget 6b's PR to `main` — do not assume the base branch still exists, since GitHub deletes it on merge (that is what broke 6a's first PR attempt).
 
-⚠️ **This phase must call `EntitlementService.check_seat_limit_for_invitation_accept(invitation)` on the accept path**, not `check_limit`. See the Phase 5 carried-forward note — accepting an invitation is net zero on seats, and using the generic entry point makes an organization unable to fill its last seat.
+⚠️ The plan's **Review models** note for 6b: the bulk sync writers at `calendar_integration/services/calendar_sync_service.py` are **the single most likely place for an unmetered path to survive**, and the plan's objective 1 depends on them. The bulk paths must check headroom *before* the write and import up to the ceiling with a recorded partial-import warning — the spec accepts partial import over unmetered creation.
 
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |
 |---|---|---|---|---|
-| 6b | Enforce pre-paid limits: calendars, groups, bundles, availability | 3 | 4 | — |
 | 6c | Enforce pre-paid limits: webhook subscriptions and API system users | 2 | — | — |
 | 7 | Meter event occurrences | 4 | 4 | — |
 | 8 | Enforce the post-paid allowance | 3 | — | — |
