@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 from django.db import transaction
 from django.utils import timezone
 
-from dependency_injector.wiring import Provide, inject
+from dependency_injector.wiring import Provide
 from vintasend.constants import NotificationTypes
 from vintasend.services.notification_service import NotificationContextDict
 
@@ -91,13 +91,22 @@ class ExternalEventChangeRequestService:
     provider changes are intercepted under the ``CHANGE_REQUEST`` or
     ``FORBIDDEN`` policy.
 
-    Constructor arguments are DI-injected:
+    Constructor arguments are supplied by the DI container, which passes them
+    explicitly (see ``di_core/containers.py``) rather than through ``@inject``. There is
+    deliberately **no** ``@inject`` here: this module carries
+    ``from __future__ import annotations``, which stringifies the ``Annotated[...,
+    Provide[...]]`` markers ``@inject`` introspects at wiring time, making the decorator
+    a silent no-op (``dependency_injector`` emits ``DIWiringWarning`` and returns the
+    function unpatched). Leaving it on would imply a wiring mechanism that is not
+    running. See ``organizations.models.resolve_branding_for_display`` for the
+    deferred-container-import pattern used where injection is actually needed under
+    the same constraint.
+
     - ``audit_service``: emits audit trail entries for each state transition.
     - ``notification_service``: dispatches in-app notifications to eligible
       approvers when a new ``PENDING`` request is created.
     """
 
-    @inject
     def __init__(
         self,
         audit_service: Annotated[AuditService | None, Provide["audit_service"]] = None,

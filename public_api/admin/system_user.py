@@ -10,6 +10,7 @@ from django.http import HttpRequest
 
 from dependency_injector.wiring import Provide, inject
 
+from payments.exceptions import OverLimitError
 from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
 
@@ -88,10 +89,17 @@ class SystemUserAdmin(admin.ModelAdmin):
         if change:
             return super().save_model(request, obj, form, change)
 
-        instance, token = self.public_api_auth_service.create_system_user(
-            integration_name=form.cleaned_data["integration_name"],
-            organization=form.cleaned_data["organization"],
-        )
+        try:
+            instance, token = self.public_api_auth_service.create_system_user(
+                integration_name=form.cleaned_data["integration_name"],
+                organization=form.cleaned_data["organization"],
+            )
+        except OverLimitError as exc:
+            # Phase 6c: the organization is at its `public_api_system_users` ceiling.
+            # Surface it as an admin error message; letting it escape renders a 500
+            # traceback for what is an ordinary, actionable business outcome.
+            self.message_user(request, exc.as_error_body()["detail"], messages.ERROR)
+            return None
 
         obj.id = instance.id
         obj.long_lived_token_hash = instance.long_lived_token_hash

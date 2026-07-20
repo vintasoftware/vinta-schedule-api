@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated, Literal
 
 from allauth.socialaccount.models import SocialAccount
@@ -11,7 +12,38 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization
+from payments.exceptions import OverLimitError
 from vinta_schedule_api.celery import app
+
+
+logger = logging.getLogger(__name__)
+
+
+def _authenticate_or_skip(calendar_service, account, organization) -> bool:
+    """Authenticate the service, treating a missing provider entitlement as a **skip**.
+
+    Every task in this module is scheduled, not user-triggered. An organization whose
+    plan omits `external_calendar_google` / `external_calendar_microsoft` would otherwise
+    turn each scheduled run into a hard task failure: these tasks declare no
+    `autoretry_for`, and `CELERY_TASK_ACKS_LATE=True` means a raising task is redelivered
+    and fails again, so a billing state that is *working as intended* would manufacture a
+    permanent stream of alarming failures.
+
+    "Not entitled to sync" is a legitimate terminal state for a sync run, so it is logged
+    and the task returns successfully. The org still cannot sync -- the guard did its job;
+    it just does not pretend the scheduler is broken. Interactive callers (REST/GraphQL)
+    keep the 402, since a user asking to connect a calendar should be told why it failed.
+    """
+    try:
+        calendar_service.authenticate(account=account, organization=organization)
+    except OverLimitError as exc:
+        logger.info(
+            "Skipping calendar sync for organization %s: %s",
+            organization.pk,
+            exc.as_error_body()["detail"],
+        )
+        return False
+    return True
 
 
 @app.task
@@ -48,7 +80,8 @@ def import_account_calendars_task(
 
     if not account:
         return
-    calendar_service.authenticate(account=account, organization=organization)
+    if not _authenticate_or_skip(calendar_service, account, organization):
+        return
     calendar_service.import_account_calendars(sync_after_import=sync_after_import)
 
 
@@ -90,7 +123,8 @@ def sync_calendar_task(
     if not account or not calendar_sync:
         return
 
-    calendar_service.authenticate(account=account, organization=organization)
+    if not _authenticate_or_skip(calendar_service, account, organization):
+        return
     calendar_service.sync_events(calendar_sync)
 
 
@@ -143,5 +177,6 @@ def import_organization_calendar_resources_task(
     if not account:
         return
 
-    calendar_service.authenticate(account=account, organization=organization)
+    if not _authenticate_or_skip(calendar_service, account, organization):
+        return
     calendar_service.import_organization_calendar_resources(import_workflow_state)

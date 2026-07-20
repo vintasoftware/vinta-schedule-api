@@ -26,6 +26,11 @@ from webhooks.models import WebhookConfiguration
 from webhooks.services.webhook_service import WebhookService
 
 
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 def _organization_with_limit(limit_value: int | None) -> Organization:
     """A standalone (non-reseller) organization with a ceiling on
     ``webhook_subscriptions``. ``limit_value=None`` builds an ``unlimited``-shaped

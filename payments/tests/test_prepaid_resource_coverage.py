@@ -18,6 +18,7 @@ resource, and nothing was created.
 """
 
 import datetime
+from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
@@ -30,15 +31,36 @@ from calendar_integration.services.calendar_group_service import CalendarGroupSe
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarGroupInputData
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
-from organizations.services import OrganizationService
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
 from public_api.models import SystemUser
-from public_api.services import PublicAPIAuthService
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
 from webhooks.services.webhook_service import WebhookService
+
+
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
+if TYPE_CHECKING:
+    from di_core.containers import AppContainer
+
+
+def _container() -> "AppContainer":
+    """The wired DI container, narrowed for mypy.
+
+    Imported inside the function body on purpose: ``di_core.containers.container`` is
+    only *assigned* in ``DICoreConfig.ready()``, so a module-level ``from ... import
+    container`` binds ``None`` forever. The root ``conftest.py``'s ``di_container``
+    fixture defers the import for the same reason.
+    """
+    from di_core.containers import container
+
+    assert container is not None, "DI container is only assigned in DICoreConfig.ready()"
+    return container
 
 
 def _organization_with_limit(resource_key: str, limit_value: int) -> Organization:
@@ -69,7 +91,7 @@ def _probe_organization_members() -> None:
     baker.make(OrganizationMembership, organization=organization, is_active=True)
 
     with pytest.raises(OverLimitError) as exc_info:
-        OrganizationService().invite_user_to_organization(
+        _container().organization_service().invite_user_to_organization(
             email="blocked@example.com",
             first_name="Blocked",
             last_name="Invitee",
@@ -78,7 +100,9 @@ def _probe_organization_members() -> None:
         )
 
     assert exc_info.value.resource_key == LimitedResource.ORGANIZATION_MEMBERS
-    assert not OrganizationInvitation.objects.filter(email="blocked@example.com").exists()
+    assert not OrganizationInvitation.objects.filter(
+        organization=organization, email="blocked@example.com"
+    ).exists()
 
 
 def _probe_resource_calendars() -> None:
@@ -193,7 +217,7 @@ def _probe_public_api_system_users() -> None:
         long_lived_token_hash="coverage-seed-hash",
     )
 
-    service = PublicAPIAuthService()
+    service = _container().public_api_auth_service()
 
     with pytest.raises(OverLimitError) as exc_info:
         service.create_system_user(
@@ -202,7 +226,9 @@ def _probe_public_api_system_users() -> None:
         )
 
     assert exc_info.value.resource_key == LimitedResource.PUBLIC_API_SYSTEM_USERS
-    assert not SystemUser.objects.filter(integration_name="coverage-blocked-integration").exists()
+    assert not SystemUser.objects.filter(
+        organization=organization, integration_name="coverage-blocked-integration"
+    ).exists()
 
 
 # Every currently-known ``kind=prepaid`` ``LimitedResource`` member maps to a probe
@@ -234,12 +260,25 @@ class TestEveryPrepaidLimitedResourceHasAGuardedCreationPath:
         )
 
     def test_every_prepaid_resource_has_a_registered_probe(self):
-        missing = self._prepaid_resource_keys() - GUARDED_CREATION_PROBES.keys()
+        prepaid = self._prepaid_resource_keys()
+
+        missing = prepaid - GUARDED_CREATION_PROBES.keys()
         assert not missing, (
             f"No guarded-creation-path probe registered for {sorted(missing)}. Every "
             "kind=prepaid LimitedResource member must have one registered in "
             "GUARDED_CREATION_PROBES -- this is the closing acceptance check for "
             "spec objective 1 on pre-paid resources."
+        )
+
+        # ...and the other direction, so the registry cannot rot the other way: a probe
+        # left behind for a resource that was renamed, deleted, or flipped to postpaid
+        # would otherwise keep passing while testing a path nothing routes through, and
+        # the check above would still report full coverage.
+        stale = GUARDED_CREATION_PROBES.keys() - prepaid
+        assert not stale, (
+            f"GUARDED_CREATION_PROBES has probes for {sorted(stale)}, which are not "
+            "kind=prepaid LimitedResource members. Remove them, or fix the catalog if "
+            "the resource was meant to stay pre-paid."
         )
 
     def test_event_occurrences_is_postpaid_not_prepaid(self):

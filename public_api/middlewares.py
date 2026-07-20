@@ -11,6 +11,7 @@ from dependency_injector.wiring import Provide, inject
 
 from organizations.models import Organization
 from payments.billing_constants import Entitlement
+from payments.entitlement_cache import entitlement_request_cache, has_entitlement_cached
 from payments.exceptions import OverLimitError
 from public_api.exceptions import InvalidAuthorizationHeaderError, PublicAPIServiceUnavailableError
 from public_api.models import SystemUser
@@ -109,7 +110,7 @@ class PublicApiSystemUserMiddleware:
         """
         if entitlement_service is None:
             return False
-        return entitlement_service.has_entitlement(organization, Entitlement.PARTNER_API)
+        return has_entitlement_cached(entitlement_service, organization, Entitlement.PARTNER_API)
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
         # ignore middleware if request is not the graphql endpoint
@@ -118,31 +119,38 @@ class PublicApiSystemUserMiddleware:
         extended_request.public_api_system_user = None
         extended_request.public_api_organization = None
 
-        if extended_request.get_full_path().startswith("/graphql/"):
-            extended_request.public_api_system_user = self._get_system_user_from_request(
-                extended_request
-            )
+        # Scope the per-request entitlement memo around the whole GraphQL request, not
+        # just the gate below: `resolve_branding_for_display` checks
+        # `white_label_branding` inside resolvers, and `brandingForTenant` /
+        # `validateReturnUrl` are unauthenticated public queries with an
+        # attacker-supplied `tenant_id`. See `payments/entitlement_cache.py` for why the
+        # cache is scoped rather than process-wide.
+        with entitlement_request_cache():
+            if extended_request.get_full_path().startswith("/graphql/"):
+                extended_request.public_api_system_user = self._get_system_user_from_request(
+                    extended_request
+                )
 
-        if extended_request.public_api_system_user:
-            extended_request.public_api_organization = (
-                extended_request.public_api_system_user.organization
-                or self._get_organization_from_request(extended_request)
-            )
+            if extended_request.public_api_system_user:
+                extended_request.public_api_organization = (
+                    extended_request.public_api_system_user.organization
+                    or self._get_organization_from_request(extended_request)
+                )
 
-        # Entitlement gate: an organization without `partner_api` cannot use the
-        # GraphQL API at all, not just individual mutations. Scoped to requests that
-        # actually resolved an authenticated organization above (anonymous / public
-        # GraphQL queries -- e.g. brandingForTenant -- never reach here, since
-        # `public_api_organization` stays None for them) so this can never reject an
-        # unauthenticated request the normal `IsAuthenticated` permission class would
-        # otherwise handle. Bypasses GraphQL execution entirely and returns a real
-        # HTTP 402 (rather than the graphql-core-swallowed 200 + `errors` shape a
-        # resolver-level rejection would produce), matching the plan's contract for
-        # this specific chokepoint.
-        if extended_request.public_api_organization is not None and not (
-            self._has_partner_api_entitlement(extended_request.public_api_organization)
-        ):
-            error = OverLimitError.from_missing_entitlement(Entitlement.PARTNER_API)
-            return JsonResponse(error.as_error_body(), status=402)
+            # Entitlement gate: an organization without `partner_api` cannot use the
+            # GraphQL API at all, not just individual mutations. Scoped to requests that
+            # actually resolved an authenticated organization above (anonymous / public
+            # GraphQL queries -- e.g. brandingForTenant -- never reach here, since
+            # `public_api_organization` stays None for them) so this can never reject an
+            # unauthenticated request the normal `IsAuthenticated` permission class would
+            # otherwise handle. Bypasses GraphQL execution entirely and returns a real
+            # HTTP 402 (rather than the graphql-core-swallowed 200 + `errors` shape a
+            # resolver-level rejection would produce), matching the plan's contract for
+            # this specific chokepoint.
+            if extended_request.public_api_organization is not None and not (
+                self._has_partner_api_entitlement(extended_request.public_api_organization)
+            ):
+                error = OverLimitError.from_missing_entitlement(Entitlement.PARTNER_API)
+                return JsonResponse(error.as_error_body(), status=402)
 
-        return self.get_response(extended_request)
+            return self.get_response(extended_request)

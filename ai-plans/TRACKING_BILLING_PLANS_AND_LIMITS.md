@@ -230,6 +230,13 @@ Closes the "no unmetered path" objective for pre-paid resources, and adds the bo
 
 ⚠️ **Carry 6b's lesson forward.** Before guarding a creation path, write down which usage counter it feeds and check that any predicate the guard uses to decide what is "new" is the *same* predicate that counter counts with — ideally by literally reusing it from the queryset. Four defects in this plan have come from two predicates that were supposed to agree and did not, most recently one that let an entire provider's calendar list be created unmetered.
 
+**Carried forward from 6c:**
+
+- ⚠️ **`Entitlement.ADVANCED_SCHEDULING` is declared but ungated.** It is a member of the closed `Entitlement` set in `payments/billing_constants.py` and is seeded on both plans (`True` on `unlimited`, `False` on `free`), but **no code anywhere checks it**. Phase 6c gated the four entitlements its body names; this fifth one was out of scope. Recorded here so the "all entitlements are enforced" reading of 6c's acceptance is not made by mistake — an organization on a plan that omits `advanced_scheduling` is not restricted in any way today. Needs either a gate (its own phase) or removal from the enum.
+- **Entitlements now have two enforcement points for external calendars**, not one. `CalendarService.authenticate` gates the *authenticated account's* provider; `CalendarService._get_write_adapter_for_calendar` gates the *calendar's* provider, which can differ (an actor authenticated with Google writing to a Microsoft calendar owned by someone else). Anyone adding a third path that resolves a provider adapter must gate it too — "authenticate is the single chokepoint" is false and is pinned as false by `TestWriteAdapterProviderGate`.
+- **`resolve_branding` is deliberately split in two.** `resolve_branding_for_display` carries the `white_label_branding` gate and is for presentation callers; plain `resolve_branding` is ungated and is what `validate_return_url` reads, because gating an OAuth allowlist on a cosmetic entitlement turns a downgrade into an auth-flow lockout for a reseller's whole subtree. Do not merge them back.
+- **Test fixtures now provision subscriptions automatically.** `conftest.py`'s autouse `provision_default_subscription` gives every `Organization` created in a test the `unlimited` subscription production's `OrganizationService` would have given it — because `has_entitlement` fails closed on a plan-less organization and ~640 tests were building organizations production cannot produce. Modules that manage their own `Subscription` rows opt out with `@pytest.mark.no_auto_subscription`.
+
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |

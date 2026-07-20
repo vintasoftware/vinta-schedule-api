@@ -48,7 +48,12 @@ from calendar_integration.models import (
     ExternalEventChangeRequest,
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
-from organizations.models import Organization, OrganizationMembership, resolve_branding
+from organizations.models import (
+    Organization,
+    OrganizationMembership,
+    resolve_branding,
+    resolve_branding_for_display,
+)
 from public_api.capabilities import assert_org_can_invite
 from public_api.permissions import (
     IsAuthenticated,
@@ -1467,8 +1472,10 @@ class Query:
             # Unknown tenant ID returns the vinta default (no enumeration oracle)
             return _vinta_default_branding()
 
-        # Resolve branding by walking up the parent chain to the nearest reseller
-        branding = resolve_branding(org)
+        # Resolve branding by walking up the parent chain to the nearest reseller.
+        # Presentation caller -> gated on `white_label_branding`; a reseller without it
+        # renders the vinta default, same as an unbranded subtree.
+        branding = resolve_branding_for_display(org)
         if branding is None:
             # Unbranded subtree returns the vinta default
             return _vinta_default_branding()
@@ -1526,6 +1533,10 @@ class Query:
             # Unknown / unparseable tenant — same shape as not-allowed (no oracle).
             return not_allowed
 
+        # Deliberately the UNGATED `resolve_branding`. This is an auth-flow decision
+        # (may this OAuth return URL be honoured?), not a cosmetic one: gating it would
+        # let a reseller's downgrade off a cosmetic entitlement break the OAuth return
+        # flow for every tenant underneath it. See `resolve_branding`'s docstring.
         branding = resolve_branding(org)
         if branding is None:
             # Unbranded subtree — same shape as not-allowed (no oracle).

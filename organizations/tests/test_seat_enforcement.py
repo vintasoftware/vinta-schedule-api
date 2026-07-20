@@ -44,6 +44,11 @@ from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
 
 
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 SHARED_OVER_LIMIT_BODY = {
     "detail": "Organization is at its limit for organization members.",
     "code": "limit_exceeded",

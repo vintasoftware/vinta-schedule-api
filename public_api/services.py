@@ -1,3 +1,4 @@
+import logging
 from typing import TYPE_CHECKING, Annotated, Any
 
 from django.db import transaction
@@ -19,6 +20,9 @@ from public_api.models import SystemUser
 if TYPE_CHECKING:
     from organizations.models import Organization, OrganizationMembership
     from payments.services.entitlement_service import EntitlementService
+
+
+logger = logging.getLogger(__name__)
 
 
 class PublicAPIAuthService:
@@ -57,7 +61,7 @@ class PublicAPIAuthService:
     def create_system_user(
         self,
         integration_name: str,
-        organization: "Organization",
+        organization: "Organization | None",
         scoped_to_membership: "OrganizationMembership | None" = None,
         bypass_limits: bool = False,
     ) -> tuple[SystemUser, str]:
@@ -65,7 +69,11 @@ class PublicAPIAuthService:
         Create a new system user with a long-lived token.
 
         :param integration_name: Unique name identifying the integration.
-        :param organization: The organization this system user belongs to.
+        :param organization: The organization this system user belongs to, or ``None``
+            for an org-less token with access to all organizations. ``SystemUser.
+            organization`` is ``null=True``, ``SystemUserAdmin`` exposes it with no
+            custom form, and that admin's ``save_model`` branches explicitly on the
+            org-less case -- so ``None`` is a supported input, not a defect.
         :param scoped_to_membership: Optional OrganizationMembership to scope this token to.
             When set, the token may only read/write data belonging to calendars owned by the
             membership's user within that organization.
@@ -85,10 +93,25 @@ class PublicAPIAuthService:
             ``deleted_at__isnull=True``. A freshly created row defaults to both, so it is
             unconditionally "live" and always feeds the same counter this check reads:
             there is no separate predicate to keep in sync.
+
+            **Not checked at all when ``organization is None``.** There is no
+            organization to resolve a billing root from -- ``resolve_billing_root(None)``
+            has no answer -- and an org-less token is unmetered by design, which
+            ``_count_public_api_system_users``'s own docstring already states (it counts
+            per-organization). Guarding it would 500 a previously-working, explicitly
+            supported admin path. Logged at WARNING so an unmetered credential is at
+            least visible in the record.
         :return: Tuple of (system_user, plaintext_token). The plaintext token is exposed
             once and never persisted; only the hash is stored.
         """
-        if not bypass_limits and self.entitlement_service is not None:
+        if organization is None:
+            logger.warning(
+                "Creating org-less system user %r: no organization to resolve a billing "
+                "root from, so the public_api_system_users limit is not enforced for it. "
+                "This credential has access to all organizations and is unmetered.",
+                integration_name,
+            )
+        elif not bypass_limits and self.entitlement_service is not None:
             result = self.entitlement_service.check_limit(
                 organization, LimitedResource.PUBLIC_API_SYSTEM_USERS, lock=True
             )
@@ -109,13 +132,21 @@ class PublicAPIAuthService:
         # Audit: a system-user (API integration credential) is provisioned for the org.
         # No acting Django User is threaded here, so the actor is the system; when the
         # token is membership-scoped, that membership is the affected party.
-        self.audit_service.record(
-            organization_id=organization.id,
-            action=AuditAction.CREATE,
-            actor=self.audit_service.system_actor(),
-            subject=self.audit_service.subject_from_instance(system_user),
-            affected_membership_ids=(
-                [scoped_to_membership.user_id] if scoped_to_membership is not None else []
-            ),
-        )
+        #
+        # Skipped entirely for an org-less token: `AuditService.record` requires an
+        # `organization_id` (the audit trail is org-scoped by design and has no sentinel
+        # for "all organizations"), and this line previously raised `AttributeError` on
+        # `None` — the org-less admin path never reached a successful return. The WARNING
+        # logged above is the record for this case until the audit trail grows a
+        # cross-organization scope.
+        if organization is not None:
+            self.audit_service.record(
+                organization_id=organization.id,
+                action=AuditAction.CREATE,
+                actor=self.audit_service.system_actor(),
+                subject=self.audit_service.subject_from_instance(system_user),
+                affected_membership_ids=(
+                    [scoped_to_membership.user_id] if scoped_to_membership is not None else []
+                ),
+            )
         return system_user, token

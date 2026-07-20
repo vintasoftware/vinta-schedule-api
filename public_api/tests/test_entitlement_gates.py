@@ -6,21 +6,27 @@ is not a bypass), applied to the three named chokepoints:
 - ``partner_api`` in ``PublicApiSystemUserMiddleware`` -- an organization without
   it cannot use the GraphQL API at all, not just individual mutations.
 - ``external_calendar_google`` / ``external_calendar_microsoft`` in
-  ``CalendarService.authenticate`` -- the common chokepoint both connection paths
-  flow through.
+  ``CalendarService.authenticate`` (the account's provider) **and** in
+  ``CalendarService._get_write_adapter_for_calendar`` (the calendar's provider,
+  which can differ -- see ``TestWriteAdapterProviderGate``).
 
 Unlike a pre-paid limit, an entitlement is boolean and uses
-``EntitlementService.has_entitlement``, which fails **closed** on an existing
-subscription whose entitlement row is absent or disabled, but fails **open**
-when the organization has no subscription at all (the same "we don't know"
-treatment ``get_effective_limit`` already gives that condition) -- see
-``EntitlementService.has_entitlement``'s docstring. Every test in this module
-that asserts a block was confirmed to fail when its corresponding guard was
-removed.
+``EntitlementService.has_entitlement``, which fails **closed** in every unknown
+case: an absent or disabled row on a real subscription, and a missing subscription
+entirely. That is deliberately *not* symmetric with ``get_effective_limit``'s
+fail-open — for a numeric ceiling "we don't know" means unlimited, which is what
+the rollout seeds anyway; for a boolean gate it would mean *granted*, handing paid
+features to organizations whose billing state is corrupt. See
+``EntitlementService.has_entitlement``'s docstring.
+
+Every test in this module that asserts a block was confirmed to fail when its
+corresponding guard was removed.
 """
 
 import datetime
+from typing import TYPE_CHECKING
 
+from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -33,9 +39,32 @@ from rest_framework.test import APIClient
 from calendar_integration.constants import CalendarProvider
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.billing_constants import BillingState, Entitlement
+from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 from public_api.models import ResourceAccess
-from public_api.services import PublicAPIAuthService
+
+
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
+if TYPE_CHECKING:
+    from di_core.containers import AppContainer
+
+
+def _container() -> "AppContainer":
+    """The wired DI container, narrowed for mypy.
+
+    Imported inside the function body on purpose: ``di_core.containers.container`` is
+    only *assigned* in ``DICoreConfig.ready()``, so a module-level ``from ... import
+    container`` binds ``None`` forever. The root ``conftest.py``'s ``di_container``
+    fixture defers the import for the same reason.
+    """
+    from di_core.containers import container
+
+    assert container is not None, "DI container is only assigned in DICoreConfig.ready()"
+    return container
 
 
 def _organization_with_entitlement(entitlement_key: str, is_enabled: bool) -> Organization:
@@ -64,10 +93,10 @@ def _unlimited_organization() -> Organization:
     """An organization on the seeded ``unlimited`` plan -- every entitlement
     enabled. The rollout's own kill switch: this is what "no feature flag" means
     in practice, and every enforcement phase carries a test against it."""
-    organization = baker.make(Organization, parent=None, can_invite_organizations=False)
-    plan = BillingPlan.objects.get(slug="unlimited")
     from payments.services.subscription_service import SubscriptionService
 
+    organization = baker.make(Organization, parent=None, can_invite_organizations=False)
+    plan = BillingPlan.objects.get(slug="unlimited")
     SubscriptionService().create_subscription_for_organization(organization, plan=plan)
     return organization
 
@@ -83,10 +112,8 @@ _EXPECTED_ERROR_KEYS = {"detail", "code", "resource", "current_usage", "limit", 
 
 
 def _post_graphql(client, system_user, token, query):
-    from di_core.containers import container
-
-    auth_service = PublicAPIAuthService()
-    with container.public_api_auth_service.override(auth_service):
+    auth_service = _container().public_api_auth_service()
+    with _container().public_api_auth_service.override(auth_service):
         return client.post(
             "/graphql/",
             data={"query": query, "variables": {}},
@@ -96,7 +123,7 @@ def _post_graphql(client, system_user, token, query):
 
 
 def _make_system_user(organization: Organization, *, with_user_access: bool = False) -> tuple:
-    auth_service = PublicAPIAuthService()
+    auth_service = _container().public_api_auth_service()
     system_user, token = auth_service.create_system_user(
         integration_name=f"test-integration-{organization.id}",
         organization=organization,
@@ -186,7 +213,11 @@ class TestPartnerApiGate:
         """No credentials presented -> no organization resolved -> the gate never
         runs. A genuinely anonymous caller is rejected (if at all) by the normal
         ``IsAuthenticated`` permission class, not this gate -- and never with the
-        entitlement error body."""
+        entitlement error body.
+
+        Asserts the exact status rather than ``!= 402``: ``!= 402`` also passes on a
+        500, which would hide the gate breaking the anonymous path outright.
+        """
         client = APIClient()
 
         response = client.post(
@@ -195,7 +226,9 @@ class TestPartnerApiGate:
             format="json",
         )
 
-        assert response.status_code != status.HTTP_402_PAYMENT_REQUIRED
+        # graphql-core reports authorization failures in the `errors` array of a 200.
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["errors"]
 
 
 # ---------------------------------------------------------------------------
@@ -270,3 +303,169 @@ class TestExternalCalendarGoogleGate:
         response = client.post(reverse("api:Calendars-request-import"))
 
         assert response.status_code == status.HTTP_202_ACCEPTED
+
+
+# The Microsoft adapter refuses to construct without these. Only the *positive*
+# controls below need them: the blocked cases never get as far as building an adapter,
+# which is itself the point of gating before `get_calendar_adapter_for_account`.
+_with_ms_credentials = override_settings(
+    MS_CLIENT_ID="test-ms-client-id",
+    MS_CLIENT_SECRET="test-ms-client-secret",  # noqa: S106 - dummy value, not a credential
+)
+
+
+def _microsoft_account_with_token(user) -> SocialAccount:
+    account = baker.make(SocialAccount, user=user, provider=CalendarProvider.MICROSOFT)
+    baker.make(
+        SocialToken,
+        account=account,
+        token="fake-ms-access-token",
+        token_secret="fake-ms-refresh-token",
+        expires_at=timezone.now() + datetime.timedelta(hours=1),
+    )
+    return account
+
+
+def _organization_with_entitlements(**grants: bool) -> Organization:
+    """A standalone organization whose subscription carries an explicit
+    ``SubscriptionEntitlement`` row per keyword (``entitlement_key=is_enabled``)."""
+    organization = baker.make(Organization, parent=None, can_invite_organizations=False)
+    now = timezone.now()
+    subscription = baker.make(
+        Subscription,
+        organization=organization,
+        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        billing_state=BillingState.FREE,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
+    )
+    for entitlement_key, is_enabled in grants.items():
+        baker.make(
+            SubscriptionEntitlement,
+            subscription=subscription,
+            entitlement_key=entitlement_key,
+            is_enabled=is_enabled,
+        )
+    return organization
+
+
+@pytest.mark.django_db
+class TestExternalCalendarMicrosoftGate:
+    """The Microsoft half of ``_PROVIDER_ENTITLEMENTS``.
+
+    The phase body names both providers; only Google was exercised, so a Microsoft-only
+    regression (a typo in the mapping, a provider constant drift) would have gone
+    unnoticed.
+    """
+
+    def test_microsoft_account_is_blocked_without_the_entitlement(self):
+        from calendar_integration.services.calendar_service import CalendarService
+
+        organization = _organization_with_entitlements(
+            **{Entitlement.EXTERNAL_CALENDAR_MICROSOFT: False}
+        )
+        membership = _admin_membership(organization)
+        account = _microsoft_account_with_token(membership.user)
+
+        service = _container().calendar_service()
+        with pytest.raises(OverLimitError) as exc_info:
+            service.authenticate(account=account, organization=organization)
+
+        assert exc_info.value.resource_key == Entitlement.EXTERNAL_CALENDAR_MICROSOFT
+        assert isinstance(service, CalendarService)
+
+    @_with_ms_credentials
+    def test_microsoft_account_is_allowed_with_the_entitlement(self):
+        organization = _organization_with_entitlements(
+            **{Entitlement.EXTERNAL_CALENDAR_MICROSOFT: True}
+        )
+        membership = _admin_membership(organization)
+        account = _microsoft_account_with_token(membership.user)
+
+        service = _container().calendar_service()
+        service.authenticate(account=account, organization=organization)
+
+        assert service.organization == organization
+
+    def test_google_entitlement_does_not_unlock_microsoft(self):
+        """The two entitlements are independent — holding one must not imply the other."""
+        organization = _organization_with_entitlements(
+            **{
+                Entitlement.EXTERNAL_CALENDAR_GOOGLE: True,
+                Entitlement.EXTERNAL_CALENDAR_MICROSOFT: False,
+            }
+        )
+        membership = _admin_membership(organization)
+        account = _microsoft_account_with_token(membership.user)
+
+        service = _container().calendar_service()
+        with pytest.raises(OverLimitError) as exc_info:
+            service.authenticate(account=account, organization=organization)
+
+        assert exc_info.value.resource_key == Entitlement.EXTERNAL_CALENDAR_MICROSOFT
+
+
+@pytest.mark.django_db
+class TestWriteAdapterProviderGate:
+    """``authenticate`` is not the sole chokepoint, and this pins the gap it leaves.
+
+    ``_get_write_adapter_for_calendar`` resolves an adapter from the **calendar's**
+    provider, not the authenticated account's, via the *static*
+    ``get_calendar_adapter_for_account`` — a different code path from the instance the
+    authenticate-time gate ran against.
+
+    The bypass this closes: an organization holds ``external_calendar_google`` but not
+    ``external_calendar_microsoft``. Calendar ``C`` has ``provider=microsoft`` and is
+    owned by a user who holds a Microsoft ``SocialAccount``. The actor authenticates with
+    their **Google** account, so the authenticate gate passes — correctly, it is a Google
+    account. Every write to ``C`` then builds a Microsoft adapter for that owner:
+    unmetered, ungated Microsoft traffic.
+    """
+
+    def _setup(self, *, microsoft_enabled: bool):
+        from calendar_integration.models import Calendar, CalendarOwnership
+
+        organization = _organization_with_entitlements(
+            **{
+                Entitlement.EXTERNAL_CALENDAR_GOOGLE: True,
+                Entitlement.EXTERNAL_CALENDAR_MICROSOFT: microsoft_enabled,
+            }
+        )
+        actor = _admin_membership(organization)
+        _google_account_with_token(actor.user)
+
+        owner = _admin_membership(organization)
+        _microsoft_account_with_token(owner.user)
+
+        calendar = baker.make(
+            Calendar,
+            organization=organization,
+            provider=CalendarProvider.MICROSOFT,
+            external_id="ms-calendar-1",
+        )
+        baker.make(
+            CalendarOwnership,
+            organization=organization,
+            calendar=calendar,
+            membership_user_id=owner.user_id,
+            is_default=True,
+        )
+
+        service = _container().calendar_service()
+        # Passes: the *account* is Google and the org holds external_calendar_google.
+        service.authenticate(account=actor.user, organization=organization)
+        return service, calendar
+
+    def test_write_adapter_is_blocked_for_an_unentitled_calendar_provider(self):
+        service, calendar = self._setup(microsoft_enabled=False)
+
+        with pytest.raises(OverLimitError) as exc_info:
+            service._get_write_adapter_for_calendar(calendar)
+
+        assert exc_info.value.resource_key == Entitlement.EXTERNAL_CALENDAR_MICROSOFT
+
+    @_with_ms_credentials
+    def test_write_adapter_is_returned_when_the_calendar_provider_is_entitled(self):
+        service, calendar = self._setup(microsoft_enabled=True)
+
+        assert service._get_write_adapter_for_calendar(calendar) is not None

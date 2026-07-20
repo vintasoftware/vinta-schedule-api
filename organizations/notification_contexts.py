@@ -5,7 +5,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from vintasend.exceptions import NotificationContextGenerationError
 from vintasend.services.notification_service import register_context
 
-from organizations.models import OrganizationInvitation, resolve_branding
+from organizations.models import OrganizationInvitation, resolve_branding_for_display
 
 
 # Vinta Schedule default branding values (used when no reseller branding is configured)
@@ -50,8 +50,10 @@ def organization_invitation_context(
         invited_by_name = f"{first_name} {last_name}"
 
     # Resolve branding: walks to the nearest reseller ancestor and uses its branding row.
-    # If no reseller ancestor or no branding row, returns None → vinta defaults apply.
-    branding_row = resolve_branding(invitation.organization)
+    # If no reseller ancestor, no branding row, or no `white_label_branding` entitlement,
+    # returns None → vinta defaults apply. This is a presentation caller (the invitation
+    # email's app name / logo / colors / support address), so it uses the gated variant.
+    branding_row = resolve_branding_for_display(invitation.organization)
 
     # Build the branding context dict with resolved values or vinta defaults.
     branding_context = {

@@ -31,6 +31,11 @@ from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
 
 
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 def _organization_with_limit(resource_key: str, limit_value: int | None) -> Organization:
     """A standalone (non-reseller) organization with a ceiling on ``resource_key``.
 

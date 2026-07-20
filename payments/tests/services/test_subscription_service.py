@@ -32,6 +32,11 @@ from payments.services.subscription_service import (
 )
 
 
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 @pytest.fixture
 def service():
     return SubscriptionService()

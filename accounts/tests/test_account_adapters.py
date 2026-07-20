@@ -20,6 +20,11 @@ from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
 from users.models import Profile, User
 
 
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 def _org_at_seat_limit_with_pending_invitation(email: str) -> Organization:
     """A one-seat organization already full, with a still-pending invitation to
     ``email`` — the exact BLOCKER 1 scenario: signup would take the org over its

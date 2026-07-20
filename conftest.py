@@ -106,6 +106,109 @@ def mock_external_calendar_clients(monkeypatch):
     )
 
 
+def _reseed_default_billing_plan():
+    """Recreate the ``unlimited`` plan that migration ``0007_seed_billing_plans`` seeds.
+
+    ``@pytest.mark.django_db(transaction=True)`` tests run against a real
+    ``TransactionTestCase``, which *flushes* every table afterwards and (without
+    ``serialized_rollback``) does not restore data created by data migrations. So the
+    seeded plan catalog disappears for every test that runs after the first transactional
+    one, and any organization created from then on has no default plan to land on.
+
+    Keep the shape in sync with ``payments/migrations/0007_seed_billing_plans.py``: a
+    ``PlanLimit`` row for **every** ``LimitedResource`` (``assert_plan_is_complete``
+    refuses a plan that omits one) with a NULL ceiling, and every ``Entitlement`` granted.
+    """
+    from payments.billing_constants import Entitlement, LimitedResource, LimitKind
+    from payments.models import BillingPlan, PlanEntitlement, PlanLimit
+
+    postpaid = {LimitedResource.EVENT_OCCURRENCES}
+    plan, _ = BillingPlan.objects.update_or_create(
+        slug="unlimited",
+        defaults={
+            "name": "Unlimited",
+            "is_active": True,
+            "is_default_for_new_organizations": True,
+            "monthly_price": 0,
+            "annual_price": None,
+            "currency": "USD",
+            "grace_period_days": None,
+        },
+    )
+    for resource_key in LimitedResource.values:
+        PlanLimit.objects.update_or_create(
+            plan=plan,
+            resource_key=resource_key,
+            defaults={
+                "limit_value": None,
+                "kind": (LimitKind.POSTPAID if resource_key in postpaid else LimitKind.PREPAID),
+                "overage_unit_price": None,
+            },
+        )
+    for entitlement_key in Entitlement.values:
+        PlanEntitlement.objects.update_or_create(
+            plan=plan, entitlement_key=entitlement_key, defaults={"is_enabled": True}
+        )
+    return plan
+
+
+@pytest.fixture(autouse=True)
+def provision_default_subscription(request):
+    """Give every ``Organization`` created during a test the ``Subscription`` production
+    would have given it.
+
+    Production organizations are created through ``OrganizationService``, which calls
+    ``SubscriptionService.create_subscription_for_organization`` — so Phase 4's "no
+    plan-less state" invariant holds for every billing root, and every one of them lands
+    on the seeded ``unlimited`` plan (``is_default_for_new_organizations=True``), whose
+    ``_sync_entitlements`` writes every entitlement enabled. Tests that build an
+    ``Organization`` with ``baker.make`` bypass that service and produce an organization
+    in a state production cannot reach: no ``Subscription`` at all.
+
+    ``EntitlementService.has_entitlement`` fails **closed** on that state, deliberately
+    (see its docstring): for a boolean gate, "we don't know" resolving to *granted* would
+    hand paid features to exactly the organizations whose billing state is corrupt. So the
+    plan-less fixture — not the production semantics — is what has to change, and this is
+    that change applied once instead of in every fixture in the suite.
+
+    Reseller children are skipped by ``create_subscription_for_organization`` itself (they
+    pool against their billing root), so this stays consistent with ``resolve_billing_root``.
+
+    Opt out with ``@pytest.mark.no_auto_subscription`` when a test builds its own
+    ``Subscription`` — ``Subscription.organization`` is a ``OneToOneField``, so a second
+    row raises ``IntegrityError`` — or when it deliberately exercises the plan-less state.
+    """
+    if request.node.get_closest_marker("no_auto_subscription"):
+        yield
+        return
+
+    from django.db.models.signals import post_save
+
+    from organizations.models import Organization
+
+    def _provision(sender, instance, created, raw=False, **kwargs):
+        if not created or raw:
+            return
+        from payments.exceptions import NoDefaultBillingPlanError
+        from payments.services.subscription_service import SubscriptionService
+
+        try:
+            SubscriptionService().create_subscription_for_organization(instance)
+        except NoDefaultBillingPlanError:
+            _reseed_default_billing_plan()
+            SubscriptionService().create_subscription_for_organization(instance)
+
+    post_save.connect(
+        _provision, sender=Organization, dispatch_uid="conftest_provision_default_subscription"
+    )
+    try:
+        yield
+    finally:
+        post_save.disconnect(
+            sender=Organization, dispatch_uid="conftest_provision_default_subscription"
+        )
+
+
 @pytest.fixture
 def user_password():
     from users.factories import DEFAULT_TEST_USER_PASSWORD

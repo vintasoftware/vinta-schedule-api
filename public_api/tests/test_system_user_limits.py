@@ -29,6 +29,11 @@ from public_api.models import SystemUser
 from public_api.services import PublicAPIAuthService
 
 
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 def _organization_with_limit(limit_value: int | None) -> Organization:
     """A standalone (non-reseller) organization with a ceiling on
     ``public_api_system_users``. ``limit_value=None`` builds an
@@ -58,12 +63,20 @@ def _organization_with_limit(limit_value: int | None) -> Organization:
 
 @pytest.fixture
 def service() -> PublicAPIAuthService:
-    # Untyped deliberately: PublicAPIAuthService's constructor params are
-    # DI-injected (Provide[...]) and resolved at call time by the wired container,
-    # which mypy cannot see -- an explicit `-> PublicAPIAuthService` return
-    # annotation would make mypy check this body and flag the zero-arg call as
-    # missing the required `audit_service` argument.
-    return PublicAPIAuthService()
+    """The container-built service, not a hand-constructed one.
+
+    ``PublicAPIAuthService.__init__`` takes required dependencies (``audit_service``);
+    constructing it with no arguments relies on ``@inject`` filling them at call time,
+    which mypy cannot see and reports as ``[call-arg]``. Asking the container is both
+    type-correct and the wiring production actually uses.
+
+    The import is deferred into the body because ``container`` is only *assigned* in
+    ``DICoreConfig.ready()`` -- a module-level import binds ``None`` forever.
+    """
+    from di_core.containers import container
+
+    assert container is not None, "DI container is only assigned in DICoreConfig.ready()"
+    return container.public_api_auth_service()
 
 
 @pytest.mark.django_db
@@ -86,7 +99,9 @@ class TestCreateSystemUserLimit:
         assert exc_info.value.resource_key == LimitedResource.PUBLIC_API_SYSTEM_USERS
         assert exc_info.value.current_usage == 1
         assert exc_info.value.limit == 1
-        assert not SystemUser.objects.filter(integration_name="blocked-integration").exists()
+        assert not SystemUser.objects.filter(
+            organization=organization, integration_name="blocked-integration"
+        ).exists()
 
     def test_revoked_and_deleted_system_users_free_capacity(self, service):
         """Neither an ``is_active=False`` (revoked) nor a soft-deleted row may count

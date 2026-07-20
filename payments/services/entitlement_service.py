@@ -507,37 +507,24 @@ class EntitlementService:
     def has_entitlement(self, organization: Organization, entitlement_key: str) -> bool:
         """Is the boolean feature gate ``entitlement_key`` granted to ``organization``?
 
-        Resolved at the billing root, like limits. **Unlike limits, an existing
-        subscription fails closed on the entitlement itself**: an absent or
-        disabled ``SubscriptionEntitlement`` row on a real ``Subscription`` means
-        "not granted", not "granted". The asymmetry is deliberate --
+        Resolved at the billing root, like limits. **Unlike limits, this fails
+        closed**: an absent ``SubscriptionEntitlement`` row means "not granted",
+        not "granted". The asymmetry is deliberate —
         ``SubscriptionService._sync_entitlements`` *deletes* rows for entitlements
-        the current plan does not carry, so absence there is how a revoked grant is
-        represented. Failing open on that case would hand every feature to every
+        the current plan does not carry, so absence is how a revoked grant is
+        represented. Failing open here would hand every feature to every
         organization whose plan omits it, whereas failing open on a limit only
         risks under-charging.
-
-        A **missing subscription entirely** is a different condition and is treated
-        like every other "we don't know" case in this service (see
-        ``get_effective_limit``): it fails open. Every billing root is expected to
-        hold exactly one ``Subscription`` (Phase 4's "no plan-less state"
-        invariant), so this branch should be unreachable for a legitimately
-        provisioned organization -- it exists for the same reason the limits side
-        fails open on the identical condition: a data gap or broken invariant must
-        never silently convert into a total lockout on every gated feature, which
-        the rollout's "no organization is blocked as a consequence of the rollout
-        itself" rule forbids just as much for entitlements as for limits.
         """
         subscription = self._get_root_subscription(organization)
         if subscription is None:
             logger.warning(
-                "No subscription resolved for organization %s; treating entitlement %s as "
-                "granted (fail-open). Every billing root is expected to hold exactly one "
-                "Subscription -- this indicates a broken invariant, not a normal state.",
+                "No subscription resolved for organization %s; denying entitlement %s. "
+                "Every billing root is expected to hold exactly one Subscription.",
                 organization.pk,
                 entitlement_key,
             )
-            return True
+            return False
         entitlement = subscription.entitlements.filter(entitlement_key=entitlement_key).first()
         return entitlement is not None and entitlement.is_enabled
 
