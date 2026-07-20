@@ -303,8 +303,9 @@ class CalendarSyncService:
 
         The split predicate consequently lives on ``CalendarQuerySet`` as
         ``external_ids_not_newly_counted_as_type`` / ``not_newly_counted_as_type``, defined
-        immediately next to the ``live_of_type`` the usage counter counts with and as its
-        exact complement, so the two cannot drift apart again.
+        immediately next to the ``live_of_type`` the usage counter counts with, as the
+        complement of *newly entering* it (not of ``live_of_type`` itself -- a row already
+        live as some other type is in neither set), so the two cannot drift apart again.
 
         A resource that does not increase the count -- an already-RESOURCE row, or a
         soft-deleted row the upsert leaves soft-deleted -- is free; every other one
@@ -330,6 +331,14 @@ class CalendarSyncService:
         entitlement_service = self._context.entitlement_service
         if bypass_limits or entitlement_service is None or not resources:
             return resources, None
+
+        # A provider that returns the same external_id twice in one discovery must not
+        # be charged twice for it: ``chargeable_resources`` below is built by membership
+        # in ``resources``, so an undeduplicated list inflates ``delta`` and can produce
+        # a false partial cap. First occurrence wins, matching the write loop's
+        # ``update_or_create`` semantics (later duplicates would just re-write the same
+        # row anyway).
+        resources = list({resource.external_id: resource for resource in resources}.values())
 
         # Take the guard lock before the split read below -- see the docstring.
         entitlement_service.lock_billing_root(organization)
@@ -386,17 +395,19 @@ class CalendarSyncService:
 
         The whole method runs in one transaction, which means the guard lock taken by
         ``_cap_resources_to_resource_calendar_headroom`` (a row lock on the billing
-        root's ``Subscription``) is held across the write loop below. That width is
-        **required**, not incidental: the lock only serializes anything if the writes
-        it authorizes commit inside the same transaction (see
-        ``EntitlementService.check_limit``'s ``lock`` docs), so releasing it earlier
-        would reintroduce the race it exists to close. The cost is real for a reseller
-        billing root -- every guarded creation path in its subtree serializes for the
-        duration of a large import -- and is bounded deliberately: the loop does
-        database work only (an upsert plus a ``CalendarSync`` row per resource; the
-        provider call and every Celery dispatch happen outside it, the former before
-        the lock is taken and the latter on commit), and this runs from a background
-        import task rather than a request hot path.
+        root's ``Subscription``) is held across the write loop below. Not narrowed
+        here: the invariant is that each authorized write commits with the lock that
+        authorized it (see ``EntitlementService.check_limit``'s ``lock`` docs), not
+        that the whole import must share one transaction -- a chunked version that
+        re-locked and re-checked headroom per chunk would preserve that invariant too,
+        and is tracked as a follow-up (see the phase's tracking doc) rather than
+        implemented here. As shipped, the cost is real for a reseller billing root --
+        every guarded creation path in its subtree serializes for the duration of a
+        large import -- and is bounded deliberately: the loop does database work only
+        (an upsert plus a ``CalendarSync`` row per resource; the provider call and
+        every Celery dispatch happen outside it, the former before the lock is taken
+        and the latter on commit), and this runs from a background import task rather
+        than a request hot path.
 
         :param start_time: Start time for the availability check.
         :param end_time: End time for the availability check.

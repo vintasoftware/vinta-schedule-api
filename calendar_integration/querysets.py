@@ -187,10 +187,13 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
     def not_newly_counted_as_type(self, calendar_type: str) -> "CalendarQuerySet":
         """Calendars an upsert that *forces* ``calendar_type`` would not newly count.
 
-        The exact complement of :meth:`live_of_type`, which is the predicate the
-        ``resource_calendars`` / ``bundle_calendars`` usage counters
-        (``payments.services.entitlement_service``) count with. It lives here, next to
-        ``live_of_type``, precisely so the two cannot drift apart: a bulk upsert that
+        The complement of *newly entering* :meth:`live_of_type` -- not of
+        :meth:`live_of_type` itself; a row that is already some other live,
+        non-``calendar_type`` type (e.g. a live ``PERSONAL``/``ACTIVE`` calendar) is in
+        neither set. :meth:`live_of_type` is the predicate the ``resource_calendars`` /
+        ``bundle_calendars`` usage counters (``payments.services.entitlement_service``)
+        count with. It lives here, next to ``live_of_type``, precisely so the two cannot
+        drift apart: a bulk upsert that
         splits "already imported" from "new" using a *different* predicate than the
         counter it is guarding lets rows through unmetered, which is exactly what the
         room-import writer did before this method existed.

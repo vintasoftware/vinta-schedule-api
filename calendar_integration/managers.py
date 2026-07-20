@@ -112,10 +112,6 @@ class CalendarManager(BaseOrganizationModelManager):
         """Wraps :meth:`CalendarQuerySet.live_of_type`."""
         return self.get_queryset().live_of_type(calendar_type)
 
-    def not_newly_counted_as_type(self, calendar_type: str) -> CalendarQuerySet:
-        """Wraps :meth:`CalendarQuerySet.not_newly_counted_as_type`."""
-        return self.get_queryset().not_newly_counted_as_type(calendar_type)
-
     def only_virtual_calendars(self):
         """
         Returns all virtual calendars.

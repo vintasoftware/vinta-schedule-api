@@ -507,6 +507,39 @@ class TestPartialImportIsDistinguishableFromSuccess:
         assert import_state.status == CalendarOrganizationResourceImportStatus.SUCCESS
         assert import_state.error_message == ""
 
+    def test_duplicate_external_id_in_one_discovery_is_not_double_charged(self):
+        """A provider that lists the same ``external_id`` twice in a single discovery
+        must not have that resource charged twice: 3 unique resources need exactly 3
+        units of headroom, not 4, even though the raw discovery has 4 entries. Before
+        the fix, ``chargeable_resources`` counted the duplicate as a second unit,
+        crowded out a genuinely-new resource from the capped slice, and produced a
+        false partial-import warning for an organization that had headroom for
+        everything it actually needed."""
+        organization = _organization_with_resource_calendar_limit(3)
+        unique_resources = _make_resources(3)
+        # The duplicate is listed first, so a naive cap (no dedup) burns a headroom
+        # slot on it before reaching the third, genuinely-new resource.
+        resources_with_duplicate = [unique_resources[0], *unique_resources]
+        service, _host = _make_service(organization, resources_with_duplicate)
+        import_state = baker.make(
+            CalendarOrganizationResourcesImport,
+            organization=organization,
+            start_time=datetime.datetime(2026, 1, 1, 9, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2026, 1, 1, 17, 0, tzinfo=datetime.UTC),
+        )
+
+        service.import_organization_calendar_resources(import_state)
+
+        import_state.refresh_from_db()
+        assert import_state.status == CalendarOrganizationResourceImportStatus.SUCCESS
+        assert import_state.error_message == ""
+        assert (
+            Calendar.objects.filter(
+                organization=organization, calendar_type=CalendarType.RESOURCE
+            ).count()
+            == 3
+        )
+
 
 @pytest.mark.django_db
 class TestUnlimitedPlanFullSyncIsUnchanged:
@@ -594,4 +627,4 @@ class TestSyncPathIsWiredThroughDI:
 
             sync_service = service._get_sync_service()
 
-        assert sync_service._context.entitlement_service is not None
+        assert isinstance(sync_service._context.entitlement_service, EntitlementService)

@@ -574,6 +574,18 @@ class AvailabilityService:
         delete_ids = [
             operation["id"] for operation in operations if operation["action"] == "delete"
         ]
+
+        entitlement_service = self._context.entitlement_service
+        # A credit is about to be granted (create_count and delete_ids), which means the
+        # delete-credit read below can race a concurrent batch computing the same credit
+        # from the same pre-write snapshot. Lock *before* that read -- not after, guarded
+        # by ``delta`` -- because ``delta == 0`` (the net-zero replace case) is exactly the
+        # case that must not skip the lock: two concurrent net-zero batches on the same
+        # delete id would otherwise both see it as live, both credit it, and both skip
+        # ``check_limit`` entirely. See ``EntitlementService.lock_billing_root``.
+        if not bypass_limits and entitlement_service is not None and create_count and delete_ids:
+            entitlement_service.lock_billing_root(context.organization)
+
         # Only deletions of rows the usage counter counts offset the creates -- see
         # ``AvailableTimeQuerySet.count_counted_windows_in_calendar``. Skipped entirely
         # when the batch creates nothing, so a delete-only batch pays for no query.
@@ -588,7 +600,6 @@ class AvailabilityService:
         # capacity rather than earning credit against the ceiling.
         delta = max(create_count - credited_delete_count, 0)
 
-        entitlement_service = self._context.entitlement_service
         if not bypass_limits and entitlement_service is not None and delta:
             result = entitlement_service.check_limit(
                 context.organization,
