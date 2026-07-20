@@ -38,6 +38,12 @@ class CalendarSyncTriggerSource(TextChoices):
 
 class CalendarOrganizationResourceImportStatus(TextChoices):
     SUCCESS = "success", "Success"
+    # The import ran without error but did not import everything it discovered --
+    # currently only because the organization ran out of `resource_calendars`
+    # headroom mid-import. A distinct terminal status rather than SUCCESS plus an
+    # advisory string on `error_message`: a consumer that has to string-match an
+    # error column to tell a clean import from a truncated one has no contract.
+    PARTIAL = "partial", "Partial"
     FAILED = "failed", "Failed"
     IN_PROGRESS = "in_progress", "In Progress"
     NOT_STARTED = "not_started", "Not Started"

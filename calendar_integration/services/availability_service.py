@@ -536,8 +536,20 @@ class AvailabilityService:
         Phase 6b: a batch with ``create`` operations is itself a bulk-creation path --
         without a check here, the ``availability_windows`` ceiling would be reachable
         only through ``create_available_time`` and trivially bypassed via this endpoint.
-        Headroom for the number of ``create`` operations is checked *before* any
-        operation in the batch is applied.
+        Headroom for the batch's **net** growth is checked *before* any operation in the
+        batch is applied.
+
+        Net, not gross: the batch's ``delete`` operations offset its ``create`` ones, so
+        replace-semantics (``[{"action": "delete", ...}, {"action": "create", ...}]``, which
+        both the REST ``AvailableTimeBatchSerializer`` and the GraphQL
+        ``batch_update_availability_windows`` mutation explicitly allow) changes usage by
+        zero and must not be refused. Charging ``create_count`` alone would leave an
+        organization sitting exactly at its ceiling permanently unable to *edit* its
+        availability by replacement -- a false block on a net-zero change, the same defect
+        class as a resend at the seat ceiling, and what ``check_limit``'s own docs name as
+        the established rule. Optimistic in the other direction by design: the deletes are
+        validated and applied inside this method's transaction, so a bad delete id rolls
+        the whole batch back and no credited delete can leak.
 
         :param calendar: The calendar whose available times are being modified.
         :param operations: Iterable of dicts, each with an ``action`` of
@@ -545,9 +557,9 @@ class AvailabilityService:
             (``id``, ``start_time``, ``end_time``, ``timezone``, ``rrule_string``).
         :param bypass_limits: When True, skips the ``availability_windows`` limit guard
             below. Only management commands and one-off repair scripts should pass this.
-        :raises OverLimitError: When the batch's ``create`` operations would take the
-            organization past its effective ``availability_windows`` ceiling. Nothing in
-            the batch is applied.
+        :raises OverLimitError: When the batch's net growth (creates minus deletes) would
+            take the organization past its effective ``availability_windows`` ceiling.
+            Nothing in the batch is applied.
         :return: The calendar's available times after the batch is applied.
         """
         context = cast("BaseCalendarService", self._context)
@@ -559,13 +571,29 @@ class AvailabilityService:
 
         operations = list(operations)
         create_count = sum(1 for operation in operations if operation["action"] == "create")
+        delete_ids = [
+            operation["id"] for operation in operations if operation["action"] == "delete"
+        ]
+        # Only deletions of rows the usage counter counts offset the creates -- see
+        # ``AvailableTimeQuerySet.count_counted_windows_in_calendar``. Skipped entirely
+        # when the batch creates nothing, so a delete-only batch pays for no query.
+        credited_delete_count = (
+            AvailableTime.objects.filter_by_organization(
+                context.organization.id
+            ).count_counted_windows_in_calendar(calendar.pk, delete_ids)
+            if create_count and delete_ids
+            else 0
+        )
+        # Net growth, floored at zero: a batch that deletes more than it creates frees
+        # capacity rather than earning credit against the ceiling.
+        delta = max(create_count - credited_delete_count, 0)
 
         entitlement_service = self._context.entitlement_service
-        if not bypass_limits and entitlement_service is not None and create_count:
+        if not bypass_limits and entitlement_service is not None and delta:
             result = entitlement_service.check_limit(
                 context.organization,
                 LimitedResource.AVAILABILITY_WINDOWS,
-                delta=create_count,
+                delta=delta,
                 lock=True,
             )
             if not result.allowed:

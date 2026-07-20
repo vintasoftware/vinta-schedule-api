@@ -31,8 +31,15 @@ from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
 
 
-def _organization_with_limit(resource_key: str, limit_value: int) -> Organization:
-    """A standalone (non-reseller) organization with a finite ceiling on ``resource_key``."""
+def _organization_with_limit(resource_key: str, limit_value: int | None) -> Organization:
+    """A standalone (non-reseller) organization with a ceiling on ``resource_key``.
+
+    ``limit_value=None`` builds an ``unlimited``-shaped subscription (NULL ceiling).
+    The plan's "no feature flag -- the ``unlimited`` plan is the switch" decision makes
+    that the rollout's only off switch, so every guard here is exercised against it as
+    well as against a finite ceiling: a guard that is not inert at NULL breaks every
+    existing organization the day it ships.
+    """
     organization = baker.make(Organization, parent=None, can_invite_organizations=False)
     now = timezone.now()
     subscription = baker.make(
@@ -75,8 +82,9 @@ class TestCreateResourceCalendarLimit:
         assert exc_info.value.limit == 1
         assert not Calendar.objects.filter(organization=organization, name="Blocked Room").exists()
 
-    def test_succeeds_with_headroom(self):
-        organization = _organization_with_limit(LimitedResource.RESOURCE_CALENDARS, 2)
+    @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
+    def test_succeeds_with_headroom(self, limit_value):
+        organization = _organization_with_limit(LimitedResource.RESOURCE_CALENDARS, limit_value)
         baker.make(
             Calendar,
             organization=organization,
@@ -126,8 +134,9 @@ class TestCreateGroupLimit:
             organization=organization, name="Blocked Group"
         ).exists()
 
-    def test_succeeds_with_headroom(self):
-        organization = _organization_with_limit(LimitedResource.CALENDAR_GROUPS, 2)
+    @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
+    def test_succeeds_with_headroom(self, limit_value):
+        organization = _organization_with_limit(LimitedResource.CALENDAR_GROUPS, limit_value)
         baker.make(CalendarGroup, organization=organization)
 
         service = CalendarGroupService()
@@ -171,8 +180,9 @@ class TestCreateBundleCalendarLimit:
             organization=organization, name="Blocked Bundle"
         ).exists()
 
-    def test_succeeds_with_headroom(self):
-        organization = _organization_with_limit(LimitedResource.BUNDLE_CALENDARS, 2)
+    @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
+    def test_succeeds_with_headroom(self, limit_value):
+        organization = _organization_with_limit(LimitedResource.BUNDLE_CALENDARS, limit_value)
         baker.make(
             Calendar,
             organization=organization,
@@ -235,8 +245,9 @@ class TestCreateAvailableTimeLimit:
             AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 1
         )
 
-    def test_succeeds_with_headroom(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 2)
+    @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
+    def test_succeeds_with_headroom(self, limit_value):
+        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, limit_value)
         calendar = _calendar_managing_windows(organization)
         baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
 
@@ -303,8 +314,9 @@ class TestBatchModifyAvailableTimesLimit:
             AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 1
         )
 
-    def test_batch_of_creates_succeeds_with_headroom(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 3)
+    @pytest.mark.parametrize("limit_value", [3, None], ids=["headroom", "unlimited"])
+    def test_batch_of_creates_succeeds_with_headroom(self, limit_value):
+        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, limit_value)
         calendar = _calendar_managing_windows(organization)
         baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
 
@@ -332,3 +344,209 @@ class TestBatchModifyAvailableTimesLimit:
             AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 3
         )
         assert len(result) == 3
+
+
+def _create_op(day: int) -> dict:
+    return {
+        "action": "create",
+        "start_time": datetime.datetime(2026, 1, day, 9, 0, tzinfo=datetime.UTC),
+        "end_time": datetime.datetime(2026, 1, day, 10, 0, tzinfo=datetime.UTC),
+        "timezone": "UTC",
+    }
+
+
+@pytest.mark.django_db
+class TestBatchModifyAvailableTimesIsNetOfDeletes:
+    """A batch is charged its **net** growth, not its gross ``create`` count.
+
+    Both the REST ``AvailableTimeBatchSerializer`` and the GraphQL
+    ``batch_update_availability_windows`` mutation allow mixed actions, so
+    replace-semantics is a normal edit. Charging creates alone leaves an organization
+    sitting exactly at its ceiling permanently unable to edit its availability by
+    replacement -- a false block on a change that moves usage by zero.
+    """
+
+    def test_one_for_one_replacement_at_the_ceiling_is_allowed(self):
+        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 5)
+        calendar = _calendar_managing_windows(organization)
+        existing = [
+            baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
+            for _ in range(5)
+        ]
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        service.batch_modify_available_times(
+            calendar=calendar,
+            operations=[{"action": "delete", "id": existing[0].id}, _create_op(2)],
+        )
+
+        # Net zero: still exactly at the ceiling, and the replacement landed.
+        assert (
+            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 5
+        )
+        assert not AvailableTime.objects.filter(id=existing[0].id).exists()
+
+    def test_growing_batch_at_the_ceiling_still_raises(self):
+        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 5)
+        calendar = _calendar_managing_windows(organization)
+        existing = [
+            baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
+            for _ in range(5)
+        ]
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(OverLimitError) as exc_info:
+            service.batch_modify_available_times(
+                calendar=calendar,
+                operations=[
+                    {"action": "delete", "id": existing[0].id},
+                    _create_op(2),
+                    _create_op(3),
+                ],
+            )
+
+        assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+        # Nothing in the batch was applied -- the delete included.
+        assert (
+            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 5
+        )
+        assert AvailableTime.objects.filter(id=existing[0].id).exists()
+
+    def test_update_only_batch_at_the_ceiling_is_allowed(self):
+        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 2)
+        calendar = _calendar_managing_windows(organization)
+        existing = [
+            baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
+            for _ in range(2)
+        ]
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        service.batch_modify_available_times(
+            calendar=calendar,
+            operations=[
+                {
+                    "action": "update",
+                    "id": existing[0].id,
+                    "start_time": datetime.datetime(2026, 2, 1, 9, 0, tzinfo=datetime.UTC),
+                    "end_time": datetime.datetime(2026, 2, 1, 11, 0, tzinfo=datetime.UTC),
+                }
+            ],
+        )
+
+        assert (
+            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 2
+        )
+
+    def test_delete_only_batch_at_the_ceiling_is_allowed(self):
+        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 2)
+        calendar = _calendar_managing_windows(organization)
+        existing = [
+            baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
+            for _ in range(2)
+        ]
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        service.batch_modify_available_times(
+            calendar=calendar,
+            operations=[{"action": "delete", "id": existing[0].id}],
+        )
+
+        assert (
+            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 1
+        )
+
+    def test_deleting_a_row_the_counter_does_not_count_earns_no_credit(self):
+        """The delete credit has to be computed with the *counter's* predicate.
+
+        ``_count_availability_windows`` counts only ``only_user_authored`` rows, so
+        crediting the deletion of a derived row (a recurrence exception) would hand out
+        capacity for freeing something that occupied none -- and let the batch push real
+        usage past the ceiling.
+        """
+        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 1)
+        calendar = _calendar_managing_windows(organization)
+        baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
+        derived = baker.make(
+            AvailableTime,
+            organization=organization,
+            calendar=calendar,
+            timezone="UTC",
+            is_recurring_exception=True,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        with pytest.raises(OverLimitError):
+            service.batch_modify_available_times(
+                calendar=calendar,
+                operations=[{"action": "delete", "id": derived.id}, _create_op(2)],
+            )
+
+        assert AvailableTime.objects.filter(id=derived.id).exists()
+
+
+@pytest.mark.django_db
+class TestBulkCreateAvailabilityWindowsLimit:
+    """``bulk_create_availability_windows`` is charged ``len(windows)``, which the
+    single-window path only ever exercises at delta=1."""
+
+    def test_multi_window_batch_over_the_ceiling_raises_and_creates_nothing(self):
+        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 4)
+        calendar = _calendar_managing_windows(organization)
+        baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        windows = [
+            (
+                datetime.datetime(2026, 1, day, 9, 0, tzinfo=datetime.UTC),
+                datetime.datetime(2026, 1, day, 10, 0, tzinfo=datetime.UTC),
+                "UTC",
+                None,
+            )
+            for day in range(2, 4 + 1 + 1)  # 4 windows: usage 1 + 4 > ceiling 4
+        ]
+
+        with pytest.raises(OverLimitError) as exc_info:
+            service.bulk_create_availability_windows(
+                calendar=calendar, availability_windows=windows
+            )
+
+        assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+        assert (
+            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 1
+        )
+
+    def test_multi_window_batch_that_exactly_fills_the_ceiling_is_allowed(self):
+        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 4)
+        calendar = _calendar_managing_windows(organization)
+        baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        windows = [
+            (
+                datetime.datetime(2026, 1, day, 9, 0, tzinfo=datetime.UTC),
+                datetime.datetime(2026, 1, day, 10, 0, tzinfo=datetime.UTC),
+                "UTC",
+                None,
+            )
+            for day in range(2, 5)  # 3 windows: usage 1 + 3 == ceiling 4
+        ]
+
+        service.bulk_create_availability_windows(calendar=calendar, availability_windows=windows)
+
+        assert (
+            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 4
+        )
