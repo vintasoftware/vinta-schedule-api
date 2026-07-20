@@ -54,7 +54,7 @@ from payments.exceptions import OverLimitError
 from payments.services.subscription_service import SubscriptionService
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
-from public_api.extensions import over_limit_graphql_error
+from public_api.extensions import raise_over_limit_graphql_error
 from public_api.models import ResourceAccess, SystemUser
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 from public_api.scoping import assert_calendar_in_owner_scope
@@ -991,8 +991,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # token as invitation._raw_token (transient, never persisted in plaintext).
         #
         # Phase 6a: invite_user_to_organization raises OverLimitError at the organization's
-        # seat limit. Rendered identically to the REST 402 body via over_limit_graphql_error
-        # (Use-case 7 — the partner API is not a bypass).
+        # seat limit. Rendered identically to the REST 402 body via
+        # raise_over_limit_graphql_error (Use-case 7 — the partner API is not a bypass).
         try:
             invitation = deps.organization_service.invite_user_to_organization(
                 email=input.user_email,
@@ -1004,7 +1004,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 send_email=input.send_email,
             )
         except OverLimitError as exc:
-            raise over_limit_graphql_error(exc) from exc
+            raise_over_limit_graphql_error(exc)
 
         raw_token: str | None = None
         invite_url: str | None = None

@@ -364,3 +364,55 @@ class TestProvisionTenantForUserInviteBranchSeatLimitGuard:
 
         assert membership is not None
         assert membership.organization_id == organization.id
+
+
+@pytest.mark.django_db
+class TestReactivateMembershipSeatLimitGuard:
+    """SHOULD-FIX 2: the seat-limit guard lives in
+    ``OrganizationService.reactivate_membership``, not the viewset -- see the
+    plan's Guiding Decisions ("Enforcement layer: service layer, not
+    viewsets"). A caller that bypasses the viewset entirely (management
+    command, admin action, shell) must still hit the guard by default, and
+    must be able to opt out explicitly via ``bypass_limits``."""
+
+    def test_reactivate_at_the_limit_raises_and_leaves_the_member_inactive(self, service):
+        organization = _organization_with_seat_limit(seat_limit=1, existing_active_members=1)
+        inactive_member = baker.make(
+            OrganizationMembership, organization=organization, is_active=False
+        )
+
+        with pytest.raises(OverLimitError):
+            service.reactivate_membership(inactive_member)
+
+        inactive_member.refresh_from_db()
+        assert inactive_member.is_active is False
+
+    def test_reactivate_with_headroom_succeeds(self, service):
+        organization = _organization_with_seat_limit(seat_limit=2, existing_active_members=1)
+        inactive_member = baker.make(
+            OrganizationMembership, organization=organization, is_active=False
+        )
+
+        reactivated = service.reactivate_membership(inactive_member)
+
+        assert reactivated.is_active is True
+        inactive_member.refresh_from_db()
+        assert inactive_member.is_active is True
+
+    def test_reactivating_an_already_active_member_is_a_no_op_even_at_the_limit(self, service):
+        organization = _organization_with_seat_limit(seat_limit=1, existing_active_members=1)
+        active_member = OrganizationMembership.objects.filter(organization=organization).first()
+
+        reactivated = service.reactivate_membership(active_member)
+
+        assert reactivated.is_active is True
+
+    def test_bypass_limits_reactivates_anyway(self, service):
+        organization = _organization_with_seat_limit(seat_limit=1, existing_active_members=1)
+        inactive_member = baker.make(
+            OrganizationMembership, organization=organization, is_active=False
+        )
+
+        reactivated = service.reactivate_membership(inactive_member, bypass_limits=True)
+
+        assert reactivated.is_active is True

@@ -5,7 +5,7 @@ from typing import Annotated
 from django.db import transaction
 
 from dependency_injector.wiring import Provide, inject
-from drf_spectacular.utils import OpenApiResponse, extend_schema
+from drf_spectacular.utils import OpenApiResponse, extend_schema, extend_schema_view
 from rest_framework import generics, status, views
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
@@ -60,9 +60,6 @@ from organizations.serializers import (
     UpdateMembershipRoleSerializer,
 )
 from organizations.services import OrganizationService
-from payments.billing_constants import LimitedResource
-from payments.exceptions import OverLimitError
-from payments.services.entitlement_service import EntitlementService
 
 
 logger = logging.getLogger(__name__)
@@ -548,6 +545,14 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema_view(
+    create=extend_schema(
+        responses={
+            201: OrganizationInvitationSerializer,
+            402: OpenApiResponse(description="Organization is at its seat limit"),
+        },
+    ),
+)
 class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
     """
     A viewset for managing organization invitations.
@@ -595,6 +600,7 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
         responses={
             200: OrganizationInvitationSerializer,
             400: OpenApiResponse(description="Invitation already accepted or service error"),
+            402: OpenApiResponse(description="Organization is at its seat limit"),
             403: OpenApiResponse(description="Not an active member"),
             404: OpenApiResponse(description="Invitation not found or cross-org"),
         },
@@ -664,11 +670,11 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     def __init__(
         self,
         *args,
-        entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]],
+        organization_service: Annotated[OrganizationService, Provide["organization_service"]],
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.entitlement_service = entitlement_service
+        self.organization_service = organization_service
 
     def get_queryset(self):
         """Org-scoped queryset: return members of the caller's organization only."""
@@ -754,36 +760,20 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         },
     )
     @action(detail=True, methods=["post"], url_path="reactivate")
-    @transaction.atomic()
     def reactivate(self, request, user_id=None):
         """Reactivate a member (set is_active=True).
 
-        Guards: reactivating occupies a seat again (``OrganizationMembershipQuerySet
-        .occupying_a_seat`` only counts ``is_active=True`` rows), so — unlike every other
-        member of this viewset — it is a capacity-raising write with no accompanying
-        ``OrganizationInvitation``/membership *create*, and would otherwise be an unmetered
-        path onto the ``organization_members`` limit. Only checked when the member is
-        currently inactive: an already-active member is a no-op and must stay one even if
-        the organization is at its limit for an unrelated reason.
-
-        Idempotency: reactivating an already-active member is a no-op success.
+        The seat-limit guard lives in ``OrganizationService.reactivate_membership``
+        (service layer, not the viewset — see the plan's Guiding Decisions), so this
+        action only resolves the target and serializes the result. Idempotency:
+        reactivating an already-active member is a no-op success.
         """
         target = (
             self.get_object()
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
 
-        if not target.is_active:
-            result = self.entitlement_service.check_limit(
-                target.organization, LimitedResource.ORGANIZATION_MEMBERS, lock=True
-            )
-            if not result.allowed:
-                raise OverLimitError.from_check_result(result)
+        target = self.organization_service.reactivate_membership(target)
 
-        # Reactivate (idempotent: no-op if already active)
-        target.is_active = True
-        target.save(update_fields=["is_active"])
-
-        # Return the updated membership
         serializer = self.get_serializer(target)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -849,6 +839,23 @@ class AcceptInvitationView(generics.CreateAPIView):
 
     serializer_class = AcceptInvitationSerializer
     permission_classes = (IsAuthenticated,)
+
+    @extend_schema(
+        responses={
+            201: AcceptInvitationSerializer,
+            400: OpenApiResponse(description="Already a member, or invalid token"),
+            402: OpenApiResponse(description="Organization is at its seat limit"),
+            404: OpenApiResponse(description="Invitation not found"),
+            409: OpenApiResponse(description="Duplicate invitation"),
+        },
+    )
+    def post(self, request, *args, **kwargs):
+        # drf-spectacular resolves a plain APIView's schema from the HTTP-verb
+        # method (`post`), not from `create` -- see OrganizationBrandingView's
+        # get/put/patch above for the same convention. `create` stays the
+        # override point (it holds the actual logic) since that is the DRF
+        # ``CreateAPIView`` convention every caller of this class expects.
+        return self.create(request, *args, **kwargs)
 
     def create(self, request, *args, **kwargs):
         """Accept invitation and return success response.

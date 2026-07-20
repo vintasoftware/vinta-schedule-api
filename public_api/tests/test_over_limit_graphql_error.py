@@ -1,12 +1,12 @@
-"""``over_limit_graphql_error`` — the GraphQL rendering of ``OverLimitError``.
+"""``raise_over_limit_graphql_error`` — the GraphQL rendering of ``OverLimitError``.
 
 Mirrors ``payments/tests/test_over_limit_rollback.py``'s reasoning for REST,
 applied to GraphQL: graphql-core catches every resolver exception internally
 and always returns a normal 200 response with the error embedded in
 ``errors``, so — unlike an unhandled exception in a plain Django view — the
 request transaction never sees anything to propagate and roll back on its own.
-Without ``set_rollback()`` in ``over_limit_graphql_error``, a write a guarded
-resolver made before it hit the limit check would commit under
+Without ``set_rollback()`` in ``raise_over_limit_graphql_error``, a write a
+guarded resolver made before it hit the limit check would commit under
 ``ATOMIC_REQUESTS`` while the client is told the request was rejected.
 
 Exercised through a real request against a throwaway schema/urlconf, not by
@@ -28,7 +28,7 @@ from calendar_integration.models import CalendarGroup
 from organizations.models import Organization
 from payments.billing_constants import LimitedResource, LimitRemedy
 from payments.exceptions import OverLimitError
-from public_api.extensions import over_limit_graphql_error
+from public_api.extensions import raise_over_limit_graphql_error
 
 
 #: Mirrors payments/tests/test_over_limit_rollback.py's use of a ContextVar
@@ -56,7 +56,7 @@ class Mutation:
             organization_id=current_organization_id.get(),
             name="written-before-the-graphql-guard",
         )
-        raise over_limit_graphql_error(
+        raise_over_limit_graphql_error(
             OverLimitError(
                 resource_key=LimitedResource.CALENDAR_GROUPS,
                 current_usage=1,
@@ -150,7 +150,7 @@ class TestOverLimitGraphQLErrorRollsBackTheRequestTransaction:
             == 0
         ), (
             "The row written before the over-limit guard was committed. "
-            "over_limit_graphql_error swallowed the exception into a normal 200 "
+            "raise_over_limit_graphql_error swallowed the exception into a normal 200 "
             "response without calling set_rollback(), so ATOMIC_REQUESTS "
             "committed the request transaction."
         )

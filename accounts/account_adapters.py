@@ -23,6 +23,7 @@ from legal.services import ConsentService
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import get_active_organization_membership
 from organizations.services import OrganizationService
+from payments.exceptions import OverLimitError
 from users.models import Profile, User
 
 
@@ -149,6 +150,14 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         mirroring AccountAdapter) and calls provision_tenant_for_user with no
         organisation_name — social signups never carry one.  No-ops silently on
         UserAlreadyHasMembershipError (re-login or race).
+
+        ``OverLimitError`` (the inviting org is at its seat limit) is caught the
+        same way: this runs under allauth.headless views, not DRF, so
+        ``vinta_exception_handler`` never sees it and an uncaught raise here would
+        surface as a bare 500 mid-signup with the social account otherwise fully
+        created and committed. Falling through leaves the user membership-less
+        (gated) — the same outcome as "no pending invitation" — rather than
+        wedging the signup.
         """
         if not user.email:
             logger.warning(
@@ -163,6 +172,15 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
             # Re-login or race: user already has a membership — no-op.
             logger.debug(
                 "Social user %s already has a membership; skipping re-provisioning.",
+                user.pk,
+            )
+            return
+        except OverLimitError:
+            # Inviting org is at its seat limit: leave the user membership-less
+            # (gated) instead of raising a 500 out of a headless view.
+            logger.info(
+                "Social user %s could not auto-join their inviting org: seat limit "
+                "reached. User remains membership-less (gated).",
                 user.pk,
             )
             return
@@ -341,6 +359,15 @@ class AccountAdapter(DefaultAccountAdapter):
         DI container global at the call site.
 
         Idempotent: swallows UserAlreadyHasMembershipError so re-confirmation is a no-op.
+
+        Also swallows ``OverLimitError`` (the inviting org is at its seat limit): this
+        adapter runs under allauth.headless views, not DRF, so
+        ``vinta_exception_handler`` never sees it. Left uncaught, it would surface as a
+        bare 500 *after* the email address is already marked verified — and under
+        ``ATOMIC_REQUESTS`` the whole request (including that verification) rolls back,
+        wedging the user with an unverified email and no way to make a retry succeed.
+        Falling through leaves the user membership-less (gated), matching the existing
+        no-pending-invitation and no-org-name branch below.
         """
         confirmed = super().confirm_email(request, email_address)
         if not confirmed:
@@ -368,6 +395,15 @@ class AccountAdapter(DefaultAccountAdapter):
             # Idempotent: re-confirmation or race — user already has a membership.
             logger.debug(
                 "User %s already has a membership; skipping re-provisioning.",
+                user.pk,
+            )
+            return confirmed
+        except OverLimitError:
+            # Inviting org is at its seat limit: leave the user membership-less
+            # (gated) instead of raising a 500 out of a headless view.
+            logger.info(
+                "User %s could not auto-join their inviting org: seat limit "
+                "reached. User remains membership-less (gated).",
                 user.pk,
             )
             return confirmed

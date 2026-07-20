@@ -296,22 +296,35 @@ class OrganizationService:
             root's subscription) inside this method's own transaction, so two concurrent
             invitations for the last seat serialize on that row and exactly one succeeds.
 
-        .. note::
-            A **resend** (re-inviting the same still-pending email/organization pair, which
-            resets the token/expiry rather than creating a new row) is checked identically to a
-            new invitation. It does not consume a new seat — the pending invitation already
-            counts toward the ceiling — so at the exact ceiling a resend is blocked even though
-            nothing new would be created. Narrower than the alternative (excluding the
-            in-place-reused invitation from the count) would require, which
-            ``EntitlementService.check_limit``'s own docs reserve for the accept path.
+        A **resend** (re-inviting the same still-pending email/organization pair, which resets
+        the token/expiry rather than creating a new row) resolves the still-pending invitation
+        being reused *before* the guard and excludes it from the count
+        (``EntitlementService.check_limit(..., exclude_invitation_id=...)``) — a resend is
+        net-zero on seats, exactly like an accept, since it creates nothing new. A genuinely
+        new invitation (no matching pending row) is still checked and blocked at the ceiling
+        as before.
         """
         # Guard first, before anything is written in this transaction — an
         # OverLimitError raised after a write would rely on the caller's exception
         # handler to roll the request transaction back (REST does; a caller that
         # does not would silently commit a rejected invitation).
         if not bypass_limits:
+            # A resend reuses the still-pending row `get_or_create` below would find
+            # (same email/organization, not yet accepted); excluding it from the count
+            # makes the resend net-zero rather than a false block at the exact ceiling.
+            existing_invitation = OrganizationInvitation.objects.filter(
+                organization=organization,
+                email=email,
+                accepted_at__isnull=True,
+                membership_user_id__isnull=True,
+            ).first()
             result = self.entitlement_service.check_limit(
-                organization, LimitedResource.ORGANIZATION_MEMBERS, lock=True
+                organization,
+                LimitedResource.ORGANIZATION_MEMBERS,
+                lock=True,
+                exclude_invitation_id=(
+                    existing_invitation.pk if existing_invitation is not None else None
+                ),
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)
@@ -471,11 +484,21 @@ class OrganizationService:
                             organization=invitation.organization,
                             role=invitation.role,
                         )
+                        # Marking the invitation accepted must land in the same
+                        # transaction as the guard + membership create, not a
+                        # separate autocommit write after the block exits. Outside
+                        # a request (Celery, management command, shell) there is no
+                        # outer ATOMIC_REQUESTS transaction to fold this into: the
+                        # membership create would commit and release the row lock,
+                        # then a concurrent check could see the seat still "pending"
+                        # and count it twice, before this line ever runs — and if
+                        # this write then failed, the double-count would be
+                        # permanent.
+                        invitation.accepted_at = now
+                        invitation.membership_user_id = membership.user_id
+                        invitation.save()
                 except IntegrityError as e:
                     raise UserAlreadyHasMembershipError() from e
-                invitation.accepted_at = now
-                invitation.membership_user_id = membership.user_id
-                invitation.save()
                 self.webhook_membership_side_effects_service.on_member_created(membership)
 
                 # Audit: the accepting user joins the org (new membership) and the
@@ -646,3 +669,44 @@ class OrganizationService:
                 }
             },
         )
+
+    @transaction.atomic()
+    def reactivate_membership(
+        self,
+        membership: OrganizationMembership,
+        bypass_limits: bool = False,
+    ) -> OrganizationMembership:
+        """Reactivate a member (set is_active=True), enforced here rather than at
+        the viewset — see the plan's Guiding Decisions ("Enforcement layer: service
+        layer, not viewsets") and the ``bypass_limits`` convention every guarded
+        method in this module follows.
+
+        Reactivating occupies a seat again (``OrganizationMembershipQuerySet
+        .occupying_a_seat`` only counts ``is_active=True`` rows), so — unlike every
+        other membership-lifecycle write — it is a capacity-raising write with no
+        accompanying ``OrganizationInvitation``/membership *create*, and would
+        otherwise be an unmetered path onto the ``organization_members`` limit.
+        Only checked when the member is currently inactive: an already-active
+        member is a no-op and must stay one even if the organization is at its
+        limit for an unrelated reason.
+
+        :param membership: The membership to reactivate.
+        :param bypass_limits: When True, skips the seat-limit guard below. Only
+            management commands and one-off repair scripts should pass this —
+            never a request-handling path.
+        :return: The (possibly already-active) membership, reactivated.
+        :raises OverLimitError: When reactivating would take the organization over
+            its seat limit.
+
+        Idempotency: reactivating an already-active member is a no-op success.
+        """
+        if not membership.is_active:
+            if not bypass_limits:
+                result = self.entitlement_service.check_limit(
+                    membership.organization, LimitedResource.ORGANIZATION_MEMBERS, lock=True
+                )
+                if not result.allowed:
+                    raise OverLimitError.from_check_result(result)
+            membership.is_active = True
+            membership.save(update_fields=["is_active"])
+        return membership

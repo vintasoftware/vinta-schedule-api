@@ -59,14 +59,16 @@ class UsageContext:
     organization_ids: Sequence[int]
     subscription: Subscription | None = None
     exclude_invitation_id: int | None = None
-    """The invitation currently being accepted, if any.
+    """The invitation currently being accepted or resent, if any.
 
     Accepting an invitation is **net zero** on seat usage: the pending invitation
     stops being pending and becomes the membership it was already holding a seat
     for. Counting it on both sides would make the accept fail its own
     ``check_limit(delta=1)`` at exactly the ceiling, so an organization could
     never fill its last seat — it could invite up to the limit and then be unable
-    to let anybody in.
+    to let anybody in. Resending is the same shape: it reuses the still-pending
+    row rather than creating a new one, so excluding it makes the resend net-zero
+    too.
     """
 
 
@@ -396,10 +398,12 @@ class EntitlementService:
             the lock exists to prevent — and both callers would be allowed. If the
             project ever raises the isolation level, this guard has to be
             revisited, not just retested.
-        :param exclude_invitation_id: See ``UsageContext.exclude_invitation_id``.
-            **Callers other than the accept-invitation path must not pass this** —
-            prefer ``check_seat_limit_for_invitation_accept``, which is a call a
-            reviewer can see rather than a kwarg nobody can grep for. Only
+        :param exclude_invitation_id: See ``UsageContext.exclude_invitation_id``. Two
+            legitimate callers pass this: ``check_seat_limit_for_invitation_accept``
+            (the accept path — prefer that named entry point, a call a reviewer can
+            see, over passing this kwarg directly) and ``invite_user_to_organization``'s
+            resend branch, which excludes the still-pending invitation being reused so
+            a resend at the exact ceiling is net-zero rather than a false block. Only
             meaningful for ``organization_members``; passing it with any other
             ``resource_key`` raises, since it would otherwise be silently ignored.
         """

@@ -293,6 +293,51 @@ class TestAcceptInvitationBlockedAtTheLimit:
 
 
 @pytest.mark.django_db
+class TestAcceptInvitationMarksAcceptedInsideTheSameTransaction:
+    """SHOULD-FIX 3: ``accept_invitation`` must mark the invitation accepted
+    inside the same ``transaction.atomic()`` block as the guard and the
+    membership create, not as a separate write after that block exits. Outside
+    a request (Celery, management command, shell) there is no outer
+    ``ATOMIC_REQUESTS`` transaction to fold a later failure into: if the
+    membership create commits and the invitation-accepted write then fails, the
+    membership exists while the invitation still reads as pending -- a
+    permanent double-count of that seat."""
+
+    def test_a_failure_marking_the_invitation_accepted_rolls_back_the_membership_too(self):
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+
+        organization = _organization_with_seat_limit(seat_limit=2, existing_active_members=0)
+        invitee = baker.make(get_user_model(), email="atomic-accept@example.com")
+        token = generate_long_lived_token()
+        baker.make(
+            OrganizationInvitation,
+            organization=organization,
+            email=invitee.email,
+            token_hash=hash_long_lived_token(token),
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership_user_id=None,
+        )
+
+        service = OrganizationService()
+        with (
+            patch.object(OrganizationInvitation, "save", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError),
+        ):
+            service.accept_invitation(token, invitee)
+
+        assert not OrganizationMembership.objects.filter(
+            user=invitee, organization=organization
+        ).exists(), (
+            "The membership committed even though marking the invitation accepted "
+            "failed -- the two writes must share one transaction."
+        )
+
+
+@pytest.mark.django_db
 class TestReactivationBlockedAtTheLimit:
     def test_reactivate_is_blocked_at_the_seat_limit(self):
         admin = baker.make(get_user_model(), email="reactivate-admin@example.com")
@@ -352,6 +397,49 @@ class TestReactivationBlockedAtTheLimit:
         response = client.post(url)
 
         assert response.status_code == status.HTTP_200_OK
+
+
+@pytest.mark.django_db
+class TestResendAtTheCeiling:
+    """BLOCKER 2: a resend creates nothing new — the pending invitation being
+    resent already counts toward the ceiling — so it must be net-zero exactly
+    like an accept, not a false block at the exact limit."""
+
+    def test_resend_succeeds_at_the_seat_limit(self):
+        # The requesting admin itself occupies a seat, so the ceiling has to
+        # account for it: limit=2 covers the admin (1) plus the one pending
+        # invitation (1) -- exactly full, mirroring the finding's "4 active
+        # members + 1 pending invite at limit 5" scenario at a smaller scale.
+        admin = baker.make(get_user_model(), email="resend-admin@example.com")
+        organization = _organization_with_seat_limit(seat_limit=2, existing_active_members=0)
+        baker.make(
+            OrganizationMembership,
+            user=admin,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        pending_invitation = baker.make(
+            OrganizationInvitation,
+            organization=organization,
+            email="already-pending@example.com",
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership_user_id=None,
+        )
+        original_token_hash = pending_invitation.token_hash
+
+        client = APIClient()
+        client.force_authenticate(user=admin)
+        url = reverse("api:OrganizationInvitations-resend", kwargs={"pk": pending_invitation.pk})
+        response = client.post(url)
+
+        assert response.status_code == status.HTTP_200_OK
+        pending_invitation.refresh_from_db()
+        assert pending_invitation.token_hash != original_token_hash
+        assert OrganizationInvitation.objects.filter(organization=organization).count() == 1, (
+            "Resend must reuse the existing pending invitation, not create a second row."
+        )
 
 
 @pytest.mark.django_db
@@ -418,12 +506,20 @@ class TestUnlimitedPlanIsNeverBlocked:
                 send_email=False,
             )
 
-        assert len(second_call.captured_queries) == len(first_call.captured_queries), (
-            "Query count grew with existing usage even though the organization is "
-            "unlimited -- the unlimited path must never count usage. First call: "
-            f"{[q['sql'] for q in first_call.captured_queries]}\n"
-            f"Second call: {[q['sql'] for q in second_call.captured_queries]}"
-        )
+        # An absolute budget on each call, not a first-vs-second comparison:
+        # usage counting is O(1) in queries regardless of row count, so if the
+        # unlimited path started counting, both measurements would grow by the
+        # same fixed amount and a relative "second == first" comparison would
+        # still pass -- it pins nothing. 10 is the query count either call
+        # makes today; checked against both calls independently instead.
+        for label, call in (
+            ("first (empty org)", first_call),
+            ("second (20 pending invitations already in the database)", second_call),
+        ):
+            assert len(call.captured_queries) <= 10, (
+                f"Too many queries for the {label} invite -- the unlimited path "
+                f"must never count usage. Queries: {[q['sql'] for q in call.captured_queries]}"
+            )
         assert not [
             query
             for query in second_call.captured_queries

@@ -7512,6 +7512,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationInvitation'
           description: ''
+        '402':
+          description: Organization is at its seat limit
   /invitations{format}:
     get:
       operationId: invitations_formatted_list
@@ -7623,6 +7625,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationInvitation'
           description: ''
+        '402':
+          description: Organization is at its seat limit
   /invitations/{id}/:
     get:
       operationId: invitations_retrieve
@@ -7809,6 +7813,8 @@ paths:
           description: ''
         '400':
           description: Invitation already accepted or service error
+        '402':
+          description: Organization is at its seat limit
         '403':
           description: Not an active member
         '404':
@@ -7874,6 +7880,8 @@ paths:
           description: ''
         '400':
           description: Invitation already accepted or service error
+        '402':
+          description: Organization is at its seat limit
         '403':
           description: Not an active member
         '404':
@@ -7906,6 +7914,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/AcceptInvitation'
           description: ''
+        '400':
+          description: Already a member, or invalid token
+        '402':
+          description: Organization is at its seat limit
+        '404':
+          description: Invitation not found
+        '409':
+          description: Duplicate invitation
   /notifications/:
     get:
       operationId: notifications_list
@@ -8582,15 +8598,10 @@ paths:
       description: |-
         Reactivate a member (set is_active=True).
 
-        Guards: reactivating occupies a seat again (``OrganizationMembershipQuerySet
-        .occupying_a_seat`` only counts ``is_active=True`` rows), so — unlike every other
-        member of this viewset — it is a capacity-raising write with no accompanying
-        ``OrganizationInvitation``/membership *create*, and would otherwise be an unmetered
-        path onto the ``organization_members`` limit. Only checked when the member is
-        currently inactive: an already-active member is a no-op and must stay one even if
-        the organization is at its limit for an unrelated reason.
-
-        Idempotency: reactivating an already-active member is a no-op success.
+        The seat-limit guard lives in ``OrganizationService.reactivate_membership``
+        (service layer, not the viewset — see the plan's Guiding Decisions), so this
+        action only resolves the target and serializes the result. Idempotency:
+        reactivating an already-active member is a no-op success.
       summary: Reactivate an organization member
       parameters:
       - in: header
@@ -8643,15 +8654,10 @@ paths:
       description: |-
         Reactivate a member (set is_active=True).
 
-        Guards: reactivating occupies a seat again (``OrganizationMembershipQuerySet
-        .occupying_a_seat`` only counts ``is_active=True`` rows), so — unlike every other
-        member of this viewset — it is a capacity-raising write with no accompanying
-        ``OrganizationInvitation``/membership *create*, and would otherwise be an unmetered
-        path onto the ``organization_members`` limit. Only checked when the member is
-        currently inactive: an already-active member is a no-op and must stay one even if
-        the organization is at its limit for an unrelated reason.
-
-        Idempotency: reactivating an already-active member is a no-op success.
+        The seat-limit guard lives in ``OrganizationService.reactivate_membership``
+        (service layer, not the viewset — see the plan's Guiding Decisions), so this
+        action only resolves the target and serializes the result. Idempotency:
+        reactivating an already-active member is a no-op success.
       summary: Reactivate an organization member
       parameters:
       - in: header

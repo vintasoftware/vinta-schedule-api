@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from typing import NoReturn
 
 from django.conf import settings
 from django.http import HttpRequest
@@ -16,8 +17,16 @@ from common.redis import ResilientLimiter
 from payments.exceptions import OverLimitError
 
 
-def over_limit_graphql_error(exc: OverLimitError) -> GraphQLError:
-    """Render ``OverLimitError`` as a GraphQL error, byte-identical to the REST body.
+def raise_over_limit_graphql_error(exc: OverLimitError) -> NoReturn:
+    """Roll back the request transaction and raise ``OverLimitError`` as a
+    GraphQL error, byte-identical to the REST body.
+
+    A raising function, not a value-returning one that a caller might forget to
+    ``raise``: this has a side effect (the rollback below), so a call site that
+    wrote ``over_limit_graphql_error(exc)`` without ``raise`` in front of it
+    would silently roll back the transaction and then fall through as if the
+    request had succeeded. Making the function itself raise removes that
+    footgun — there is no way to call it and continue.
 
     The shared over-limit contract (``OverLimitError.as_error_body()``) is carried
     verbatim in the GraphQL error's ``extensions`` — the GraphQL spec's own
@@ -39,9 +48,19 @@ def over_limit_graphql_error(exc: OverLimitError) -> GraphQLError:
     propagate. Without this, a write a guarded service made before it reached
     the limit check (e.g. ``invite_user_to_organization``'s invitation row)
     would commit while the client is told the request was rejected.
+
+    ``set_rollback()`` marks the **whole request's** transaction for rollback, not
+    just the current field. GraphQL executes a mutation document's root-level
+    fields serially in one transaction, so a document with more than one root
+    mutation field — e.g. ``mutation { a: createCalendar(...) b:
+    createInvitation(...) }`` where ``b`` hits this — rolls back ``a``'s write too,
+    even though the response still reports 200 with ``data.a`` populated: the
+    client is told ``a`` succeeded when its write did not survive. This is
+    documented rather than guarded against — rejecting multi-root-field
+    documents outright is out of scope here.
     """
     set_rollback()
-    return GraphQLError(exc.detail, extensions=exc.as_error_body())
+    raise GraphQLError(exc.detail, extensions=exc.as_error_body()) from exc
 
 
 class OrganizationRateLimiter(SchemaExtension):

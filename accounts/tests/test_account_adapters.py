@@ -2,6 +2,7 @@ import datetime
 from unittest.mock import MagicMock, patch
 
 from django.conf import settings as django_settings
+from django.utils import timezone
 
 import pytest
 from allauth.socialaccount.models import SocialLogin
@@ -13,7 +14,43 @@ from accounts.account_adapters import (
     SocialAccountAdapter,
 )
 from legal.factories import UserConsentFactory
+from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
+from payments.billing_constants import BillingState, LimitedResource, LimitKind
+from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
 from users.models import Profile, User
+
+
+def _org_at_seat_limit_with_pending_invitation(email: str) -> Organization:
+    """A one-seat organization already full, with a still-pending invitation to
+    ``email`` — the exact BLOCKER 1 scenario: signup would take the org over its
+    seat limit, so ``provision_tenant_for_user`` raises ``OverLimitError``."""
+    organization = baker.make(Organization, parent=None, can_invite_organizations=False)
+    now = timezone.now()
+    subscription = baker.make(
+        Subscription,
+        organization=organization,
+        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        billing_state=BillingState.FREE,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
+    )
+    baker.make(
+        SubscriptionPlanLimit,
+        subscription=subscription,
+        resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+        limit_value=1,
+        kind=LimitKind.PREPAID,
+    )
+    baker.make(OrganizationMembership, organization=organization, is_active=True)
+    baker.make(
+        OrganizationInvitation,
+        organization=organization,
+        email=email,
+        expires_at=now + datetime.timedelta(days=7),
+        accepted_at=None,
+        membership_user_id=None,
+    )
+    return organization
 
 
 @pytest.mark.django_db
@@ -211,6 +248,20 @@ class TestSocialAccountAdapter:
             result = adapter.deserialize_instance(object, data)
             assert result == "fallback"
 
+    def test_provision_org_membership_does_not_wedge_signup_at_the_seat_limit(self):
+        """BLOCKER 1: without catching OverLimitError, this raises out of a
+        headless (non-DRF) view — a bare 500 for social signup. With the fix,
+        the user is left membership-less (gated) instead."""
+        organization = _org_at_seat_limit_with_pending_invitation("dana@example.com")
+        new_user = baker.make(User, email="dana@example.com")
+        adapter = SocialAccountAdapter()
+
+        adapter._provision_org_membership(new_user)  # must not raise
+
+        assert not OrganizationMembership.objects.filter(
+            user=new_user, organization=organization
+        ).exists()
+
 
 @pytest.mark.django_db
 class TestAccountAdapter:
@@ -352,6 +403,29 @@ class TestAccountAdapter:
         with patch("accounts.account_adapters.logger.warning") as log_warn:
             adapter.send_unknown_account_sms(None)
             log_warn.assert_called_with("No phone number provided for sending unknown account SMS.")
+
+    def test_confirm_email_does_not_wedge_signup_at_the_seat_limit(self, adapter):
+        """BLOCKER 1: without catching OverLimitError, this raises out of a
+        headless (non-DRF) view *after* the email has already been marked
+        verified — under ATOMIC_REQUESTS the whole request (including that
+        verification) rolls back, wedging the user with an unverified email
+        and no way to make a retry succeed. With the fix, confirm_email still
+        reports success and the user is left membership-less (gated)."""
+        organization = _org_at_seat_limit_with_pending_invitation("erin@example.com")
+        new_user = baker.make(User, email="erin@example.com")
+        Profile.objects.create(user=new_user, pending_organization_name="")
+        email_address = MagicMock()
+        email_address.user = new_user
+
+        with patch(
+            "accounts.account_adapters.DefaultAccountAdapter.confirm_email", return_value=True
+        ):
+            confirmed = adapter.confirm_email(MagicMock(), email_address)
+
+        assert confirmed is True
+        assert not OrganizationMembership.objects.filter(
+            user=new_user, organization=organization
+        ).exists()
 
 
 @pytest.mark.django_db
