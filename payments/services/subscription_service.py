@@ -11,6 +11,7 @@ from organizations.models import Organization
 from payments.billing_constants import BillingInterval, BillingState
 from payments.constants import PaymentProviders
 from payments.exceptions import (
+    BillingPeriodResolutionError,
     BillingRootCycleError,
     IncompleteBillingPlanError,
     NoDefaultBillingPlanError,
@@ -84,6 +85,104 @@ def resolve_billing_root(organization: Organization) -> Organization:
     # and returns above, so the walk only continues while org.parent is set (and
     # therefore non-None). Kept as a defensive fallback rather than an assert.
     return organization
+
+
+#: Ceiling on how many whole intervals ``resolve_billing_period`` will step before
+#: giving up. 1200 months is a century of monthly cycles — far past any real
+#: subscription, and small enough that a corrupt period pair fails fast instead of
+#: spinning.
+MAX_BILLING_PERIOD_STEPS = 1200
+
+
+def billing_interval_step(billing_interval: str) -> relativedelta:
+    """The length of one billing cycle, as a calendar-aware delta.
+
+    ``relativedelta`` rather than ``timedelta`` so a monthly cycle anchored on the
+    31st, or one spanning a DST transition, lands on the same wall-clock anchor
+    instead of drifting by a day.
+    """
+    if billing_interval == BillingInterval.ANNUAL:
+        return relativedelta(years=1)
+    return relativedelta(months=1)
+
+
+def resolve_billing_period(
+    subscription: Subscription, moment: datetime.datetime
+) -> tuple[datetime.datetime, datetime.datetime]:
+    """The ``[start, end)`` billing cycle that ``moment`` falls in.
+
+    **The single definition of "which cycle does this belong to".** The meter
+    stamps ``MeteredOccurrence.billing_period_start`` from it, the usage counter
+    behind ``LimitedResource.EVENT_OCCURRENCES`` reads rows back by it, and
+    ``reconcile_period`` recomputes a closed cycle's bounds with it. Three
+    hand-written date comparisons that are supposed to agree is precisely how a
+    charge lands on the wrong invoice.
+
+    A ``Subscription`` stores only its *current* period, so past and future cycles
+    are reconstructed by stepping whole intervals from it. That assumes cycle
+    boundaries are regular, which is the shape ``SubscriptionService`` creates them
+    in (``_period_end`` adds exactly one interval). A subscription whose stored
+    period is not one interval long — a mid-cycle plan change that moved the
+    boundary, say — will reconstruct *neighbouring* periods from the current
+    anchor rather than from history; the current period, which is the one anything
+    live reads, is always exact.
+
+    Half-open on purpose: an occurrence starting exactly at ``current_period_end``
+    belongs to the next cycle, and is billed there rather than twice or not at all.
+    """
+    step = billing_interval_step(subscription.billing_interval)
+    start = subscription.current_period_start
+    end = subscription.current_period_end
+    steps = 0
+    while moment < start:
+        end, start = start, start - step
+        steps += 1
+        if steps > MAX_BILLING_PERIOD_STEPS:
+            raise BillingPeriodResolutionError(subscription.pk, moment, steps)
+    while moment >= end:
+        start, end = end, end + step
+        steps += 1
+        if steps > MAX_BILLING_PERIOD_STEPS:
+            raise BillingPeriodResolutionError(subscription.pk, moment, steps)
+    return start, end
+
+
+def resolve_billing_period_start(
+    subscription: Subscription, moment: datetime.datetime
+) -> datetime.datetime:
+    """The ``billing_period_start`` that ``moment`` belongs to.
+
+    ``resolve_billing_period``'s first element, as a named function, because the
+    *stamp* and the *read-back* of ``MeteredOccurrence.billing_period_start`` must
+    be the same expression and previously were not. ``MeteringService`` stamped
+    ``resolve_billing_period(subscription, occurrence_start)[0]`` while the
+    ``event_occurrences`` usage counter read back
+    ``subscription.current_period_start`` directly. Those agree only while the
+    stored period happens to contain "now" — and nothing advances
+    ``current_period_start`` (cycle close is Phase 13), so once the stored period
+    elapses the meter writes one period and the counter asks for another, and the
+    counter reads zero forever.
+
+    Callers differ only in the ``moment`` they pass: the meter passes each
+    occurrence's own start (so an occurrence is billed to the cycle it happened
+    in), the counter passes ``timezone.now()`` (the cycle in progress). Anything
+    needing "the current cycle" should go through
+    ``current_billing_period_start`` rather than reading the column.
+    """
+    period_start, _period_end = resolve_billing_period(subscription, moment)
+    return period_start
+
+
+def current_billing_period_start(subscription: Subscription) -> datetime.datetime:
+    """The start of the cycle in progress *now*.
+
+    Deliberately derived from ``timezone.now()`` rather than read off
+    ``Subscription.current_period_start``. That column records the cycle the
+    subscription was created or last advanced into; until Phase 13 introduces
+    cycle close, nothing ever moves it forward, so it goes stale as soon as one
+    interval elapses.
+    """
+    return resolve_billing_period_start(subscription, timezone.now())
 
 
 def assert_plan_is_complete(plan: BillingPlan) -> None:
@@ -227,9 +326,14 @@ class SubscriptionService:
         return subscription
 
     def _period_end(self, start: datetime.datetime, billing_interval: str) -> datetime.datetime:
-        if billing_interval == BillingInterval.ANNUAL:
-            return start + relativedelta(years=1)
-        return start + relativedelta(months=1)
+        """One cycle after ``start``.
+
+        Shares ``billing_interval_step`` with ``resolve_billing_period`` on purpose:
+        the cycle length used to *create* a period and the one used to reconstruct
+        past periods have to be the same expression, or reconstructed boundaries
+        drift away from the ones that were actually billed.
+        """
+        return start + billing_interval_step(billing_interval)
 
     def _sync_limits(self, subscription: Subscription, plan: BillingPlan) -> None:
         overridden_keys = set(

@@ -251,30 +251,81 @@ Also: `resolve_branding` had to be **split** rather than gated — it also backs
 - `SystemUserAdmin`'s changelist raises `ImproperlyConfigured: QuerySet must be filtered by 'organization'` — pre-existing, unrelated.
 - The `@inject` sweep above.
 
+### Phase 7 — Meter event occurrences ✅
+
+- **Status**: reviewed clean, gates green, PR open
+- **Models**: implementer Tier 4; reviewer Tier 4; fixer Tier 4
+- **Branch**: `plan/billing-plans-and-limits/phase-7` · **Base**: `main` (rebased — 6b/6c merged mid-run)
+- **Commits**: `64ea614` implementation, `ec758f1` BLOCKER fixes, `a05ddb9` mechanism correction
+
+**Gates** (re-run independently, credentials cleared to match CI): suite **4262 passed** (base 4237; +25); `mypy` **305 / 57**, zero new errors by set diff against 6c; `ruff` clean (500 files); `makemigrations --check` clean; migration `0011` reverses.
+
+One suite failure, investigated and **not** a Phase 7 regression: `test_without_the_lock_the_net_zero_race_overshoots` is a **Phase 6b** test — the negative control asserting the race overshoots when the lock is removed. It passed 3/3 in isolation and failed once under full parallel load. A control that asserts a race *reproduces* is inherently timing-dependent, so it will intermittently redden CI. **Recorded against #196; worth making deterministic or marking `flaky`.**
+
+**Gate-integrity note (mine, not the phase's).** I reported a `mypy` regression to 315/58 that did not exist. Re-verification — three runs, one with `.mypy_cache` removed, plus a direct error-set diff — returned 305/57 with zero new errors. The 315 run was an outlier under container contention. **Corroborate a gate delta with a second run before acting on it**; the same contention produced three non-reproducible phantom test failures in another run this phase.
+
+**A fabricated mechanism was caught and retracted.** The fixer claimed `truncate_parent` decrements COUNT by one. Reading `RecurrenceRuleSplitter` showed the arithmetic correct (`count=None` + `until` for the parent; `5-1=4` for the continuation). Challenged for persisted state rather than reasoning, it replied: *"My 'decrements COUNT by one' claim was fabricated — I saw COUNT=4 in the persisted parent and wrote a plausible-sounding cause instead of finding the real one."* The real cause is the pk-aliasing defect below.
+
+⚠️ **The spec's highest-severity risk.** A double-count here is silent revenue drift or overcharging, and it is invisible until a customer disputes a bill. The unique constraint on `(organization, event_id, occurrence_start)` is what makes re-running a window harmless; `is_within_allowance` and `unit_price` are stamped at meter time so a later limit change cannot retroactively reprice already-metered occurrences.
+
+#### Decision: what a bundle booking costs (binding on Phase 8)
+
+**One bundle booking is billed as `1 + n_internal_children` occurrences.** Not changed in Phase 7; recorded here so Phase 8's guard counts the same number rather than re-deciding.
+
+`CalendarBundleService` (`calendar_bundle_service.py:470-505`) creates a primary `CalendarEvent` plus, for each child calendar, either a full `CalendarEvent` (when `provider == INTERNAL`) or a `BlockedTime` (every other provider). The meter counts `CalendarEvent` rows, so the same user-facing action costs a different amount depending on which providers the bundle's children use: **1** occurrence across five Google calendars, **5** across five internal ones.
+
+Rationale for leaving it:
+
+- It is not arbitrary. An internal child event is a real, independently editable `CalendarEvent` that consumes the same storage and expansion cost as any other; a `BlockedTime` is not billable anywhere in this plan. Billing what exists is defensible and needs no special case.
+- Suppressing child events at meter time means teaching the meter about `bundle_primary_event`, i.e. a billing-specific exception inside the one expansion this phase exists to keep single-definition. That is exactly the second-predicate shape that has produced a defect in every phase of this plan.
+- Nobody is currently charged: every organization is on `unlimited` for the whole rollout, so the number is only visible in usage readouts until Phase 8.
+
+**Revisit trigger.** If product decides a bundle booking should be one billable unit regardless of child providers, the change belongs in `MeteringService.expand_occurrence_identities` (skip `bundle_primary_event__isnull=False`), **and** the same predicate must be added to Phase 8's guard and Phase 12's usage readout in the same change — three places, or the meter and the guard disagree.
+
+#### Phase 13 gating precondition: identity churn and series truncation
+
+Widened from "first-occurrence split" to **all identity-churn paths**, plus one defect that is not identity churn at all and is materially larger. Both are characterised with measured numbers in `payments/tests/test_metering_reconciliation.py`.
+
+Identity is `(series root pk, occurrence start time)`. The series-root half is durable and tested. **The start-time half is not**: re-timing an occurrence mints a new identity, so an edit applied to an already-metered stretch bills the moved occurrence again. Measured: re-timing one occurrence of a 5-occurrence month → **6** rows. Bounded by an already-metered window, and surfaced by `reconcile_period` as `orphaned` drift.
+
+**Larger, and not previously known — a bulk modification does not truncate the parent series.** The rule *arithmetic* is correct: `RecurrenceRuleSplitter.split_at_date` returns a truncated parent rule (`count=None`, `until=<last occurrence before the split>`) and a continuation rule with the remaining count — 1 + 4 = 5 for a `COUNT=5` series split at its second occurrence. Verified directly against the splitter.
+
+The defect is that **the truncation never reaches the database**. `copy.deepcopy` of a saved Django model preserves its `pk`, so both rules the splitter returns are aliases for the original row rather than the "new, unsaved instances" `recurrence_utils`' module docstring promises. In `RecurrenceManager.create_bulk_modification_generic` the parent is truncated first and `continuation_rule.save()` runs second; still carrying the original pk, it `UPDATE`s the **parent's** rule row and overwrites the `UNTIL` just written. The continuation is unharmed — it is built from an rrule *string* and gets a fresh rule row — so the clobber is pure collateral damage.
+
+Persisted state, read back after splitting a `COUNT=5` weekly series at Monday #2: parent still points at rule id 1, now holding `COUNT=4, until=NULL`; continuation holds a **new** rule id 2 with `COUNT=4`. Parent yields Mondays 1-4, continuation yields Mondays 2-5.
+
+**The open-ended case is worse.** An open-ended series has `count=None, until=None`, so the continuation rule is byte-for-byte the *original unbounded rule*. Saving it over the parent's row erases the truncation completely — the parent never stops, and the series is duplicated **indefinitely**, every future month, not merely across the split window. Verified: parent rule left at `count=NULL, until=NULL`, 9 billed in the month. This is the shape most standing meetings have.
+
+Measured, with a `+30min` offset on the modification:
+
+| Scenario | Real occurrences | Billed | `reconcile_period` |
+|---|---|---|---|
+| Modify, then sweep once (**no prior metering**) | 5 | **8** | `drift == 0`, `is_clean == True` |
+| Sweep, then modify, then sweep | 5 | **9** | `drift == 1`, 1 `orphaned` |
+
+Two things make this worse than the bound previously accepted:
+
+1. **It does not need an already-metered window.** A single fresh sweep over-bills 8/5. The first-occurrence hazard cannot do this.
+2. **Reconciliation is blind to it.** The recompute reads the same calendar, which also says eight, so it reports a clean period. In the already-metered case it reports `drift == 1` against a 4-row over-bill — an operator would materially underestimate it.
+
+**It is an upstream recurrence defect, not a metering one.** `get_calendar_events_expanded` returns the same eight events, so the calendar genuinely contains them and the meter is faithful to what it is shown. The fix belongs in `CalendarEventService.create_recurring_event_bulk_modification`.
+
+**Where this gates, precisely.** An earlier draft of this note said "Phase 8 must not enforce the post-paid ceiling until it lands." That is stricter than necessary and would stall the plan. Phase 8's guard is **inert on every current organization**: `unlimited` carries a NULL `event_occurrences` limit, and `check_postpaid_allowance` returns headroom for a NULL ceiling, so no code path can block on an over-counted number today. The real gate is the first moment a non-NULL `event_occurrences` limit reaches a live organization — **Phase 14**, already deferred, and **Phase 13**'s overage charge, which converts the same over-count into money. Both must wait for the recurrence fix. Phase 8 ships.
+
 ## Current phase
 
-**None — paused after Phase 6c for a human decision.** See "Stack depth" below.
+**Phase 8 — Enforce the post-paid allowance** (implementer Tier 3)
 
-## Stack depth — needs a human call
+Base: `plan/billing-plans-and-limits/phase-7` · Branch: `plan/billing-plans-and-limits/phase-8`
 
-Phases 6b ([#196](https://github.com/vintasoftware/vinta-schedule-api/pull/196)) and 6c ([#197](https://github.com/vintasoftware/vinta-schedule-api/pull/197)) are **open and not yet reviewed by a human**. Phases 1–5 and 6a are merged.
+Six entry points plus one fan-out case, against the pattern Phase 6 established. The fan-out count must be **`1 + n_internal_children`** — the number fixed by the bundle-booking decision recorded under Phase 7, not re-derived. The plan's own wording ("one row per member calendar") is looser than that decision and must not be followed literally: a bundle over five Google calendars creates one `CalendarEvent` and four `BlockedTime` rows, and `BlockedTime` is not billable anywhere in this plan.
 
-Continuing to Phase 7 would stack a third unreviewed phase on top. Phase 7 (Meter event occurrences, Tier 4) introduces the post-paid metering model that Phases 8 and 13 build on, so a human review of 6b/6c that requires changes would force a rebase of everything above it.
-
-⚠️ **Carry 6b's lesson forward.** Before guarding a creation path, write down which usage counter it feeds and check that any predicate the guard uses to decide what is "new" is the *same* predicate that counter counts with — ideally by literally reusing it from the queryset. Four defects in this plan have come from two predicates that were supposed to agree and did not, most recently one that let an entire provider's calendar list be created unmetered.
-
-**Carried forward from 6c:**
-
-- ⚠️ **`Entitlement.ADVANCED_SCHEDULING` is declared but ungated.** It is a member of the closed `Entitlement` set in `payments/billing_constants.py` and is seeded on both plans (`True` on `unlimited`, `False` on `free`), but **no code anywhere checks it**. Phase 6c gated the four entitlements its body names; this fifth one was out of scope. Recorded here so the "all entitlements are enforced" reading of 6c's acceptance is not made by mistake — an organization on a plan that omits `advanced_scheduling` is not restricted in any way today. Needs either a gate (its own phase) or removal from the enum.
-- **Entitlements now have two enforcement points for external calendars**, not one. `CalendarService.authenticate` gates the *authenticated account's* provider; `CalendarService._get_write_adapter_for_calendar` gates the *calendar's* provider, which can differ (an actor authenticated with Google writing to a Microsoft calendar owned by someone else). Anyone adding a third path that resolves a provider adapter must gate it too — "authenticate is the single chokepoint" is false and is pinned as false by `TestWriteAdapterProviderGate`.
-- **`resolve_branding` is deliberately split in two.** `resolve_branding_for_display` carries the `white_label_branding` gate and is for presentation callers; plain `resolve_branding` is ungated and is what `validate_return_url` reads, because gating an OAuth allowlist on a cosmetic entitlement turns a downgrade into an auth-flow lockout for a reseller's whole subtree. Do not merge them back.
-- **Test fixtures now provision subscriptions automatically.** `conftest.py`'s autouse `provision_default_subscription` gives every `Organization` created in a test the `unlimited` subscription production's `OrganizationService` would have given it — because `has_entitlement` fails closed on a plan-less organization and ~640 tests were building organizations production cannot produce. Modules that manage their own `Subscription` rows opt out with `@pytest.mark.no_auto_subscription`.
+**Watch for the plan's recurring failure shape** — two predicates that must mean the same thing, written separately. Here the risk is concrete and named: the guard's headroom count and `MeteringService.expand_occurrence_identities` must agree on what one booking costs, or an organization is blocked on a number it will never be billed. Derive the guard's count from the meter's expansion rather than reimplementing it.
 
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |
 |---|---|---|---|---|
-| 7 | Meter event occurrences | 4 | 4 | — |
 | 8 | Enforce the post-paid allowance | 3 | — | — |
 | 9 | Upgrade, add-on purchase, and proration | 3 | 4 | — |
 | 10 | Grace, dunning, and the restricted transition | 3 | — | — |

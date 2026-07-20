@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import datetime
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from django.db.models import Manager
 from django.utils import timezone
 
-from payments.querysets import ProviderWebhookEventQuerySet
+from payments.querysets import MeteredOccurrenceQuerySet, ProviderWebhookEventQuerySet
 
 
 if TYPE_CHECKING:
@@ -69,3 +71,24 @@ class ProviderWebhookEventManager(Manager):
     def mark_processed(self, event: ProviderWebhookEvent) -> None:
         event.processed_at = timezone.now()
         event.save(update_fields=["processed_at", "modified"])
+
+
+class MeteredOccurrenceManager(Manager):
+    """Manager for the post-paid occurrence ledger.
+
+    A plain ``Manager`` for the same reason as ``ProviderWebhookEventManager``:
+    ``MeteredOccurrence`` is not an ``OrganizationModel``, because billing reads
+    legitimately cross organizations (summing a reseller subtree's usage, sweeping
+    every subscription at cycle close). See the model docstring.
+    """
+
+    def get_queryset(self) -> MeteredOccurrenceQuerySet:
+        return MeteredOccurrenceQuerySet(self.model, using=self._db)
+
+    def for_billing_period(
+        self, subscription_id: int, billing_period_start: datetime.datetime
+    ) -> MeteredOccurrenceQuerySet:
+        return self.get_queryset().for_billing_period(subscription_id, billing_period_start)
+
+    def for_organizations(self, organization_ids: Sequence[int]) -> MeteredOccurrenceQuerySet:
+        return self.get_queryset().for_organizations(organization_ids)

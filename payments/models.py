@@ -19,7 +19,7 @@ from payments.constants import (
     RefundStatuses,
     SubscriptionStatuses,
 )
-from payments.managers import ProviderWebhookEventManager
+from payments.managers import MeteredOccurrenceManager, ProviderWebhookEventManager
 
 
 if TYPE_CHECKING:
@@ -441,3 +441,84 @@ class ProviderWebhookEvent(BaseModel):
 
     def __str__(self):
         return f"{self.provider} - {self.route} - {self.external_event_id}"
+
+
+class MeteredOccurrence(BaseModel):
+    """One event occurrence, recorded as billable exactly once, ever.
+
+    Occurrences of a recurring series are *computed* in Postgres, never stored
+    (``calculate_recurring_events`` and friends), so there is no row to bill
+    against. This table is that row — written by ``MeteringService`` from a
+    Celery sweep of elapsed time.
+
+    **The unique constraint is the correctness mechanism, not the code path.**
+    ``(organization, event_id, occurrence_start)`` plus
+    ``bulk_create(..., ignore_conflicts=True)`` is what makes re-running a window,
+    or running two windows that overlap, harmless. The sweep window deliberately
+    overlaps the previous one so that a missed run self-heals on the next pass;
+    that is only safe because a re-insert is a no-op at the database level rather
+    than something application code has to remember to check. Do not replace it
+    with an application-level "have I already seen this?" lookup — that lookup
+    races itself, and the failure is a silent wrong number on an invoice rather
+    than an exception.
+
+    ``event_id`` is a soft reference (``BigIntegerField``, not a ``ForeignKey``) on
+    purpose: deleting an event must not delete the record that its occurrences were
+    billed. An occurrence is billed at most once *ever*, and that fact has to
+    outlive the event.
+
+    What the two identity columns hold, precisely. ``event_id`` is the **series
+    root** — the original master, following ``bulk_modification_parent`` back
+    through any splits — so moving later occurrences onto a continuation row does
+    not make already-billed occurrences look new. ``occurrence_start`` is the
+    occurrence's **current start time**, nothing cleverer: the expansion has no
+    notion of a "slot" distinct from ``start_time`` to key on
+    (``calculate_recurring_events`` emits a modified exception as the moved row's
+    own ``me.start_time``). Re-timing an occurrence therefore mints a new identity
+    and bills it again — a known, deferred defect, characterised in
+    ``payments/tests/test_metering_reconciliation.py`` and reported by
+    ``MeteringService.reconcile_period`` as ``orphaned`` drift.
+
+    ``is_within_allowance`` and ``unit_price`` are stamped **at meter time** against
+    the allowance and overage price in force at that moment, so a later plan change
+    or limit override cannot retroactively reprice usage that already happened.
+
+    Not an ``OrganizationModel``: billing legitimately reads across organizations
+    (a reseller root's cycle close sums its whole subtree), and the tenant-safe
+    queryset layer would force an ``original_manager`` escape at nearly every call
+    site. The ``organization`` FK is still present and every read goes through
+    ``MeteredOccurrenceQuerySet.for_organizations``.
+    """
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="metered_occurrences",
+    )
+    subscription = models.ForeignKey(
+        Subscription, on_delete=models.CASCADE, related_name="metered_occurrences"
+    )
+    event_id = models.BigIntegerField()
+    occurrence_start = models.DateTimeField()
+    billing_period_start = models.DateTimeField(db_index=True)
+    is_within_allowance = models.BooleanField()
+    unit_price = models.DecimalField(max_digits=10, decimal_places=4)
+
+    objects: ClassVar[MeteredOccurrenceManager] = MeteredOccurrenceManager()
+
+    class Meta(BaseModel.Meta):
+        constraints: ClassVar = [
+            UniqueConstraint(
+                fields=["organization", "event_id", "occurrence_start"],
+                name="uniq_metered_occurrence",
+            )
+        ]
+        indexes: ClassVar = [
+            models.Index(
+                fields=["subscription", "billing_period_start"],
+                name="metered_occ_sub_period_idx",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.organization_id}/{self.event_id} @ {self.occurrence_start.isoformat()}"

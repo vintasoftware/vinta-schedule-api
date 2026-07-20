@@ -605,6 +605,115 @@ class CalendarEventQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
             )
         )
 
+    def occurrence_bearing_masters_in_range(
+        self, start: datetime.datetime, end: datetime.datetime
+    ) -> "CalendarEventQuerySet":
+        """Master rows that can yield an occurrence *starting* in ``[start, end)``.
+
+        Deliberately the same shape as the expansion in
+        ``CalendarEventService.get_calendar_events_expanded`` — masters only
+        (``parent_recurring_object__isnull=True``), one-off events by their own
+        ``start_time``, recurring series by their rule — because "what occurrences
+        exist in this range" must have exactly one definition in this codebase.
+
+        Two exclusions are load-bearing and are the reason this is a queryset method
+        rather than a filter written at the call site:
+
+        - **Recurrence instances and exceptions are excluded here** (they always have
+          ``parent_recurring_object`` set). They are not missed: expanding their master
+          returns the *exception row itself*, with its own pk and its own moved
+          ``start_time``. Enumerating them here as well would produce the identical
+          occurrence from two sources.
+        - **A bulk-modification continuation is a master in its own right** and *is*
+          enumerated, alongside its truncated parent. This is why callers must use
+          ``get_occurrences_in_range`` and **not**
+          ``get_occurrences_in_range_with_bulk_modifications``: the latter walks
+          ``bulk_modifications`` from the parent and would return the continuation's
+          occurrences a second time.
+
+          The parent and continuation do **not** reliably tile the timeline. The
+          rule *arithmetic* is correct — ``RecurrenceRuleSplitter.split_at_date``
+          returns a truncated parent rule (``count=None``, ``until=<last occurrence
+          before the split>``) and a continuation rule carrying the remaining count,
+          and 1 + 4 == 5 for a five-occurrence series split at its second
+          occurrence. The defect is that the truncation never survives to the
+          database.
+
+          ``copy.deepcopy`` of a *saved* Django model preserves its ``pk``, so both
+          rules the splitter returns are aliases for the original row rather than
+          the "new, unsaved instances" ``recurrence_utils`` documents. In
+          ``RecurrenceManager.create_bulk_modification_generic`` the parent is
+          truncated first and ``continuation_rule.save()`` runs second — and because
+          that object still carries the original pk, it issues an ``UPDATE`` against
+          the **parent's** rule row, overwriting the ``UNTIL`` just written. The
+          continuation itself is unaffected: it is created from an rrule *string*
+          and gets a fresh rule row, so the clobber is pure collateral damage.
+
+          The parent therefore keeps generating past the split. Verified persisted
+          state, weekly series split at its second occurrence:
+
+          - ``COUNT=5`` series → parent rule left at ``COUNT=4, until=NULL`` (the
+            continuation's remaining count), so the parent yields occurrences 1-4
+            and the continuation yields 2-5: eight where five exist.
+          - **Open-ended series → parent rule left at the original unbounded rule**
+            (``count=NULL, until=NULL``). The truncation is erased outright, so the
+            parent never stops and the series is duplicated **indefinitely**, not
+            merely across the split window. This is the more severe shape.
+
+          Not a metering defect: ``get_calendar_events_expanded`` returns the same
+          rows, so the calendar genuinely contains them and the meter is faithful to
+          it. Recorded here because this method is where a reader would otherwise
+          conclude the two rows cannot overlap. Measured in
+          ``payments/tests/test_metering_reconciliation.py``.
+
+        The result is annotated with ``recurring_occurrences`` so a caller iterating it
+        and calling ``get_occurrences_in_range`` pays one query for the whole set
+        rather than one per master.
+
+        **Cost, measured rather than bounded.** Every recurring master with
+        ``until IS NULL`` and ``start_time < end`` is re-selected and re-expanded on
+        every sweep — every 15 minutes, forever. Two things about that were checked
+        rather than assumed:
+
+        - Expansion is **not** proportional to the series' age.
+          ``calculate_recurring_events`` fast-forwards to ``p_start_date``
+          arithmetically per frequency (see its ``IF v_range_start >
+          v_event.start_time`` branch) instead of stepping from ``start_time``, so a
+          series created in 2019 costs the same to expand over a 6-hour window as
+          one created yesterday.
+        - The cost that *does* grow is the **row count**: this is O(open-ended
+          masters in the pooled subtree), and that set only ever grows. It includes
+          series that are long finished — a ``COUNT``-bounded rule leaves ``until``
+          NULL, so a weekly standup that ended in 2019 is still selected and still
+          expanded (to zero occurrences) on every sweep.
+
+        No cheap lower bound is available in the predicate itself: deciding whether a
+        rule can still yield an occurrence after ``start`` requires the rule
+        arithmetic that lives in the SQL function, not something expressible as an
+        indexable ``WHERE``. Materializing a ``last_occurrence_at`` column on
+        ``RecurrenceRule`` at write time is the real fix and is deliberately not done
+        here — it is a schema change on a hot calendar path, for a cost that is
+        currently one cheap function call per stale master.
+        """
+        return (
+            self.filter(parent_recurring_object__isnull=True)
+            .filter(
+                Q(
+                    recurrence_rule__isnull=True,
+                    is_recurring_exception=False,
+                    start_time__gte=start,
+                    start_time__lt=end,
+                )
+                | Q(
+                    Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start),
+                    recurrence_rule__isnull=False,
+                    start_time__lt=end,
+                )
+            )
+            .annotate_recurring_occurrences_on_date_range(start, end)
+            .select_related("recurrence_rule")
+        )
+
 
 class CalendarSyncQuerySet(BaseOrganizationModelQuerySet):
     """

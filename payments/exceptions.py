@@ -166,6 +166,33 @@ class IncompleteBillingPlanError(BillingError):
         self.missing_resource_keys = missing_resource_keys
 
 
+class BillingPeriodResolutionError(BillingError):
+    """Raised when the billing cycle containing a given moment cannot be reached by
+    stepping from a ``Subscription``'s current period.
+
+    ``resolve_billing_period`` walks whole intervals backwards or forwards from
+    ``current_period_start``. A moment that is still outside the period after an
+    implausible number of steps means the subscription's period fields are
+    corrupt — most likely ``current_period_end <= current_period_start``, which
+    makes the walk unable to advance — and continuing would loop forever.
+
+    Raising is the only safe outcome: the alternative is stamping
+    ``billing_period_start`` with a wrong cycle, which bills real usage to the
+    wrong invoice and is invisible until a customer disputes it.
+    """
+
+    def __init__(self, subscription_id: int, moment: object, steps: int):
+        super().__init__(
+            f"Could not resolve the billing period containing {moment!r} for "
+            f"Subscription {subscription_id} within {steps} interval steps. The "
+            "subscription's current_period_start/current_period_end are likely "
+            "inconsistent."
+        )
+        self.subscription_id = subscription_id
+        self.moment = moment
+        self.steps = steps
+
+
 class InvalidLimitCheckResultError(BillingError):
     """Raised by ``OverLimitError.from_check_result`` when the ``LimitCheckResult``
     it was given breaks the invariant ``EntitlementService.check_limit`` documents:
