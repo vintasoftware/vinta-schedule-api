@@ -220,13 +220,46 @@ Also: the "exact complement of `live_of_type`" docstring was factually wrong (`P
 
 **Out of scope, spotted while fixing**: `CalendarQuerySet.update()` (`calendar_integration/querysets.py`) raises `AttributeError: 'CalendarQuerySet' object has no attribute '_meta'` — it reads `self._meta` where it means `self.model._meta`, so **any** `.update()` on a Calendar queryset is broken. Pre-existing, unrelated to this phase, not fixed here.
 
+### Phase 6c — Enforce pre-paid limits: webhook subscriptions and API system users ✅
+
+- **Status**: reviewed clean (3 rounds), PR open
+- **Models**: implementer Tier 2; reviewer Tier 3→4 (stepped up for the security surface); fixer Tier 2→4 rounds 1–2, Tier 3 round 3
+- **Branch**: `plan/billing-plans-and-limits/phase-6c` · **Base**: `plan/billing-plans-and-limits/phase-6b`
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/197
+- **Commits**: `8c46f02` implementation, `bd07aed` rounds 1–2, `5796cc9` round 3
+
+**Closes spec objective 1 for pre-paid resources.** All 7 `kind=prepaid` members of `LimitedResource` have a guarded creation path with a blocking test, machine-checked by `payments/tests/test_prepaid_resource_coverage.py`, which derives the prepaid set from the seeded plan's own `PlanLimit.kind` and asserts the registry bidirectionally. `event_occurrences` is the one deliberate exclusion (postpaid, Phase 8).
+
+**The biggest finding was the first round's own fix.** The implementation changed `has_entitlement` to fail **open** on a missing subscription, after 106 test failures from calendar-integration fixtures that build orgs with no `Subscription`. It argued symmetry with `get_effective_limit`. **That symmetry is invalid**: for a numeric ceiling "we don't know" → NULL → unlimited, which coincides with what the rollout seeds; for a **boolean** gate "we don't know" → `True` grants **paid** features, strictly more than `free`. Rollout safety was already covered by the backfill migration, so the branch fired only when billing state was already broken — granting the most access to exactly those orgs. Ops deleting a `Subscription` to re-provision would hand a `free` org the entire partner API in that window. **Reverted; `entitlement_service.py` has zero net diff against 6b.** The fixtures were the defect and were fixed instead (autouse provisioning fixture, 20 modules opting out via `@pytest.mark.no_auto_subscription`).
+
+Two more BLOCKERs: **the entitlement gate was bypassable** — the plan names `authenticate` as the chokepoint, but `_get_write_adapter_for_calendar` builds an adapter for the calendar's *owner*, so a Google-authenticated actor could write to a Microsoft calendar ungated; and **`create_system_user(organization=None)`**, an explicitly supported admin path, started 500ing.
+
+**Two `@inject` landmines, neither billing-related, both invisible to the suite:**
+1. **Silent no-op under `from __future__ import annotations`** — dependency_injector cannot read `Provide[...]` from a stringified annotation and returns the function unpatched. The branding guard passed every test while doing nothing.
+2. **Admin autodiscovery beats DI wiring** — `@admin.register` constructs `SystemUserAdmin` before `DICoreConfig.ready()` wires the container, so its injected service was permanently `None`: **every** admin-created system user raised `ValueError`, independent of billing. A live production bug.
+
+**⚠️ Follow-up: sweep the codebase for both `@inject` patterns.** Neither is detectable by tests.
+
+Also: `resolve_branding` had to be **split** rather than gated — it also backs `validate_return_url`, so gating it wholesale would break the OAuth return flow for every downstream tenant of a reseller that downgraded off `white_label_branding`. And `_get_write_adapter_for_calendar` now **raises** rather than returning `None` (callers traced individually; the calendar webhook service is the one place where skipping the remote work is intended, and it catches explicitly — otherwise the provider gets a 500 and retries until the channel expires).
+
+**Gate-integrity note.** The implementation regressed `mypy` 305/57 → 309/60 and reported "net new: zero". Its `git stash` verification left the new **untracked** test files on disk, so it measured the phase against itself. **Use `git stash -u` or a clean checkout of the base branch when establishing a baseline.**
+
+**Gates** (re-run independently in the container): suite **4200 passed** (6b base 4148; +52); `mypy` **305 / 57** at baseline; `ruff` clean (493 files); `makemigrations --check` clean; `schema.yml` unchanged; 5 × `noqa: S106`, all test dummy credentials.
+
+**Carried forward from 6c:**
+- `ADVANCED_SCHEDULING` is a declared `Entitlement` with **no gate anywhere**. Recorded so it is not mistaken for covered.
+- `SystemUserAdmin`'s changelist raises `ImproperlyConfigured: QuerySet must be filtered by 'organization'` — pre-existing, unrelated.
+- The `@inject` sweep above.
+
 ## Current phase
 
-**Phase 6c — Enforce pre-paid limits: webhook subscriptions and API system users** (implementer Tier 2)
+**None — paused after Phase 6c for a human decision.** See "Stack depth" below.
 
-Base: `plan/billing-plans-and-limits/phase-6b` · Branch: `plan/billing-plans-and-limits/phase-6c`
+## Stack depth — needs a human call
 
-Closes the "no unmetered path" objective for pre-paid resources, and adds the boolean entitlement gates (`partner_api`, `external_calendar_google` / `external_calendar_microsoft`, `white_label_branding`) at the three chokepoints the plan names.
+Phases 6b ([#196](https://github.com/vintasoftware/vinta-schedule-api/pull/196)) and 6c ([#197](https://github.com/vintasoftware/vinta-schedule-api/pull/197)) are **open and not yet reviewed by a human**. Phases 1–5 and 6a are merged.
+
+Continuing to Phase 7 would stack a third unreviewed phase on top. Phase 7 (Meter event occurrences, Tier 4) introduces the post-paid metering model that Phases 8 and 13 build on, so a human review of 6b/6c that requires changes would force a rebase of everything above it.
 
 ⚠️ **Carry 6b's lesson forward.** Before guarding a creation path, write down which usage counter it feeds and check that any predicate the guard uses to decide what is "new" is the *same* predicate that counter counts with — ideally by literally reusing it from the queryset. Four defects in this plan have come from two predicates that were supposed to agree and did not, most recently one that let an entire provider's calendar list be created unmetered.
 
@@ -241,7 +274,6 @@ Closes the "no unmetered path" objective for pre-paid resources, and adds the bo
 
 | Phase | Title | Impl | Reviewer | Fixer |
 |---|---|---|---|---|
-| 6c | Enforce pre-paid limits: webhook subscriptions and API system users | 2 | — | — |
 | 7 | Meter event occurrences | 4 | 4 | — |
 | 8 | Enforce the post-paid allowance | 3 | — | — |
 | 9 | Upgrade, add-on purchase, and proration | 3 | 4 | — |
