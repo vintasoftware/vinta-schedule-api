@@ -1,0 +1,402 @@
+"""``EntitlementService`` — effective limits, usage counting, and entitlements.
+
+The load-bearing behavior under test is the fail-open rule: a NULL ``limit_value``
+*and* a missing ``SubscriptionPlanLimit`` row both mean **unlimited**, never zero.
+A missing seed row locking an organization out of a resource it could use
+yesterday is the failure mode this whole feature is most likely to produce, and
+these tests are what stop it.
+"""
+
+import datetime
+from decimal import Decimal
+
+from django.db import transaction
+from django.utils import timezone
+
+import pytest
+from model_bakery import baker
+
+from calendar_integration.constants import CalendarType, CalendarVisibility
+from calendar_integration.models import Calendar, CalendarGroup
+from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
+from payments.billing_constants import (
+    BillingState,
+    Entitlement,
+    LimitedResource,
+    LimitKind,
+    LimitRemedy,
+)
+from payments.models import (
+    BillingPlan,
+    Subscription,
+    SubscriptionAddOn,
+    SubscriptionEntitlement,
+    SubscriptionPlanLimit,
+)
+from payments.services.entitlement_service import USAGE_COUNTERS, EntitlementService
+from webhooks.models import WebhookConfiguration
+
+
+@pytest.fixture
+def service():
+    return EntitlementService()
+
+
+@pytest.fixture
+def organization():
+    return baker.make(Organization, parent=None, can_invite_organizations=False)
+
+
+@pytest.fixture
+def subscription(organization):
+    now = timezone.now()
+    return baker.make(
+        Subscription,
+        organization=organization,
+        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        billing_state=BillingState.FREE,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
+    )
+
+
+def make_limit(subscription, resource_key, limit_value, kind=LimitKind.PREPAID, **kwargs):
+    return baker.make(
+        SubscriptionPlanLimit,
+        subscription=subscription,
+        resource_key=resource_key,
+        limit_value=limit_value,
+        kind=kind,
+        **kwargs,
+    )
+
+
+def make_add_on(subscription, resource_key, quantity, is_active=True):
+    return baker.make(
+        SubscriptionAddOn,
+        subscription=subscription,
+        resource_key=resource_key,
+        quantity=quantity,
+        is_recurring=True,
+        is_active=is_active,
+    )
+
+
+@pytest.mark.django_db
+class TestGetEffectiveLimit:
+    def test_returns_the_subscriptions_own_limit_value(self, service, organization, subscription):
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
+
+        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
+
+        assert result.limit_value == 5
+        assert result.kind == LimitKind.PREPAID
+        assert result.is_unlimited is False
+
+    def test_adds_active_add_on_quantity_to_the_plan_limit(
+        self, service, organization, subscription
+    ):
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
+        make_add_on(subscription, LimitedResource.ORGANIZATION_MEMBERS, 3)
+        make_add_on(subscription, LimitedResource.ORGANIZATION_MEMBERS, 2)
+
+        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
+
+        assert result.limit_value == 10
+
+    def test_ignores_inactive_add_ons(self, service, organization, subscription):
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
+        make_add_on(subscription, LimitedResource.ORGANIZATION_MEMBERS, 3, is_active=False)
+
+        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
+
+        assert result.limit_value == 5
+
+    def test_ignores_add_ons_for_a_different_resource(self, service, organization, subscription):
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
+        make_add_on(subscription, LimitedResource.RESOURCE_CALENDARS, 3)
+
+        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
+
+        assert result.limit_value == 5
+
+    def test_null_limit_value_is_unlimited(self, service, organization, subscription):
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, None)
+
+        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
+
+        assert result.limit_value is None
+        assert result.is_unlimited is True
+
+    def test_unlimited_plus_an_add_on_is_still_unlimited(self, service, organization, subscription):
+        """NULL must never be coerced into a number by add-on arithmetic."""
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, None)
+        make_add_on(subscription, LimitedResource.ORGANIZATION_MEMBERS, 3)
+
+        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
+
+        assert result.limit_value is None
+
+    def test_missing_limit_row_is_unlimited_not_zero(self, service, organization, subscription):
+        """Fail-open: a resource the subscription has no row for is uncapped.
+
+        This is the case a missing/incomplete seed produces. Treating it as zero
+        would lock the organization out of a resource entirely, with no signal and
+        no self-serve remedy.
+        """
+        assert not subscription.limits.filter(
+            resource_key=LimitedResource.RESOURCE_CALENDARS
+        ).exists()
+
+        result = service.get_effective_limit(organization, LimitedResource.RESOURCE_CALENDARS)
+
+        assert result.limit_value is None
+        assert result.is_unlimited is True
+
+    def test_missing_subscription_is_unlimited_not_zero(self, service, organization):
+        """Fail-open again: a billing root with no ``Subscription`` at all is a
+        broken invariant, but it must not become a lockout."""
+        assert not Subscription.objects.filter(organization=organization).exists()
+
+        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
+
+        assert result.limit_value is None
+
+    def test_carries_the_kind_and_overage_price_through(self, service, organization, subscription):
+        make_limit(
+            subscription,
+            LimitedResource.EVENT_OCCURRENCES,
+            50,
+            kind=LimitKind.POSTPAID,
+            overage_unit_price=Decimal("0.0500"),
+        )
+
+        result = service.get_effective_limit(organization, LimitedResource.EVENT_OCCURRENCES)
+
+        assert result.kind == LimitKind.POSTPAID
+        assert result.overage_unit_price == Decimal("0.0500")
+
+
+@pytest.mark.django_db
+class TestUsageCounters:
+    def test_every_limited_resource_has_a_counter(self):
+        """A new ``LimitedResource`` member without a counter would silently report
+        zero usage forever — i.e. an unenforceable limit that looks enforced."""
+        assert set(USAGE_COUNTERS) == {member.value for member in LimitedResource}
+
+    def test_counts_active_memberships_and_pending_invitations(
+        self, service, organization, subscription
+    ):
+        baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=2)
+        baker.make(OrganizationMembership, organization=organization, is_active=False)
+        baker.make(
+            OrganizationInvitation,
+            organization=organization,
+            accepted_at=None,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+        )
+
+        usage = service.get_current_usage(organization, LimitedResource.ORGANIZATION_MEMBERS)
+
+        assert usage == 3
+
+    def test_expired_and_accepted_invitations_do_not_count(
+        self, service, organization, subscription
+    ):
+        """An expired invitation can never become a seat; an accepted one is already
+        counted as its membership. Counting either would over-report."""
+        baker.make(
+            OrganizationInvitation,
+            organization=organization,
+            accepted_at=None,
+            expires_at=timezone.now() - datetime.timedelta(days=1),
+        )
+        baker.make(
+            OrganizationInvitation,
+            organization=organization,
+            accepted_at=timezone.now(),
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+        )
+
+        usage = service.get_current_usage(organization, LimitedResource.ORGANIZATION_MEMBERS)
+
+        assert usage == 0
+
+    def test_resource_calendar_counter_excludes_other_types_and_soft_deletes(
+        self, service, organization, subscription
+    ):
+        # `external_id` is unique per (provider, organization), so each calendar
+        # needs a distinct one rather than baker's shared blank default.
+        for index, (calendar_type, visibility) in enumerate(
+            [
+                (CalendarType.RESOURCE, CalendarVisibility.ACTIVE),
+                (CalendarType.RESOURCE, CalendarVisibility.UNLISTED),
+                (CalendarType.RESOURCE, CalendarVisibility.INACTIVE),
+                (CalendarType.BUNDLE, CalendarVisibility.ACTIVE),
+            ]
+        ):
+            baker.make(
+                Calendar,
+                organization=organization,
+                calendar_type=calendar_type,
+                visibility=visibility,
+                external_id=f"external-{index}",
+            )
+
+        assert service.get_current_usage(organization, LimitedResource.RESOURCE_CALENDARS) == 2
+        assert service.get_current_usage(organization, LimitedResource.BUNDLE_CALENDARS) == 1
+
+    def test_calendar_group_and_webhook_counters(self, service, organization, subscription):
+        baker.make(CalendarGroup, organization=organization, _quantity=2)
+        baker.make(WebhookConfiguration, organization=organization, deleted_at=None)
+        baker.make(WebhookConfiguration, organization=organization, deleted_at=timezone.now())
+
+        assert service.get_current_usage(organization, LimitedResource.CALENDAR_GROUPS) == 2
+        assert service.get_current_usage(organization, LimitedResource.WEBHOOK_SUBSCRIPTIONS) == 1
+
+    def test_usage_is_scoped_to_the_organization(self, service, organization, subscription):
+        """A sibling organization's rows must never leak into this one's count."""
+        other = baker.make(Organization, parent=None, can_invite_organizations=False)
+        baker.make(CalendarGroup, organization=other, _quantity=3)
+        baker.make(CalendarGroup, organization=organization)
+
+        assert service.get_current_usage(organization, LimitedResource.CALENDAR_GROUPS) == 1
+
+
+@pytest.mark.django_db
+class TestCheckLimit:
+    def test_allows_when_under_the_ceiling(self, service, organization, subscription):
+        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
+        baker.make(CalendarGroup, organization=organization)
+
+        result = service.check_limit(organization, LimitedResource.CALENDAR_GROUPS)
+
+        assert result.allowed is True
+        assert result.current_usage == 1
+        assert result.ceiling == 3
+        assert result.remedy is None
+
+    def test_allows_the_create_that_exactly_reaches_the_ceiling(
+        self, service, organization, subscription
+    ):
+        """``current + delta <= ceiling``: a limit of 3 permits the third row."""
+        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
+        baker.make(CalendarGroup, organization=organization, _quantity=2)
+
+        assert service.check_limit(organization, LimitedResource.CALENDAR_GROUPS).allowed is True
+
+    def test_blocks_the_create_that_would_exceed_the_ceiling(
+        self, service, organization, subscription
+    ):
+        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
+        baker.make(CalendarGroup, organization=organization, _quantity=3)
+
+        result = service.check_limit(organization, LimitedResource.CALENDAR_GROUPS)
+
+        assert result.allowed is False
+        assert result.current_usage == 3
+        assert result.ceiling == 3
+        assert result.remedy == LimitRemedy.PURCHASE_ADD_ON
+
+    def test_honours_a_delta_greater_than_one(self, service, organization, subscription):
+        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
+        baker.make(CalendarGroup, organization=organization)
+
+        assert service.check_limit(organization, LimitedResource.CALENDAR_GROUPS, delta=2).allowed
+        assert not service.check_limit(
+            organization, LimitedResource.CALENDAR_GROUPS, delta=3
+        ).allowed
+
+    def test_unlimited_never_blocks(self, service, organization, subscription):
+        """The rollout switch: an organization on the ``unlimited`` plan behaves
+        exactly as it did before this feature existed."""
+        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, None)
+        baker.make(CalendarGroup, organization=organization, _quantity=50)
+
+        result = service.check_limit(organization, LimitedResource.CALENDAR_GROUPS, delta=1000)
+
+        assert result.allowed is True
+        assert result.ceiling is None
+
+    def test_add_on_lifts_a_blocked_check(self, service, organization, subscription):
+        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
+        baker.make(CalendarGroup, organization=organization, _quantity=3)
+        assert not service.check_limit(organization, LimitedResource.CALENDAR_GROUPS).allowed
+
+        make_add_on(subscription, LimitedResource.CALENDAR_GROUPS, 2)
+
+        result = service.check_limit(organization, LimitedResource.CALENDAR_GROUPS)
+        assert result.allowed is True
+        assert result.ceiling == 5
+
+    def test_postpaid_resource_recommends_a_plan_upgrade(self, service, organization, subscription):
+        """Extra capacity is not purchasable for a post-paid allowance, so pointing
+        the user at an add-on would be a dead end."""
+        make_limit(subscription, LimitedResource.EVENT_OCCURRENCES, 0, kind=LimitKind.POSTPAID)
+
+        result = service.check_limit(organization, LimitedResource.EVENT_OCCURRENCES)
+
+        assert result.allowed is False
+        assert result.remedy == LimitRemedy.UPGRADE_PLAN
+
+    @pytest.mark.parametrize("billing_state", [BillingState.GRACE, BillingState.RESTRICTED])
+    def test_unpaid_organization_is_pointed_at_billing_first(
+        self, service, organization, subscription, billing_state
+    ):
+        subscription.billing_state = billing_state
+        subscription.save(update_fields=["billing_state"])
+        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 1)
+        baker.make(CalendarGroup, organization=organization)
+
+        result = service.check_limit(organization, LimitedResource.CALENDAR_GROUPS)
+
+        assert result.allowed is False
+        assert result.remedy == LimitRemedy.RESOLVE_BILLING
+
+    def test_lock_takes_a_row_lock_on_the_subscription(
+        self, service, organization, subscription, django_assert_num_queries
+    ):
+        """Sanity check that ``lock=True`` runs and issues an extra query; that it
+        actually serializes is proven in ``test_limit_concurrency.py``."""
+        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
+
+        with transaction.atomic():
+            result = service.check_limit(organization, LimitedResource.CALENDAR_GROUPS, lock=True)
+
+        assert result.allowed is True
+
+
+@pytest.mark.django_db
+class TestHasEntitlement:
+    def test_enabled_entitlement_is_granted(self, service, organization, subscription):
+        baker.make(
+            SubscriptionEntitlement,
+            subscription=subscription,
+            entitlement_key=Entitlement.PARTNER_API,
+            is_enabled=True,
+        )
+
+        assert service.has_entitlement(organization, Entitlement.PARTNER_API) is True
+
+    def test_disabled_entitlement_is_denied(self, service, organization, subscription):
+        baker.make(
+            SubscriptionEntitlement,
+            subscription=subscription,
+            entitlement_key=Entitlement.PARTNER_API,
+            is_enabled=False,
+        )
+
+        assert service.has_entitlement(organization, Entitlement.PARTNER_API) is False
+
+    def test_missing_entitlement_row_is_denied(self, service, organization, subscription):
+        """Deliberately the opposite of the limits fail-open rule.
+
+        ``SubscriptionService._sync_entitlements`` *deletes* rows for entitlements
+        the current plan does not carry, so absence is exactly how a revoked grant
+        is represented. Failing open here would hand every paid feature to every
+        organization whose plan omits it.
+        """
+        assert service.has_entitlement(organization, Entitlement.WHITE_LABEL_BRANDING) is False
+
+    def test_missing_subscription_denies(self, service, organization):
+        assert service.has_entitlement(organization, Entitlement.PARTNER_API) is False

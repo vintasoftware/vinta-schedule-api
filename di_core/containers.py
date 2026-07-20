@@ -31,6 +31,7 @@ from notifications.notification_template_renderers.django_in_app_renderer import
 )
 from organizations.services import OrganizationService
 from payments.constants import PaymentProviders
+from payments.services.entitlement_service import EntitlementService
 from payments.services.payment_adapters.mercadopago_payment_adapter import MercadoPagoPaymentAdapter
 from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
 from payments.services.payment_service import PaymentService
@@ -120,6 +121,10 @@ class AppContainer(containers.DeclarativeContainer):
 
     subscription_service = providers.Factory(
         SubscriptionService,
+    )
+
+    entitlement_service = providers.Factory(
+        EntitlementService,
     )
 
     notification_service = providers.Singleton(

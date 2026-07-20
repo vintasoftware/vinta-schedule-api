@@ -188,6 +188,7 @@ class Subscription(BaseModel):
 
     limits: "RelatedManager[SubscriptionPlanLimit]"
     entitlements: "RelatedManager[SubscriptionEntitlement]"
+    add_ons: "RelatedManager[SubscriptionAddOn]"
 
     def __str__(self):
         return (
@@ -254,6 +255,34 @@ class SubscriptionEntitlement(BaseModel):
 
     def __str__(self):
         return f"{self.subscription} - {self.entitlement_key} - {self.is_enabled}"
+
+
+class SubscriptionAddOn(BaseModel):
+    """Extra capacity bought on top of a ``Subscription``'s plan limits.
+
+    An active add-on's ``quantity`` is added to the matching
+    ``SubscriptionPlanLimit.limit_value`` when resolving the effective ceiling
+    (``EntitlementService.get_effective_limit``). An add-on on a resource whose
+    limit is NULL (unlimited) changes nothing — unlimited plus anything is still
+    unlimited.
+
+    ``purchase_idempotency_key`` is unique so a retried purchase (a double-clicked
+    button, a Celery task re-delivered under ``CELERY_TASK_ACKS_LATE``) neither
+    grants capacity twice nor charges twice. The purchase flow that populates it
+    lands in a later phase; the constraint exists from the start so no code path
+    can be written against a non-idempotent shape.
+    """
+
+    subscription = models.ForeignKey(Subscription, on_delete=models.CASCADE, related_name="add_ons")
+    resource_key = models.CharField(max_length=100, choices=LimitedResource)
+    quantity = models.PositiveIntegerField()
+    is_recurring = models.BooleanField()
+    is_active = models.BooleanField(default=True, db_index=True)
+    external_id = models.CharField(max_length=255, blank=True)
+    purchase_idempotency_key = models.CharField(max_length=255, unique=True)
+
+    def __str__(self):
+        return f"{self.subscription} - {self.resource_key} - +{self.quantity}"
 
 
 class Payment(BaseModel):

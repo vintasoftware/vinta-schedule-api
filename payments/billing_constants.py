@@ -62,6 +62,20 @@ class LimitKind(TextChoices):
     POSTPAID = ("postpaid", _("Postpaid"))
 
 
+class LimitRemedy(TextChoices):
+    """What the caller can do about an over-limit rejection.
+
+    Rendered verbatim as the ``remedy`` key of the shared over-limit error body
+    (see ``OverLimitError``), so the client can route the user to the right screen
+    instead of parsing a human-readable message.
+    """
+
+    PURCHASE_ADD_ON = ("purchase_add_on", _("Purchase additional capacity"))
+    UPGRADE_PLAN = ("upgrade_plan", _("Upgrade to a plan with a higher limit"))
+    ADD_PAYMENT_METHOD = ("add_payment_method", _("Add a payment method"))
+    RESOLVE_BILLING = ("resolve_billing", _("Resolve an outstanding billing issue"))
+
+
 class Entitlement(TextChoices):
     """The closed set of boolean feature gates a ``BillingPlan`` can grant."""
 

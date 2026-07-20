@@ -16,6 +16,7 @@ from payments.models import (
     Refund,
     RefundStatusUpdate,
     Subscription,
+    SubscriptionAddOn,
     SubscriptionEntitlement,
     SubscriptionPlanLimit,
     SubscriptionStatusUpdate,
@@ -101,6 +102,26 @@ class SubscriptionEntitlementInline(admin.TabularInline):
     fields = ("entitlement_key", "is_enabled", "is_overridden")
 
 
+class SubscriptionAddOnInline(admin.TabularInline):
+    """Purchased extra capacity, visible alongside the limits it modifies.
+
+    Read-only: an add-on represents money that changed hands, and
+    ``purchase_idempotency_key`` is what ties it to that transaction. Granting
+    capacity by hand belongs in ``SubscriptionPlanLimitInline`` (which stamps
+    ``is_overridden``), not here — creating an add-on row in admin would fabricate
+    a purchase with no payment behind it.
+    """
+
+    model = SubscriptionAddOn
+    extra = 0
+    # `max_num = 0` renders no add form at all — the inline is a read-only ledger
+    # view, not a creation surface.
+    max_num = 0
+    fields = ("resource_key", "quantity", "is_recurring", "is_active", "external_id")
+    readonly_fields = fields
+    can_delete = False
+
+
 @admin.register(Subscription)
 class SubscriptionAdmin(admin.ModelAdmin):
     list_display = (
@@ -116,7 +137,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
     list_filter = ("status", "billing_state", "billing_interval", "payment_provider")
     search_fields = ("organization__name", "external_id")
     readonly_fields = ("created", "modified")
-    inlines = (SubscriptionPlanLimitInline, SubscriptionEntitlementInline)
+    inlines = (SubscriptionPlanLimitInline, SubscriptionEntitlementInline, SubscriptionAddOnInline)
 
     def save_formset(
         self, request: HttpRequest, form: Any, formset: BaseInlineFormSet, change: bool
