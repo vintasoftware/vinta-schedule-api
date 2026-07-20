@@ -39,6 +39,11 @@ from payments.services.entitlement_service import USAGE_COUNTERS, EntitlementSer
 from webhooks.models import WebhookConfiguration
 
 
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 @pytest.fixture
 def service():
     return EntitlementService()
@@ -619,4 +624,24 @@ class TestHasEntitlement:
         assert service.has_entitlement(organization, Entitlement.WHITE_LABEL_BRANDING) is False
 
     def test_missing_subscription_denies(self, service, organization):
+        """A missing subscription denies, and deliberately does **not** mirror
+        ``get_effective_limit``'s fail-open on the same condition.
+
+        The two are only superficially the same "we don't know". For a numeric
+        ceiling, not knowing resolves to ``limit_value=None`` -- unlimited --
+        which is what the rollout actually seeds, so failing open there changes
+        nothing. For a boolean gate, not knowing would resolve to *granted*, which
+        hands out paid features the ``free`` plan does not carry. Same phrase,
+        opposite consequence.
+
+        Rollout safety does not depend on this branch either: migration
+        ``0009_backfill_unlimited_subscriptions`` plus
+        ``is_default_for_new_organizations`` put every billing root on
+        ``unlimited``, whose ``_sync_entitlements`` writes every entitlement
+        enabled. This branch only fires once that invariant is already broken --
+        e.g. ops deleting a ``Subscription`` to re-provision an organization -- and
+        failing open would grant the *most* access to exactly the organizations
+        whose billing state is corrupt. A loud, recoverable 402 is the better
+        failure.
+        """
         assert service.has_entitlement(organization, Entitlement.PARTNER_API) is False

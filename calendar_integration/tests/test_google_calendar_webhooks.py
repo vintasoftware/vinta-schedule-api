@@ -7,8 +7,10 @@ from unittest.mock import Mock, patch
 
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 import pytest
+from model_bakery import baker
 
 from calendar_integration.constants import (
     CalendarProvider,
@@ -30,6 +32,8 @@ from calendar_integration.services.calendar_adapters.google_calendar_adapter imp
 )
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization
+from payments.billing_constants import BillingState, Entitlement
+from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 
 
 @override_settings(GOOGLE_CLIENT_ID="test_client_id", GOOGLE_CLIENT_SECRET="test_client_secret")
@@ -492,3 +496,81 @@ class GoogleCalendarWebhookIntegrationTest(TestCase):
         args = mock_handle_webhook.call_args[0]
         assert args[0] == CalendarProvider.GOOGLE
         assert hasattr(args[1], "META")  # Check it's an HttpRequest object
+
+
+class GoogleCalendarWebhookOverLimitEntitlementTest(TestCase):
+    """Phase 6c BLOCKER: an ``OverLimitError`` raised by the entitlement-gated
+    ``_get_write_adapter_for_calendar`` must not 500 the webhook endpoint.
+
+    ``_get_write_adapter_for_calendar`` (the second, calendar-provider-scoped
+    entitlement gate) raises ``OverLimitError`` when the organization has lost the
+    calendar's provider entitlement. The webhook flow's only job on that path is to
+    fall back to static validation and still record the ``CalendarWebhookEvent`` --
+    exactly what it already does for ``ServiceNotAuthenticatedError`` /
+    ``Calendar.DoesNotExist``. Before the fix, ``OverLimitError`` was not in that
+    caught tuple, so it escaped to ``webhook_views.py``'s bare ``except Exception``
+    and turned into an HTTP 500, with no ``CalendarWebhookEvent`` row recorded --
+    exactly what Google/Microsoft retry against until the channel expires.
+    """
+
+    # This test builds its own Subscription row (OneToOne with Organization), so it
+    # opts out of conftest's autouse `provision_default_subscription`.
+    pytestmark = pytest.mark.no_auto_subscription
+
+    def setUp(self):
+        self.organization = baker.make(Organization, parent=None, can_invite_organizations=False)
+        now = timezone.now()
+        subscription = baker.make(
+            Subscription,
+            organization=self.organization,
+            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            billing_state=BillingState.FREE,
+            current_period_start=now,
+            current_period_end=now + datetime.timedelta(days=30),
+        )
+        baker.make(
+            SubscriptionEntitlement,
+            subscription=subscription,
+            entitlement_key=Entitlement.EXTERNAL_CALENDAR_GOOGLE,
+            is_enabled=False,
+        )
+        self.calendar = Calendar.objects.create(
+            name="Entitlement Test Calendar",
+            organization=self.organization,
+            provider=CalendarProvider.GOOGLE,
+            external_id="entitlement-test-calendar-id",
+        )
+        self.webhook_url = reverse(
+            "calendar_integration:google_webhook", kwargs={"organization_id": self.organization.id}
+        )
+
+    @patch.object(CalendarService, "_get_calendar_by_external_id")
+    def test_over_limit_error_from_write_adapter_does_not_500(self, mock_get_calendar):
+        """``_get_calendar_by_external_id`` is stubbed to return the calendar
+        directly: a real incoming webhook can't authenticate the facade (there is
+        no user session on a provider's server-to-server push), so this lookup
+        already always raises ``ServiceNotAuthenticatedError`` today -- a case the
+        pre-existing ``except`` clause already handles and is not what this test is
+        about. Stubbing only this call isolates the actual defect: with a real
+        (unmocked) calendar looked up, ``_get_write_adapter_for_calendar`` runs for
+        real against the real, container-wired ``entitlement_service`` and is what
+        raises the ``OverLimitError`` this test asserts does not escape as a 500.
+        """
+        mock_get_calendar.return_value = self.calendar
+
+        headers = {
+            "HTTP_X_GOOG_CHANNEL_ID": "test-channel-id",
+            "HTTP_X_GOOG_RESOURCE_ID": "test-resource-id",
+            "HTTP_X_GOOG_RESOURCE_URI": (
+                "https://www.googleapis.com/calendar/v3/calendars/"
+                "entitlement-test-calendar-id/events"
+            ),
+            "HTTP_X_GOOG_RESOURCE_STATE": "exists",
+            "HTTP_X_GOOG_CHANNEL_TOKEN": "test-token",
+        }
+
+        response = self.client.post(self.webhook_url, **headers)
+
+        assert response.status_code != 500
+        assert response.status_code == 200
+        assert CalendarWebhookEvent.objects.filter(organization=self.organization).exists()

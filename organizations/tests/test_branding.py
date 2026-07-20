@@ -1,9 +1,25 @@
 """Tests for OrganizationBranding model and resolve_branding function (Phase 6)."""
 
+import datetime
+
+from django.utils import timezone
+
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationBranding, resolve_branding
+from organizations.models import (
+    Organization,
+    OrganizationBranding,
+    resolve_branding,
+    resolve_branding_for_display,
+)
+from payments.billing_constants import BillingState, Entitlement
+from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+
+
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
 
 
 @pytest.mark.django_db
@@ -108,3 +124,125 @@ class TestResolveBranding:
 
         # Should only have one OrganizationBranding row for this org
         assert OrganizationBranding.objects.filter(organization=reseller).count() == 1
+
+
+def _reseller_with_entitlement(entitlement_key: str, is_enabled: bool) -> Organization:
+    """A reseller organization whose subscription carries an explicit
+    ``SubscriptionEntitlement`` row for ``entitlement_key``."""
+    reseller = baker.make(Organization, can_invite_organizations=True)
+    now = timezone.now()
+    subscription = baker.make(
+        Subscription,
+        organization=reseller,
+        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        billing_state=BillingState.FREE,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
+    )
+    baker.make(
+        SubscriptionEntitlement,
+        subscription=subscription,
+        entitlement_key=entitlement_key,
+        is_enabled=is_enabled,
+    )
+    return reseller
+
+
+@pytest.mark.django_db
+class TestResolveBrandingForDisplayEntitlementGate:
+    """Phase 6c: ``white_label_branding`` gates branding resolution for *presentation*.
+
+    A reseller whose plan does not grant the entitlement is treated identically to one
+    with no branding row at all -- every presentation caller already falls back to the
+    vinta default in that case, so this degrades gracefully rather than erroring.
+
+    The gate lives on ``resolve_branding_for_display``, not on ``resolve_branding``:
+    ``validate_return_url`` reads the same row to make an auth-flow decision and must
+    not be gated. ``TestResolveBrandingIsUngated`` below pins that split.
+    """
+
+    def test_branding_is_hidden_when_the_entitlement_is_disabled(self):
+        reseller = _reseller_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=False)
+        baker.make(OrganizationBranding, organization=reseller)
+
+        assert resolve_branding_for_display(reseller) is None
+
+    def test_branding_is_hidden_when_the_entitlement_row_is_missing(self):
+        """No row at all is how a revoked grant is represented -- same outcome as
+        an explicit ``is_enabled=False`` row."""
+        reseller = baker.make(Organization, can_invite_organizations=True)
+        now = timezone.now()
+        baker.make(
+            Subscription,
+            organization=reseller,
+            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            billing_state=BillingState.FREE,
+            current_period_start=now,
+            current_period_end=now + datetime.timedelta(days=30),
+        )
+        baker.make(OrganizationBranding, organization=reseller)
+
+        assert resolve_branding_for_display(reseller) is None
+
+    def test_branding_is_hidden_when_the_reseller_has_no_subscription(self):
+        """``has_entitlement`` fails closed on a plan-less organization, and this
+        caller inherits that. Cosmetic degradation, not a lockout -- which is exactly
+        why the *ungated* ``resolve_branding`` exists for the allowlist reader."""
+        reseller = baker.make(Organization, can_invite_organizations=True)
+        baker.make(OrganizationBranding, organization=reseller)
+
+        assert resolve_branding_for_display(reseller) is None
+
+    def test_branding_is_returned_when_the_entitlement_is_enabled(self):
+        reseller = _reseller_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True)
+        branding = baker.make(OrganizationBranding, organization=reseller)
+
+        result = resolve_branding_for_display(reseller)
+        assert result is not None
+        assert result.id == branding.id
+
+    def test_unlimited_plan_reseller_is_never_blocked(self):
+        """The rollout's kill switch: every organization is on ``unlimited`` until
+        deliberately migrated, so this must see byte-for-byte unchanged behavior."""
+        from payments.services.subscription_service import SubscriptionService
+
+        reseller = baker.make(Organization, can_invite_organizations=True)
+        plan = BillingPlan.objects.get(slug="unlimited")
+        SubscriptionService().create_subscription_for_organization(reseller, plan=plan)
+        branding = baker.make(OrganizationBranding, organization=reseller)
+
+        result = resolve_branding_for_display(reseller)
+        assert result is not None
+        assert result.id == branding.id
+
+
+@pytest.mark.django_db
+class TestResolveBrandingIsUngated:
+    """``resolve_branding`` must stay entitlement-free.
+
+    ``public_api.queries.validate_return_url`` reads ``return_url_allowlist`` off this
+    row to decide whether an OAuth return URL may be honoured. If the cosmetic
+    ``white_label_branding`` entitlement gated it, a reseller downgrading off that
+    entitlement would return ``{allowed: False, sanitized_url: None}`` for every tenant
+    underneath it -- breaking the OAuth return flow across the whole subtree. An
+    auth-flow lockout caused by a billing change to a logo is not an acceptable
+    degradation, so these two resolvers are deliberately separate functions.
+    """
+
+    def test_returns_the_row_even_without_the_entitlement(self):
+        reseller = _reseller_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=False)
+        branding = baker.make(OrganizationBranding, organization=reseller)
+
+        result = resolve_branding(reseller)
+        assert result is not None
+        assert result.id == branding.id
+        # ... and the gated sibling does hide it, so the split is real, not incidental.
+        assert resolve_branding_for_display(reseller) is None
+
+    def test_returns_the_row_for_a_reseller_with_no_subscription(self):
+        reseller = baker.make(Organization, can_invite_organizations=True)
+        branding = baker.make(OrganizationBranding, organization=reseller)
+
+        result = resolve_branding(reseller)
+        assert result is not None
+        assert result.id == branding.id

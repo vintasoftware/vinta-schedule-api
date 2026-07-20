@@ -153,6 +153,7 @@ class AppContainer(containers.DeclarativeContainer):
 
     webhook_service = providers.Factory(
         WebhookService,
+        entitlement_service=entitlement_service,
     )
 
     webhook_calendar_side_effects_service = providers.Factory(
@@ -226,6 +227,7 @@ class AppContainer(containers.DeclarativeContainer):
     public_api_auth_service = providers.Factory(
         PublicAPIAuthService,
         audit_service=audit_service,
+        entitlement_service=entitlement_service,
     )
 
     consent_service = providers.Factory(

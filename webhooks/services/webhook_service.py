@@ -1,16 +1,24 @@
 import datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import URLValidator
+from django.db import transaction
 
 import requests
+from dependency_injector.wiring import Provide, inject
 
 from organizations.models import Organization
+from payments.billing_constants import LimitedResource
+from payments.exceptions import OverLimitError
 from webhooks.constants import WebhookEventType, WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
 from webhooks.services.payloads import WebhookEnvelope
 from webhooks.tasks import process_webhook_event
+
+
+if TYPE_CHECKING:
+    from payments.services.entitlement_service import EntitlementService
 
 
 MAX_WEBHOOK_RETRIES = 5
@@ -23,6 +31,15 @@ class InitializedWebhook:
 
 
 class WebhookService:
+    @inject
+    def __init__(
+        self,
+        entitlement_service: Annotated[
+            "EntitlementService | None", Provide["entitlement_service"]
+        ] = None,
+    ) -> None:
+        self.entitlement_service = entitlement_service
+
     def _validate_config_fields(self, event_type: str, url: str) -> None:
         """Validate event_type and url before persisting a WebhookConfiguration.
 
@@ -43,10 +60,41 @@ class WebhookService:
         except DjangoValidationError as e:
             raise ValueError(f"Invalid url '{url}'. Must be a valid http(s) URL.") from e
 
+    @transaction.atomic()
     def create_configuration(
-        self, organization: Organization, event_type: str, url: str, headers: dict
+        self,
+        organization: Organization,
+        event_type: str,
+        url: str,
+        headers: dict,
+        bypass_limits: bool = False,
     ) -> WebhookConfiguration:
+        """Create a ``WebhookConfiguration``, guarded on the ``webhook_subscriptions``
+        pre-paid limit.
+
+        :param bypass_limits: When True, skips the ``webhook_subscriptions`` limit
+            guard below. Only management commands and one-off repair scripts should
+            pass this -- never a request-handling path.
+        :raises OverLimitError: When the organization is at its effective
+            ``webhook_subscriptions`` ceiling. Nothing is created. Checked and locked
+            (``SELECT ... FOR UPDATE`` on the billing root's subscription) inside this
+            method's own transaction, so two concurrent creates for the last unit of
+            capacity serialize on that row.
+
+            The counter this guards (``EntitlementService._count_webhook_subscriptions``)
+            counts ``WebhookConfiguration.objects.live()`` -- rows with
+            ``deleted_at__isnull=True``. A freshly created row always has
+            ``deleted_at=None``, so it is unconditionally "live" and always feeds the
+            same counter this check reads: there is no separate predicate to keep in
+            sync.
+        """
         self._validate_config_fields(event_type, url)
+        if not bypass_limits and self.entitlement_service is not None:
+            result = self.entitlement_service.check_limit(
+                organization, LimitedResource.WEBHOOK_SUBSCRIPTIONS, lock=True
+            )
+            if not result.allowed:
+                raise OverLimitError.from_check_result(result)
         return WebhookConfiguration.objects.create(
             organization=organization, event_type=event_type, url=url, headers=headers
         )

@@ -19,6 +19,11 @@ from payments.models import (
 )
 
 
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 @pytest.fixture
 def organization():
     return baker.make(Organization)

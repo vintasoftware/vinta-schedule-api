@@ -24,6 +24,11 @@ from payments.models import BillingPlan, PlanLimit, Subscription
 from payments.services.subscription_service import SubscriptionService
 
 
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 @pytest.fixture
 def superuser():
     return get_user_model().objects.create_superuser(

@@ -49,6 +49,11 @@ from payments.services.subscription_adapters.base import (
 from payments.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
 
 
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 class MockSubscriptionPlanFactory(BaseSubscriptionPlanFactory):
     def make_plan_from_subscription(self, subscription):
         return CreatedPlan(

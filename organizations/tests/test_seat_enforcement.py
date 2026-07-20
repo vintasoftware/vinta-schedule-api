@@ -31,12 +31,22 @@ from organizations.models import (
     OrganizationRole,
 )
 from organizations.services import OrganizationService
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
+from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
 from payments.exceptions import OverLimitError
-from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from payments.models import (
+    BillingPlan,
+    Subscription,
+    SubscriptionEntitlement,
+    SubscriptionPlanLimit,
+)
 from payments.services.entitlement_service import EntitlementService
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
+
+
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
 
 
 SHARED_OVER_LIMIT_BODY = {
@@ -89,6 +99,20 @@ def _organization_with_seat_limit(
         limit_value=seat_limit,
         kind=LimitKind.PREPAID,
     )
+    if can_invite_organizations:
+        # Phase 6c: a reseller org used to exercise the GraphQL surface needs
+        # `partner_api` granted, or `PublicApiSystemUserMiddleware`'s entitlement
+        # gate blocks it before the seat-limit guard this test targets ever runs.
+        # A real reseller on any real plan carries this row (every seeded plan
+        # grants it); this fixture only needs to say so explicitly because it
+        # builds a bare `Subscription` rather than going through
+        # `SubscriptionService`, which is what normally syncs it.
+        baker.make(
+            SubscriptionEntitlement,
+            subscription=subscription,
+            entitlement_key=Entitlement.PARTNER_API,
+            is_enabled=True,
+        )
     if existing_active_members:
         baker.make(
             OrganizationMembership,

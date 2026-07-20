@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from payments.billing_constants import LimitedResource
+from payments.billing_constants import Entitlement, LimitedResource, LimitRemedy
 
 
 if TYPE_CHECKING:
@@ -287,6 +287,39 @@ class OverLimitError(BillingError):
             current_usage=result.current_usage,
             limit=result.ceiling,
             remedy=result.remedy,
+        )
+
+    @classmethod
+    def from_missing_entitlement(cls, entitlement_key: str) -> "OverLimitError":
+        """Build the error for a denied boolean feature gate (``Entitlement``, not
+        ``LimitedResource``).
+
+        An entitlement has no usage count or ceiling to report -- it is granted or
+        it is not -- so ``current_usage``/``limit`` are both ``0`` (0 of an
+        allowance of 0) rather than ``None``: the shared contract's ``current_usage``
+        and ``limit`` fields are typed as ``int`` on every surface that renders this
+        error, and every existing renderer (``vinta_exception_handler``,
+        ``raise_over_limit_graphql_error``) reads them unconditionally.
+
+        ``remedy`` is always ``upgrade_plan`` -- unlike a pre-paid ceiling, an
+        entitlement cannot be lifted by purchasing more of the same resource; only a
+        plan that grants it does. This intentionally does not consult billing state
+        the way ``EntitlementService._resolve_remedy_for`` does for limits: an
+        organization in grace/restricted is already told to resolve billing by
+        whichever limit check it hits first on the same request, and duplicating
+        that lookup here would mean re-fetching the subscription this call has no
+        other reason to need.
+        """
+        try:
+            label = Entitlement(entitlement_key).label.lower()
+        except ValueError:
+            label = entitlement_key
+        return cls(
+            resource_key=entitlement_key,
+            current_usage=0,
+            limit=0,
+            remedy=LimitRemedy.UPGRADE_PLAN,
+            detail=f"Organization does not have the {label} entitlement.",
         )
 
 

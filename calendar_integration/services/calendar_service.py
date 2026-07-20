@@ -139,7 +139,7 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from organizations.models import Organization, OrganizationMembership
-from payments.billing_constants import LimitedResource
+from payments.billing_constants import Entitlement, LimitedResource
 from payments.exceptions import OverLimitError
 from public_api.models import SystemUser
 from users.models import User
@@ -157,6 +157,30 @@ logger = logging.getLogger(__name__)
 
 # Sentinel for partial updates: distinguishes "omit capacity" from "explicit null"
 _UNCHANGED = object()
+
+# The boolean entitlement gating each external provider, checked in `authenticate()` --
+# the chokepoint both the Google and Microsoft connection paths flow through. Providers
+# with no entry (INTERNAL, APPLE, ICS) are ungated: the spec's `Entitlement` closed set
+# only names Google and Microsoft.
+_PROVIDER_ENTITLEMENTS: dict[str, str] = {
+    CalendarProvider.GOOGLE: Entitlement.EXTERNAL_CALENDAR_GOOGLE,
+    CalendarProvider.MICROSOFT: Entitlement.EXTERNAL_CALENDAR_MICROSOFT,
+}
+
+
+def _provider_for_account(account: object) -> str | None:
+    """The ``CalendarProvider`` an account authenticates against, or ``None`` when it
+    cannot be determined without resolving an adapter.
+
+    ``None`` is returned for a bare ``User``: which of that user's social accounts is
+    used is ``get_calendar_adapter_for_account``'s decision, so the caller has to gate
+    after resolution instead. Every other case is readable off the object.
+    """
+    if isinstance(account, GoogleCalendarServiceAccount):
+        return CalendarProvider.GOOGLE
+    if isinstance(account, User):
+        return None
+    return getattr(account, "provider", None)
 
 
 def _resolve_owner_membership_user_id(user: User, organization: Organization) -> int | None:
@@ -215,6 +239,9 @@ class CalendarService(BaseCalendarService):
         self.external_event_change_request_service = external_event_change_request_service
         self.booking_policy_service = booking_policy_service
         self.entitlement_service = entitlement_service
+        # Set by authenticate(bypass_limits=True); disables every provider entitlement
+        # guard on this instance, not just the authenticate-time one.
+        self._bypass_entitlement_limits = False
         # Per-instance calendar lookup cache: keyed on (organization_id, id_or_external_id).
         # This replaces the @lru_cache approach which was keyed only on id/external_id and
         # could return a cached Calendar from a different organization when the service
@@ -397,10 +424,28 @@ class CalendarService(BaseCalendarService):
             }
         ), token.account
 
+    def _assert_provider_entitlement(self, provider: str | None) -> None:
+        """Raise ``OverLimitError`` if ``provider`` is gated and the organization is not
+        entitled to it.
+
+        Providers with no ``_PROVIDER_ENTITLEMENTS`` entry (INTERNAL, APPLE, ICS) are
+        ungated: the spec's closed ``Entitlement`` set only names Google and Microsoft.
+        A no-op when the service has no ``entitlement_service`` injected, or when
+        ``authenticate(bypass_limits=True)`` put this instance in bypass mode.
+        """
+        if self._bypass_entitlement_limits or self.entitlement_service is None:
+            return
+        entitlement_key = _PROVIDER_ENTITLEMENTS.get(provider) if provider else None
+        if entitlement_key is None or self.organization is None:
+            return
+        if not self.entitlement_service.has_entitlement(self.organization, entitlement_key):
+            raise OverLimitError.from_missing_entitlement(entitlement_key)
+
     def authenticate(
         self,
         account: "User | SocialAccount | GoogleCalendarServiceAccount",
         organization: Organization,
+        bypass_limits: bool = False,
     ) -> None:
         """
         Authenticate the service with the provided account.
@@ -409,6 +454,17 @@ class CalendarService(BaseCalendarService):
             the owning ``User`` is used for record attribution (e.g.
             ``CalendarOwnership``).
         :param organization: Calendar organization instance.
+        :param bypass_limits: When True, skips the ``external_calendar_google`` /
+            ``external_calendar_microsoft`` entitlement guard below, and every guard on
+            this service instance for the rest of its life (writes resolved through
+            ``_get_write_adapter_for_calendar`` included). Only management commands and
+            one-off repair scripts should pass this -- never a request-handling path.
+        :raises OverLimitError: When the resolved account's provider is Google or
+            Microsoft and the organization lacks the matching entitlement. Every caller
+            that authenticates a Google or Microsoft account, including calendar sync,
+            routes through here -- but this is **not** the only enforcement point:
+            ``_get_write_adapter_for_calendar`` gates on the *calendar's* provider,
+            which can differ from the authenticated account's. See its docstring.
         """
         if isinstance(account, User):
             self.user_or_token = account
@@ -417,7 +473,23 @@ class CalendarService(BaseCalendarService):
         else:
             self.user_or_token = None
         self.organization = organization
+        self._bypass_entitlement_limits = bypass_limits
+
+        # Gate *before* `get_calendar_adapter_for_account` where the provider can be read
+        # off `account` without resolving an adapter. That call refreshes an expired
+        # access token while constructing the adapter -- an outbound provider call and a
+        # token mutation. Doing that work for a request we are about to reject with a 402
+        # is both wasteful and a side effect on data the caller has no entitlement to
+        # touch. The `User` branch is the exception: which social account it resolves to
+        # is `get_calendar_adapter_for_account`'s decision, so it can only be gated after.
+        early_provider = _provider_for_account(account)
+        if early_provider is not None:
+            self._assert_provider_entitlement(early_provider)
+
         self.calendar_adapter, self.account = self.get_calendar_adapter_for_account(account)
+
+        if early_provider is None:
+            self._assert_provider_entitlement(_provider_for_account(self.account))
 
         # Reset the per-instance calendar lookup cache whenever the auth context changes.
         # This ensures no stale cross-organization entries survive a re-authentication.
@@ -1232,6 +1304,31 @@ class CalendarService(BaseCalendarService):
         return self._get_bundle_service()._collect_bundle_attendees(child_calendars, event_data)
 
     def _get_write_adapter_for_calendar(self, calendar: Calendar) -> CalendarAdapter | None:
+        """Resolve the adapter to write ``calendar`` through, gated on the calendar's own
+        provider entitlement.
+
+        :raises OverLimitError: When ``calendar.provider`` is Google or Microsoft and the
+            organization lacks the matching entitlement.
+
+        **This is a second enforcement point, not a redundant one.** ``authenticate()``
+        gates the *authenticated account's* provider; this method resolves an adapter
+        from the *calendar's* provider, which need not be the same one. Concretely: an
+        organization entitled to ``external_calendar_google`` but not
+        ``external_calendar_microsoft`` has a Microsoft calendar ``C`` owned by a user who
+        holds a Microsoft ``SocialAccount``. An actor authenticates with their Google
+        account — ``authenticate()`` passes, correctly. Any write to ``C`` then reaches
+        the branch below, which resolves that owner and builds a **Microsoft** adapter via
+        the *static* ``get_calendar_adapter_for_account``, bypassing the instance the
+        authenticate-time gate ran against. Without this check that is unmetered,
+        ungated Microsoft traffic.
+
+        Raises rather than returning ``None``: several callers treat ``None`` as "no
+        external sync configured" and complete the local write silently
+        (``if write_adapter := ...``). Silently diverging local and provider state on a
+        billing decision is worse than a loud, recoverable 402.
+        """
+        self._assert_provider_entitlement(calendar.provider)
+
         # if the authenticated account doesn't own the calendar:
         if not self.account or not (
             (

@@ -1,18 +1,26 @@
 from collections.abc import Callable
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 from django.http import (
     HttpRequest,
     HttpResponse,
+    JsonResponse,
 )
 
 from dependency_injector.wiring import Provide, inject
 
 from organizations.models import Organization
+from payments.billing_constants import Entitlement
+from payments.entitlement_cache import entitlement_request_cache, has_entitlement_cached
+from payments.exceptions import OverLimitError
 from public_api.exceptions import InvalidAuthorizationHeaderError, PublicAPIServiceUnavailableError
 from public_api.models import SystemUser
 from public_api.services import PublicAPIAuthService
 from public_api.types import PublicApiHttpRequest
+
+
+if TYPE_CHECKING:
+    from payments.services.entitlement_service import EntitlementService
 
 
 class PublicApiSystemUserMiddleware:
@@ -77,6 +85,33 @@ class PublicApiSystemUserMiddleware:
             return None
         return Organization.objects.filter(id=organization_id).first()
 
+    @inject
+    def _has_partner_api_entitlement(
+        self,
+        organization: Organization,
+        entitlement_service: Annotated[
+            "EntitlementService | None", Provide["entitlement_service"]
+        ] = None,
+    ) -> bool:
+        """Is ``organization`` (or its billing root) entitled to use the partner API?
+
+        Fails closed defensively when DI wiring itself is broken (``entitlement_service``
+        is ``None``): denying an authenticated request beats silently granting every
+        organization unrestricted API access because a container failed to wire.
+
+        Under normal operation this cannot lock out a legitimate organization:
+        ``EntitlementService.has_entitlement`` resolves at the billing root, and every
+        billing root always holds exactly one ``Subscription`` (the "no plan-less
+        state" invariant from Phase 4) whose entitlement rows are synced from its plan
+        on creation -- including the seeded ``unlimited`` default, which grants every
+        ``Entitlement`` member. An org only loses this gate by being placed on a plan
+        that explicitly omits or disables ``partner_api``, which is the intended
+        enforcement, not an accident of a missing row.
+        """
+        if entitlement_service is None:
+            return False
+        return has_entitlement_cached(entitlement_service, organization, Entitlement.PARTNER_API)
+
     def __call__(self, request: HttpRequest) -> HttpResponse:
         # ignore middleware if request is not the graphql endpoint
 
@@ -84,15 +119,38 @@ class PublicApiSystemUserMiddleware:
         extended_request.public_api_system_user = None
         extended_request.public_api_organization = None
 
-        if extended_request.get_full_path().startswith("/graphql/"):
-            extended_request.public_api_system_user = self._get_system_user_from_request(
-                extended_request
-            )
+        # Scope the per-request entitlement memo around the whole GraphQL request, not
+        # just the gate below: `resolve_branding_for_display` checks
+        # `white_label_branding` inside resolvers, and `brandingForTenant` /
+        # `validateReturnUrl` are unauthenticated public queries with an
+        # attacker-supplied `tenant_id`. See `payments/entitlement_cache.py` for why the
+        # cache is scoped rather than process-wide.
+        with entitlement_request_cache():
+            if extended_request.get_full_path().startswith("/graphql/"):
+                extended_request.public_api_system_user = self._get_system_user_from_request(
+                    extended_request
+                )
 
-        if extended_request.public_api_system_user:
-            extended_request.public_api_organization = (
-                extended_request.public_api_system_user.organization
-                or self._get_organization_from_request(extended_request)
-            )
+            if extended_request.public_api_system_user:
+                extended_request.public_api_organization = (
+                    extended_request.public_api_system_user.organization
+                    or self._get_organization_from_request(extended_request)
+                )
 
-        return self.get_response(extended_request)
+            # Entitlement gate: an organization without `partner_api` cannot use the
+            # GraphQL API at all, not just individual mutations. Scoped to requests that
+            # actually resolved an authenticated organization above (anonymous / public
+            # GraphQL queries -- e.g. brandingForTenant -- never reach here, since
+            # `public_api_organization` stays None for them) so this can never reject an
+            # unauthenticated request the normal `IsAuthenticated` permission class would
+            # otherwise handle. Bypasses GraphQL execution entirely and returns a real
+            # HTTP 402 (rather than the graphql-core-swallowed 200 + `errors` shape a
+            # resolver-level rejection would produce), matching the plan's contract for
+            # this specific chokepoint.
+            if extended_request.public_api_organization is not None and not (
+                self._has_partner_api_entitlement(extended_request.public_api_organization)
+            ):
+                error = OverLimitError.from_missing_entitlement(Entitlement.PARTNER_API)
+                return JsonResponse(error.as_error_body(), status=402)
+
+            return self.get_response(extended_request)

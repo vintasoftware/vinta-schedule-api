@@ -19,6 +19,8 @@ from organizations.managers import (
     OrganizationInvitationManager,
     OrganizationMembershipManager,
 )
+from payments.billing_constants import Entitlement
+from payments.entitlement_cache import has_entitlement_cached
 
 
 if TYPE_CHECKING:
@@ -518,6 +520,14 @@ def resolve_branding(org: Organization) -> OrganizationBranding | None:
 
     If no reseller ancestor exists, returns None (vinta default branding applies).
 
+    **Deliberately ungated.** The ``white_label_branding`` entitlement is applied by
+    ``resolve_branding_for_display`` instead, because not every caller of this function
+    is presenting branding. ``public_api.queries.validate_return_url`` reads
+    ``return_url_allowlist`` off the row to answer whether an OAuth return URL is
+    permitted — an **auth-flow** decision, not a cosmetic one. Gating that would mean a
+    reseller downgrading off a cosmetic entitlement silently breaks the OAuth return
+    flow for every tenant underneath it, which is a lockout, not a downgrade.
+
     Args:
         org: The Organization instance to resolve branding for.
 
@@ -526,5 +536,56 @@ def resolve_branding(org: Organization) -> OrganizationBranding | None:
     """
     branding_root = org.get_branding_root()
     if branding_root is None:
+        return None
+    return getattr(branding_root, "branding", None)
+
+
+def resolve_branding_for_display(org: Organization) -> OrganizationBranding | None:
+    """``resolve_branding``, gated on the ``white_label_branding`` entitlement.
+
+    Use this for every **presentation** caller — anything that renders the reseller's
+    app name, logo, colors, or support address (``branding_for_tenant``,
+    ``organizations.notification_contexts``). Use plain ``resolve_branding`` when the
+    row is being read for a non-cosmetic decision, i.e. ``validate_return_url``'s
+    allowlist check.
+
+    The entitlement is resolved at the reseller's own billing root, which may differ
+    from the branding root when the reseller itself pools against a grandparent — see
+    ``payments.services.subscription_service.resolve_billing_root``. A reseller whose
+    plan does not grant the entitlement is treated identically to one with no branding
+    row: every presentation caller already falls back to the vinta default in that case
+    (``branding_for_tenant``'s ``_vinta_default_branding()``, ``notification_contexts``'s
+    default sender), so revoking degrades gracefully rather than erroring.
+
+    The ``EntitlementService`` is pulled from the DI container directly (a deferred,
+    function-body-local import) rather than via ``@inject``/``Provide[...]``:
+    ``organizations/models.py`` carries ``from __future__ import annotations``, which
+    stringifies every annotation in the module, including the ``Annotated[...,
+    Provide[...]]`` marker ``@inject`` needs to introspect at wiring time. Decorating
+    this function with ``@inject`` under that combination is a *silent* no-op --
+    ``dependency_injector`` emits a ``DIWiringWarning`` and returns the function
+    unpatched, so the parameter would always take its default and the guard below
+    would never run. Precedent for the deferred-import pattern instead: the
+    ``di_container`` fixture in the root ``conftest.py``, which imports ``container``
+    the same way for the same reason (a module-level import would bind ``None``,
+    since the container is only assigned in ``DICoreConfig.ready()`` after import
+    time).
+
+    Fails **closed** when the container itself is unavailable, matching
+    ``PublicApiSystemUserMiddleware._has_partner_api_entitlement`` on the identical
+    condition: an unresolvable entitlement service denies. Here that costs a reseller
+    its logo until DI is repaired, which is the cheap direction to be wrong in.
+    """
+    branding_root = org.get_branding_root()
+    if branding_root is None:
+        return None
+
+    from di_core.containers import container
+
+    if container is None:
+        return None
+    if not has_entitlement_cached(
+        container.entitlement_service(), branding_root, Entitlement.WHITE_LABEL_BRANDING
+    ):
         return None
     return getattr(branding_root, "branding", None)

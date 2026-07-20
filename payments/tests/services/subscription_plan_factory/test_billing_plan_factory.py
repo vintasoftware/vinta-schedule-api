@@ -11,6 +11,11 @@ from payments.models import BillingPlan, Subscription
 from payments.services.subscription_plan_factory.billing_plan_factory import BillingPlanFactory
 
 
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 @pytest.fixture
 def organization():
     return baker.make(Organization)

@@ -6490,3 +6490,103 @@ class TestEventIcsQuery:
         assert data["eventIcs"] is None, (
             "Event from a different org must not be visible (org filter)"
         )
+
+
+# This class builds its own Subscription rows (OneToOne with Organization); the rest of
+# the module relies on conftest's autouse `provision_default_subscription`.
+@pytest.mark.no_auto_subscription
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+class TestReturnUrlSurvivesBrandingDowngrade:
+    """Phase 6c: the ``white_label_branding`` entitlement must not gate the OAuth
+    return flow.
+
+    ``resolve_branding`` backs two very different callers: ``brandingForTenant``
+    (cosmetic) and ``validateReturnUrl`` (an auth-flow decision). Gating both would mean
+    a reseller downgrading off a *cosmetic* entitlement returns
+    ``{allowed: False, sanitized_url: None}`` for every tenant in its subtree, breaking
+    the OAuth interstitial for all of them. That is a lockout caused by a change to a
+    logo, so the two callers use different resolvers -- ``resolve_branding_for_display``
+    for presentation, plain ``resolve_branding`` for the allowlist.
+
+    Confirmed to fail when ``validate_return_url`` is pointed at the gated resolver.
+    """
+
+    def _post(self, client, query, variables):
+        return client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+    def _reseller_without_branding_entitlement(self, allowlist):
+        import datetime as _datetime
+
+        from django.utils import timezone as _timezone
+
+        from payments.billing_constants import BillingState, Entitlement
+        from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+
+        reseller = baker.make(Organization, name="Downgraded", can_invite_organizations=True)
+        now = _timezone.now()
+        subscription = baker.make(
+            Subscription,
+            organization=reseller,
+            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            billing_state=BillingState.FREE,
+            current_period_start=now,
+            current_period_end=now + _datetime.timedelta(days=30),
+        )
+        baker.make(
+            SubscriptionEntitlement,
+            subscription=subscription,
+            entitlement_key=Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=False,
+        )
+        baker.make(
+            "organizations.OrganizationBranding",
+            organization=reseller,
+            app_name="Downgraded App",
+            return_url_allowlist=allowlist,
+        )
+        return reseller
+
+    def test_return_url_still_validates_after_the_downgrade(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = self._reseller_without_branding_entitlement(["https://app.example.com"])
+        child = baker.make(Organization, name="Downgraded Child", parent=reseller)
+
+        candidate = "https://app.example.com/auth/callback?code=abc"
+        response = self._post(
+            anonymous_client,
+            _VALIDATE_RETURN_URL_QUERY,
+            {"tenantId": str(child.id), "url": candidate},
+        )
+
+        data = assert_graphql_success(response)
+        assert data["validateReturnUrl"] == {"allowed": True, "sanitizedUrl": candidate}
+
+    def test_branding_itself_does_fall_back_to_the_vinta_default(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """The other half of the split: the cosmetic surface *is* gated, so the
+        downgrade is really in effect and the test above is not just measuring an
+        ungated system."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = self._reseller_without_branding_entitlement(["https://app.example.com"])
+
+        query = """
+            query BrandingForTenant($tenantId: ID!) {
+                brandingForTenant(tenantId: $tenantId) { appName }
+            }
+        """
+        response = self._post(anonymous_client, query, {"tenantId": str(reseller.id)})
+
+        data = assert_graphql_success(response)
+        from public_api.queries import _vinta_default_branding
+
+        assert data["brandingForTenant"]["appName"] == _vinta_default_branding().app_name

@@ -83,6 +83,7 @@ from calendar_integration.services.type_guards import (
     is_authenticated_calendar_service,
     is_initialized_or_authenticated_calendar_service,
 )
+from payments.exceptions import OverLimitError
 
 
 if TYPE_CHECKING:
@@ -413,6 +414,20 @@ class CalendarWebhookService:
         except (ServiceNotAuthenticatedError, Calendar.DoesNotExist):
             # Calendar not found or not authenticated - we'll still record the webhook event
             pass
+        except OverLimitError as exc:
+            # The organization lost the calendar's provider entitlement. Unlike the
+            # interactive REST/GraphQL callers of _get_write_adapter_for_calendar (which
+            # keep the 402 -- a user asking to connect a calendar should be told why),
+            # this webhook caller has no user to tell: Google/Microsoft's server-to-server
+            # push has nowhere to route a 402 to, and would just retry against a 500 until
+            # the channel expires. Degrade to the static-validation fallback below and
+            # still record the event, mirroring _authenticate_or_skip's reasoning for the
+            # scheduled sync tasks.
+            logger.info(
+                "Skipping write-adapter resolution for webhook on calendar %s: %s",
+                calendar_external_id,
+                exc.as_error_body()["detail"],
+            )
 
         # Handle provider-specific validation/parsing
         # Use static validation if we don't have an authenticated adapter

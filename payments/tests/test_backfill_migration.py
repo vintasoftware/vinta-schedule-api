@@ -38,6 +38,12 @@ from payments.exceptions import MissingSeedBillingPlanError
 from payments.models import BillingPlan, Subscription
 
 
+# This module is *about* the plan-less state the backfill migration repairs, so it opts
+# out of conftest's autouse `provision_default_subscription` — that fixture would provision
+# the very subscriptions these tests assert the migration creates.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 migration_module = importlib.import_module(
     "payments.migrations.0009_backfill_unlimited_subscriptions"
 )

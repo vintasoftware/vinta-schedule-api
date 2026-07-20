@@ -29,6 +29,11 @@ from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
 from payments.services.entitlement_service import EntitlementService
 
 
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
+
+
 @pytest.fixture
 def service():
     return EntitlementService()

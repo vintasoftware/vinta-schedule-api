@@ -23,6 +23,7 @@ directly -- the same seam identified there -- proving:
 import datetime
 from unittest.mock import MagicMock, patch
 
+from django.test import override_settings
 from django.utils import timezone
 
 import pytest
@@ -32,19 +33,35 @@ from model_bakery import baker
 from calendar_integration.constants import (
     CalendarOrganizationResourceImportStatus,
     CalendarProvider,
+    CalendarSyncStatus,
     CalendarType,
     CalendarVisibility,
 )
-from calendar_integration.models import Calendar, CalendarOrganizationResourcesImport
+from calendar_integration.models import (
+    Calendar,
+    CalendarOrganizationResourcesImport,
+    CalendarSync,
+)
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.calendar_sync_service import CalendarSyncService
 from calendar_integration.services.dataclasses import CalendarResourceData
 from organizations.models import Organization
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
+from payments.models import (
+    BillingPlan,
+    Subscription,
+    SubscriptionEntitlement,
+    SubscriptionPlanLimit,
+)
 from payments.services.entitlement_service import EntitlementService
+from payments.services.subscription_service import SubscriptionService
 from users.models import Profile, User
+
+
+# This module builds its own Subscription rows (OneToOne with Organization), so it
+# opts out of conftest's autouse `provision_default_subscription`.
+pytestmark = pytest.mark.no_auto_subscription
 
 
 class FakeHost:
@@ -599,6 +616,12 @@ class TestSyncPathIsWiredThroughDI:
 
     def test_authenticated_facade_gives_the_sync_service_an_entitlement_service(self):
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
+        # This module opts out of the autouse subscription fixture, and `authenticate()`
+        # gates on `external_calendar_google` — which fails closed without a
+        # subscription. Provision the same `unlimited` subscription production would.
+        SubscriptionService().create_subscription_for_organization(
+            organization, plan=BillingPlan.objects.get(slug="unlimited")
+        )
         user = User.objects.create_user(email="di-sync@example.com", password="pw")  # noqa: S106
         Profile.objects.create(user=user)
         account = SocialAccount.objects.create(
@@ -628,3 +651,106 @@ class TestSyncPathIsWiredThroughDI:
             sync_service = service._get_sync_service()
 
         assert isinstance(sync_service._context.entitlement_service, EntitlementService)
+
+
+# The Google adapter refuses to construct without these. Both tests below pass a
+# bare `User` to `authenticate()`, so -- per `_provider_for_account`'s docstring --
+# the entitlement gate can only run *after* `get_calendar_adapter_for_account`
+# resolves and builds the adapter, exactly like the production path once
+# credentials are configured.
+_with_google_credentials = override_settings(
+    GOOGLE_CLIENT_ID="test-google-client-id",
+    GOOGLE_CLIENT_SECRET="test-google-client-secret",  # noqa: S106 - dummy value, not a credential
+)
+
+
+@pytest.mark.django_db
+class TestSyncTasksSkipRatherThanFailOnMissingEntitlement:
+    """Phase 6c: an unentitled organization must make scheduled syncs a **skip**, not a
+    task failure.
+
+    These tasks are scheduled, declare no ``autoretry_for``, and run under
+    ``CELERY_TASK_ACKS_LATE=True`` -- so letting ``OverLimitError`` escape would turn a
+    billing state that is working exactly as intended into a permanent stream of hard
+    task failures and redeliveries. Interactive callers (REST/GraphQL) keep the 402;
+    only the scheduled path degrades to a logged skip.
+
+    Confirmed to fail when ``_authenticate_or_skip`` is replaced by a bare
+    ``calendar_service.authenticate(...)``.
+    """
+
+    def _unentitled_org_and_account(self):
+        organization = baker.make(Organization, parent=None, can_invite_organizations=False)
+        now = timezone.now()
+        subscription = baker.make(
+            Subscription,
+            organization=organization,
+            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            billing_state=BillingState.FREE,
+            current_period_start=now,
+            current_period_end=now + datetime.timedelta(days=30),
+        )
+        baker.make(
+            SubscriptionEntitlement,
+            subscription=subscription,
+            entitlement_key=Entitlement.EXTERNAL_CALENDAR_GOOGLE,
+            is_enabled=False,
+        )
+        user = User.objects.create_user(email="skip-sync@example.com", password="pw")  # noqa: S106
+        Profile.objects.create(user=user)
+        account = SocialAccount.objects.create(
+            user=user, provider=CalendarProvider.GOOGLE, uid="skip-12345"
+        )
+        SocialToken.objects.create(
+            account=account,
+            token="access",  # noqa: S106
+            token_secret="refresh",  # noqa: S106
+            expires_at=timezone.now() + datetime.timedelta(hours=1),
+        )
+        return organization, account
+
+    @_with_google_credentials
+    def test_import_account_calendars_task_returns_instead_of_raising(self):
+        from calendar_integration.tasks.calendar_sync_tasks import import_account_calendars_task
+
+        organization, account = self._unentitled_org_and_account()
+
+        # No exception, and the task never reaches import_account_calendars().
+        with patch.object(CalendarService, "import_account_calendars") as imported:
+            import_account_calendars_task(
+                account_type="social_account",
+                account_id=account.id,
+                organization_id=organization.id,
+            )
+
+        imported.assert_not_called()
+
+    @_with_google_credentials
+    def test_sync_calendar_task_returns_instead_of_raising(self):
+        from calendar_integration.tasks.calendar_sync_tasks import sync_calendar_task
+
+        organization, account = self._unentitled_org_and_account()
+        calendar = baker.make(
+            Calendar,
+            organization=organization,
+            provider=CalendarProvider.GOOGLE,
+            external_id="skip-cal-1",
+        )
+        calendar_sync = baker.make(
+            CalendarSync,
+            organization=organization,
+            calendar=calendar,
+            status=CalendarSyncStatus.NOT_STARTED,
+            start_datetime=timezone.now(),
+            end_datetime=timezone.now() + datetime.timedelta(days=1),
+        )
+
+        with patch.object(CalendarService, "sync_events") as synced:
+            sync_calendar_task(
+                account_type="social_account",
+                account_id=account.id,
+                calendar_sync_id=calendar_sync.id,
+                organization_id=organization.id,
+            )
+
+        synced.assert_not_called()
