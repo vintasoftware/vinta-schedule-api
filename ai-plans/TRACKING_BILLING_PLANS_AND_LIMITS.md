@@ -352,23 +352,47 @@ The plan's deferred `TRIALING` state (`…IMPLEMENTATION_PLAN.md`, "no payment m
 
 **The bundle fan-out still counts masters.** `_bundle_event_billable_units` returns `1 + n_internal_children` per the Phase 7 binding decision, and each child create runs with `_check_postpaid_allowance=False`, so a *recurring* bundle event is under-charged by exactly the same factor the single-event path used to be. Bounded and inert today (every organization is `unlimited`), but it is a **Phase 13 gating precondition** alongside the identity-churn and series-truncation defects above: an over-allowance number that becomes money must be in occurrence units on every path, not just the one.
 
+### Phase 9 — Upgrade, add-on purchase, and proration ✅
+
+- **Status**: reviewed clean (1 round, 2 BLOCKERs + 4 SHOULD-FIX fixed), gates green, ready to integrate
+- **Models**: implementer Tier 3; reviewer Tier 4; fixer Tier 4
+- **Branch**: `plan/billing-plans-and-limits/phase-9` · **Base**: `main` (rebased — 7 and 8 merged mid-run as #198/#199)
+- **Commits**: `32e4572` implementation, `daf80e9` money-safety fixes · **Migrations**: `0012` (pending-plan + PaymentMethod), `0013` (plan_change_pending_confirmation) — both reverse cleanly
+
+**Gates** (implementer, then re-run independently with credentials cleared): suite **4384 passed** (base 4316; +68) + 1 known flake (`payments/tests/services/test_limit_concurrency.py::test_lock_does_not_block_when_there_is_room_for_both` — a threaded lock-timing test, passes 3/3 in isolation, reddens only under full parallel load; same class as the 6b negative control); `mypy` **305 / 57** at ceiling, zero new; `ruff` clean (506); `makemigrations --check` clean; `schema.yml` regenerated (+976/−9). Money-safety subset (131 tests) re-run green independently.
+
+Ships the self-serve billing surface: `payments/billing_views.py` (`SubscriptionViewSet`, `AddOnViewSet`, plan/usage read views), `IsBillingOwnerOrAdmin` with the reseller-subtree exception, `SubscriptionService.request_plan_change` / `confirm_plan_change` / `purchase_add_on` / `activate_add_on` / `record_payment_method`, and the new `PaymentMethod` model.
+
+**The Phase 8 precondition was discharged.** `has_payment_method` now queries `PaymentMethod(is_active=True)` at the billing root; `PAYMENT_METHOD_BILLING_STATES` is deleted (survives only as docstring history); `record_payment_method` writes only from the confirmed-webhook path, never synchronously. `GRACE`-with-a-card now correctly reads `True` — the case the old proxy could not express.
+
+**Two BLOCKERs, both money-safety, both found by review — and both are the `ATOMIC_REQUESTS` production-only trap.** The orchestrator's own spot-check *missed* them by assuming the inner `transaction.atomic()` durably commits before the charge; under production `ATOMIC_REQUESTS` it is a savepoint inside the request transaction, so the dedup row commits only at request end — after the charge. (1) `purchase_add_on` would re-charge on a crash between charge and request-commit, because the retry finds no dedup row; the tests passed only because test settings omit `ATOMIC_REQUESTS`. (2) change-plan's serializer *required* an `idempotency_key` that was never threaded past the view, so concurrent first-upgrades double-drove the provider with no dedup row at all. **Fixed with provider-side idempotency** — the client key now reaches the Stripe `Idempotency-Key` / MercadoPago `x-idempotency-key` on the money-moving SDK call, correct across process boundaries — **plus a `SELECT ... FOR UPDATE`** on the subscription row for the concurrent-upgrade case.
+
+**Lesson recorded:** re-run gates green ≠ correct when the defect is production-transaction-semantics. A green test under test settings is not evidence about `ATOMIC_REQUESTS` behavior. Reason about the production transaction wrapper explicitly for any charge/commit ordering.
+
+Three more of the plan's signature two-predicates defects, all fixed: `confirm_plan_change` re-copied `subscription.plan`'s (higher) limits on every APPROVED webhook, so a redelivery during a downgrade grace window silently restored the higher ceiling — now syncs from the pending lower plan while the downgrade is pending. A second upgrade before the first confirmed would grant the latest tier rather than the paid one — now a `plan_change_pending_confirmation` flag rejects a *different* plan change with 409 until confirmation (limitation: a first-upgrade whose charge *fails* leaves the flag set until Phase 10 dunning clears it; same-plan retry stays a no-op). Object-level DENY of `IsBillingOwnerOrAdmin` is now tested on both write paths; billing writes got a `ScopedRateThrottle`.
+
+**Carried forward from 9:**
+- ⚠️ **`MercadoPagoPaymentAdapter.refund` has the same idempotency-key bug** the fixer corrected in `process`: it uses a `{refund.id}` set-literal for `x-idempotency-key`. Latent, not in any finding, left untouched — worth a follow-up.
+- The adapter idempotency-key plumbing is **unit-tested only** (no live provider in this environment — same caveat Phase 2b left).
+
 ## Current phase
 
-**Phase 9 — Upgrade, add-on purchase, and proration** (implementer Tier 3, reviewer Tier 4)
+**Phase 10 — Grace, dunning, and the restricted transition** (implementer Tier 3)
 
-Base: `plan/billing-plans-and-limits/phase-8` · Branch: `plan/billing-plans-and-limits/phase-9`
+Base: `plan/billing-plans-and-limits/phase-9` · Branch: `plan/billing-plans-and-limits/phase-10`
 
-Spec objective 2: an org on the free plan can choose a paid plan, pay, and see its limits lift with no engineering intervention. New endpoints on a new path — purely additive surface, no feature flag.
+A failed payment moves an org through a warned grace period with retries, into `RESTRICTED` if unresolved. Implements the spec's lifecycle diagram as explicit transitions in `payments/services/dunning_service.py`, rejecting any transition not on it. Celery beat `process_dunning` retries on schedule with escalating email and moves `GRACE → RESTRICTED` on expiry; `RESTRICTED → ACTIVE` on payment success; cancellation `ACTIVE → CANCELLED` running to period end.
 
-**Binding on this phase (from Phase 8's precondition above):** Phase 9 introduces the first real payment-method record. When it does, `EntitlementService.has_payment_method` must be **re-pointed at that record and the `billing_state` proxy deleted** — not widened. Once an instrument is actually persisted, `billing_state` stops being evidence of anything. The per-state test (`EXPECTED_HAS_PAYMENT_METHOD`) must be updated in the same change so it pins the new source of truth.
+**Two hard constraints inherited from earlier phases — both load-bearing:**
+1. **`GRACE` must keep `has_payment_method` reading `True` via the real `PaymentMethod` record** (Phase 8/9). Phase 10 moves `ACTIVE → GRACE` on a *failed charge*, which says nothing about whether the card is still attached. Do **not** reintroduce a `billing_state`-based answer to "has a payment method" — that was deleted in Phase 9 on purpose. A `GRACE` org with a card on file still accrues postpaid; the dunning ladder, not the postpaid guard, is what escalates it. If Phase 10 needs to block writes it does so through the `RESTRICTED` state (Phase 11), not by lying about the payment method.
+2. **Phase 9 left `plan_change_pending_confirmation` set when a first-upgrade charge fails** (no APPROVED webhook clears it). Phase 10 owns the failed-charge path — it should **clear that flag when it moves the subscription to `GRACE`/`RESTRICTED` on a failed initial charge**, or the org is stuck unable to switch plans. Wire it into the same transition.
 
-**Watch for the plan's recurring failure shape** — two predicates that must mean the same thing. Proration maths is the obvious host for it here: the amount charged and the entitlement granted must derive from one plan-change computation, not two.
+**Watch for the plan's recurring failure shape** — the state machine is the host this time: the set of transitions the diagram permits and the set `process_dunning` can actually drive must be the same set, defined once. A transition the beat task performs that the validator does not list (or vice versa) is the two-predicates defect in state-machine form.
 
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |
 |---|---|---|---|---|
-| 10 | Grace, dunning, and the restricted transition | 3 | — | — |
 | 11 | Restricted enforcement and sync pause | 3 | 4 | — |
 | 12 | Usage API and approaching-limit warnings | 2 | — | — |
 | 13 | Cycle close, overage charge, and reconciliation | 4 | 4 | 3 |
