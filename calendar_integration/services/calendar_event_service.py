@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 
 from audit.constants import AuditAction, AuditActorType
 from audit.diff import compute_diff
@@ -100,6 +101,8 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from payments.exceptions import OverLimitError
+from payments.services.metering_service import MeteringService
+from payments.services.subscription_service import resolve_billing_period
 from public_api.models import SystemUser
 from users.models import User
 
@@ -135,6 +138,8 @@ if TYPE_CHECKING:
     from calendar_integration.services.dataclasses import AvailableTimeWindow
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
     from calendar_integration.services.recurrence_manager import RecurrenceManager
+    from payments.models import Subscription
+    from payments.services.entitlement_service import EntitlementService
 
 
 class EventServiceHost(Protocol):
@@ -174,7 +179,9 @@ class EventServiceHost(Protocol):
         calendar_id: int,
         event_data: CalendarEventInputData,
         *,
+        bypass_limits: bool = False,
         _enforce_policy: bool = True,
+        _check_postpaid_allowance: bool = True,
     ) -> CalendarEvent: ...
 
     def delete_event(
@@ -182,7 +189,11 @@ class EventServiceHost(Protocol):
     ) -> None: ...
 
     def _create_bundle_event(
-        self, bundle_calendar: Calendar, event_data: CalendarEventInputData
+        self,
+        bundle_calendar: Calendar,
+        event_data: CalendarEventInputData,
+        *,
+        bypass_limits: bool = False,
     ) -> CalendarEvent: ...
 
     def _update_bundle_event(
@@ -400,6 +411,87 @@ class CalendarEventService:
         return _convert_naive_utc_datetime_to_timezone(datetime_obj, iana_tz)
 
     # ------------------------------------------------------------------
+    # Post-paid allowance guard
+    # ------------------------------------------------------------------
+
+    def _postpaid_entitlement_service(self, *, bypass_limits: bool) -> EntitlementService | None:
+        """The entitlement service to guard with, or ``None`` to skip the guard.
+
+        Three separate reasons to skip, resolved in one place so no guarded path can
+        honour one and forget another:
+
+        - ``bypass_limits=True`` -- this call asked to be exempt.
+        - ``context.bypass_entitlement_limits`` -- the whole *service* was placed in
+          bypass mode by ``CalendarService.authenticate(bypass_limits=True)``. The
+          provider-entitlement gate already honours it; this makes the post-paid guard
+          agree, instead of a service in explicit bypass mode still being blockable.
+        - no ``entitlement_service`` on the context -- a sub-service built directly in
+          a test without DI, mirroring ``audit_service``'s no-op-when-absent convention.
+        """
+        if bypass_limits or self._context.bypass_entitlement_limits:
+            return None
+        return self._context.entitlement_service
+
+    @staticmethod
+    def _check_new_master_postpaid_allowance(
+        entitlement_service: EntitlementService, event: CalendarEvent
+    ) -> None:
+        """Re-check the post-paid allowance against the **exact** unit count of a
+        just-created recurring master, and roll the create back if it does not fit.
+
+        Why a second check exists at all. ``current_usage`` counts
+        ``MeteredOccurrence`` rows -- one per *occurrence*. The stage-1 guard above
+        charges 1 per *master*, which is exact for a one-off event and a large
+        undercount for a recurring one: a free organization at 49/50 could create an
+        open-ended daily series (``49 + 1 <= 50``), accrue ~30 unbillable occurrences
+        every month from it forever, and never trip the guard on that series again.
+        Guard and meter must count the same thing.
+
+        Why it runs *after* the insert. The expansion lives in Postgres
+        (``calculate_recurring_events``, keyed on the event's id), so a rule with no
+        row cannot be expanded -- and re-deriving the count in Python from the rrule
+        string would be a second expansion, the exact "two predicates that must agree"
+        defect this plan keeps producing. So the row is written first and
+        ``MeteringService.occurrence_starts_of`` -- the meter's own expansion, shared
+        rather than copied -- is asked how many occurrences it yields.
+        ``create_event`` is ``@transaction.atomic``, so raising here rolls the insert
+        (and everything else in the caller's transaction) back.
+
+        The residual cost of that ordering is that a *provider* write may already have
+        happened for an adapter-backed calendar, which no rollback undoes. It is
+        narrow: stage 1's ``delta=1`` lower bound has already rejected every
+        organization with no headroom at all, so this can only fire in the band where
+        there is room for one booking but not for the whole series. And it is not new
+        -- the provider write is inside the atomic block already, so any later failure
+        (``event.save()`` conflicting, a permission grant erroring) has always had the
+        same shape.
+
+        The window is ``[now, end of the current billing period)``: exactly the
+        occurrences the meter will bill against the allowance ``current_usage`` was
+        just read from. A series that starts next period therefore contributes nothing
+        here -- correct for *this* period's allowance -- but it is still charged
+        ``max(1, ...)``, because creating a master that bills nothing now and plenty
+        later must not be free at the guard.
+        """
+        if not event.is_recurring:
+            # Stage 1's delta=1 was already exact for a one-off event.
+            return
+
+        def resolve_delta(subscription: Subscription) -> int:
+            now = timezone.now()
+            _period_start, period_end = resolve_billing_period(subscription, now)
+            if period_end <= now:
+                return 1
+            starts = MeteringService.occurrence_starts_of(event, now, period_end)
+            return max(1, sum(1 for start in starts if now <= start < period_end))
+
+        result = entitlement_service.check_postpaid_allowance(
+            event.organization, lock=True, delta_resolver=resolve_delta
+        )
+        if not result.allowed:
+            raise OverLimitError.from_check_result(result)
+
+    # ------------------------------------------------------------------
     # Public event CRUD
     # ------------------------------------------------------------------
 
@@ -409,19 +501,31 @@ class CalendarEventService:
         calendar_id: int,
         event_data: CalendarEventInputData,
         *,
+        bypass_limits: bool = False,
         _check_postpaid_allowance: bool = True,
     ) -> CalendarEvent:
         """
         Create a new event in the calendar.
         :param calendar_id: Internal ID of the calendar
         :param event_data: Dictionary containing event details.
+        :param bypass_limits: When True, skips the post-paid ``event_occurrences``
+            allowance guard. The plan's Enforcement-bypass Guiding Decision: every
+            guarded write takes this so a management command, a data migration, or a
+            support-side repair can run against an organization that is over its
+            allowance. Same spelling and default as the pre-paid guards
+            (``CalendarService.create_calendar`` / ``create_bundle_calendar`` /
+            ``create_availability_windows``).
         :param _check_postpaid_allowance: Internal flag; callers must NOT pass this.
-            Set to ``False`` by the bundle fan-out (``CalendarBundleService.create_bundle_event``),
-            which already checked headroom once for the whole fan-out count before
-            creating anything -- re-checking per child here would ask the same
-            question against an unchanged ``MeteredOccurrence`` count (nothing is
-            metered until a Celery sweep runs) and add nothing but redundant row
-            locks.
+            Distinct from ``bypass_limits``: that one is a *caller's* request to be
+            exempt, this one records that the allowance was already checked, correctly,
+            somewhere else on this same write. Set to ``False`` by the bundle fan-out
+            (``CalendarBundleService.create_bundle_event``), which checks headroom once
+            for the whole ``1 + n_internal_children`` count before creating anything --
+            re-checking per child here would ask the same question against an unchanged
+            ``MeteredOccurrence`` count (nothing is metered until a Celery sweep runs)
+            and add nothing but redundant row locks -- and by
+            ``transfer_event``, where the create is paired with a delete of
+            the same event and is therefore net-zero on billable units.
         :return: Response from the calendar client.
         """
         context = cast("BaseCalendarService", self._context)
@@ -481,27 +585,32 @@ class CalendarEventService:
             raise PermissionDenied("You do not have permission to update this event.")
 
         if calendar.calendar_type == CalendarType.BUNDLE:
-            return self._host._create_bundle_event(bundle_calendar=calendar, event_data=event_data)
-
-        # Postpaid ``event_occurrences`` allowance guard. ``event_data.parent_event_id``
-        # set means this create is a recurrence *exception* -- a modification of an
-        # occurrence slot the owning master's rule already accounts for, not a new
-        # one (``calculate_recurring_events`` substitutes the exception row in place
-        # of the original occurrence; see ``MeteringService.expand_occurrence_identities``).
-        # It is deliberately excluded here with the exact predicate
-        # ``occurrence_bearing_masters_in_range`` uses to exclude the same rows
-        # (``parent_recurring_object__isnull=True``) -- checking it as a new unit
-        # would disagree with what the meter will ever bill for it. Every other
-        # create here (a one-off event, a new recurring master, or a
-        # bulk-modification continuation) is a genuinely new master and is checked.
-        if (
-            _check_postpaid_allowance
-            and event_data.parent_event_id is None
-            and self._context.entitlement_service is not None
-        ):
-            result = self._context.entitlement_service.check_postpaid_allowance(
-                context.organization, lock=True
+            return self._host._create_bundle_event(
+                bundle_calendar=calendar, event_data=event_data, bypass_limits=bypass_limits
             )
+
+        # Postpaid ``event_occurrences`` allowance guard, stage 1 of 2 (see
+        # ``_check_new_master_postpaid_allowance`` for stage 2 and why there are two).
+        #
+        # ``event_data.parent_event_id`` set means this create is a recurrence
+        # *exception* -- a modification of an occurrence slot the owning master's rule
+        # already accounts for, not a new one (``calculate_recurring_events``
+        # substitutes the exception row in place of the original occurrence; see
+        # ``MeteringService.expand_occurrence_identities``). It is deliberately
+        # excluded here with the exact predicate ``occurrence_bearing_masters_in_range``
+        # uses to exclude the same rows (``parent_recurring_object__isnull=True``) --
+        # checking it as a new unit would disagree with what the meter will ever bill
+        # for it. Every other create here (a one-off event, a new recurring master, or
+        # a bulk-modification continuation) is a genuinely new master and is checked.
+        #
+        # ``delta=1`` is exact for a one-off event and a deliberate **lower bound** for
+        # a recurring one, so this stage can never over-block. It runs here, before the
+        # external provider write below, so the ordinary rejection costs no provider
+        # round-trip and leaves nothing behind at the provider.
+        guard_applies = _check_postpaid_allowance and event_data.parent_event_id is None
+        entitlement_service = self._postpaid_entitlement_service(bypass_limits=bypass_limits)
+        if guard_applies and entitlement_service is not None:
+            result = entitlement_service.check_postpaid_allowance(context.organization, lock=True)
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)
 
@@ -607,6 +716,12 @@ class CalendarEventService:
             event.recurrence_rule_fk = recurrence_rule  # type: ignore
 
         event.save()
+
+        # Postpaid ``event_occurrences`` allowance guard, stage 2 of 2 -- the exact
+        # unit count for a recurring master, which is only computable now that the row
+        # exists. See ``_check_new_master_postpaid_allowance``.
+        if guard_applies and entitlement_service is not None:
+            self._check_new_master_postpaid_allowance(entitlement_service, event)
 
         EventExternalAttendance.objects.bulk_create(
             [
@@ -1933,7 +2048,21 @@ class CalendarEventService:
         # Route create/delete through the host so the facade's public methods (the
         # original ``self.create_event`` / ``self.delete_event`` call targets) run —
         # preserving the facade-level call graph the existing transfer tests assert on.
-        new_event = self._host.create_event(new_calendar.id, new_event_data)
+        #
+        # ``_check_postpaid_allowance=False``: a transfer is a **move**, not a
+        # creation. The old event is deleted immediately below, so the pair is
+        # net-zero on billable masters — but the guard would compare ``delta=1``
+        # against a ``current_usage`` that already includes the occurrences metered
+        # for the event being moved, and refuse an organization sitting at its
+        # allowance the right to move an event between its own calendars. A 402 for
+        # no net new billable capacity. (It is not perfectly net-zero for the
+        # *meter*: the new master has a new pk, so occurrences already metered under
+        # the old one are re-billed under the new identity. That is the known
+        # identity-churn defect recorded as a Phase 13 precondition, not something
+        # this guard could fix by charging a unit.)
+        new_event = self._host.create_event(
+            new_calendar.id, new_event_data, _check_postpaid_allowance=False
+        )
 
         # Delete the old event
         self._host.delete_event(event.calendar.id, event.id)

@@ -61,3 +61,11 @@ class CalendarServiceContext:
     # convention -- the facade (the only production entry point) always injects a real
     # instance, so this only matters for tests that build a sub-service directly.
     entitlement_service: EntitlementService | None = None
+    # Mirrors ``CalendarService._bypass_entitlement_limits``, set by
+    # ``authenticate(bypass_limits=True)``. Threaded into the snapshot so a sub-service
+    # guard honours the facade's bypass mode too: before this existed, a facade in
+    # bypass mode still had its provider-entitlement gate skipped (that check reads the
+    # facade attribute directly) while ``CalendarEventService``'s post-paid guard --
+    # which reads ``entitlement_service`` off the context -- kept enforcing, so a
+    # service explicitly placed in bypass mode was still blockable.
+    bypass_entitlement_limits: bool = False

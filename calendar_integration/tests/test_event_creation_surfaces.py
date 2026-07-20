@@ -18,11 +18,16 @@ a bundle event over five ``INTERNAL`` children costs 5 units of headroom, one ov
 five Google children costs 1 -- because a ``BlockedTime`` is never billable.
 """
 
+import ast
 import base64
 import datetime
+import pathlib
 from unittest.mock import Mock, patch
 
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
+from django.utils import timezone
 
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
@@ -67,7 +72,6 @@ from payments.models import (
 )
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
-from public_api.services import PublicAPIAuthService
 from users.models import Profile, User
 
 
@@ -118,18 +122,57 @@ def _organization_with_postpaid_limit(
 
 
 def _seed_metered_occurrences(organization: Organization, subscription: Subscription, count: int):
+    """``count`` already-metered occurrences in the subscription's current billing
+    period -- what ``_count_event_occurrences`` reads back as usage.
+
+    Each row points at a **real** ``CalendarEvent``. An earlier version invented
+    ``event_id=800000 + i`` for rows whose events did not exist; that only survived
+    because Django declares FK constraints ``DEFERRABLE INITIALLY DEFERRED`` and a
+    test transaction is rolled back rather than committed, so the check never ran. A
+    fixture that depends on never committing is a fixture that breaks the first time
+    somebody writes a ``transactional_db`` test against it.
+    """
+    seed_calendar = baker.make(
+        Calendar,
+        organization=organization,
+        provider=CalendarProvider.INTERNAL,
+        external_id=f"usage-seed-cal-{organization.pk}",
+    )
+    period_start = subscription.current_period_start
+    events = CalendarEvent.objects.bulk_create(
+        [
+            CalendarEvent(
+                organization=organization,
+                calendar_fk=seed_calendar,
+                title=f"Seeded usage {i}",
+                description="",
+                start_time_tz_unaware=(period_start + datetime.timedelta(hours=i)).replace(
+                    tzinfo=None
+                ),
+                end_time_tz_unaware=(
+                    period_start + datetime.timedelta(hours=i, minutes=30)
+                ).replace(tzinfo=None),
+                timezone="UTC",
+                # `CalendarEvent.external_id` is globally unique and an un-adapted
+                # create stamps `""`, so the seeds must not also use `""` or the very
+                # first real create in the test collides with them.
+                external_id=f"usage-seed-{organization.pk}-{i}",
+            )
+            for i in range(count)
+        ]
+    )
     MeteredOccurrence.objects.bulk_create(
         [
             MeteredOccurrence(
                 organization=organization,
                 subscription=subscription,
-                event_id=800000 + i,
-                occurrence_start=subscription.current_period_start + datetime.timedelta(hours=i),
-                billing_period_start=subscription.current_period_start,
+                event_id=event.pk,
+                occurrence_start=period_start + datetime.timedelta(hours=i),
+                billing_period_start=period_start,
                 is_within_allowance=True,
                 unit_price=0,
             )
-            for i in range(count)
+            for i, event in enumerate(events)
         ]
     )
 
@@ -245,7 +288,7 @@ class TestRestSurface:
 
     def test_unlimited_plan_is_unchanged(self, mock_google_adapter):
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
-        _seed_metered_occurrences(organization, subscription, 10_000)
+        _seed_metered_occurrences(organization, subscription, 1)
         calendar = baker.make(
             Calendar,
             organization=organization,
@@ -351,7 +394,7 @@ class TestTokenSurface:
 
     def test_unlimited_plan_is_unchanged(self):
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
-        _seed_metered_occurrences(organization, subscription, 10_000)
+        _seed_metered_occurrences(organization, subscription, 1)
         calendar = baker.make(
             Calendar,
             organization=organization,
@@ -390,7 +433,15 @@ mutation ScheduleEvent($input: ScheduleEventInput!) {
 def _scoped_system_user(
     organization: Organization, membership: OrganizationMembership
 ) -> tuple[object, str]:
-    auth_service = PublicAPIAuthService()
+    # Built through the container rather than `PublicAPIAuthService()`: its
+    # `audit_service` is a required constructor argument, satisfied by DI at runtime
+    # but not by a bare call (which mypy correctly rejects). Imported inside the
+    # function because `di_core.containers.container` is None until app startup wires
+    # it -- a module-level `from ... import container` would capture the None.
+    from di_core.containers import container
+
+    assert container is not None
+    auth_service = container.public_api_auth_service()
     system_user, token = auth_service.create_system_user(
         integration_name=f"sched-surface-{organization.pk}",
         organization=organization,
@@ -468,7 +519,7 @@ class TestPublicApiScheduleEventSurface:
     def test_unlimited_plan_is_unchanged(self, mock_rate_limiter):
         mock_rate_limiter.return_value = iter([None])
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
-        _seed_metered_occurrences(organization, subscription, 10_000)
+        _seed_metered_occurrences(organization, subscription, 1)
         _owner, membership, calendar = _owner_with_calendar(organization)
         system_user, token = _scoped_system_user(organization, membership)
 
@@ -581,7 +632,7 @@ class TestBookingCodeEventSurface:
     def test_unlimited_plan_is_unchanged(self, mock_rate_limiter):
         mock_rate_limiter.return_value = iter([None])
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
-        _seed_metered_occurrences(organization, subscription, 10_000)
+        _seed_metered_occurrences(organization, subscription, 1)
         calendar = baker.make(
             Calendar,
             organization=organization,
@@ -714,7 +765,7 @@ class TestBookingCodeGroupEventSurface:
     def test_unlimited_plan_is_unchanged(self, mock_rate_limiter):
         mock_rate_limiter.return_value = iter([None])
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
-        _seed_metered_occurrences(organization, subscription, 10_000)
+        _seed_metered_occurrences(organization, subscription, 1)
         group, slot, calendar = _group_with_one_slot(organization)
         _token, code = _group_booking_code(organization, group)
 
@@ -826,7 +877,7 @@ class TestBulkSyncWriterSurface:
 
     def test_unlimited_plan_is_unchanged(self):
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
-        _seed_metered_occurrences(organization, subscription, 10_000)
+        _seed_metered_occurrences(organization, subscription, 1)
         sync_service, calendar = _sync_setup(organization)
 
         from calendar_integration.models import CalendarSync
@@ -1065,32 +1116,668 @@ class TestBundleEventFanOutHeadroom:
 
 
 # ----------------------------------------------------------------------------------
-# Coverage registry: every named surface has a probe here
+# Inertness, observed rather than inferred
 # ----------------------------------------------------------------------------------
 
-GUARDED_SURFACES = {
-    "rest": TestRestSurface,
-    "token": TestTokenSurface,
-    "public_api_schedule_event": TestPublicApiScheduleEventSurface,
-    "booking_code_single_event": TestBookingCodeEventSurface,
-    "booking_code_group_event": TestBookingCodeGroupEventSurface,
-    "bulk_sync_writer": TestBulkSyncWriterSurface,
+
+@pytest.mark.django_db
+class TestUnlimitedPlanTakesNoLock:
+    """The ``test_unlimited_plan_is_unchanged`` probes above assert a 201/success,
+    which is necessary but blind to *how* the guard reached it.
+
+    An earlier revision of ``check_postpaid_allowance`` took ``SELECT ... FOR UPDATE``
+    on the billing root's ``Subscription`` row **before** resolving the limit, so every
+    event creation for every organization -- all of which are on ``unlimited`` for this
+    whole rollout -- took an organization-wide row lock, inside ``create_event``'s
+    transaction, held across the external provider round-trip. Two users booking
+    different calendars of the same organization serialized on it. Every one of those
+    tests still passed, because the request still returned 201.
+
+    So this asserts the property directly: on the unlimited path the guard issues no
+    row lock at all. A future change cannot silently put one back.
+    """
+
+    def test_no_row_lock_is_taken_on_the_unlimited_path(self):
+        organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        calendar = baker.make(
+            Calendar,
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+            accepts_public_scheduling=True,
+            manage_available_windows=False,
+            external_id=f"nolock-cal-{organization.pk}",
+        )
+        facade = CalendarService()
+        facade.initialize_without_provider(organization=organization)
+
+        start = subscription.current_period_start + datetime.timedelta(days=1)
+        with CaptureQueriesContext(connection) as captured:
+            facade.create_event(
+                calendar.id,
+                CalendarEventInputData(
+                    title="Unlimited, unlocked",
+                    description="",
+                    start_time=start,
+                    end_time=start + datetime.timedelta(hours=1),
+                    timezone="UTC",
+                    attendances=[],
+                    external_attendances=[],
+                    resource_allocations=[],
+                ),
+            )
+
+        locking = [
+            query["sql"]
+            for query in captured.captured_queries
+            if "FOR UPDATE" in query["sql"].upper()
+            and "PAYMENTS_SUBSCRIPTION" in query["sql"].upper()
+        ]
+        assert not locking, (
+            "check_postpaid_allowance took SELECT ... FOR UPDATE on payments_subscription "
+            "for an organization with a NULL event_occurrences ceiling. Every organization "
+            "is on `unlimited` for this rollout and create_event is @transaction.atomic "
+            "around a provider round-trip, so this serializes every booking in the "
+            f"organization on one row for a ceiling that cannot block anybody: {locking}"
+        )
+
+    def test_a_finite_ceiling_still_takes_the_lock(self):
+        """The negative control: the lock is *deferred* until a real ceiling exists,
+        not deleted. Without this, "take no lock" would pass by removing the guard's
+        concurrency protection entirely."""
+        organization, subscription = _organization_with_postpaid_limit(50, BillingState.ACTIVE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        calendar = baker.make(
+            Calendar,
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+            accepts_public_scheduling=True,
+            manage_available_windows=False,
+            external_id=f"lock-cal-{organization.pk}",
+        )
+        facade = CalendarService()
+        facade.initialize_without_provider(organization=organization)
+
+        start = subscription.current_period_start + datetime.timedelta(days=1)
+        with CaptureQueriesContext(connection) as captured:
+            facade.create_event(
+                calendar.id,
+                CalendarEventInputData(
+                    title="Finite ceiling, locked",
+                    description="",
+                    start_time=start,
+                    end_time=start + datetime.timedelta(hours=1),
+                    timezone="UTC",
+                    attendances=[],
+                    external_attendances=[],
+                    resource_allocations=[],
+                ),
+            )
+
+        assert any(
+            "FOR UPDATE" in query["sql"].upper() and "PAYMENTS_SUBSCRIPTION" in query["sql"].upper()
+            for query in captured.captured_queries
+        )
+
+
+# ----------------------------------------------------------------------------------
+# Recurring masters: the guard must charge occurrences, not masters
+# ----------------------------------------------------------------------------------
+
+
+def _bookable_calendar(organization: Organization, slug: str) -> Calendar:
+    return baker.make(
+        Calendar,
+        organization=organization,
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.PERSONAL,
+        accepts_public_scheduling=True,
+        manage_available_windows=False,
+        external_id=f"{slug}-{organization.pk}",
+    )
+
+
+@pytest.mark.django_db
+class TestRecurringMasterCostsItsOccurrences:
+    """``current_usage`` counts ``MeteredOccurrence`` rows -- one per *occurrence*.
+    A recurring master is one row in ``CalendarEvent`` but ~30 occurrences a month in
+    the meter, so a guard that charges 1 per master lets an organization one unit
+    below its ceiling create an open-ended daily series and accrue unbillable usage
+    forever, never tripping the guard on that series again.
+
+    The delta comes from ``MeteringService.occurrence_starts_of`` -- the meter's own
+    expansion, called rather than re-implemented.
+    """
+
+    def test_a_daily_series_costs_its_occurrences_not_one(self):
+        organization, subscription = _organization_with_postpaid_limit(10, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 9)
+        calendar = _bookable_calendar(organization, "recurring-cal")
+        facade = CalendarService()
+        facade.initialize_without_provider(organization=organization)
+
+        # 9 used of 10: a *single* event would fit (9 + 1 <= 10). A daily series of 5
+        # does not (9 + 5 > 10), and the old master-counting guard would have allowed it.
+        start = timezone.now() + datetime.timedelta(days=1)
+        with pytest.raises(OverLimitError) as exc_info:
+            facade.create_event(
+                calendar.id,
+                CalendarEventInputData(
+                    title="Daily standup",
+                    description="",
+                    start_time=start,
+                    end_time=start + datetime.timedelta(minutes=30),
+                    timezone="UTC",
+                    recurrence_rule="RRULE:FREQ=DAILY;COUNT=5",
+                    attendances=[],
+                    external_attendances=[],
+                    resource_allocations=[],
+                ),
+            )
+
+        assert exc_info.value.resource_key == LimitedResource.EVENT_OCCURRENCES
+        assert exc_info.value.remedy == LimitRemedy.ADD_PAYMENT_METHOD
+        # Stage 2 runs after the insert and rolls it back; nothing survives.
+        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+
+    def test_a_single_event_of_the_same_shape_still_fits(self):
+        """The control for the test above: with 9 of 10 used, one booking is allowed.
+        Without this, the block above could just be an over-eager guard."""
+        organization, subscription = _organization_with_postpaid_limit(10, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 9)
+        calendar = _bookable_calendar(organization, "single-cal")
+        facade = CalendarService()
+        facade.initialize_without_provider(organization=organization)
+
+        start = timezone.now() + datetime.timedelta(days=1)
+        event = facade.create_event(
+            calendar.id,
+            CalendarEventInputData(
+                title="One booking",
+                description="",
+                start_time=start,
+                end_time=start + datetime.timedelta(minutes=30),
+                timezone="UTC",
+                attendances=[],
+                external_attendances=[],
+                resource_allocations=[],
+            ),
+        )
+
+        assert event.pk is not None
+
+    def test_a_series_that_fits_is_created(self):
+        organization, subscription = _organization_with_postpaid_limit(10, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 4)
+        calendar = _bookable_calendar(organization, "fits-cal")
+        facade = CalendarService()
+        facade.initialize_without_provider(organization=organization)
+
+        start = timezone.now() + datetime.timedelta(days=1)
+        event = facade.create_event(
+            calendar.id,
+            CalendarEventInputData(
+                title="Daily standup that fits",
+                description="",
+                start_time=start,
+                end_time=start + datetime.timedelta(minutes=30),
+                timezone="UTC",
+                recurrence_rule="RRULE:FREQ=DAILY;COUNT=5",
+                attendances=[],
+                external_attendances=[],
+                resource_allocations=[],
+            ),
+        )
+
+        assert event.pk is not None
+        assert event.is_recurring
+
+    def test_create_recurring_event_shortcut_is_guarded_the_same_way(self):
+        """``create_recurring_event`` is a thin shortcut over ``create_event``; it must
+        not be a way around the occurrence-counting guard."""
+        organization, subscription = _organization_with_postpaid_limit(10, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 9)
+        calendar = _bookable_calendar(organization, "shortcut-cal")
+        facade = CalendarService()
+        facade.initialize_without_provider(organization=organization)
+
+        start = timezone.now() + datetime.timedelta(days=1)
+        with pytest.raises(OverLimitError):
+            facade.create_recurring_event(
+                calendar_id=calendar.id,
+                title="Daily standup",
+                description="",
+                start_time=start,
+                end_time=start + datetime.timedelta(minutes=30),
+                timezone="UTC",
+                recurrence_rule="RRULE:FREQ=DAILY;COUNT=5",
+            )
+
+    def test_the_unlimited_plan_is_unchanged_for_a_series(self):
+        organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        calendar = _bookable_calendar(organization, "unlimited-recurring-cal")
+        facade = CalendarService()
+        facade.initialize_without_provider(organization=organization)
+
+        start = timezone.now() + datetime.timedelta(days=1)
+        with CaptureQueriesContext(connection) as captured:
+            event = facade.create_event(
+                calendar.id,
+                CalendarEventInputData(
+                    title="Unlimited daily standup",
+                    description="",
+                    start_time=start,
+                    end_time=start + datetime.timedelta(minutes=30),
+                    timezone="UTC",
+                    recurrence_rule="RRULE:FREQ=DAILY;COUNT=5",
+                    attendances=[],
+                    external_attendances=[],
+                    resource_allocations=[],
+                ),
+            )
+
+        assert event.pk is not None
+        # The expansion is behind the unlimited early-return, so an unlimited
+        # organization does not pay for it -- nor for a row lock.
+        assert not [
+            query["sql"]
+            for query in captured.captured_queries
+            if "FOR UPDATE" in query["sql"].upper()
+            and "PAYMENTS_SUBSCRIPTION" in query["sql"].upper()
+        ]
+
+
+# ----------------------------------------------------------------------------------
+# Internal re-entries into create_event, and the bypass switch
+# ----------------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestInternalCreateEventReentries:
+    def test_bulk_modification_continuation_is_guarded(self):
+        """Splitting a series creates a *continuation* master through ``create_event``.
+        It is a genuinely new master the meter enumerates in its own right, so it is
+        checked -- and, being recurring, checked for its occurrences."""
+        organization, subscription = _organization_with_postpaid_limit(20, BillingState.FREE)
+        calendar = _bookable_calendar(organization, "bulkmod-cal")
+        facade = CalendarService()
+        facade.initialize_without_provider(organization=organization)
+
+        # Microsecond-free: `OccurrenceValidator.validate_modification_date` compares
+        # the split date against `dateutil.rrule` output, which truncates microseconds,
+        # so a `now()`-derived start would never match its own second occurrence.
+        start = (timezone.now() + datetime.timedelta(days=1)).replace(microsecond=0)
+        parent = facade.create_event(
+            calendar.id,
+            CalendarEventInputData(
+                title="Weekly sync",
+                description="",
+                start_time=start,
+                end_time=start + datetime.timedelta(minutes=30),
+                timezone="UTC",
+                recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=5",
+                attendances=[],
+                external_attendances=[],
+                resource_allocations=[],
+            ),
+        )
+
+        # Fill the allowance to the brim before splitting, so the continuation's own
+        # create is the thing that has to fail.
+        _seed_metered_occurrences(organization, subscription, 20)
+
+        # The split first *updates* the parent (to truncate it), which runs the
+        # ordinary permission-token check -- unrelated to the guard under test and
+        # needing a full event-token fixture to satisfy. Mocked open; the guard and
+        # every write stay real.
+        with (
+            patch.object(CalendarPermissionService, "can_perform_update", return_value=True),
+            pytest.raises(OverLimitError) as exc_info,
+        ):
+            facade.create_recurring_event_bulk_modification(
+                parent_event=parent,
+                modification_start_date=parent.start_time + datetime.timedelta(weeks=1),
+                modified_title="Weekly sync (moved)",
+            )
+
+        assert exc_info.value.resource_key == LimitedResource.EVENT_OCCURRENCES
+
+    def test_transfer_between_calendars_is_not_charged(self):
+        """A transfer is a **move**: ``transfer_event`` creates the event on
+        the target calendar and deletes it from the source, so it is net-zero on
+        billable masters. Charging it would compare ``delta=1`` against a usage count
+        that already includes the moved event's own occurrences and hand an
+        organization at its allowance a 402 for no net new billable capacity."""
+        organization, subscription = _organization_with_postpaid_limit(1, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        source = _bookable_calendar(organization, "transfer-src")
+        target = _bookable_calendar(organization, "transfer-dst")
+
+        start = subscription.current_period_start + datetime.timedelta(days=1)
+        event = baker.make(
+            CalendarEvent,
+            organization=organization,
+            calendar_fk=source,
+            title="Movable",
+            description="",
+            start_time_tz_unaware=start.replace(tzinfo=None),
+            end_time_tz_unaware=(start + datetime.timedelta(hours=1)).replace(tzinfo=None),
+            timezone="UTC",
+            external_id="transfer-external-id",
+        )
+
+        facade = CalendarService()
+        facade.initialize_without_provider(organization=organization)
+        # `transfer_event` requires an authenticated service (it reads the
+        # source event back off the provider). Everything below the guard is real.
+        adapter = Mock()
+        adapter.get_event.return_value = CalendarEventAdapterOutputData(
+            calendar_external_id=source.external_id,
+            external_id=event.external_id,
+            title="Movable",
+            description="",
+            start_time=start,
+            end_time=start + datetime.timedelta(hours=1),
+            timezone="UTC",
+            attendees=[],
+            resources=[],
+            original_payload={},
+        )
+        adapter.create_event.return_value = CalendarEventAdapterOutputData(
+            calendar_external_id=target.external_id,
+            external_id="transferred-external-id",
+            title="Movable",
+            description="",
+            start_time=start,
+            end_time=start + datetime.timedelta(hours=1),
+            timezone="UTC",
+            attendees=[],
+            resources=[],
+            original_payload={},
+        )
+        facade.account = Mock(name="fake-social-account")
+        facade.calendar_adapter = adapter
+
+        # At the allowance (1 of 1) with no payment method: a *creation* would be
+        # blocked here (that is what TestRestSurface asserts). A move must not be.
+        #
+        # The transfer's second half (`delete_event` on the source) runs the ordinary
+        # permission-token update check, which has nothing to do with the post-paid
+        # guard under test and would need a full event-token fixture to satisfy. It is
+        # mocked open; the guard, both creates, and every DB write stay real.
+        with patch.object(CalendarPermissionService, "can_perform_update", return_value=True):
+            moved = facade.transfer_event(event, target)
+
+        assert moved.pk is not None
+        assert moved.calendar_fk_id == target.id
+        assert not CalendarEvent.objects.filter(pk=event.pk).exists()
+
+    def test_bypass_limits_skips_the_guard(self):
+        """The plan's Enforcement-bypass Guiding Decision: every guarded write takes
+        ``bypass_limits`` so a management command or a support repair can run against
+        an organization that is over its allowance."""
+        organization, subscription = _organization_with_postpaid_limit(1, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        calendar = _bookable_calendar(organization, "bypass-cal")
+        facade = CalendarService()
+        facade.initialize_without_provider(organization=organization)
+
+        start = subscription.current_period_start + datetime.timedelta(days=1)
+        event_data = CalendarEventInputData(
+            title="Bypassed",
+            description="",
+            start_time=start,
+            end_time=start + datetime.timedelta(hours=1),
+            timezone="UTC",
+            attendances=[],
+            external_attendances=[],
+            resource_allocations=[],
+        )
+
+        # Control: without the bypass this exact call is blocked.
+        with pytest.raises(OverLimitError):
+            facade.create_event(calendar.id, event_data)
+
+        event = facade.create_event(calendar.id, event_data, bypass_limits=True)
+        assert event.pk is not None
+
+    def test_a_service_in_bypass_mode_skips_the_guard(self):
+        """``CalendarService.authenticate(bypass_limits=True)`` puts the whole service
+        in bypass mode. The provider-entitlement gate honours it; so must this guard,
+        or a service explicitly placed in bypass mode is still post-paid-blocked."""
+        organization, subscription = _organization_with_postpaid_limit(1, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        calendar = _bookable_calendar(organization, "bypassmode-cal")
+        facade = CalendarService()
+        facade.initialize_without_provider(organization=organization)
+        facade._bypass_entitlement_limits = True
+
+        start = subscription.current_period_start + datetime.timedelta(days=1)
+        event = facade.create_event(
+            calendar.id,
+            CalendarEventInputData(
+                title="Bypass mode",
+                description="",
+                start_time=start,
+                end_time=start + datetime.timedelta(hours=1),
+                timezone="UTC",
+                attendances=[],
+                external_attendances=[],
+                resource_allocations=[],
+            ),
+        )
+
+        assert event.pk is not None
+
+
+@pytest.mark.django_db
+class TestSyncRecoversOnceHeadroomIsRestored:
+    """An over-allowance sync is refused, recorded as ``FAILED``, and retried on the
+    next scheduled pass. Nothing in the ``CalendarSync`` row distinguishes that from a
+    provider outage, so the refusal is logged with the organization and the remedy --
+    and, critically, it must **self-heal**: once headroom exists, the very next sync
+    over the same window must succeed with no manual replay."""
+
+    def test_the_same_sync_succeeds_once_headroom_exists(self):
+        organization, subscription = _organization_with_postpaid_limit(1, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        sync_service, calendar = _sync_setup(organization)
+
+        from calendar_integration.models import CalendarSync
+
+        calendar_sync = CalendarSync.objects.create(
+            organization=organization,
+            calendar=calendar,
+            start_datetime=datetime.datetime.now(datetime.UTC),
+            end_datetime=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30),
+            should_update_events=False,
+        )
+        sync_service._context.calendar_adapter.get_events.return_value = {
+            "events": [_recurring_master_adapter_event("sync-recovers")],
+            "next_sync_token": None,
+        }
+
+        sync_service.sync_events(calendar_sync)
+        calendar_sync.refresh_from_db()
+        assert calendar_sync.status == "failed"
+
+        # Headroom restored (here by attaching a payment method -- the remedy the
+        # refusal reports). No replay, no manual intervention: just the next pass.
+        subscription.billing_state = BillingState.ACTIVE
+        subscription.save(update_fields=["billing_state"])
+
+        sync_service.sync_events(calendar_sync)
+        calendar_sync.refresh_from_db()
+        assert calendar_sync.status == "success"
+        assert CalendarEvent.objects.filter(calendar=calendar, external_id="sync-recovers").exists()
+
+
+# ----------------------------------------------------------------------------------
+# Coverage registry: every module that reaches the guard has a probe here
+# ----------------------------------------------------------------------------------
+
+#: Repository root, for the source walk below.
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+#: The three modules that *implement* the guarded write chain rather than consume it,
+#: excluded from the derived set below. Each has a reason, not a convenience:
+#:
+#: - ``calendar_event_service.py`` holds the guard itself, and its internal
+#:   re-entries into ``create_event`` (``create_recurring_event``, the
+#:   bulk-modification continuation, ``transfer_event``) are covered by
+#:   ``TestInternalCreateEventReentries`` below rather than by a "surface" probe.
+#: - ``calendar_service.py`` is the facade that forwards to it.
+#: - ``calendar_bundle_service.py`` is the fan-out, covered by
+#:   ``TestBundleEventFanOutHeadroom``.
+_GUARD_IMPLEMENTATION_MODULES = {
+    "calendar_integration/services/calendar_event_service.py",
+    "calendar_integration/services/calendar_service.py",
+    "calendar_integration/services/calendar_bundle_service.py",
+}
+
+#: Call names that mean "this module can trip the post-paid guard": the two service
+#: entry points that route into ``CalendarEventService.create_event``, and a direct
+#: call to the guard for a writer (the sync path) that does not go through it.
+_GUARD_REACHING_CALLS = {"create_event", "create_recurring_event", "check_postpaid_allowance"}
+
+#: Receivers whose ``create_event`` is the *provider* adapter's (a Google/Microsoft
+#: API write), not this service's. ``ExternalEventChangeRequestService`` calls
+#: ``write_adapter.create_event`` to re-create an event on the provider after an
+#: undone deletion -- no local ``CalendarEvent`` is created and nothing is metered,
+#: so it is not a guarded surface.
+_ADAPTER_RECEIVER_MARKERS = ("adapter", "client")
+
+
+def _receiver_name(node: ast.Attribute) -> str:
+    """The identifier the guarded call is made *on* (``x.y.create_event`` -> ``y``)."""
+    value = node.value
+    if isinstance(value, ast.Attribute):
+        return value.attr
+    if isinstance(value, ast.Name):
+        return value.id
+    return ""
+
+
+#: Every module the walk below is expected to find, mapped to the test class(es) that
+#: drive it. The **keys are asserted against the source tree**, in both directions --
+#: this is the difference between this test and the hand-written literal it replaced,
+#: which compared a dict in this file against a list in this file and would therefore
+#: have passed unchanged when a seventh entry point appeared.
+GUARDED_SURFACES: dict[str, tuple[type, ...]] = {
+    # REST (`CalendarEventViewSet`) and the token REST surface share one serializer,
+    # which is the module that actually issues the create.
+    "calendar_integration/serializers.py": (TestRestSurface, TestTokenSurface),
+    # `createCalendarEventWithCode` (direct) and `createCalendarGroupEventWithCode`
+    # (via `calendar_group_service`, below).
+    "calendar_integration/mutations.py": (
+        TestBookingCodeEventSurface,
+        TestBookingCodeGroupEventSurface,
+    ),
+    "public_api/mutations.py": (TestPublicApiScheduleEventSurface,),
+    "calendar_integration/services/calendar_group_service.py": (TestBookingCodeGroupEventSurface,),
+    "calendar_integration/services/calendar_sync_service.py": (TestBulkSyncWriterSurface,),
 }
 
 
-def test_every_named_surface_has_a_blocked_and_unlimited_probe():
-    """The plan names exactly six ``CalendarEvent`` creation entry points. A
-    surface class registered here without both a blocked-at-the-allowance and an
-    unlimited-plan test method would defeat the point of this file."""
-    assert set(GUARDED_SURFACES) == {
-        "rest",
-        "token",
-        "public_api_schedule_event",
-        "booking_code_single_event",
-        "booking_code_group_event",
-        "bulk_sync_writer",
-    }
-    for name, test_class in GUARDED_SURFACES.items():
-        method_names = {m for m in dir(test_class) if m.startswith("test_")}
-        assert any("blocked" in m for m in method_names), f"{name} has no blocked-path test"
-        assert any("unlimited" in m for m in method_names), f"{name} has no unlimited-plan test"
+def _modules_reaching_the_guard() -> set[str]:
+    """Every module in the tree that can trip the post-paid guard, read out of the
+    source with ``ast`` rather than listed by hand.
+
+    Tests, migrations, factories, and the calendar *adapters* (whose own
+    ``create_event`` talks to Google/Microsoft, not to this service) are excluded, as
+    are the three guard-implementation modules above.
+
+    Scoped to this project's own **first-party Django app packages** (resolved from
+    ``django.apps``, kept to those living under the repo), not a blind ``rglob`` of the
+    repo root. Two reasons, one correctness and one operational: a blind walk would
+    read non-source trees like ``mediafiles`` / ``templates`` / a nested
+    ``.claude/worktrees`` checkout of this same repo -- making the result depend on
+    what else is on disk -- and parsing every one of them is slow enough to trip this
+    test's ``pytest-timeout`` under parallel load. Walking only the app packages is
+    both the correct set and an order of magnitude less work.
+    """
+    from django.apps import apps
+
+    app_dirs: list[pathlib.Path] = []
+    for config in apps.get_app_configs():
+        app_path = pathlib.Path(config.path).resolve()
+        try:
+            app_path.relative_to(_REPO_ROOT)
+        except ValueError:
+            continue  # third-party app installed outside the repo
+        app_dirs.append(app_path)
+
+    found: set[str] = set()
+    for app_dir in app_dirs:
+        for path in app_dir.rglob("*.py"):
+            parts = path.relative_to(_REPO_ROOT).parts
+            relative = path.relative_to(_REPO_ROOT).as_posix()
+            if (
+                any(part.startswith(".") for part in parts)
+                or "tests" in parts
+                or "migrations" in parts
+                or "calendar_adapters" in parts
+                or path.name == "factories.py"
+                or relative in _GUARD_IMPLEMENTATION_MODULES
+            ):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - not our source
+                continue
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in _GUARD_REACHING_CALLS
+                    and not any(
+                        marker in _receiver_name(node.func) for marker in _ADAPTER_RECEIVER_MARKERS
+                    )
+                ):
+                    found.add(relative)
+                    break
+    return found
+
+
+def test_every_module_reaching_the_guard_has_a_probe():
+    """Derived from the source tree, and asserted both ways.
+
+    A seventh entry point -- a new viewset, a new mutation, a new service that calls
+    ``create_event`` -- appears in ``discovered`` the moment it is written and fails
+    here until somebody registers a probe for it. And a registration left behind for
+    a module that no longer creates events fails the other assertion, so the registry
+    cannot rot in the direction of *claiming* coverage it no longer has.
+    """
+    discovered = _modules_reaching_the_guard()
+
+    unprobed = discovered - GUARDED_SURFACES.keys()
+    assert not unprobed, (
+        f"These modules reach CalendarEventService.create_event (or the post-paid guard "
+        f"directly) but have no probe in this file: {sorted(unprobed)}. Add one, or add "
+        "the module to _GUARD_IMPLEMENTATION_MODULES with a reason if it implements the "
+        "guarded chain rather than consuming it."
+    )
+
+    stale = GUARDED_SURFACES.keys() - discovered
+    assert not stale, (
+        f"GUARDED_SURFACES registers {sorted(stale)}, which no longer reach the guard. "
+        "Remove the registration, or fix the call path if the surface was meant to stay "
+        "guarded -- otherwise this file reports coverage of a path nothing routes through."
+    )
+
+
+def test_every_registered_surface_has_a_blocked_and_unlimited_probe():
+    """A registered probe class that lost its blocked-path or unlimited-path test
+    would leave the module above nominally covered and actually unchecked."""
+    for module, test_classes in GUARDED_SURFACES.items():
+        for test_class in test_classes:
+            method_names = {m for m in dir(test_class) if m.startswith("test_")}
+            assert any("blocked" in m for m in method_names), (
+                f"{module} -> {test_class.__name__} has no blocked-path test"
+            )
+            assert any("unlimited" in m for m in method_names), (
+                f"{module} -> {test_class.__name__} has no unlimited-plan test"
+            )

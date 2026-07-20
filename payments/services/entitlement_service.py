@@ -526,43 +526,75 @@ class EntitlementService:
             exclude_invitation_id=invitation.pk,
         )
 
+    #: The ``billing_state`` values that are taken to mean "a payment instrument
+    #: exists and can be charged **right now**".
+    #:
+    #: An explicit **allow-list**, deliberately, rather than ``!= FREE``. This is a
+    #: proxy (there is no payment-method record yet), and the two directions of
+    #: being wrong are not symmetric: reading ``True`` for a state with no working
+    #: instrument lets an organization accrue overage nobody can be billed for,
+    #: while reading ``False`` only asks it to attach a card. An allow-list makes a
+    #: newly-added state default to the second, safe direction; a deny-list makes it
+    #: default to the first. The plan's deferred ``TRIALING`` state
+    #: (``…IMPLEMENTATION_PLAN.md``, "no payment method to start") is exactly that
+    #: case, and would have read ``True`` under a negation.
+    PAYMENT_METHOD_BILLING_STATES = frozenset({BillingState.ACTIVE})
+
     def has_payment_method(self, organization: Organization) -> bool:
-        """Does the billing root have a payment method on file?
+        """Does the billing root have a chargeable payment method right now?
 
         Resolved at the billing root, like every other check in this service, so a
         reseller child asks the same question its root would answer.
 
-        No dedicated "payment method" record exists yet — Phase 9 (add-on
-        purchase / plan change) and Phase 10 (dunning) are what actually attach and
-        track one against a payment provider. ``Subscription.billing_state`` is the
-        only currently-persisted signal that distinguishes "never paid" from "on a
-        paid path": ``FREE`` is the state every subscription is created into and
-        never leaves without a successful payment round-trip
-        (``SubscriptionService.change_plan``), so every other state (``ACTIVE``,
-        ``GRACE``, ``RESTRICTED``, ``CANCELLED``) implies a payment method was, at
-        some point, successfully attached. ``GRACE``/``RESTRICTED`` specifically
-        mean a *later* charge failed, not that no payment method was ever
-        provided, so this still reads ``True`` for them: an org already mid-dunning
-        is not additionally interrupted by this guard while its payment problem is
-        being resolved through the separate grace/restricted machinery
-        (Phase 10/11), which is what actually blocks writes on that state.
+        **This is a proxy, and it is temporary.** No dedicated payment-method record
+        exists yet — Phase 9 (add-on purchase / plan change) and Phase 10 (dunning)
+        are what actually attach and track one against a payment provider.
+        ``Subscription.billing_state`` is the only currently-persisted signal, so it
+        stands in. Whoever introduces the real record must re-point this method at it
+        rather than widening the allow-list (see the Phase 10 precondition recorded in
+        ``ai-plans/TRACKING_BILLING_PLANS_AND_LIMITS.md``).
 
-        No subscription resolves to ``False`` — the fail-closed side of postpaid
-        enforcement (see ``check_postpaid_allowance``).
+        Only ``ACTIVE`` qualifies. Each exclusion is a separate decision:
+
+        - ``FREE`` — the state every subscription is created into; it never left it,
+          so no instrument was ever attached.
+        - ``GRACE`` — Phase 10 moves ``ACTIVE → GRACE`` **on a failed charge**, and a
+          ``GRACE`` organization stays fully operational (only ``RESTRICTED`` is
+          write-blocked, in Phase 11). Reading ``True`` here would give an
+          organization whose card just declined *unbounded* unbillable accrual for
+          the whole dunning window — turning the dunning ladder into the largest-bill
+          path in the system. The earlier justification for including it ("the
+          separate grace/restricted machinery is what blocks writes on that state")
+          is true of ``RESTRICTED`` and false of ``GRACE``.
+        - ``RESTRICTED`` — a later charge failed and was never resolved. Phase 11
+          blocks its writes anyway, so this costs nothing and keeps the predicate
+          honest about what it claims to know.
+        - ``CANCELLED`` — the paid relationship is over and the instrument may well
+          have been removed with it. There is no assurance anything is chargeable,
+          which is the only question this method exists to answer. (The reviewer
+          suggested keeping ``CANCELLED`` on the strength of "a payment method was
+          attached at some point"; that is the wrong tense for a guard whose whole
+          purpose is "can we bill the overage we are about to let them accrue".)
+
+        A missing subscription is ``False`` for the same reason: nothing to charge.
+        Note that on the postpaid path this rarely decides anything — a
+        subscription-less pool resolves to an unlimited ceiling and returns before
+        this is ever consulted (see ``check_postpaid_allowance``).
         """
         return self._has_payment_method_for_subscription(self._get_root_subscription(organization))
 
-    @staticmethod
-    def _has_payment_method_for_subscription(subscription: Subscription | None) -> bool:
+    @classmethod
+    def _has_payment_method_for_subscription(cls, subscription: Subscription | None) -> bool:
         if subscription is None:
             return False
-        return subscription.billing_state != BillingState.FREE
+        return subscription.billing_state in cls.PAYMENT_METHOD_BILLING_STATES
 
     def check_postpaid_allowance(
         self,
         organization: Organization,
         delta: int = 1,
         lock: bool = False,
+        delta_resolver: Callable[[Subscription], int] | None = None,
     ) -> LimitCheckResult:
         """Would creating ``delta`` more ``event_occurrences`` need a payment method
         this organization does not have?
@@ -588,11 +620,16 @@ class EntitlementService:
         method can never block anybody today. See the phase's own tests for that
         inertness guarantee on every guarded path.
 
-        ``delta`` must be the same "one booking" unit
-        ``MeteringService.expand_occurrence_identities`` will eventually count for
-        this creation — 1 for a single event, a new recurring master, or a
-        bulk-modification continuation, and ``1 + n_internal_children`` for a
-        bundle-event fan-out (the Phase 7 binding decision: a bundle booking is
+        ``delta`` must be in the same unit ``current_usage`` is measured in: the
+        number of ``MeteredOccurrence`` rows this creation will eventually cause —
+        **occurrences, not masters**. For a one-off event those coincide (1). For a
+        *recurring* master they do not: ``MeteringService`` expands the master's rule
+        and writes one row per occurrence, so a daily series costs ~30 a month, not 1.
+        A caller creating a recurring master must therefore pass ``delta_resolver``
+        rather than a hand-counted ``delta``.
+
+        The other established value is the bundle fan-out's
+        ``1 + n_internal_children`` (the Phase 7 binding decision: a bundle booking is
         billed as the primary calendar's event plus one more per
         ``CalendarProvider.INTERNAL`` child, never per member calendar). A caller
         that invents its own number here reproduces the "two predicates that must
@@ -600,16 +637,37 @@ class EntitlementService:
         provider/parent predicates the meter and the fan-out writer use, never
         recompute it independently.
 
+        :param delta_resolver: Lazy alternative to ``delta`` for a caller whose unit
+            count is itself a query — specifically, expanding a just-created recurring
+            master through ``MeteringService.occurrence_starts_of`` (the meter's own
+            expansion, so the guard and the meter cannot disagree). Receives the
+            resolved billing-root ``Subscription`` so it can bound its window with
+            ``resolve_billing_period``. Called at most once, and **only after the
+            ceiling is known to be finite**, so an ``unlimited`` organization — i.e.
+            every organization for this whole rollout — never pays for the expansion.
+            Takes precedence over ``delta`` when both are given.
         :param lock: Same contract as ``check_limit``'s ``lock`` — ``SELECT ... FOR
             UPDATE`` on the billing root's ``Subscription`` row before counting, so
             two racing creates at the allowance boundary serialize on one row.
             Requires an open transaction; see ``check_limit`` for the full isolation-
             level discussion.
+
+            **Taken only once a finite ceiling is known to exist**, unlike
+            ``check_limit``, which locks before resolving anything. That ordering
+            difference is deliberate and load-bearing. Every event-creation path
+            passes ``lock=True``, ``create_event`` is ``@transaction.atomic`` with an
+            external provider round-trip inside it, and every organization is on
+            ``unlimited`` — so locking first would put an organization-wide row lock
+            on the hottest write path in the product, held across a network call, in
+            service of a NULL ceiling that cannot block anybody. Two users booking
+            different calendars of the same organization would serialize.
+
+            Nothing is lost by locking later: the ceiling is not the racing quantity.
+            ``_count_usage`` — the read the lock actually exists to serialize — still
+            runs after the lock is acquired, and under READ COMMITTED it therefore
+            still sees a racing transaction's committed inserts.
         """
         root = resolve_billing_root(organization)
-        if lock:
-            self._lock_billing_root_row(root)
-
         subscription = self._get_subscription_for_root(root)
         effective_limit = self._effective_limit_for_subscription(
             subscription,
@@ -625,8 +683,13 @@ class EntitlementService:
                 ceiling=None,
             )
 
+        if lock:
+            self._lock_billing_root_row(root)
+
         # Narrowed by the ``is_unlimited`` return above: limit_value is not None here.
         ceiling = effective_limit.limit_value or 0
+        if delta_resolver is not None and subscription is not None:
+            delta = delta_resolver(subscription)
         current_usage = self._count_usage(root, LimitedResource.EVENT_OCCURRENCES, subscription)
         within_allowance = current_usage + delta <= ceiling
         if within_allowance or self._has_payment_method_for_subscription(subscription):
@@ -636,12 +699,12 @@ class EntitlementService:
                 current_usage=current_usage,
                 ceiling=ceiling,
             )
-        # The only way to reach here is ``has_payment_method`` being False, which
-        # (see its docstring) only happens when ``billing_state == FREE`` — a
-        # grace/restricted organization already has one and was let through above.
-        # So the remedy is always "go get a payment method", never
-        # ``_resolve_remedy_for``'s billing-first branch: there is no billing
-        # problem to resolve here, there is no payment method to begin with.
+        # The only way to reach here is ``has_payment_method`` being False — every
+        # ``billing_state`` outside ``PAYMENT_METHOD_BILLING_STATES``. The remedy is
+        # always "go get a payment method", never ``_resolve_remedy_for``'s
+        # billing-first branch, even for ``GRACE``/``RESTRICTED``: from this guard's
+        # point of view there is nothing chargeable on file, and attaching a working
+        # instrument is what both resolves the dunning and lifts this block.
         return LimitCheckResult(
             allowed=False,
             resource_key=LimitedResource.EVENT_OCCURRENCES,

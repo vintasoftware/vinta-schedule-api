@@ -125,23 +125,59 @@ def _service_for(organization: Organization) -> CalendarService:
 # ----------------------------------------------------------------------------------
 
 
+#: Every ``BillingState``, with the answer ``has_payment_method`` must give for it.
+#: Spelled out state by state rather than "ACTIVE vs. the rest" on purpose: this is
+#: the table Phase 10 (grace/dunning) and Phase 9 (real payment-method record) will
+#: be tempted to change, and each entry is a separate product decision. Adding a
+#: state without adding a row here fails ``test_every_billing_state_is_pinned``.
+EXPECTED_HAS_PAYMENT_METHOD = {
+    # Never paid: the state every subscription is created into.
+    BillingState.FREE: False,
+    # The only state that asserts a working instrument right now.
+    BillingState.ACTIVE: True,
+    # Phase 10 moves ACTIVE -> GRACE *on a failed charge*, and a GRACE organization
+    # stays fully operational (only RESTRICTED is write-blocked, in Phase 11). If this
+    # flipped to True, an organization whose card just declined would get unbounded
+    # unbillable accrual for the whole dunning window -- the dunning ladder would
+    # become the largest-bill path in the system.
+    BillingState.GRACE: False,
+    # A later charge failed and was never resolved.
+    BillingState.RESTRICTED: False,
+    # The paid relationship is over; the instrument may have been removed with it.
+    # "A card was attached at some point" is the wrong tense for a guard that decides
+    # whether overage we are about to allow can actually be billed.
+    BillingState.CANCELLED: False,
+}
+
+
 @pytest.mark.django_db
 class TestHasPaymentMethod:
-    def test_free_billing_state_has_no_payment_method(self):
-        organization, _subscription = _organization_with_postpaid_limit(1, BillingState.FREE)
-        assert EntitlementService().has_payment_method(organization) is False
-
     @pytest.mark.parametrize(
-        "billing_state",
-        [BillingState.ACTIVE, BillingState.GRACE, BillingState.RESTRICTED, BillingState.CANCELLED],
+        "billing_state,expected",
+        list(EXPECTED_HAS_PAYMENT_METHOD.items()),
+        ids=[state.value for state in EXPECTED_HAS_PAYMENT_METHOD],
     )
-    def test_any_non_free_billing_state_has_a_payment_method(self, billing_state):
+    def test_each_billing_state_resolves_explicitly(self, billing_state, expected):
         organization, _subscription = _organization_with_postpaid_limit(1, billing_state)
-        assert EntitlementService().has_payment_method(organization) is True
+        assert EntitlementService().has_payment_method(organization) is expected
+
+    def test_every_billing_state_is_pinned(self):
+        """``has_payment_method`` is an allow-list, so an unpinned new state silently
+        resolves to ``False``. That is the safe direction, but it must still be a
+        decision somebody made rather than a default nobody noticed."""
+        assert set(EXPECTED_HAS_PAYMENT_METHOD) == set(BillingState)
+
+    def test_the_allow_list_matches_the_table(self):
+        """The service's own constant, against the table above -- so widening the
+        allow-list cannot pass by editing one side."""
+        assert EntitlementService.PAYMENT_METHOD_BILLING_STATES == {
+            state for state, expected in EXPECTED_HAS_PAYMENT_METHOD.items() if expected
+        }
 
     def test_no_subscription_has_no_payment_method(self):
-        """Fail-closed side of postpaid enforcement: an unresolvable subscription
-        must not be read as "has a payment method"."""
+        """Nothing to charge, so ``False``. (On the post-paid path this rarely
+        decides anything: a subscription-less pool resolves to an unlimited ceiling
+        and returns before this is consulted.)"""
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
         assert EntitlementService().has_payment_method(organization) is False
 
@@ -187,19 +223,25 @@ class TestCheckPostpaidAllowance:
         assert result.ceiling == 5
         assert result.remedy == LimitRemedy.ADD_PAYMENT_METHOD
 
-    @pytest.mark.parametrize("billing_state", [BillingState.GRACE, BillingState.RESTRICTED])
-    def test_at_the_allowance_in_grace_or_restricted_still_accrues(self, billing_state):
-        """Grace/restricted already have a payment method on file (see
-        ``has_payment_method``) -- their payment problem is resolved through the
-        separate grace/restricted machinery (Phase 10/11), not by this guard, so
-        they are treated the same as an active organization: let through, not
-        blocked."""
+    @pytest.mark.parametrize(
+        "billing_state,expected_allowed",
+        [(state, expected) for state, expected in EXPECTED_HAS_PAYMENT_METHOD.items()],
+        ids=[state.value for state in EXPECTED_HAS_PAYMENT_METHOD],
+    )
+    def test_accrual_past_the_allowance_follows_the_payment_method_allow_list(
+        self, billing_state, expected_allowed
+    ):
+        """Who may accrue past the allowance is exactly ``has_payment_method``, state
+        by state. ``GRACE`` is the load-bearing row: Phase 10 will move a *failed
+        charge* into it while leaving the organization fully operational, and if that
+        state started reading as "has a payment method" the dunning window would
+        become an unbounded, unbillable accrual window."""
         organization, subscription = _organization_with_postpaid_limit(5, billing_state)
         _seed_metered_occurrences(organization, subscription, 5)
 
         result = EntitlementService().check_postpaid_allowance(organization, delta=1)
 
-        assert result.allowed is True
+        assert result.allowed is expected_allowed
 
     def test_delta_larger_than_headroom_blocks_without_a_payment_method(self):
         """A fan-out delta (e.g. a bundle event) is checked as one unit, not one
@@ -278,7 +320,11 @@ class TestCreateEventPostpaidGuard:
         means this guard can never block anybody today, with or without a payment
         method on file."""
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
-        _seed_metered_occurrences(organization, subscription, 10_000)
+        # One seeded row, not 10k: the unlimited branch returns before usage is ever
+        # counted, so the count is never read. Ten thousand rows only added minutes of
+        # bulk insert (enough to trip pytest-timeout under parallel contention) to
+        # prove the same thing one row does.
+        _seed_metered_occurrences(organization, subscription, 1)
         calendar = _bookable_calendar(organization)
         service = _service_for(organization)
         start = subscription.current_period_start + datetime.timedelta(days=1)

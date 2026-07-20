@@ -505,6 +505,7 @@ class CalendarService(BaseCalendarService):
             calendar_side_effects_service=self.calendar_side_effects_service,
             audit_service=self.audit_service,
             entitlement_service=self.entitlement_service,
+            bypass_entitlement_limits=self._bypass_entitlement_limits,
         )
 
     def initialize_without_provider(
@@ -543,6 +544,7 @@ class CalendarService(BaseCalendarService):
             calendar_side_effects_service=self.calendar_side_effects_service,
             audit_service=self.audit_service,
             entitlement_service=self.entitlement_service,
+            bypass_entitlement_limits=self._bypass_entitlement_limits,
         )
 
     def _build_context_snapshot(self) -> CalendarServiceContext:
@@ -563,6 +565,7 @@ class CalendarService(BaseCalendarService):
             calendar_side_effects_service=self.calendar_side_effects_service,
             audit_service=self.audit_service,
             entitlement_service=self.entitlement_service,
+            bypass_entitlement_limits=self._bypass_entitlement_limits,
         )
 
     def _get_event_service(self) -> CalendarEventService:
@@ -1282,7 +1285,11 @@ class CalendarService(BaseCalendarService):
         )
 
     def _create_bundle_event(
-        self, bundle_calendar: Calendar, event_data: "CalendarEventInputData"
+        self,
+        bundle_calendar: Calendar,
+        event_data: "CalendarEventInputData",
+        *,
+        bypass_limits: bool = False,
     ) -> CalendarEvent:
         """Create a bundle event — delegates to ``CalendarBundleService``.
 
@@ -1291,7 +1298,9 @@ class CalendarService(BaseCalendarService):
         The facade is the host, so control reaches here and is forwarded to the bundle
         sub-service. See ``CalendarBundleService.create_bundle_event`` for full semantics.
         """
-        return self._get_bundle_service().create_bundle_event(bundle_calendar, event_data)
+        return self._get_bundle_service().create_bundle_event(
+            bundle_calendar, event_data, bypass_limits=bypass_limits
+        )
 
     def _get_primary_calendar(self, bundle_calendar: Calendar) -> Calendar:
         """Get the designated primary calendar for a bundle — delegates to ``CalendarBundleService``."""
@@ -1460,6 +1469,7 @@ class CalendarService(BaseCalendarService):
         calendar_id: int,
         event_data: CalendarEventInputData,
         *,
+        bypass_limits: bool = False,
         _enforce_policy: bool = True,
         _check_postpaid_allowance: bool = True,
     ) -> CalendarEvent:
@@ -1472,6 +1482,11 @@ class CalendarService(BaseCalendarService):
             top-level entry point (using ``resolve_for_bundle``), not again for each
             child create (which would use ``resolve_for_calendar`` on the child and
             could falsely reject bookings the bundle policy permits).
+        :param bypass_limits: When True, skips the post-paid ``event_occurrences``
+            allowance guard, like every other guarded write on this facade
+            (``create_calendar`` / ``create_bundle_calendar`` /
+            ``create_availability_windows``). Forwarded verbatim to
+            ``CalendarEventService.create_event``.
         :param _check_postpaid_allowance: Internal flag; callers must NOT pass this.
             Forwarded verbatim to ``CalendarEventService.create_event`` -- see its
             docstring. Set to ``False`` by the bundle fan-out for the same reason as
@@ -1489,7 +1504,10 @@ class CalendarService(BaseCalendarService):
             except Calendar.DoesNotExist:
                 # Let the event service raise the not-found; do not hide the error.
                 return self._get_event_service().create_event(
-                    calendar_id, event_data, _check_postpaid_allowance=_check_postpaid_allowance
+                    calendar_id,
+                    event_data,
+                    bypass_limits=bypass_limits,
+                    _check_postpaid_allowance=_check_postpaid_allowance,
                 )
             self._check_booking_policy(
                 calendar,
@@ -1502,7 +1520,10 @@ class CalendarService(BaseCalendarService):
             # shape used by _get_calendar_by_id_util.
             self._calendar_cache[(self.organization.id, calendar_id)] = calendar
         return self._get_event_service().create_event(
-            calendar_id, event_data, _check_postpaid_allowance=_check_postpaid_allowance
+            calendar_id,
+            event_data,
+            bypass_limits=bypass_limits,
+            _check_postpaid_allowance=_check_postpaid_allowance,
         )
 
     def _update_bundle_event(

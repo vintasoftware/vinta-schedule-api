@@ -848,6 +848,16 @@ class CalendarSyncService:
         # message, and the next scheduled sync retries the same window -- a half-applied
         # recurring master (some occurrences visible, some not) would be a worse outcome
         # than a deferred sync.
+        #
+        # That retry behaviour is also why this logs before it raises. ``sync_events``
+        # stores ``str(exc)`` on the ``CalendarSync`` row and nothing distinguishes an
+        # over-allowance refusal from a provider outage; every subsequent scheduled
+        # sync hits the same window and fails identically, so without a log line
+        # naming the organization and the remedy, a permanently stalled calendar looks
+        # exactly like a flaky provider. The block clears itself the moment headroom
+        # is restored (a payment method is attached, or the cycle rolls over) -- no
+        # manual replay is needed, which is the other half of what an operator
+        # reading this needs to know.
         new_master_count = self._new_master_count(changes)
         if new_master_count:
             entitlement_service = self._context.entitlement_service
@@ -856,6 +866,21 @@ class CalendarSyncService:
                     context.organization, delta=new_master_count, lock=True
                 )
                 if not result.allowed:
+                    logger.warning(
+                        "Calendar sync %s for calendar %s (organization %s) refused: %s new "
+                        "event masters would exceed the post-paid event_occurrences "
+                        "allowance (usage %s, ceiling %s) with no payment method on file. "
+                        "The sync will be recorded as FAILED and every retry will fail the "
+                        "same way until headroom is restored (remedy: %s); no manual replay "
+                        "is required once it is.",
+                        calendar_sync.pk,
+                        calendar.pk,
+                        context.organization.pk,
+                        new_master_count,
+                        result.current_usage,
+                        result.ceiling,
+                        result.remedy,
+                    )
                     raise OverLimitError.from_check_result(result)
 
         # Apply all changes to database

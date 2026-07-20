@@ -116,6 +116,7 @@ class BundleServiceHost(Protocol):
         calendar_id: int,
         event_data: CalendarEventInputData,
         *,
+        bypass_limits: bool = False,
         _enforce_policy: bool = True,
         _check_postpaid_allowance: bool = True,
     ) -> CalendarEvent: ...
@@ -402,7 +403,11 @@ class CalendarBundleService:
     # ------------------------------------------------------------------
 
     def create_bundle_event(
-        self, bundle_calendar: Calendar, event_data: CalendarEventInputData
+        self,
+        bundle_calendar: Calendar,
+        event_data: CalendarEventInputData,
+        *,
+        bypass_limits: bool = False,
     ) -> CalendarEvent:
         """
         Create an event in a bundle calendar by:
@@ -447,7 +452,16 @@ class CalendarBundleService:
         # recheck would be redundant rather than merely wasted work: nothing is
         # metered until a Celery sweep runs, so a re-check would ask the same
         # question against an unchanged usage count).
-        entitlement_service = self._context.entitlement_service
+        #
+        # Skipped when this call, or the whole service
+        # (``CalendarService.authenticate(bypass_limits=True)``), is in bypass mode --
+        # the same two conditions ``CalendarEventService._postpaid_entitlement_service``
+        # resolves for the single-event path.
+        entitlement_service = (
+            None
+            if bypass_limits or self._context.bypass_entitlement_limits
+            else self._context.entitlement_service
+        )
         if entitlement_service is not None:
             billable_units = self._bundle_event_billable_units(primary_calendar.id, child_calendars)
             result = entitlement_service.check_postpaid_allowance(

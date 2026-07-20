@@ -332,7 +332,7 @@ def test_facade_create_event_delegates_to_event_service(
 
     assert result is sentinel
     fake_event_service.create_event.assert_called_once_with(
-        123, sample_event_input_data, _check_postpaid_allowance=True
+        123, sample_event_input_data, bypass_limits=False, _check_postpaid_allowance=True
     )
 
 

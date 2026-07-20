@@ -322,6 +322,23 @@ Six entry points plus one fan-out case, against the pattern Phase 6 established.
 
 **Watch for the plan's recurring failure shape** — two predicates that must mean the same thing, written separately. Here the risk is concrete and named: the guard's headroom count and `MeteringService.expand_occurrence_identities` must agree on what one booking costs, or an organization is blocked on a number it will never be billed. Derive the guard's count from the meter's expansion rather than reimplementing it.
 
+#### Phase 9/10 gating precondition: `has_payment_method` is a proxy
+
+`EntitlementService.has_payment_method` is the whole basis on which an organization is allowed to accrue post-paid overage. **There is no payment-method record in the schema yet**, so it reads `Subscription.billing_state` as a stand-in, through an explicit allow-list: `PAYMENT_METHOD_BILLING_STATES = {ACTIVE}`. Everything else — `FREE`, `GRACE`, `RESTRICTED`, `CANCELLED`, and any state added later — resolves to `False`. `payments/services/entitlement_service.py` carries the per-state reasoning; `calendar_integration/tests/services/test_postpaid_enforcement.py::EXPECTED_HAS_PAYMENT_METHOD` pins every state to an assertion, and a new `BillingState` fails that test until somebody decides for it.
+
+Two things are binding on the phases that touch this:
+
+1. **Phase 9 must re-point the method at the real record, not widen the allow-list.** Once a payment instrument is actually persisted, `billing_state` stops being evidence of anything and the proxy must be deleted rather than extended.
+2. **Phase 10 must keep `GRACE` resolving to `False`.** Phase 10 moves `ACTIVE → GRACE` **on a failed charge** while leaving the organization fully operational (only `RESTRICTED` is write-blocked, and that is Phase 11). If `GRACE` read as "has a payment method", an organization whose card just declined would get *unbounded, unbillable* accrual for the entire dunning window — making the dunning ladder the largest-bill path in the product. The original justification for including it ("the separate grace/restricted machinery is what blocks writes on that state") is true of `RESTRICTED` and false of `GRACE`.
+
+The plan's deferred `TRIALING` state (`…IMPLEMENTATION_PLAN.md`, "no payment method to start") is the same trap from the other direction, and is why this is an allow-list: a newly-added state defaults to "no payment method", which is the safe direction, instead of silently granting accrual.
+
+#### Residual: the guard counts occurrences for a single recurring master, masters for a bundle fan-out
+
+`check_postpaid_allowance`'s `current_usage` is in `MeteredOccurrence` rows — **occurrences**. Phase 8's single-event path matches that unit: a recurring master is expanded, after insert and inside the creating transaction, through `MeteringService.occurrence_starts_of` — the meter's own expansion, shared rather than re-implemented — and the create is rolled back if the series does not fit. (It has to run after the insert because the expansion is a Postgres function keyed on the event's id; re-deriving it in Python from the rrule string would be the second-expansion defect this plan keeps producing.)
+
+**The bundle fan-out still counts masters.** `_bundle_event_billable_units` returns `1 + n_internal_children` per the Phase 7 binding decision, and each child create runs with `_check_postpaid_allowance=False`, so a *recurring* bundle event is under-charged by exactly the same factor the single-event path used to be. Bounded and inert today (every organization is `unlimited`), but it is a **Phase 13 gating precondition** alongside the identity-churn and series-truncation defects above: an over-allowance number that becomes money must be in occurrence units on every path, not just the one.
+
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |

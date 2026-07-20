@@ -832,7 +832,7 @@ def test_facade_create_bundle_event_delegates_to_bundle_service(
         CalendarBundleService, "create_bundle_event", return_value=mock_event
     ) as mock_method:
         result = facade._create_bundle_event(bundle_calendar, bundle_event_data)
-        mock_method.assert_called_once_with(bundle_calendar, bundle_event_data)
+        mock_method.assert_called_once_with(bundle_calendar, bundle_event_data, bypass_limits=False)
         assert result is mock_event
 
 
