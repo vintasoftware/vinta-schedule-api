@@ -7512,6 +7512,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationInvitation'
           description: ''
+        '402':
+          description: Organization is at its seat limit
   /invitations{format}:
     get:
       operationId: invitations_formatted_list
@@ -7623,6 +7625,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationInvitation'
           description: ''
+        '402':
+          description: Organization is at its seat limit
   /invitations/{id}/:
     get:
       operationId: invitations_retrieve
@@ -7809,6 +7813,8 @@ paths:
           description: ''
         '400':
           description: Invitation already accepted or service error
+        '402':
+          description: Organization is at its seat limit
         '403':
           description: Not an active member
         '404':
@@ -7874,6 +7880,8 @@ paths:
           description: ''
         '400':
           description: Invitation already accepted or service error
+        '402':
+          description: Organization is at its seat limit
         '403':
           description: Not an active member
         '404':
@@ -7904,8 +7912,16 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AcceptInvitation'
-          description: ''
+                $ref: '#/components/schemas/AcceptInvitationResponse'
+          description: Invitation accepted
+        '400':
+          description: Already a member, or invalid token
+        '402':
+          description: Organization is at its seat limit
+        '404':
+          description: Invitation not found
+        '409':
+          description: Duplicate invitation
   /notifications/:
     get:
       operationId: notifications_list
@@ -8582,9 +8598,10 @@ paths:
       description: |-
         Reactivate a member (set is_active=True).
 
-        No guards — re-enabling is always safe.
-
-        Idempotency: reactivating an already-active member is a no-op success.
+        The seat-limit guard lives in ``OrganizationService.reactivate_membership``
+        (service layer, not the viewset — see the plan's Guiding Decisions), so this
+        action only resolves the target and serializes the result. Idempotency:
+        reactivating an already-active member is a no-op success.
       summary: Reactivate an organization member
       parameters:
       - in: header
@@ -8625,6 +8642,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
+        '402':
+          description: Organization is at its seat limit
         '403':
           description: Not an admin
         '404':
@@ -8635,9 +8654,10 @@ paths:
       description: |-
         Reactivate a member (set is_active=True).
 
-        No guards — re-enabling is always safe.
-
-        Idempotency: reactivating an already-active member is a no-op success.
+        The seat-limit guard lives in ``OrganizationService.reactivate_membership``
+        (service layer, not the viewset — see the plan's Guiding Decisions), so this
+        action only resolves the target and serializes the result. Idempotency:
+        reactivating an already-active member is a no-op success.
       summary: Reactivate an organization member
       parameters:
       - in: header
@@ -8685,6 +8705,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
+        '402':
+          description: Organization is at its seat limit
         '403':
           description: Not an admin
         '404':
@@ -12653,6 +12675,19 @@ components:
           type: string
       required:
       - token
+    AcceptInvitationResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        organization_id:
+          type: integer
+        organization_name:
+          type: string
+      required:
+      - message
+      - organization_id
+      - organization_name
     ActionEnum:
       enum:
       - create

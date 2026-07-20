@@ -12,7 +12,14 @@ from rest_framework.exceptions import NotFound
 
 from common.exception_handlers import vinta_exception_handler
 from payments.billing_constants import LimitedResource, LimitRemedy
-from payments.exceptions import OverLimitError
+from payments.exceptions import (
+    BillingError,
+    InvalidLimitCheckResultError,
+    MissingBillingProfileError,
+    OverLimitError,
+    PaymentError,
+)
+from payments.services.billing_dataclasses import LimitCheckResult
 
 
 def build_error():
@@ -85,8 +92,6 @@ class TestExceptionHandler:
 
 def test_over_limit_error_is_a_billing_error():
     """Keeps it catchable alongside the rest of the payments exception tree."""
-    from payments.exceptions import BillingError
-
     with pytest.raises(BillingError):
         raise build_error()
 
@@ -124,7 +129,47 @@ def test_over_limit_error_is_not_a_value_error():
 def test_payment_error_keeps_its_value_error_lineage():
     """The rest of the tree is unchanged: existing ``except ValueError`` handlers
     around payment-gateway calls must keep working."""
-    from payments.exceptions import MissingBillingProfileError, PaymentError
-
     assert issubclass(PaymentError, ValueError)
     assert issubclass(MissingBillingProfileError, ValueError)
+
+
+class TestFromCheckResultInvariantViolations:
+    """NIT, Phase 6a review: ``from_check_result`` raising a broken-invariant
+    signal must not be a bare ``ValueError`` -- ``PaymentError`` is itself a
+    ``ValueError``, so an upstream ``except ValueError`` wrapper (the same idiom
+    ``test_over_limit_error_is_not_a_value_error`` guards ``OverLimitError``
+    itself against) would flatten a genuine programming-error invariant
+    violation into a user-facing validation message."""
+
+    def _allowed_result(self):
+        return LimitCheckResult(
+            allowed=True,
+            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            current_usage=None,
+            ceiling=None,
+        )
+
+    def _incomplete_blocked_result(self):
+        return LimitCheckResult(
+            allowed=False,
+            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            current_usage=None,
+            ceiling=None,
+            remedy=None,
+        )
+
+    def test_called_on_an_allowed_result_raises_a_billing_error_not_a_bare_value_error(self):
+        with pytest.raises(InvalidLimitCheckResultError) as exc_info:
+            OverLimitError.from_check_result(self._allowed_result())
+
+        assert isinstance(exc_info.value, BillingError)
+        assert not isinstance(exc_info.value, ValueError)
+
+    def test_called_on_an_incomplete_blocked_result_raises_a_billing_error_not_a_bare_value_error(
+        self,
+    ):
+        with pytest.raises(InvalidLimitCheckResultError) as exc_info:
+            OverLimitError.from_check_result(self._incomplete_blocked_result())
+
+        assert isinstance(exc_info.value, BillingError)
+        assert not isinstance(exc_info.value, ValueError)

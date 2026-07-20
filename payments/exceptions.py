@@ -1,4 +1,10 @@
+from typing import TYPE_CHECKING
+
 from payments.billing_constants import LimitedResource
+
+
+if TYPE_CHECKING:
+    from payments.services.billing_dataclasses import LimitCheckResult
 
 
 class BillingError(Exception):
@@ -160,6 +166,22 @@ class IncompleteBillingPlanError(BillingError):
         self.missing_resource_keys = missing_resource_keys
 
 
+class InvalidLimitCheckResultError(BillingError):
+    """Raised by ``OverLimitError.from_check_result`` when the ``LimitCheckResult``
+    it was given breaks the invariant ``EntitlementService.check_limit`` documents:
+    a blocked (``allowed=False``) result must carry non-``None``
+    ``current_usage``/``ceiling``/``remedy``, and this must never be called on an
+    ``allowed=True`` result at all.
+
+    A broken invariant in ``check_limit`` itself, not a runtime condition a caller
+    should ever hit. Inherits ``BillingError`` rather than plain ``ValueError`` —
+    ``PaymentError`` is itself a ``ValueError``, and several call sites across the
+    codebase wrap service calls in ``except ValueError as e: raise ...(str(e))``,
+    which would flatten this invariant violation into a user-facing validation
+    message instead of surfacing it as the programming error it is.
+    """
+
+
 class OverLimitError(BillingError):
     """Raised by a guarded service method when creating one more of a resource
     would take the organization past its effective ceiling.
@@ -233,6 +255,39 @@ class OverLimitError(BillingError):
             "limit": self.limit,
             "remedy": self.remedy,
         }
+
+    @classmethod
+    def from_check_result(cls, result: "LimitCheckResult") -> "OverLimitError":
+        """Build the error from a blocked ``EntitlementService.check_limit`` result.
+
+        Every guarded creation path ends the same way: call ``check_limit`` and,
+        if ``result.allowed`` is ``False``, raise this. Centralizing the
+        conversion here means every call site does the identical narrowing
+        exactly once, rather than repeating "current_usage/ceiling/remedy are
+        only guaranteed non-None on the blocked branch" (see
+        ``LimitCheckResult``'s docstring) at each of them.
+
+        :raises InvalidLimitCheckResultError: if called on an ``allowed`` result,
+            or on a blocked one missing any of the three fields it is documented
+            to carry — both are programming errors (a broken ``check_limit``
+            invariant), not a runtime condition a caller should ever hit.
+        """
+        if result.allowed:
+            raise InvalidLimitCheckResultError(
+                "from_check_result() called on an allowed LimitCheckResult"
+            )
+        if result.current_usage is None or result.ceiling is None or result.remedy is None:
+            raise InvalidLimitCheckResultError(
+                f"Blocked LimitCheckResult for {result.resource_key!r} is missing "
+                "current_usage/ceiling/remedy; EntitlementService.check_limit must "
+                "populate all three when allowed is False."
+            )
+        return cls(
+            resource_key=result.resource_key,
+            current_usage=result.current_usage,
+            limit=result.ceiling,
+            remedy=result.remedy,
+        )
 
 
 class NoDefaultBillingPlanError(PaymentError):

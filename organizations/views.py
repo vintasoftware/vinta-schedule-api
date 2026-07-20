@@ -5,8 +5,13 @@ from typing import Annotated
 from django.db import transaction
 
 from dependency_injector.wiring import Provide, inject
-from drf_spectacular.utils import OpenApiResponse, extend_schema
-from rest_framework import generics, status, views
+from drf_spectacular.utils import (
+    OpenApiResponse,
+    extend_schema,
+    extend_schema_view,
+    inline_serializer,
+)
+from rest_framework import generics, serializers, status, views
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
@@ -545,6 +550,14 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema_view(
+    create=extend_schema(
+        responses={
+            201: OrganizationInvitationSerializer,
+            402: OpenApiResponse(description="Organization is at its seat limit"),
+        },
+    ),
+)
 class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
     """
     A viewset for managing organization invitations.
@@ -592,6 +605,7 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
         responses={
             200: OrganizationInvitationSerializer,
             400: OpenApiResponse(description="Invitation already accepted or service error"),
+            402: OpenApiResponse(description="Organization is at its seat limit"),
             403: OpenApiResponse(description="Not an active member"),
             404: OpenApiResponse(description="Invitation not found or cross-org"),
         },
@@ -656,6 +670,16 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     # member is uniquely identified within that scope by ``user_id``; use it as the
     # detail-route lookup instead of the (now non-existent) scalar pk.
     lookup_field = "user_id"
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        organization_service: Annotated[OrganizationService, Provide["organization_service"]],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.organization_service = organization_service
 
     def get_queryset(self):
         """Org-scoped queryset: return members of the caller's organization only."""
@@ -735,6 +759,7 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         summary="Reactivate an organization member",
         responses={
             200: OrganizationMembershipSerializer,
+            402: OpenApiResponse(description="Organization is at its seat limit"),
             403: OpenApiResponse(description="Not an admin"),
             404: OpenApiResponse(description="Member not found or cross-org"),
         },
@@ -743,19 +768,17 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     def reactivate(self, request, user_id=None):
         """Reactivate a member (set is_active=True).
 
-        No guards — re-enabling is always safe.
-
-        Idempotency: reactivating an already-active member is a no-op success.
+        The seat-limit guard lives in ``OrganizationService.reactivate_membership``
+        (service layer, not the viewset — see the plan's Guiding Decisions), so this
+        action only resolves the target and serializes the result. Idempotency:
+        reactivating an already-active member is a no-op success.
         """
         target = (
             self.get_object()
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
 
-        # Reactivate (idempotent: no-op if already active)
-        target.is_active = True
-        target.save(update_fields=["is_active"])
+        target = self.organization_service.reactivate_membership(target)
 
-        # Return the updated membership
         serializer = self.get_serializer(target)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -821,6 +844,35 @@ class AcceptInvitationView(generics.CreateAPIView):
 
     serializer_class = AcceptInvitationSerializer
     permission_classes = (IsAuthenticated,)
+
+    @extend_schema(
+        responses={
+            # `create` below returns {"message", "organization_id", "organization_name"},
+            # not an AcceptInvitationSerializer instance — describe the actual body.
+            201: OpenApiResponse(
+                response=inline_serializer(
+                    name="AcceptInvitationResponse",
+                    fields={
+                        "message": serializers.CharField(),
+                        "organization_id": serializers.IntegerField(),
+                        "organization_name": serializers.CharField(),
+                    },
+                ),
+                description="Invitation accepted",
+            ),
+            400: OpenApiResponse(description="Already a member, or invalid token"),
+            402: OpenApiResponse(description="Organization is at its seat limit"),
+            404: OpenApiResponse(description="Invitation not found"),
+            409: OpenApiResponse(description="Duplicate invitation"),
+        },
+    )
+    def post(self, request, *args, **kwargs):
+        # drf-spectacular resolves a plain APIView's schema from the HTTP-verb
+        # method (`post`), not from `create` -- see OrganizationBrandingView's
+        # get/put/patch above for the same convention. `create` stays the
+        # override point (it holds the actual logic) since that is the DRF
+        # ``CreateAPIView`` convention every caller of this class expects.
+        return self.create(request, *args, **kwargs)
 
     def create(self, request, *args, **kwargs):
         """Accept invitation and return success response.

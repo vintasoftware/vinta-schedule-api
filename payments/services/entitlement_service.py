@@ -59,14 +59,16 @@ class UsageContext:
     organization_ids: Sequence[int]
     subscription: Subscription | None = None
     exclude_invitation_id: int | None = None
-    """The invitation currently being accepted, if any.
+    """The invitation currently being accepted or resent, if any.
 
     Accepting an invitation is **net zero** on seat usage: the pending invitation
     stops being pending and becomes the membership it was already holding a seat
     for. Counting it on both sides would make the accept fail its own
     ``check_limit(delta=1)`` at exactly the ceiling, so an organization could
     never fill its last seat — it could invite up to the limit and then be unable
-    to let anybody in.
+    to let anybody in. Resending is the same shape: it reuses the still-pending
+    row rather than creating a new one, so excluding it makes the resend net-zero
+    too.
     """
 
 
@@ -180,17 +182,16 @@ USAGE_COUNTERS: dict[str, UsageCounter] = {
 }
 
 
-def _reject_inapplicable_invitation_exclusion(
-    resource_key: str, exclude_invitation_id: int | None
-) -> None:
-    """``exclude_invitation_id`` is read by exactly one usage counter.
+def _reject_inapplicable_invitation_exclusion(resource_key: str, has_exclusion: bool) -> None:
+    """An invitation exclusion (eager id or lazy resolver) is read by exactly one
+    usage counter.
 
     Every other counter takes the ``UsageContext`` and ignores the field, so
-    passing it with any other ``resource_key`` is a no-op that *looks* like a seat
-    exclusion took place. Raising is the only way that mistake is visible; logging
-    would leave the caller with a wrong answer it believes.
+    passing one with any other ``resource_key`` is a no-op that *looks* like a
+    seat exclusion took place. Raising is the only way that mistake is visible;
+    logging would leave the caller with a wrong answer it believes.
     """
-    if exclude_invitation_id is not None and resource_key != LimitedResource.ORGANIZATION_MEMBERS:
+    if has_exclusion and resource_key != LimitedResource.ORGANIZATION_MEMBERS:
         raise InapplicableInvitationExclusionError(resource_key)
 
 
@@ -318,7 +319,7 @@ class EntitlementService:
             meaningful for ``organization_members``; passing it with another
             ``resource_key`` raises rather than being silently ignored.
         """
-        _reject_inapplicable_invitation_exclusion(resource_key, exclude_invitation_id)
+        _reject_inapplicable_invitation_exclusion(resource_key, exclude_invitation_id is not None)
         root = resolve_billing_root(organization)
         return self._count_usage(
             root,
@@ -360,6 +361,7 @@ class EntitlementService:
         delta: int = 1,
         lock: bool = False,
         exclude_invitation_id: int | None = None,
+        exclude_invitation_id_resolver: Callable[[], int | None] | None = None,
     ) -> LimitCheckResult:
         """Would creating ``delta`` more of ``resource_key`` stay within the ceiling?
 
@@ -396,14 +398,25 @@ class EntitlementService:
             the lock exists to prevent — and both callers would be allowed. If the
             project ever raises the isolation level, this guard has to be
             revisited, not just retested.
-        :param exclude_invitation_id: See ``UsageContext.exclude_invitation_id``.
-            **Callers other than the accept-invitation path must not pass this** —
-            prefer ``check_seat_limit_for_invitation_accept``, which is a call a
-            reviewer can see rather than a kwarg nobody can grep for. Only
+        :param exclude_invitation_id: See ``UsageContext.exclude_invitation_id``. Two
+            legitimate callers pass this: ``check_seat_limit_for_invitation_accept``
+            (the accept path — prefer that named entry point, a call a reviewer can
+            see, over passing this kwarg directly) and ``invite_user_to_organization``'s
+            resend branch, which excludes the still-pending invitation being reused so
+            a resend at the exact ceiling is net-zero rather than a false block. Only
             meaningful for ``organization_members``; passing it with any other
             ``resource_key`` raises, since it would otherwise be silently ignored.
+        :param exclude_invitation_id_resolver: Lazy alternative to ``exclude_invitation_id``
+            for a caller whose exclusion itself requires a query (e.g. resolving the
+            still-pending invitation a resend is reusing). Called at most once, and only
+            after the ceiling is known to be finite, so an ``unlimited`` organization never
+            pays for that query. Mutually exclusive with ``exclude_invitation_id``; same
+            ``organization_members``-only restriction.
         """
-        _reject_inapplicable_invitation_exclusion(resource_key, exclude_invitation_id)
+        _reject_inapplicable_invitation_exclusion(
+            resource_key,
+            exclude_invitation_id is not None or exclude_invitation_id_resolver is not None,
+        )
         root = resolve_billing_root(organization)
         if lock:
             # Discard the returned row: the point is the row lock, and the
@@ -424,6 +437,8 @@ class EntitlementService:
 
         # Narrowed by the ``is_unlimited`` return above: limit_value is not None here.
         ceiling = effective_limit.limit_value or 0
+        if exclude_invitation_id_resolver is not None:
+            exclude_invitation_id = exclude_invitation_id_resolver()
         current_usage = self._count_usage(
             root, resource_key, subscription, exclude_invitation_id=exclude_invitation_id
         )
