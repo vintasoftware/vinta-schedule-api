@@ -261,6 +261,15 @@ def _google_account_with_token(user) -> SocialAccount:
     return account
 
 
+# The Google adapter refuses to construct without these. Only the *positive*
+# controls below need them: the blocked case never gets as far as building an
+# adapter, which is itself the point of gating before `get_calendar_adapter_for_account`.
+_with_google_credentials = override_settings(
+    GOOGLE_CLIENT_ID="test-google-client-id",
+    GOOGLE_CLIENT_SECRET="test-google-client-secret",  # noqa: S106 - dummy value, not a credential
+)
+
+
 @pytest.mark.django_db
 class TestExternalCalendarGoogleGate:
     def test_cannot_import_from_a_google_account_without_the_entitlement(self):
@@ -278,6 +287,7 @@ class TestExternalCalendarGoogleGate:
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
         assert response.data["resource"] == Entitlement.EXTERNAL_CALENDAR_GOOGLE
 
+    @_with_google_credentials
     def test_can_import_from_a_google_account_with_the_entitlement(self):
         organization = _organization_with_entitlement(
             Entitlement.EXTERNAL_CALENDAR_GOOGLE, is_enabled=True
@@ -292,6 +302,7 @@ class TestExternalCalendarGoogleGate:
 
         assert response.status_code == status.HTTP_202_ACCEPTED
 
+    @_with_google_credentials
     def test_unlimited_plan_org_can_import_unchanged(self):
         organization = _unlimited_organization()
         membership = _admin_membership(organization)
@@ -456,6 +467,7 @@ class TestWriteAdapterProviderGate:
         service.authenticate(account=actor.user, organization=organization)
         return service, calendar
 
+    @_with_google_credentials
     def test_write_adapter_is_blocked_for_an_unentitled_calendar_provider(self):
         service, calendar = self._setup(microsoft_enabled=False)
 
@@ -464,6 +476,7 @@ class TestWriteAdapterProviderGate:
 
         assert exc_info.value.resource_key == Entitlement.EXTERNAL_CALENDAR_MICROSOFT
 
+    @_with_google_credentials
     @_with_ms_credentials
     def test_write_adapter_is_returned_when_the_calendar_provider_is_entitled(self):
         service, calendar = self._setup(microsoft_enabled=True)

@@ -23,6 +23,7 @@ directly -- the same seam identified there -- proving:
 import datetime
 from unittest.mock import MagicMock, patch
 
+from django.test import override_settings
 from django.utils import timezone
 
 import pytest
@@ -652,6 +653,17 @@ class TestSyncPathIsWiredThroughDI:
         assert isinstance(sync_service._context.entitlement_service, EntitlementService)
 
 
+# The Google adapter refuses to construct without these. Both tests below pass a
+# bare `User` to `authenticate()`, so -- per `_provider_for_account`'s docstring --
+# the entitlement gate can only run *after* `get_calendar_adapter_for_account`
+# resolves and builds the adapter, exactly like the production path once
+# credentials are configured.
+_with_google_credentials = override_settings(
+    GOOGLE_CLIENT_ID="test-google-client-id",
+    GOOGLE_CLIENT_SECRET="test-google-client-secret",  # noqa: S106 - dummy value, not a credential
+)
+
+
 @pytest.mark.django_db
 class TestSyncTasksSkipRatherThanFailOnMissingEntitlement:
     """Phase 6c: an unentitled organization must make scheduled syncs a **skip**, not a
@@ -697,6 +709,7 @@ class TestSyncTasksSkipRatherThanFailOnMissingEntitlement:
         )
         return organization, account
 
+    @_with_google_credentials
     def test_import_account_calendars_task_returns_instead_of_raising(self):
         from calendar_integration.tasks.calendar_sync_tasks import import_account_calendars_task
 
@@ -712,6 +725,7 @@ class TestSyncTasksSkipRatherThanFailOnMissingEntitlement:
 
         imported.assert_not_called()
 
+    @_with_google_credentials
     def test_sync_calendar_task_returns_instead_of_raising(self):
         from calendar_integration.tasks.calendar_sync_tasks import sync_calendar_task
 
