@@ -1119,7 +1119,7 @@ class CalendarEventService:
     def create_recurring_event_exception(
         self,
         parent_event: CalendarEvent,
-        exception_date: datetime.datetime,
+        exception_date: datetime.date,
         modified_title: str | None = None,
         modified_description: str | None = None,
         modified_start_time: datetime.datetime | None = None,
@@ -1134,7 +1134,11 @@ class CalendarEventService:
         and creates a new recurring event on the second occurrence
 
         :param parent_event: The recurring event to create an exception for
-        :param exception_date: The date of the occurrence to modify/cancel
+        :param exception_date: The **date** of the occurrence to modify/cancel. A
+            ``datetime.date``, not a datetime: the engine compares it against
+            ``parent_event.start_time.date()`` to decide whether the exception falls
+            on the master occurrence, and a datetime never matches that, so it would
+            silently take the future-occurrence branch instead.
         :param modified_title: New title for the modified occurrence (if not cancelled)
         :param modified_description: New description for the modified occurrence (if not cancelled)
         :param modified_start_time: New start time for the modified occurrence (if not cancelled)

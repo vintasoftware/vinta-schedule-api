@@ -14,6 +14,7 @@ and a stale snapshot behind a *guard* would be an enforcement bug rather than an
 optimization. It belongs with the phase that introduces the first reader.
 """
 
+import datetime
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -69,3 +70,82 @@ class LimitCheckResult:
     current_usage: int | None
     ceiling: int | None
     remedy: str | None = None
+
+
+@dataclass(frozen=True)
+class OccurrenceIdentity:
+    """The billing identity of a single event occurrence.
+
+    Exactly the fields of ``MeteredOccurrence``'s unique constraint, and nothing
+    else — this dataclass *is* the key, so "what the meter writes" and "what
+    reconciliation recomputes" cannot drift into two different notions of identity.
+
+    ``event_id`` is the pk of the **series root** — the original master, following
+    ``bulk_modification_parent`` back through any splits — and ``occurrence_start``
+    is the **recurrence slot** the occurrence occupies, not necessarily the instant
+    it was finally scheduled at. Both are deliberate: an occurrence's identity has to
+    survive the occurrence being edited and the series being split, or re-reading an
+    already-metered stretch of time bills the customer twice. See
+    ``MeteringService.expand_occurrence_identities``.
+
+    Times are always the timezone-aware ``start_time`` generated column, never the
+    ``*_tz_unaware`` field, which is not comparable across timezones.
+    """
+
+    organization_id: int
+    event_id: int
+    occurrence_start: datetime.datetime
+
+
+@dataclass(frozen=True)
+class MeteringResult:
+    """What one call to ``MeteringService.meter_occurrences_for_period`` did.
+
+    ``occurrences_seen`` counts occurrences the window expanded to;
+    ``occurrences_recorded`` counts rows the database actually gained. On a
+    re-run of an already-metered window the first is unchanged and the second is
+    **zero** — that difference is the observable proof that the sweep is
+    idempotent, and it is measured by counting rows before and after rather than
+    by trusting ``bulk_create``'s return value (which cannot report conflicts).
+    """
+
+    subscription_id: int
+    window_start: datetime.datetime
+    window_end: datetime.datetime
+    occurrences_seen: int
+    occurrences_recorded: int
+
+
+@dataclass(frozen=True)
+class ReconciliationReport:
+    """Drift between what a closed period *should* have metered and what it did.
+
+    The plan's named mitigation for this feature's highest-severity risk: metering
+    depends on a scheduled task, occurrences are computed rather than stored, and a
+    miscount is invisible until a customer disputes a bill. Nothing here writes —
+    reconciliation reports, it does not repair, so a surprising number is escalated
+    rather than silently absorbed.
+
+    ``unmetered`` are occurrences the period still expands to but that were never
+    recorded (under-billing — a sweep that never ran). ``orphaned`` are recorded
+    rows the period no longer expands to (over-billing *or* a legitimately deleted
+    event; ``MeteredOccurrence`` deliberately outlives its event, so a non-zero
+    ``orphaned`` is not automatically a defect).
+    """
+
+    subscription_id: int
+    billing_period_start: datetime.datetime
+    billing_period_end: datetime.datetime
+    expected_count: int
+    metered_count: int
+    unmetered: tuple[OccurrenceIdentity, ...]
+    orphaned: tuple[OccurrenceIdentity, ...]
+
+    @property
+    def drift(self) -> int:
+        """Total number of occurrences the two sides disagree about; 0 == clean."""
+        return len(self.unmetered) + len(self.orphaned)
+
+    @property
+    def is_clean(self) -> bool:
+        return self.drift == 0

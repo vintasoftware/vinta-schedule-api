@@ -173,6 +173,12 @@ class CalendarEventManager(BaseOrganizationModelManager, RecurringManagerMixin):
     def get_queryset(self) -> CalendarEventQuerySet:
         return CalendarEventQuerySet(self.model, using=self._db)
 
+    def occurrence_bearing_masters_in_range(
+        self, start: datetime.datetime, end: datetime.datetime
+    ) -> CalendarEventQuerySet:
+        """Wraps :meth:`CalendarEventQuerySet.occurrence_bearing_masters_in_range`."""
+        return self.get_queryset().occurrence_bearing_masters_in_range(start, end)
+
 
 class CalendarSyncManager(BaseOrganizationModelManager):
     """Custom manager for CalendarSync model to handle specific queries."""

@@ -605,6 +605,56 @@ class CalendarEventQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
             )
         )
 
+    def occurrence_bearing_masters_in_range(
+        self, start: datetime.datetime, end: datetime.datetime
+    ) -> "CalendarEventQuerySet":
+        """Master rows that can yield an occurrence *starting* in ``[start, end)``.
+
+        Deliberately the same shape as the expansion in
+        ``CalendarEventService.get_calendar_events_expanded`` — masters only
+        (``parent_recurring_object__isnull=True``), one-off events by their own
+        ``start_time``, recurring series by their rule — because "what occurrences
+        exist in this range" must have exactly one definition in this codebase.
+
+        Two exclusions are load-bearing and are the reason this is a queryset method
+        rather than a filter written at the call site:
+
+        - **Recurrence instances and exceptions are excluded here** (they always have
+          ``parent_recurring_object`` set). They are not missed: expanding their master
+          returns the *exception row itself*, with its own pk and its own moved
+          ``start_time``. Enumerating them here as well would produce the identical
+          occurrence from two sources.
+        - **A bulk-modification continuation is a master in its own right** and *is*
+          enumerated, while its parent has been truncated (``UNTIL`` set to the
+          occurrence before the split). The two therefore tile the timeline without
+          overlapping. This is also why callers must use ``get_occurrences_in_range``
+          and **not** ``get_occurrences_in_range_with_bulk_modifications``: the latter
+          walks ``bulk_modifications`` from the parent and would return the
+          continuation's occurrences a second time.
+
+        The result is annotated with ``recurring_occurrences`` so a caller iterating it
+        and calling ``get_occurrences_in_range`` pays one query for the whole set
+        rather than one per master.
+        """
+        return (
+            self.filter(parent_recurring_object__isnull=True)
+            .filter(
+                Q(
+                    recurrence_rule__isnull=True,
+                    is_recurring_exception=False,
+                    start_time__gte=start,
+                    start_time__lt=end,
+                )
+                | Q(
+                    Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start),
+                    recurrence_rule__isnull=False,
+                    start_time__lt=end,
+                )
+            )
+            .annotate_recurring_occurrences_on_date_range(start, end)
+            .select_related("recurrence_rule")
+        )
+
 
 class CalendarSyncQuerySet(BaseOrganizationModelQuerySet):
     """

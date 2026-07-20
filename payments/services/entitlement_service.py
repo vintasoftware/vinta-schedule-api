@@ -35,7 +35,7 @@ from payments.billing_constants import (
     LimitRemedy,
 )
 from payments.exceptions import InapplicableInvitationExclusionError
-from payments.models import Subscription
+from payments.models import MeteredOccurrence, Subscription
 from payments.services.billing_dataclasses import EffectiveLimit, LimitCheckResult
 from payments.services.subscription_service import is_billing_root, resolve_billing_root
 from public_api.models import SystemUser
@@ -155,19 +155,28 @@ def _count_public_api_system_users(context: UsageContext) -> int:
 def _count_event_occurrences(context: UsageContext) -> int:
     """Metered event occurrences in the subscription's current billing period.
 
-    Always ``0`` for now: occurrences are computed rather than stored, and the
-    ``MeteredOccurrence`` table that records billed ones is introduced by the
-    metering phase. Returning ``0`` (rather than omitting the counter) keeps
-    ``USAGE_COUNTERS`` total over ``LimitedResource`` — ``get_current_usage`` is
-    then a lookup that cannot ``KeyError`` on a resource somebody forgot to
-    register, and ``test_every_limited_resource_has_a_counter`` fails loudly the
-    day a new member is added without one.
+    Occurrences of a recurring series are computed, never stored, so this counts
+    the ``MeteredOccurrence`` rows ``MeteringService`` wrote — **not** a second,
+    independent expansion of the calendar. There is deliberately only one place
+    that decides an occurrence happened; a counter that re-derived it would be a
+    second opinion, and the two would eventually disagree about a customer's bill.
 
-    ``event_occurrences`` is post-paid, so a zero here under-reports rather than
-    blocking anyone in the meantime.
+    Reads back through ``MeteredOccurrenceQuerySet.for_billing_period``, the same
+    method the meter's own allowance arithmetic uses, so "in this period" means one
+    thing. A subscription-less pool (a broken invariant, warned about elsewhere)
+    reports zero: this resource is post-paid, so under-reporting cannot block
+    anybody.
     """
-    del context
-    return 0
+    subscription = context.subscription
+    if subscription is None:
+        return 0
+    return (
+        MeteredOccurrence.objects.for_billing_period(
+            subscription.pk, subscription.current_period_start
+        )
+        .for_organizations(context.organization_ids)
+        .count()
+    )
 
 
 USAGE_COUNTERS: dict[str, UsageCounter] = {
@@ -561,6 +570,17 @@ class EntitlementService:
         ``None``; every caller here wants the ``None``.
         """
         return Subscription.objects.filter(organization=root).first()
+
+    def get_pooled_organization_ids(self, organization: Organization) -> list[int]:
+        """Every organization whose usage pools with ``organization``'s.
+
+        Public entry point onto the same subtree walk every usage counter runs on,
+        for callers that need the pool itself rather than a count —
+        ``MeteringService`` sweeps calendar events across exactly this set, and it
+        must be the *same* set the ``event_occurrences`` counter later reads back,
+        or the meter and the counter would be looking at different organizations.
+        """
+        return self._get_pooled_organization_ids(resolve_billing_root(organization))
 
     def _get_pooled_organization_ids(self, root: Organization) -> list[int]:
         """Every organization whose usage counts against ``root``'s ceiling.

@@ -1592,7 +1592,7 @@ class CalendarService(BaseCalendarService):
     def create_recurring_event_exception(
         self,
         parent_event: CalendarEvent,
-        exception_date: datetime.datetime,
+        exception_date: datetime.date,
         modified_title: str | None = None,
         modified_description: str | None = None,
         modified_start_time: datetime.datetime | None = None,
