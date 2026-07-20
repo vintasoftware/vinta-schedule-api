@@ -1,9 +1,12 @@
 from typing import Any
 
+from django import forms
 from django.contrib import admin
+from django.core.exceptions import ValidationError
 from django.forms.models import BaseInlineFormSet
 from django.http import HttpRequest
 
+from payments.billing_constants import LimitedResource
 from payments.models import (
     BillingAddress,
     BillingPlan,
@@ -23,8 +26,41 @@ from payments.models import (
 )
 
 
+class PlanLimitInlineFormSet(BaseInlineFormSet):
+    """Enforces plan completeness against the rows the save is *about to* produce.
+
+    ``BillingPlan.clean`` states the same invariant, but the parent form is
+    validated before this formset is saved, so it can only see the rows already in
+    the database — it would reject the very edit that adds the missing row. Here
+    the resulting set is knowable: existing rows, minus the ones marked for
+    deletion, plus the ones being added.
+    """
+
+    def clean(self) -> None:
+        super().clean()
+        if any(self.errors):
+            # Per-row errors already block the save; a coverage complaint on top of
+            # them would be noise about a state the admin is not saving anyway.
+            return
+        covered = {
+            form.cleaned_data.get("resource_key")
+            for form in self.forms
+            if form.cleaned_data and not form.cleaned_data.get("DELETE", False)
+        }
+        missing = sorted(set(LimitedResource.values) - covered)
+        if missing:
+            raise ValidationError(
+                "This plan has no limit row for %(missing)s. Every plan must carry a row "
+                "for every limited resource — 'not included' is a row with limit value 0, "
+                "never an omitted row, because an omitted row reads as unlimited.",
+                code="incomplete_plan_limits",
+                params={"missing": ", ".join(missing)},
+            )
+
+
 class PlanLimitInline(admin.TabularInline):
     model = PlanLimit
+    formset = PlanLimitInlineFormSet
     extra = 0
     fields = ("resource_key", "limit_value", "kind", "overage_unit_price")
 
@@ -35,10 +71,45 @@ class PlanEntitlementInline(admin.TabularInline):
     fields = ("entitlement_key", "is_enabled")
 
 
+class BillingPlanAdminForm(forms.ModelForm):
+    """Hands plan-completeness validation over to ``PlanLimitInlineFormSet``.
+
+    ``ModelForm._post_clean`` calls ``instance.full_clean()``, which runs
+    ``BillingPlan.clean`` — and that check reads the limit rows already in the
+    database, while the rows that would make the plan complete are still sitting
+    unsaved in the inline formset. Left alone it would reject the exact edit that
+    fixes an incomplete plan, with no way out of the admin. The inline formset
+    validates the resulting set instead, which is strictly more accurate.
+
+    The opt-out is set in ``clean``, which ``full_clean`` runs *before*
+    ``_post_clean`` — so the flag is in place by the time the instance is
+    validated, without overriding a private form hook.
+    """
+
+    class Meta:
+        model = BillingPlan
+        fields = (
+            "slug",
+            "name",
+            "is_active",
+            "is_default_for_new_organizations",
+            "monthly_price",
+            "annual_price",
+            "currency",
+            "grace_period_days",
+        )
+
+    def clean(self) -> dict[str, Any] | None:
+        self.instance.skip_limit_coverage_validation = True
+        return super().clean()
+
+
 @admin.register(BillingPlan)
 class BillingPlanAdmin(admin.ModelAdmin):
     """Admin interface for the catalog ``BillingPlan``, with its ``PlanLimit`` /
     ``PlanEntitlement`` rows editable inline."""
+
+    form = BillingPlanAdminForm
 
     list_display = (
         "id",

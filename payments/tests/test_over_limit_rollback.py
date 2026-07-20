@@ -16,6 +16,7 @@ passes identically whether or not ``set_rollback()`` is there. That is precisely
 the failure mode this file exists to catch.
 """
 
+import contextvars
 from unittest import mock
 
 from django.db import connection
@@ -32,6 +33,18 @@ from payments.billing_constants import LimitedResource, LimitRemedy
 from payments.exceptions import OverLimitError
 
 
+#: The organization the two views below write against.
+#:
+#: A ``ContextVar`` rather than a class attribute on one of the views: class state
+#: is module-global and survives a mid-test failure, so a test that blew up before
+#: its teardown would leave a stale organization id set for every test after it —
+#: and the other view had to reach across into a sibling view class to read it.
+#: The fixture resets this token in a ``finally``, so the reset happens even then.
+current_organization_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "current_organization_id", default=None
+)
+
+
 class WriteThenExceedLimitView(APIView):
     """Stands in for a Phase 6a/6b guarded service method.
 
@@ -43,11 +56,9 @@ class WriteThenExceedLimitView(APIView):
     authentication_classes = ()
     permission_classes = ()
 
-    organization_id: int | None = None
-
     def post(self, request, *args, **kwargs):
         CalendarGroup.objects.create(
-            organization_id=WriteThenExceedLimitView.organization_id,
+            organization_id=current_organization_id.get(),
             name="written-before-the-guard",
         )
         raise OverLimitError(
@@ -68,7 +79,7 @@ class WriteOnlyView(APIView):
 
     def post(self, request, *args, **kwargs):
         CalendarGroup.objects.create(
-            organization_id=WriteThenExceedLimitView.organization_id,
+            organization_id=current_organization_id.get(),
             name="written-and-kept",
         )
         return Response({"ok": True}, status=status.HTTP_201_CREATED)
@@ -105,9 +116,11 @@ def test_urlconf(settings):
 @pytest.fixture
 def organization():
     org = Organization.objects.create(name="rollback-test-org")
-    WriteThenExceedLimitView.organization_id = org.pk
-    yield org
-    WriteThenExceedLimitView.organization_id = None
+    token = current_organization_id.set(org.pk)
+    try:
+        yield org
+    finally:
+        current_organization_id.reset(token)
 
 
 @pytest.mark.django_db

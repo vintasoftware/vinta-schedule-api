@@ -13,12 +13,14 @@ from model_bakery import baker
 
 from organizations.models import Organization
 from payments.admin import (
+    BillingPlanAdminForm,
+    PlanLimitInline,
     SubscriptionAdmin,
     SubscriptionEntitlementInline,
     SubscriptionPlanLimitInline,
 )
-from payments.billing_constants import Entitlement, LimitedResource
-from payments.models import Subscription
+from payments.billing_constants import Entitlement, LimitedResource, LimitKind
+from payments.models import BillingPlan, PlanLimit, Subscription
 from payments.services.subscription_service import SubscriptionService
 
 
@@ -170,3 +172,112 @@ class TestSubscriptionAdminSaveFormsetEntitlements:
         assert changed_row.is_enabled is False
         assert changed_row.is_overridden is True
         assert unchanged_row.is_overridden is False
+
+
+@pytest.mark.django_db
+class TestBillingPlanAdminLimitCoverage:
+    """``BillingPlanAdmin`` must refuse to author an incomplete plan.
+
+    Plan completeness is the invariant that stops a downgrade from handing a
+    resource an infinite ceiling (BLOCKER 3, Phase 5 review), and the admin is the
+    one surface where a support admin can introduce a gap. Checked on the *inline
+    formset* rather than on the parent form: the parent is validated before the
+    inline rows are saved, so ``BillingPlan.clean`` there would reject the very
+    edit that completes the plan.
+    """
+
+    def _formset_data(self, resource_keys, prefix="limits"):
+        data = {
+            f"{prefix}-TOTAL_FORMS": str(len(resource_keys)),
+            f"{prefix}-INITIAL_FORMS": "0",
+            f"{prefix}-MIN_NUM_FORMS": "0",
+            f"{prefix}-MAX_NUM_FORMS": "1000",
+        }
+        for index, resource_key in enumerate(resource_keys):
+            data[f"{prefix}-{index}-resource_key"] = resource_key
+            data[f"{prefix}-{index}-limit_value"] = "0"
+            data[f"{prefix}-{index}-kind"] = LimitKind.PREPAID
+        return data
+
+    def _formset_class(self, rf, superuser, plan):
+        inline = PlanLimitInline(BillingPlan, AdminSite())
+        request = rf.post(f"/admin/payments/billingplan/{plan.pk}/change/")
+        request.user = superuser
+        return inline.get_formset(request, plan)
+
+    def test_a_formset_omitting_a_resource_is_rejected(self, rf, superuser):
+        plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+        submitted = [
+            key for key in LimitedResource.values if key != LimitedResource.RESOURCE_CALENDARS
+        ]
+        formset_class = self._formset_class(rf, superuser, plan)
+
+        formset = formset_class(self._formset_data(submitted), instance=plan, prefix="limits")
+
+        assert not formset.is_valid()
+        assert LimitedResource.RESOURCE_CALENDARS in str(formset.non_form_errors())
+
+    def test_a_formset_covering_every_resource_is_accepted(self, rf, superuser):
+        plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+        formset_class = self._formset_class(rf, superuser, plan)
+
+        formset = formset_class(
+            self._formset_data(list(LimitedResource.values)), instance=plan, prefix="limits"
+        )
+
+        assert formset.is_valid(), formset.errors
+
+    def test_deleting_a_row_that_would_leave_a_gap_is_rejected(self, rf, superuser):
+        """The check runs against the rows the save is about to produce, so removing
+        coverage is caught as surely as never adding it."""
+        plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+        rows = [
+            baker.make(
+                PlanLimit,
+                plan=plan,
+                resource_key=resource_key,
+                limit_value=0,
+                kind=LimitKind.PREPAID,
+            )
+            for resource_key in LimitedResource.values
+        ]
+        data = {
+            "limits-TOTAL_FORMS": str(len(rows)),
+            "limits-INITIAL_FORMS": str(len(rows)),
+            "limits-MIN_NUM_FORMS": "0",
+            "limits-MAX_NUM_FORMS": "1000",
+        }
+        for index, row in enumerate(rows):
+            data[f"limits-{index}-id"] = str(row.pk)
+            data[f"limits-{index}-plan"] = str(plan.pk)
+            data[f"limits-{index}-resource_key"] = row.resource_key
+            data[f"limits-{index}-limit_value"] = "0"
+            data[f"limits-{index}-kind"] = row.kind
+        data["limits-0-DELETE"] = "on"
+        formset_class = self._formset_class(rf, superuser, plan)
+
+        formset = formset_class(data, instance=plan, prefix="limits")
+
+        assert not formset.is_valid()
+        assert rows[0].resource_key in str(formset.non_form_errors())
+
+    def test_the_parent_form_does_not_block_fixing_an_incomplete_plan(self, rf, superuser):
+        """``BillingPlan.clean`` would reject an existing incomplete plan on the
+        parent form — before the inline rows that complete it are saved — leaving no
+        way to fix the plan through the admin at all. The admin form opts that one
+        check out; the formset above is what enforces it."""
+        plan = baker.make(BillingPlan, is_default_for_new_organizations=False, slug="gappy")
+        assert plan.get_missing_limited_resource_keys()
+
+        form = BillingPlanAdminForm(
+            data={
+                "slug": plan.slug,
+                "name": plan.name,
+                "is_active": "on",
+                "monthly_price": "10.00",
+                "currency": "USD",
+            },
+            instance=plan,
+        )
+
+        assert form.is_valid(), form.errors

@@ -34,6 +34,7 @@ from payments.billing_constants import (
     LimitKind,
     LimitRemedy,
 )
+from payments.exceptions import InapplicableInvitationExclusionError
 from payments.models import Subscription
 from payments.services.billing_dataclasses import EffectiveLimit, LimitCheckResult
 from payments.services.subscription_service import is_billing_root, resolve_billing_root
@@ -179,6 +180,20 @@ USAGE_COUNTERS: dict[str, UsageCounter] = {
 }
 
 
+def _reject_inapplicable_invitation_exclusion(
+    resource_key: str, exclude_invitation_id: int | None
+) -> None:
+    """``exclude_invitation_id`` is read by exactly one usage counter.
+
+    Every other counter takes the ``UsageContext`` and ignores the field, so
+    passing it with any other ``resource_key`` is a no-op that *looks* like a seat
+    exclusion took place. Raising is the only way that mistake is visible; logging
+    would leave the caller with a wrong answer it believes.
+    """
+    if exclude_invitation_id is not None and resource_key != LimitedResource.ORGANIZATION_MEMBERS:
+        raise InapplicableInvitationExclusionError(resource_key)
+
+
 class EntitlementService:
     """Answers "what is the ceiling?", "how much is in use?", and "may I create one
     more?" for any organization and limited resource.
@@ -199,15 +214,20 @@ class EntitlementService:
         ``limit_value=None`` (unlimited). Treating any of them as zero would turn a
         data gap into a total lockout, which the rollout explicitly forbids.
         """
+        root = resolve_billing_root(organization)
         return self._effective_limit_for_subscription(
-            self._get_root_subscription(organization), resource_key, organization.pk
+            self._get_subscription_for_root(root),
+            resource_key,
+            root.pk,
+            asked_for_organization_pk=organization.pk,
         )
 
     def _effective_limit_for_subscription(
         self,
         subscription: Subscription | None,
         resource_key: str,
-        organization_pk: int | None = None,
+        root_pk: int | None = None,
+        asked_for_organization_pk: int | None = None,
     ) -> EffectiveLimit:
         """``get_effective_limit`` given an already-resolved subscription.
 
@@ -215,14 +235,25 @@ class EntitlementService:
         subscription **once** and reuse both, instead of re-walking the ``parent``
         chain (one query per level) and re-fetching the subscription for the
         ceiling lookup, the usage count, and the remedy.
+
+        :param root_pk: The **billing root**'s pk — always the root, never the
+            organization that was asked about, so the warning below means one thing
+            regardless of which entry point produced it. The subscription that is
+            missing belongs to the root; logging a child's pk there would send
+            whoever reads it looking for a subscription that was never supposed to
+            exist.
+        :param asked_for_organization_pk: The organization the caller actually asked
+            about, when it differs from the root. Context only.
         """
         if subscription is None:
             logger.warning(
-                "No subscription resolved for organization %s (resource %s); treating the "
-                "limit as unlimited. Every billing root is expected to hold exactly one "
-                "Subscription — this indicates a broken invariant, not a normal state.",
-                organization_pk,
+                "No subscription resolved for billing root %s (resource %s, asked for "
+                "organization %s); treating the limit as unlimited. Every billing root is "
+                "expected to hold exactly one Subscription — this indicates a broken "
+                "invariant, not a normal state.",
+                root_pk,
                 resource_key,
+                asked_for_organization_pk if asked_for_organization_pk is not None else root_pk,
             )
             return EffectiveLimit(
                 resource_key=resource_key, limit_value=None, kind=None, overage_unit_price=None
@@ -283,8 +314,11 @@ class EntitlementService:
         (which pays for its own subtree separately).
 
         :param exclude_invitation_id: See ``UsageContext.exclude_invitation_id`` —
-            the accept-invitation path is net zero and must not double-count.
+            the accept-invitation path is net zero and must not double-count. Only
+            meaningful for ``organization_members``; passing it with another
+            ``resource_key`` raises rather than being silently ignored.
         """
+        _reject_inapplicable_invitation_exclusion(resource_key, exclude_invitation_id)
         root = resolve_billing_root(organization)
         return self._count_usage(
             root,
@@ -363,7 +397,13 @@ class EntitlementService:
             project ever raises the isolation level, this guard has to be
             revisited, not just retested.
         :param exclude_invitation_id: See ``UsageContext.exclude_invitation_id``.
+            **Callers other than the accept-invitation path must not pass this** —
+            prefer ``check_seat_limit_for_invitation_accept``, which is a call a
+            reviewer can see rather than a kwarg nobody can grep for. Only
+            meaningful for ``organization_members``; passing it with any other
+            ``resource_key`` raises, since it would otherwise be silently ignored.
         """
+        _reject_inapplicable_invitation_exclusion(resource_key, exclude_invitation_id)
         root = resolve_billing_root(organization)
         if lock:
             # Discard the returned row: the point is the row lock, and the
@@ -372,7 +412,7 @@ class EntitlementService:
 
         subscription = self._get_subscription_for_root(root)
         effective_limit = self._effective_limit_for_subscription(
-            subscription, resource_key, root.pk
+            subscription, resource_key, root.pk, asked_for_organization_pk=organization.pk
         )
         if effective_limit.is_unlimited:
             return LimitCheckResult(
@@ -394,6 +434,35 @@ class EntitlementService:
             current_usage=current_usage,
             ceiling=ceiling,
             remedy=(None if allowed else self._resolve_remedy_for(subscription, effective_limit)),
+        )
+
+    def check_seat_limit_for_invitation_accept(
+        self, invitation: OrganizationInvitation, lock: bool = True
+    ) -> LimitCheckResult:
+        """May ``invitation`` be accepted without exceeding the seat ceiling?
+
+        The accept path's own entry point, rather than "``check_limit`` plus the
+        right kwarg". Accepting is **net zero** on seats — the pending invitation
+        stops being pending and becomes the membership it was already holding a
+        seat for — so it must be excluded from the pending count or the accept
+        fails its own check at exactly the ceiling, and an organization can never
+        fill its last seat.
+
+        Getting that wrong via ``check_limit(..., exclude_invitation_id=...)`` is a
+        *missing kwarg*: invisible in review, ungreppable, and silent (a permanent
+        lockout rather than an error). Getting it wrong here is a missing call.
+
+        ``lock`` defaults to ``True`` — unlike ``check_limit`` — because this is
+        only ever called immediately before the accept writes, which is exactly the
+        situation the row lock exists for. See ``check_limit`` for the transaction
+        and isolation-level requirements that come with it.
+        """
+        return self.check_limit(
+            invitation.organization,
+            LimitedResource.ORGANIZATION_MEMBERS,
+            delta=1,
+            lock=lock,
+            exclude_invitation_id=invitation.pk,
         )
 
     def has_entitlement(self, organization: Organization, entitlement_key: str) -> bool:

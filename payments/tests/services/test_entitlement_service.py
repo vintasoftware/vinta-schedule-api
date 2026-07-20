@@ -27,6 +27,7 @@ from payments.billing_constants import (
     LimitKind,
     LimitRemedy,
 )
+from payments.exceptions import InapplicableInvitationExclusionError
 from payments.models import (
     BillingPlan,
     Subscription,
@@ -509,6 +510,62 @@ class TestSeatCountingOnTheAcceptPath:
 
         assert result.allowed is True
         assert result.current_usage == 4
+
+    def test_the_named_accept_entry_point_applies_the_exclusion(
+        self, service, organization, subscription
+    ):
+        """SHOULD-FIX 2, Phase 5 verification review. ``exclude_invitation_id`` is a
+        kwarg six other call sites must *not* pass and the accept path must never
+        forget — and forgetting it is a silent permanent lockout, not an error.
+        ``check_seat_limit_for_invitation_accept`` turns that into a missing *call*,
+        which a reviewer can see.
+        """
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
+        baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=4)
+        invitation = self._make_pending_invitation(organization)
+
+        result = service.check_seat_limit_for_invitation_accept(invitation)
+
+        assert result.allowed is True
+        assert result.current_usage == 4
+        assert result.resource_key == LimitedResource.ORGANIZATION_MEMBERS
+
+    def test_the_named_accept_entry_point_still_blocks_a_genuinely_full_organization(
+        self, service, organization, subscription
+    ):
+        """Net zero is not a bypass: with the ceiling already filled by memberships
+        alone, the accept is still refused."""
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
+        baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=5)
+        invitation = self._make_pending_invitation(organization)
+
+        result = service.check_seat_limit_for_invitation_accept(invitation)
+
+        assert result.allowed is False
+        assert result.current_usage == 5
+
+    def test_excluding_an_invitation_on_a_non_seat_resource_raises(
+        self, service, organization, subscription
+    ):
+        """SHOULD-FIX 3, Phase 5 verification review: only
+        ``_count_organization_members`` reads ``exclude_invitation_id``, so passing it
+        for any other resource used to be a silent no-op that reads as an exclusion
+        that never happened."""
+        invitation = self._make_pending_invitation(organization)
+
+        with pytest.raises(InapplicableInvitationExclusionError):
+            service.check_limit(
+                organization,
+                LimitedResource.RESOURCE_CALENDARS,
+                exclude_invitation_id=invitation.pk,
+            )
+
+        with pytest.raises(InapplicableInvitationExclusionError):
+            service.get_current_usage(
+                organization,
+                LimitedResource.RESOURCE_CALENDARS,
+                exclude_invitation_id=invitation.pk,
+            )
 
     def test_the_exclusion_does_not_hide_other_pending_invitations(
         self, service, organization, subscription

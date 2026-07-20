@@ -8,9 +8,13 @@ from django.utils import timezone
 from dateutil.relativedelta import relativedelta
 
 from organizations.models import Organization
-from payments.billing_constants import BillingInterval, BillingState, LimitedResource
+from payments.billing_constants import BillingInterval, BillingState
 from payments.constants import PaymentProviders
-from payments.exceptions import BillingRootCycleError, NoDefaultBillingPlanError
+from payments.exceptions import (
+    BillingRootCycleError,
+    IncompleteBillingPlanError,
+    NoDefaultBillingPlanError,
+)
 from payments.models import (
     BillingPlan,
     Subscription,
@@ -82,6 +86,35 @@ def resolve_billing_root(organization: Organization) -> Organization:
     return organization
 
 
+def assert_plan_is_complete(plan: BillingPlan) -> None:
+    """Refuse to place a subscription on a plan that omits a ``LimitedResource``.
+
+    The invariant — every plan carries a ``PlanLimit`` row for every
+    ``LimitedResource`` member — used to be enforced only by a test over *seed
+    data*, which cannot see a plan an admin authors at runtime. This is that
+    invariant in code, on the two paths that put a subscription on a plan
+    (``create_subscription_for_organization`` and ``change_plan``).
+
+    Why refusing is the only correct outcome. An omitted resource leaves the
+    subscription's row for it either absent or stale, and both read as
+    **unlimited** in ``EntitlementService`` — so a downgrade onto an incomplete
+    plan grants an infinite ceiling, the exact inverse of a downgrade. The two
+    obvious alternatives are worse: materializing the gap as ``limit_value=0``
+    blocks an organization on a resource nobody agreed to restrict (the rollout's
+    "no organization is blocked as a consequence of the rollout itself" rule), and
+    keeping the stale row is the bug itself whenever that row is ``NULL`` — which
+    is the dominant real state, since every organization is on ``unlimited``
+    (every ``limit_value`` NULL) for the whole rollout.
+
+    An incomplete plan is a catalog authoring error, so it fails loudly at the
+    point of use and, via ``BillingPlan.clean`` / ``BillingPlanAdmin``, at the
+    point of authoring — where a support admin can fix it.
+    """
+    missing = plan.get_missing_limited_resource_keys()
+    if missing:
+        raise IncompleteBillingPlanError(plan.slug, missing)
+
+
 class SubscriptionService:
     """Places organizations on a ``BillingPlan`` and keeps their per-subscription
     limit/entitlement copies in sync with plan changes.
@@ -123,6 +156,7 @@ class SubscriptionService:
 
         if plan is None:
             plan = self._get_default_plan()
+        assert_plan_is_complete(plan)
 
         now = timezone.now()
         period_end = self._period_end(now, BillingInterval.MONTHLY)
@@ -179,7 +213,13 @@ class SubscriptionService:
         Atomic: a ``save`` + two ``bulk_create`` + two ``delete`` run as one unit
         so a mid-way failure cannot leave the subscription on the new plan with
         half-synced limits/entitlements.
+
+        Raises ``IncompleteBillingPlanError`` when ``plan`` omits a
+        ``LimitedResource``, *before* anything is written — see
+        ``assert_plan_is_complete``. A downgrade onto an incomplete plan has no
+        correct outcome, so it is refused rather than resolved arbitrarily.
         """
+        assert_plan_is_complete(plan)
         subscription.plan = plan
         subscription.save(update_fields=["plan"])
         self._sync_limits(subscription, plan)
@@ -219,64 +259,37 @@ class SubscriptionService:
                 update_fields=["limit_value", "kind", "overage_unit_price", "is_overridden"],
                 unique_fields=["subscription", "resource_key"],
             )
-        self._prune_stale_limits(subscription, plan, plan_resource_keys)
+        self._prune_stale_limits(subscription, plan_resource_keys)
 
     def _prune_stale_limits(
         self,
         subscription: Subscription,
-        plan: BillingPlan,
         plan_resource_keys: set[str],
     ) -> None:
         """Drop ``SubscriptionPlanLimit`` rows the new plan no longer accounts for.
 
-        **Only rows whose ``resource_key`` is not a ``LimitedResource`` member.**
-        Those are retired keys — a resource that left the enum — and nothing can
-        ever consult them again, so deleting is the only sensible outcome.
+        By the time this runs, ``assert_plan_is_complete`` has already established
+        that ``plan_resource_keys`` covers every ``LimitedResource`` member, so
+        every row left here is a **retired key** — a resource that left the enum.
+        Nothing can ever consult one again, so deleting is the only sensible
+        outcome, and deleting cannot raise anybody's ceiling: an absent row reads
+        as unlimited in ``EntitlementService``, but no code path asks about a key
+        that is not a ``LimitedResource`` member.
 
-        A key that *is* a ``LimitedResource`` member but is missing from ``plan`` is
-        a different animal, and deleting it used to be an exploitable composition:
-        ``EntitlementService.get_effective_limit`` treats an absent row as
-        **unlimited** (the deliberate fail-open that stops a missing seed row
-        locking an organization out). Delete-on-downgrade plus fail-open-on-absence
-        meant *downgrading to a plan that omits a resource handed that resource an
-        infinite ceiling* — the exact inverse of what a downgrade means. Each half
-        was correct alone; only together were they wrong.
+        That guard is what makes this safe. Without it, deleting a row for a key
+        that *is* a ``LimitedResource`` member but is missing from the plan would
+        compose with the fail-open-on-absence rule into *downgrading to a plan that
+        omits a resource grants that resource an infinite ceiling* — the exact
+        inverse of a downgrade. Each half is correct alone; only together are they
+        wrong. The fix is to reject the incomplete plan up front, not to guess a
+        ceiling for it here.
 
-        The catalog never expresses "this plan does not include X" by omission — it
-        expresses it with an explicit row, exactly as the seeded ``free`` plan does
-        with ``public_api_system_users: limit_value=0``. Omission means the plan is
-        *incomplete*, i.e. a catalog data gap, which is the same condition the
-        fail-open exists for. So the row is retained (a bounded, stale ceiling) and
-        the gap is logged, rather than silently converted into no ceiling at all.
-        A complete plan — every seeded plan, asserted by
-        ``test_seeded_plans_cover_every_limited_resource`` — overwrites the row in
-        ``bulk_create`` above and never reaches here.
-
-        Overridden rows are exempt from both branches: the support lever for a
-        stuck organization must survive a plan change untouched.
+        Overridden rows are exempt: the support lever for a stuck organization must
+        survive a plan change untouched.
         """
-        known_resource_keys = set(LimitedResource.values)
-        stale_rows = subscription.limits.exclude(resource_key__in=plan_resource_keys).filter(
+        subscription.limits.exclude(resource_key__in=plan_resource_keys).filter(
             is_overridden=False
-        )
-
-        retained = sorted(
-            set(stale_rows.values_list("resource_key", flat=True)) & known_resource_keys
-        )
-        if retained:
-            logger.warning(
-                "BillingPlan %s (id=%s) carries no PlanLimit row for %s, which are "
-                "LimitedResource members. Keeping subscription %s's existing rows rather "
-                "than deleting them: an absent row reads as *unlimited*, so deleting here "
-                "would raise the ceiling on a downgrade. Add explicit PlanLimit rows to "
-                "this plan (limit_value=0 for 'not included').",
-                plan.slug,
-                plan.pk,
-                retained,
-                subscription.pk,
-            )
-
-        stale_rows.exclude(resource_key__in=known_resource_keys).delete()
+        ).delete()
 
     def _sync_entitlements(self, subscription: Subscription, plan: BillingPlan) -> None:
         overridden_keys = set(

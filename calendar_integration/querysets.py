@@ -844,12 +844,16 @@ class AvailableTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
         this organization have" (the billing usage counter above all) wants this
         queryset, not a bare ``filter(...)``.
 
-        Known gap: when the edited occurrence is the *first* one, the recurrence
-        manager truncates the master row and creates a fresh series row with no
-        link back to it (``recurrence_manager.create_recurrence_exception_generic``,
-        the ``exception_date == parent.start_time.date()`` branch). That second row
-        is indistinguishable from a genuinely new window in the current schema, so
-        it is still counted. Closing it needs a new column, not a filter.
+        Known gap: editing **or cancelling** the first occurrence of a series
+        truncates the master row and creates a fresh series row with no link back to
+        it (``recurrence_manager.create_recurring_exception_generic``, the
+        ``exception_date == parent.start_time.date()`` branch — which never reads
+        ``is_cancelled``, so both operations take the identical path). That second
+        row is indistinguishable from a genuinely new window in the current schema,
+        so it is still counted, and it **compounds**: every subsequent
+        first-occurrence edit or cancel on the resulting series adds another
+        unlinked row. The over-count is therefore once per operation and unbounded,
+        not "one". Closing it needs a new column, not a filter.
         """
         return self.filter(
             exception_for__isnull=True,

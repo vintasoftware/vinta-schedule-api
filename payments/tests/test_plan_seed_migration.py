@@ -71,17 +71,26 @@ class TestPlanSeedMigration:
     def test_every_seeded_plan_covers_every_limited_resource(self):
         """The plan-completeness invariant, stated once for the whole catalog.
 
-        `SubscriptionService._prune_stale_limits` leans on this: a plan carrying a
-        row for every `LimitedResource` member can never leave a subscription in the
-        absent-row state on a plan change, and absent-row is what
-        `EntitlementService.get_effective_limit` reads as **unlimited**. Without
-        this, adding a resource to `LimitedResource` and forgetting one plan would
-        let a downgrade onto that plan hand the resource an infinite ceiling
-        (BLOCKER 3, Phase 5 review).
+        `SubscriptionService.assert_plan_is_complete` enforces this at runtime for
+        *any* plan a subscription is placed on, including one authored through the
+        admin. This test is the seed-data half: it proves no shipped plan trips that
+        guard, so nobody is refused a plan change on catalog data we control.
+
+        The invariant itself: a plan carrying a row for every `LimitedResource`
+        member can never leave a subscription in the absent-row state on a plan
+        change, and absent-row (like a stale `limit_value=None`) is what
+        `EntitlementService.get_effective_limit` reads as **unlimited**. Without it,
+        adding a resource to `LimitedResource` and forgetting one plan would let a
+        downgrade onto that plan hand the resource an infinite ceiling (BLOCKER 3,
+        Phase 5 review).
 
         Enumerated over every seeded plan, not just `unlimited`, so a plan added to
         the catalog later is held to the same rule.
         """
+        assert BillingPlan.objects.exists(), (
+            "No seeded plans at all — without this guard the loop below passes "
+            "vacuously and asserts nothing."
+        )
         expected = set(LimitedResource.values)
         for plan in BillingPlan.objects.all():
             covered = set(plan.limits.values_list("resource_key", flat=True))

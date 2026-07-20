@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING, ClassVar
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q, UniqueConstraint
 
@@ -69,6 +70,11 @@ class BillingPlan(BaseModel):
     limits: "RelatedManager[PlanLimit]"
     entitlements: "RelatedManager[PlanEntitlement]"
 
+    #: Per-instance opt-out of the limit-coverage check in ``clean`` — set by
+    #: ``BillingPlanAdmin``'s form, which validates coverage on the inline formset
+    #: instead (the only place that can see the rows the save is about to write).
+    skip_limit_coverage_validation: bool = False
+
     class Meta(BaseModel.Meta):
         constraints: ClassVar = [
             UniqueConstraint(
@@ -80,6 +86,52 @@ class BillingPlan(BaseModel):
 
     def __str__(self):
         return self.name
+
+    def get_missing_limited_resource_keys(self) -> list[str]:
+        """``LimitedResource`` members this plan carries no ``PlanLimit`` row for.
+
+        A plan is *complete* when this is empty. Completeness is an invariant, not
+        a preference: an absent ``PlanLimit`` row (or a stale
+        ``SubscriptionPlanLimit`` left over from a previous plan with
+        ``limit_value=None``) reads as **unlimited** in ``EntitlementService``, so
+        an incomplete plan silently grants an infinite ceiling on the resource it
+        omits. "Not included" is expressed with ``limit_value=0``, never omission.
+
+        An unsaved plan has no rows to read (the related manager raises on an
+        instance with no pk), so it is reported as missing everything — which is
+        what ``clean`` should say about it.
+        """
+        expected = set(LimitedResource.values)
+        if self.pk is None:
+            return sorted(expected)
+        covered = set(self.limits.values_list("resource_key", flat=True))
+        return sorted(expected - covered)
+
+    def clean(self) -> None:
+        """Reject an incomplete plan at authoring time rather than at downgrade time.
+
+        ``BillingPlanAdmin`` skips this one check (see
+        ``BillingPlanAdmin.form``) because the parent form is validated *before*
+        its ``PlanLimit`` inline formset is saved — the rows that would make the
+        plan complete are still pending, so this would reject the very edit that
+        fixes it, with no way out. The admin runs the equivalent check on the
+        inline formset instead, against the rows the save is about to produce.
+        """
+        super().clean()
+        if self.skip_limit_coverage_validation:
+            return
+        missing = self.get_missing_limited_resource_keys()
+        if missing:
+            raise ValidationError(
+                {
+                    "__all__": (
+                        f"This plan has no PlanLimit row for {missing}. Every plan must "
+                        "carry a row for every limited resource — 'not included' is "
+                        "limit_value=0, never omission, because an omitted row reads as "
+                        "unlimited."
+                    )
+                }
+            )
 
 
 class PlanLimit(BaseModel):

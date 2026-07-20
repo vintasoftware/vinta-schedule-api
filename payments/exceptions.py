@@ -106,6 +106,60 @@ class MissingSeedBillingPlanError(PaymentError):
         self.slug = slug
 
 
+class InapplicableInvitationExclusionError(BillingError):
+    """Raised when ``exclude_invitation_id`` is passed for a resource whose usage
+    counter does not read it — i.e. anything but ``organization_members``.
+
+    A programming error, not a runtime condition: the caller believes a pending
+    invitation was excluded from the count and it was not, so the number they get
+    back is wrong in a direction nothing else will contradict.
+    """
+
+    def __init__(self, resource_key: str):
+        super().__init__(
+            f"exclude_invitation_id is only meaningful for "
+            f"{LimitedResource.ORGANIZATION_MEMBERS!r}, not {resource_key!r}: no other usage "
+            "counter reads it, so it would be silently ignored."
+        )
+        self.resource_key = resource_key
+
+
+class IncompleteBillingPlanError(BillingError):
+    """Raised when a ``BillingPlan`` a subscription is being placed on carries no
+    ``PlanLimit`` row for some ``LimitedResource`` member.
+
+    The catalog never expresses "this plan does not include X" by omission — it
+    expresses it with an explicit row (``limit_value=0``), exactly as the seeded
+    ``free`` plan does for ``public_api_system_users``. Omission is therefore a
+    catalog *authoring* error, and there is no safe way to interpret it at
+    runtime: an absent (or stale ``limit_value=None``) row reads as **unlimited**
+    in ``EntitlementService``, so letting the plan change through would hand the
+    omitted resource an infinite ceiling on a downgrade; materializing it as
+    ``limit_value=0`` would instead block an organization on a resource nobody
+    agreed to restrict, which the rollout forbids.
+
+    So the plan change is refused and the gap is surfaced to whoever authored it.
+    ``BillingPlan.clean`` and ``BillingPlanAdmin``'s limit inline raise the same
+    condition as a ``ValidationError`` at authoring time, which is where a support
+    admin can actually act on it; this exception is the runtime backstop for a plan
+    that reached the database some other way.
+
+    Inherits ``BillingError`` rather than ``PaymentError`` (a ``ValueError``) so
+    the ``except ValueError`` wrappers around service calls cannot flatten a
+    catalog-integrity failure into a user-facing validation message.
+    """
+
+    def __init__(self, plan_slug: str, missing_resource_keys: list[str]):
+        super().__init__(
+            f"BillingPlan {plan_slug!r} carries no PlanLimit row for "
+            f"{missing_resource_keys}. Every plan must carry a row for every "
+            "LimitedResource member — 'not included' is limit_value=0, never omission, "
+            "because an omitted row reads as unlimited."
+        )
+        self.plan_slug = plan_slug
+        self.missing_resource_keys = missing_resource_keys
+
+
 class OverLimitError(BillingError):
     """Raised by a guarded service method when creating one more of a resource
     would take the organization past its effective ceiling.
