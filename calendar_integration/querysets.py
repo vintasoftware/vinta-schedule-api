@@ -631,18 +631,39 @@ class CalendarEventQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
           ``bulk_modifications`` from the parent and would return the continuation's
           occurrences a second time.
 
-          The parent and continuation do **not** reliably tile the timeline.
-          ``CalendarEventService.create_recurring_event_bulk_modification``
-          truncates a ``COUNT``-bounded parent by decrementing ``COUNT`` by one
-          rather than clamping it at the split index, so splitting a five-occurrence
-          weekly series at its second occurrence leaves the parent generating four
-          occurrences and the continuation generating four more — eight where five
-          exist. When the modification also carries a time offset those eight land
-          at eight distinct times, so nothing downstream collapses them. This is an
-          upstream recurrence defect, not a metering one: ``get_calendar_events_expanded``
-          returns the same eight, so the calendar genuinely contains them and the
-          meter is faithful to it. Recorded here because this method is where a
-          reader would otherwise conclude the two rows cannot overlap. Measured in
+          The parent and continuation do **not** reliably tile the timeline. The
+          rule *arithmetic* is correct — ``RecurrenceRuleSplitter.split_at_date``
+          returns a truncated parent rule (``count=None``, ``until=<last occurrence
+          before the split>``) and a continuation rule carrying the remaining count,
+          and 1 + 4 == 5 for a five-occurrence series split at its second
+          occurrence. The defect is that the truncation never survives to the
+          database.
+
+          ``copy.deepcopy`` of a *saved* Django model preserves its ``pk``, so both
+          rules the splitter returns are aliases for the original row rather than
+          the "new, unsaved instances" ``recurrence_utils`` documents. In
+          ``RecurrenceManager.create_bulk_modification_generic`` the parent is
+          truncated first and ``continuation_rule.save()`` runs second — and because
+          that object still carries the original pk, it issues an ``UPDATE`` against
+          the **parent's** rule row, overwriting the ``UNTIL`` just written. The
+          continuation itself is unaffected: it is created from an rrule *string*
+          and gets a fresh rule row, so the clobber is pure collateral damage.
+
+          The parent therefore keeps generating past the split. Verified persisted
+          state, weekly series split at its second occurrence:
+
+          - ``COUNT=5`` series → parent rule left at ``COUNT=4, until=NULL`` (the
+            continuation's remaining count), so the parent yields occurrences 1-4
+            and the continuation yields 2-5: eight where five exist.
+          - **Open-ended series → parent rule left at the original unbounded rule**
+            (``count=NULL, until=NULL``). The truncation is erased outright, so the
+            parent never stops and the series is duplicated **indefinitely**, not
+            merely across the split window. This is the more severe shape.
+
+          Not a metering defect: ``get_calendar_events_expanded`` returns the same
+          rows, so the calendar genuinely contains them and the meter is faithful to
+          it. Recorded here because this method is where a reader would otherwise
+          conclude the two rows cannot overlap. Measured in
           ``payments/tests/test_metering_reconciliation.py``.
 
         The result is annotated with ``recurring_occurrences`` so a caller iterating it

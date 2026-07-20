@@ -281,7 +281,13 @@ Widened from "first-occurrence split" to **all identity-churn paths**, plus one 
 
 Identity is `(series root pk, occurrence start time)`. The series-root half is durable and tested. **The start-time half is not**: re-timing an occurrence mints a new identity, so an edit applied to an already-metered stretch bills the moved occurrence again. Measured: re-timing one occurrence of a 5-occurrence month → **6** rows. Bounded by an already-metered window, and surfaced by `reconcile_period` as `orphaned` drift.
 
-**Larger, and not previously known — `truncate_parent` does not truncate.** `create_recurring_event_bulk_modification` rewrites a `COUNT`-bounded parent by decrementing `COUNT` by one instead of clamping it at the split index. Splitting a `COUNT=5` weekly series at its second occurrence leaves the parent on `COUNT=4` (Mondays 1-4) while the continuation generates four more — they **overlap by three weeks** rather than tiling, contradicting what `occurrence_bearing_masters_in_range` documented.
+**Larger, and not previously known — a bulk modification does not truncate the parent series.** The rule *arithmetic* is correct: `RecurrenceRuleSplitter.split_at_date` returns a truncated parent rule (`count=None`, `until=<last occurrence before the split>`) and a continuation rule with the remaining count — 1 + 4 = 5 for a `COUNT=5` series split at its second occurrence. Verified directly against the splitter.
+
+The defect is that **the truncation never reaches the database**. `copy.deepcopy` of a saved Django model preserves its `pk`, so both rules the splitter returns are aliases for the original row rather than the "new, unsaved instances" `recurrence_utils`' module docstring promises. In `RecurrenceManager.create_bulk_modification_generic` the parent is truncated first and `continuation_rule.save()` runs second; still carrying the original pk, it `UPDATE`s the **parent's** rule row and overwrites the `UNTIL` just written. The continuation is unharmed — it is built from an rrule *string* and gets a fresh rule row — so the clobber is pure collateral damage.
+
+Persisted state, read back after splitting a `COUNT=5` weekly series at Monday #2: parent still points at rule id 1, now holding `COUNT=4, until=NULL`; continuation holds a **new** rule id 2 with `COUNT=4`. Parent yields Mondays 1-4, continuation yields Mondays 2-5.
+
+**The open-ended case is worse.** An open-ended series has `count=None, until=None`, so the continuation rule is byte-for-byte the *original unbounded rule*. Saving it over the parent's row erases the truncation completely — the parent never stops, and the series is duplicated **indefinitely**, every future month, not merely across the split window. Verified: parent rule left at `count=NULL, until=NULL`, 9 billed in the month. This is the shape most standing meetings have.
 
 Measured, with a `+30min` offset on the modification:
 

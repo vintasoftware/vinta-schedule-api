@@ -725,18 +725,36 @@ class TestBulkModificationWithOffsetOverBills:
     The mechanism is *not* the identity churn this phase was designed around, and
     saying so precisely matters because it changes the size of the exposure:
 
-    ``truncate_parent`` rewrites a ``COUNT``-bounded parent's rule by decrementing
-    ``COUNT`` by one, rather than clamping it at the split index. Splitting a
-    ``COUNT=5`` weekly series at its **second** occurrence leaves the parent on
-    ``COUNT=4`` — still generating Mondays 1-4 — while the continuation generates
-    four more at the offset time. Parent and continuation therefore **overlap by
-    three weeks** instead of tiling, which is the opposite of what
-    ``CalendarEventQuerySet.occurrence_bearing_masters_in_range`` documents.
+    The **rule arithmetic is correct**. ``RecurrenceRuleSplitter.split_at_date``
+    returns a truncated parent rule (``count=None``, ``until=<Monday #1>``) and a
+    continuation rule with ``count=4``; 1 + 4 == 5. Verified directly against the
+    splitter. The defect is that the truncation never reaches the database.
+
+    ``copy.deepcopy`` of a *saved* Django model **preserves its pk**, so both rules
+    the splitter returns are aliases for the original row — not the "new, unsaved
+    instances" ``recurrence_utils``' module docstring promises. In
+    ``RecurrenceManager.create_bulk_modification_generic`` the parent is truncated
+    first and ``continuation_rule.save()`` runs second; carrying the original pk, it
+    ``UPDATE``s the **parent's** rule row and overwrites the ``UNTIL`` just written.
+    The continuation is unharmed — it is built from an rrule *string* and gets a
+    fresh rule row — so the clobber is pure collateral damage.
+
+    Persisted state after splitting this five-occurrence series at Monday #2,
+    read back from the database:
+
+    - original rule id 1 → ``COUNT=4, until=NULL`` (the *continuation's* remaining
+      count, written over the parent's truncation);
+    - continuation → a **new** rule id 2, ``COUNT=4, until=NULL``, correct.
+
+    So the parent yields Mondays 1-4 at 10:00 and the continuation yields Mondays
+    2-5 at 10:30 — eight where five exist. See
+    ``test_an_open_ended_series_loses_its_truncation_entirely`` for the more severe
+    shape, where the parent reverts to an unbounded rule.
 
     **This is an upstream recurrence defect, not a metering one.**
     ``get_calendar_events_expanded`` returns the same eight events, so the calendar
     genuinely contains them and the meter is faithfully billing what it is shown.
-    Fixing it belongs in ``CalendarEventService``, not here.
+    Fixing it belongs in ``RecurrenceManager`` / ``recurrence_utils``, not here.
 
     The consequences for billing are what these tests pin down, and one of them is
     materially worse than the first-occurrence hazard in
@@ -914,3 +932,132 @@ class TestBulkModificationWithOffsetOverBills:
                 "event_id", flat=True
             )
         ) == {weekly_series.pk}
+
+    def test_the_splitter_itself_computes_the_split_correctly(
+        self,
+        subscription: Subscription,
+        weekly_series: CalendarEvent,
+    ):
+        """Isolate the arithmetic from the persistence, so blame lands correctly.
+
+        It would be easy to read the over-count above and "fix" the splitter's
+        remaining-count maths, which is not wrong. Split a ``COUNT=5`` series at its
+        second occurrence and the returned pair is exactly right: the parent is
+        bounded by ``UNTIL=<Monday #1>`` with no count, the continuation carries the
+        remaining four. One plus four is five.
+
+        The assertion that matters is the last one: **all three objects share a pk**.
+        ``copy.deepcopy`` preserves it, so these are aliases for the original row,
+        and saving either one writes over the original rule. That is the bug, and it
+        is in the persistence step, not the arithmetic.
+        """
+        from calendar_integration.recurrence_utils import RecurrenceRuleSplitter
+
+        original = weekly_series.recurrence_rule
+        assert original is not None, "the fixture series is recurring"
+        truncated, continuation = RecurrenceRuleSplitter.split_at_date(
+            original, ALL_MONDAYS[1], weekly_series.start_time
+        )
+        # `split_at_date` returns `None` for either half when that half would
+        # generate nothing; a mid-series split produces both.
+        assert truncated is not None
+        assert continuation is not None
+
+        assert (truncated.count, truncated.until) == (None, ALL_MONDAYS[0])
+        assert (continuation.count, continuation.until) == (4, None)
+        assert truncated.pk == continuation.pk == original.pk, (
+            "deepcopy preserves the pk, so both 'copies' alias the original row"
+        )
+
+    def test_the_parents_rule_row_is_overwritten_by_the_continuations(
+        self,
+        event_service: CalendarEventService,
+        social_account: SocialAccount,
+        subscription: Subscription,
+        weekly_series: CalendarEvent,
+    ):
+        """The persisted evidence for the mechanism, read back from the database.
+
+        After the split the parent still points at the *original* rule row, and that
+        row now holds the continuation's values — ``COUNT=4`` with no ``UNTIL`` —
+        rather than the truncation. The continuation meanwhile has a rule row of its
+        own, which is how we know the ``save()`` that clobbered row 1 was collateral
+        damage rather than the continuation claiming it.
+        """
+        from calendar_integration.models import RecurrenceRule
+
+        original_rule_id = weekly_series.recurrence_rule_fk_id
+        continuation = self._split_with_offset(event_service, social_account, weekly_series)
+        assert continuation is not None
+
+        parent = CalendarEvent.objects.filter(organization=subscription.organization).get(
+            pk=weekly_series.pk
+        )
+
+        assert parent.recurrence_rule_fk_id == original_rule_id, (
+            "the parent keeps its original rule row"
+        )
+        assert continuation.recurrence_rule_fk_id != original_rule_id, (
+            "the continuation gets a fresh rule row, built from an rrule string"
+        )
+        parent_rule = RecurrenceRule.objects.filter(organization=subscription.organization).get(
+            pk=original_rule_id
+        )
+        assert (parent_rule.count, parent_rule.until) == (4, None), (
+            "the parent's UNTIL truncation was overwritten with the continuation's count"
+        )
+
+    def test_an_open_ended_series_loses_its_truncation_entirely(
+        self,
+        metering_service: MeteringService,
+        event_service: CalendarEventService,
+        social_account: SocialAccount,
+        subscription: Subscription,
+        calendar: Calendar,
+    ):
+        """The severe shape: the parent reverts to an **unbounded** rule.
+
+        An open-ended series has ``count=None`` and ``until=None``, so the
+        continuation rule the splitter derives also carries ``count=None,
+        until=None`` — which is byte-for-byte the *original* unbounded rule. Saving
+        it over the parent's row does not merely move the boundary, it **erases the
+        truncation completely**.
+
+        The parent therefore never stops. Where the ``COUNT``-bounded case
+        over-bills by a bounded three occurrences, this one duplicates the series
+        **forever**: every future month is billed twice, once at each time. It is the
+        shape most real standing meetings have, since an open-ended weekly series is
+        the default way to express "every Monday until further notice".
+        """
+        series = CalendarEventFactory.create_recurring_event(
+            calendar=calendar,
+            title="Open ended standup",
+            description="",
+            start_time=FIRST_MONDAY,
+            end_time=FIRST_MONDAY + datetime.timedelta(hours=1),
+            frequency=RecurrenceFrequency.WEEKLY,
+            by_weekday="MO",
+            external_id="open_ended_bulk_mod",
+        )
+        _grant_event_owner_token(series, social_account)
+        event_service.create_recurring_event_bulk_modification(
+            parent_event=series,
+            modification_start_date=ALL_MONDAYS[1],
+            modified_start_time_offset=datetime.timedelta(minutes=30),
+        )
+
+        parent = CalendarEvent.objects.filter(organization=subscription.organization).get(
+            pk=series.pk
+        )
+        assert (parent.recurrence_rule.count, parent.recurrence_rule.until) == (None, None), (
+            "the parent reverted to the original unbounded rule; the split is gone"
+        )
+
+        _meter_the_period(metering_service, subscription)
+
+        # All five Mondays at 10:00 (parent, unbounded) plus the four from the
+        # split onwards at 10:30 (continuation) — and this repeats every month.
+        assert _occurrence_starts(subscription) == sorted(
+            ALL_MONDAYS + [monday + datetime.timedelta(minutes=30) for monday in ALL_MONDAYS[1:]]
+        )
+        assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 9
