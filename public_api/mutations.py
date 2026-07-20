@@ -2371,6 +2371,12 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError(
                 str(exc) or "You do not have permission to schedule this event."
             ) from exc
+        # Phase 8: create_event raises OverLimitError at the organization's postpaid
+        # event_occurrences allowance (no payment method on file); rendered via
+        # raise_over_limit_graphql_error (also rolls back the request transaction --
+        # see its docstring).
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
             raise GraphQLError(str(exc)) from exc
 

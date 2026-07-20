@@ -1289,6 +1289,14 @@ class CalendarGroupMutations:
                 error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
                 error_message="The requested time slot is not available.",
             )
+        # Phase 8: create_event raises OverLimitError at the organization's postpaid
+        # event_occurrences allowance (no payment method on file). Unlike the domain
+        # errors above, this is not a booking-code-specific outcome the patient can
+        # retry around, so it is rendered via the shared over-limit GraphQL contract
+        # (raise_over_limit_graphql_error, also rolls back the request transaction --
+        # see its docstring) rather than a CodeEventResult error_code.
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
 
         return CodeEventResult(success=True, event=event)  # type: ignore[arg-type]
 
@@ -1464,6 +1472,12 @@ class CalendarGroupMutations:
                 error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
                 error_message="The requested time slot is not available.",
             )
+        # Phase 8: create_grouped_event raises OverLimitError at the organization's
+        # postpaid event_occurrences allowance (no payment method on file). Rendered
+        # via raise_over_limit_graphql_error (also rolls back the request transaction
+        # -- see its docstring), like the single-calendar booking-code path above.
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
 
         return CodeEventResult(success=True, event=event)  # type: ignore[arg-type]
 

@@ -116,7 +116,9 @@ class BundleServiceHost(Protocol):
         calendar_id: int,
         event_data: CalendarEventInputData,
         *,
+        bypass_limits: bool = False,
         _enforce_policy: bool = True,
+        _check_postpaid_allowance: bool = True,
     ) -> CalendarEvent: ...
 
     def update_event(
@@ -401,7 +403,11 @@ class CalendarBundleService:
     # ------------------------------------------------------------------
 
     def create_bundle_event(
-        self, bundle_calendar: Calendar, event_data: CalendarEventInputData
+        self,
+        bundle_calendar: Calendar,
+        event_data: CalendarEventInputData,
+        *,
+        bypass_limits: bool = False,
     ) -> CalendarEvent:
         """
         Create an event in a bundle calendar by:
@@ -439,6 +445,31 @@ class CalendarBundleService:
         # Get the designated primary calendar
         primary_calendar = self._get_primary_calendar(bundle_calendar)
 
+        # Postpaid ``event_occurrences`` allowance guard -- checked ONCE, for the whole
+        # fan-out, before anything is written. Each per-child ``create_event`` call
+        # below passes ``_check_postpaid_allowance=False`` so it is not re-checked
+        # (see ``CalendarEventService.create_event``'s docstring for why a per-child
+        # recheck would be redundant rather than merely wasted work: nothing is
+        # metered until a Celery sweep runs, so a re-check would ask the same
+        # question against an unchanged usage count).
+        #
+        # Skipped when this call, or the whole service
+        # (``CalendarService.authenticate(bypass_limits=True)``), is in bypass mode --
+        # the same two conditions ``CalendarEventService._postpaid_entitlement_service``
+        # resolves for the single-event path.
+        entitlement_service = (
+            None
+            if bypass_limits or self._context.bypass_entitlement_limits
+            else self._context.entitlement_service
+        )
+        if entitlement_service is not None:
+            billable_units = self._bundle_event_billable_units(primary_calendar.id, child_calendars)
+            result = entitlement_service.check_postpaid_allowance(
+                context.organization, delta=billable_units, lock=True
+            )
+            if not result.allowed:
+                raise OverLimitError.from_check_result(result)
+
         # Collect all attendees from child calendar ownerships
         all_attendees = self._collect_bundle_attendees(child_calendars, event_data)
 
@@ -461,7 +492,10 @@ class CalendarBundleService:
         # rejections when a child has its own stricter individual policy that would block
         # a booking the bundle policy (and Phase-5 discovery) correctly permits.
         primary_event = self._host.create_event(
-            primary_calendar.id, primary_event_data, _enforce_policy=False
+            primary_calendar.id,
+            primary_event_data,
+            _enforce_policy=False,
+            _check_postpaid_allowance=False,
         )
 
         # Mark primary event as part of bundle
@@ -474,7 +508,7 @@ class CalendarBundleService:
             if child_calendar.id == primary_calendar.id:
                 continue
 
-            if child_calendar.provider == CalendarProvider.INTERNAL:
+            if self._child_gets_full_event(child_calendar):
                 # Create full CalendarEvent for internal calendars
                 child_event_data = CalendarEventInputData(
                     title=f"[Bundle] {event_data.title}",
@@ -488,7 +522,10 @@ class CalendarBundleService:
                 )
 
                 child_event = self._host.create_event(
-                    child_calendar.id, child_event_data, _enforce_policy=False
+                    child_calendar.id,
+                    child_event_data,
+                    _enforce_policy=False,
+                    _check_postpaid_allowance=False,
                 )
 
                 # Link to primary event and bundle
@@ -647,6 +684,49 @@ class CalendarBundleService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _child_gets_full_event(child_calendar: Calendar) -> bool:
+        """Whether a non-primary bundle child gets a real ``CalendarEvent`` (rather
+        than a non-billable ``BlockedTime``) when a bundle event is created.
+
+        The single definition of that predicate. ``create_bundle_event``'s write
+        loop calls this to decide what to create, and
+        ``_bundle_event_billable_units`` calls the identical function to decide
+        what to charge for -- so "which children become billable rows" cannot be
+        answered two different ways by two pieces of code that drift apart over
+        time. The primary calendar is handled separately by its caller (it always
+        gets a real event, unconditionally); this only decides for the rest.
+        """
+        return child_calendar.provider == CalendarProvider.INTERNAL
+
+    @classmethod
+    def _bundle_event_billable_units(
+        cls, primary_calendar_id: int, child_calendars: list[Calendar]
+    ) -> int:
+        """How many ``event_occurrences`` units one bundle-event booking costs.
+
+        Binding decision (Phase 7 tracking doc, "what a bundle booking costs"):
+        **1 + n_internal_children**. The primary calendar always gets a real
+        ``CalendarEvent`` (the actual booking); every other child gets one too only
+        when ``_child_gets_full_event`` says so -- the exact predicate
+        ``create_bundle_event``'s write loop uses to decide "full CalendarEvent vs.
+        BlockedTime" for that same calendar. A ``BlockedTime`` is never billable
+        anywhere in this plan, so a bundle over five Google calendars costs 1, not
+        5, and this must never be computed a second, independent way.
+
+        Not derived by calling ``MeteringService.expand_occurrence_identities``:
+        nothing exists to expand yet -- the events this counts are about to be
+        created, not already in the database. This exists so the guard counts
+        exactly the rows the write loop below is about to write, using the same
+        predicate the write loop uses, rather than a second guess at what the
+        meter will later see.
+        """
+        return 1 + sum(
+            1
+            for calendar in child_calendars
+            if calendar.id != primary_calendar_id and cls._child_gets_full_event(calendar)
+        )
 
     def _get_primary_calendar(self, bundle_calendar: Calendar) -> Calendar:
         """Get the designated primary calendar for a bundle."""

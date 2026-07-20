@@ -376,7 +376,7 @@ class MeteringService:
         identities: dict[OccurrenceIdentity, None] = {}
         for master in masters:
             series_root_id = series_root_ids[master.pk]
-            for occurrence_start in self._occurrence_starts_of(master, window_start, window_end):
+            for occurrence_start in self.occurrence_starts_of(master, window_start, window_end):
                 if not window_start <= occurrence_start < window_end:
                     continue
                 identities[
@@ -389,10 +389,32 @@ class MeteringService:
         return list(identities)
 
     @staticmethod
-    def _occurrence_starts_of(
+    def occurrence_starts_of(
         master: CalendarEvent, window_start: datetime.datetime, window_end: datetime.datetime
     ) -> list[datetime.datetime]:
         """The occurrence start times one master contributes to the window.
+
+        **Public, and deliberately so: this is the single definition of "how many
+        billable units does this master cost".** Two callers share it — the meter's
+        own ``expand_occurrence_identities`` (which turns each start into an
+        identity and writes a row for it) and Phase 8's post-paid allowance guard in
+        ``CalendarEventService`` (which counts them to decide whether a *new*
+        recurring master fits the organization's remaining allowance). Before that,
+        the guard charged 1 unit per master, so a free organization one unit below
+        its ceiling could create an open-ended daily series and accrue ~30
+        unbillable occurrences a month forever. A guard and a meter that count
+        different things is the failure shape this plan keeps producing; there is
+        one function, and both call it.
+
+        A ``@staticmethod`` for the same reason: the guard can call it as
+        ``MeteringService.occurrence_starts_of(...)`` without a DI-injected
+        ``MeteringService`` (which would also be an import cycle, since this module
+        imports ``EntitlementService``).
+
+        The master must already be **persisted**: the expansion runs in Postgres
+        (``calculate_recurring_events``, keyed on the event's id), so there is no
+        way to expand a rule that has no row. That is what forces the guard to run
+        after the insert, inside the creating transaction, rather than before it.
 
         Reads ``start_time`` off ``get_occurrences_in_range`` — the ordinary calendar
         expansion, with no billing-specific variant. An earlier revision of this

@@ -76,6 +76,7 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
 from calendar_integration.services.type_guards import is_authenticated_calendar_service
 from organizations.models import ExternalEventUpdatePolicy, OrganizationMembership
 from payments.billing_constants import LimitedResource
+from payments.exceptions import OverLimitError
 from users.models import User
 
 
@@ -834,6 +835,54 @@ class CalendarSyncService:
             calendar_sync.next_sync_token = next_sync_token or ""
             calendar_sync.save(update_fields=["next_sync_token"])
 
+        # Postpaid ``event_occurrences`` allowance guard -- checked *before* the bulk
+        # write, not per-row after it, exactly like ``_cap_resources_to_resource_calendar_headroom``
+        # above. Unlike that prepaid guard this never bypasses (no ``bypass_limits``
+        # param): the plan's guiding decision keeps calendar sync fully enforced, since
+        # it is a named enforcement point in the spec, not something a management
+        # command routes through.
+        #
+        # Raising here (rather than dropping the offending rows and importing a partial
+        # batch) fails the whole sync pass: ``sync_events`` already wraps this call in
+        # ``try/except Exception`` and records the sync as FAILED with this error's
+        # message, and the next scheduled sync retries the same window -- a half-applied
+        # recurring master (some occurrences visible, some not) would be a worse outcome
+        # than a deferred sync.
+        #
+        # That retry behaviour is also why this logs before it raises. ``sync_events``
+        # stores ``str(exc)`` on the ``CalendarSync`` row and nothing distinguishes an
+        # over-allowance refusal from a provider outage; every subsequent scheduled
+        # sync hits the same window and fails identically, so without a log line
+        # naming the organization and the remedy, a permanently stalled calendar looks
+        # exactly like a flaky provider. The block clears itself the moment headroom
+        # is restored (a payment method is attached, or the cycle rolls over) -- no
+        # manual replay is needed, which is the other half of what an operator
+        # reading this needs to know.
+        new_master_count = self._new_master_count(changes)
+        if new_master_count:
+            entitlement_service = self._context.entitlement_service
+            if entitlement_service is not None:
+                result = entitlement_service.check_postpaid_allowance(
+                    context.organization, delta=new_master_count, lock=True
+                )
+                if not result.allowed:
+                    logger.warning(
+                        "Calendar sync %s for calendar %s (organization %s) refused: %s new "
+                        "event masters would exceed the post-paid event_occurrences "
+                        "allowance (usage %s, ceiling %s) with no payment method on file. "
+                        "The sync will be recorded as FAILED and every retry will fail the "
+                        "same way until headroom is restored (remedy: %s); no manual replay "
+                        "is required once it is.",
+                        calendar_sync.pk,
+                        calendar.pk,
+                        context.organization.pk,
+                        new_master_count,
+                        result.current_usage,
+                        result.ceiling,
+                        result.remedy,
+                    )
+                    raise OverLimitError.from_check_result(result)
+
         # Apply all changes to database
         self._apply_sync_changes(calendar.id, changes)
 
@@ -888,6 +937,26 @@ class CalendarSyncService:
             )
         }
         return calendar_events_by_external_id, blocked_times_by_external_id
+
+    @staticmethod
+    def _new_master_count(changes: EventsSyncChanges) -> int:
+        """How many of ``changes.events_to_create`` are new occurrence-bearing masters.
+
+        Filtered on ``parent_recurring_object_fk_id is None`` -- the exact predicate
+        ``CalendarEventQuerySet.occurrence_bearing_masters_in_range`` filters on to
+        decide "master, not exception" (``parent_recurring_object__isnull=True``).
+        ``_process_new_event`` only ever puts two kinds of ``CalendarEvent`` into this
+        list: a recurrence exception synced in from the provider
+        (``parent_recurring_object_fk`` set, substituting for an occurrence slot its
+        master already accounts for -- not a new one, and never counted as an
+        independent master by the meter) and a recurring master (no parent set, a
+        genuinely new master). A plain one-off external event is stored as a
+        ``BlockedTime``, never a ``CalendarEvent``, so it never reaches this count at
+        all -- consistent with the meter, which only ever counts ``CalendarEvent`` rows.
+        """
+        return sum(
+            1 for event in changes.events_to_create if event.parent_recurring_object_fk_id is None
+        )
 
     # ------------------------------------------------------------------
     # Diff/merge machine
