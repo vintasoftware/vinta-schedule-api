@@ -180,15 +180,45 @@ Also fixed: `accept_invitation` marked the invitation accepted outside its trans
 
 **Gates** (re-run independently): suite **4094 passed** (phase-5 base 4054; +40); `mypy` **305 / 57** at baseline with **zero suppressions added**; `ruff` clean; `makemigrations --check` clean (no model changes); `schema.yml` verified in sync by regenerating to an empty diff. Each guard confirmed by deletion; the concurrency test races genuinely with a working negative control.
 
+### Phase 6b — Enforce pre-paid limits: calendars, groups, bundles, availability ✅
+
+- **Status**: review round 1 fixed
+- **Models**: implementer Tier 3; reviewer Tier 4; fixer Tier 4
+- **Branch**: `plan/billing-plans-and-limits/phase-6b` · **Base**: `plan/billing-plans-and-limits/phase-6a`
+- **Commits**: `64cf6c0` implementation, `1397738` round 1
+
+Guards `create_resource_calendar`, `create_group`, `create_bundle_calendar`, `create_available_time` / `bulk_create_availability_windows` / `batch_modify_available_times`, and the bulk room-import writer. **The reviewer's prediction was right**: the unmetered path did survive in the bulk sync writer, exactly where the plan said to look.
+
+**Two BLOCKERs, and once again one of each failure mode** — unmetered creation and false block:
+
+1. **The headroom split let unlimited RESOURCE calendars through by *promotion*.** It classified resources as "already imported" by querying `Calendar` on `(organization, external_id)` with **no `calendar_type` predicate**, while the counter it guards counts only live `RESOURCE` rows. The write loop puts `calendar_type=RESOURCE` in `update_or_create`'s `defaults`, so a matched PERSONAL row — created by `import_account_calendars` **on the identical key** — was retyped into the counted set having consumed nothing; and when every discovered room already had a row, the split returned before `check_limit` was ever called. **For Microsoft this is a total bypass, not an edge case**: `get_account_calendars` and `get_calendar_resources` both enumerate `client.list_calendars()` and emit the same `external_id` space, so importing an account's calendars and then the rooms retyped every one of them, unmetered, without limit.
+2. **A net-zero availability batch was refused at the ceiling.** `delta=create_count` ignored the batch's `delete` operations, so an org at its exact `availability_windows` ceiling could never edit availability by replacement — reachable from both the REST batch serializer and the GraphQL mutation, and the same defect as 6a's resend-at-the-ceiling.
+
+**The recurring root cause of this plan is now explicit: two predicates that are supposed to mean the same thing, written twice.** It has produced a defect four times. The split predicate now lives on `CalendarQuerySet` as the *exact complement* of the `live_of_type` the usage counter counts with, and a property test asserts that equivalence over every `(calendar_type, visibility)` combination rather than a few examples. The batch's delete credit is likewise computed with `only_user_authored` — the counter's own predicate — so deleting a derived row (a recurrence exception) earns no capacity for freeing something that occupied none.
+
+The rule is stated once, in the queryset: **"will this write raise the counter?"** — not "does a row exist?". That also makes soft-deleted rows *free* (the upsert leaves `visibility` untouched, so they stay uncounted), which the reviewer's suggested `calendar_type=RESOURCE` predicate would have false-blocked; a deliberate deviation, derived in the docstring.
+
+Also fixed: the split is read **inside** the guard lock (`EntitlementService.lock_billing_root`, so a bulk writer whose delta comes from a read can lock before reading); a truncated import now ends `PARTIAL` rather than `SUCCESS` plus an advisory string on an error column (migration `0041`, choices-only, reverses clean); the warning caps the skipped ids it names instead of writing a multi-hundred-KB string; and the executor returns what it imported rather than what the provider reported.
+
+**One SHOULD-FIX was answered rather than applied.** The `FOR UPDATE` lock is held across the whole import loop, and **it cannot be narrowed** — `check_limit(lock=True)`'s contract is that the writes it authorizes commit in the same transaction, so an earlier release reopens the race the lock closes. Justified in place instead: the loop is database-only (the provider call happens before the lock, every Celery dispatch on commit) and runs from a background task.
+
+**Test gaps the review named, now closed**: every guard is exercised at `limit_value=NULL` as well as at a finite ceiling (the "no feature flag — `unlimited` is the switch" rule); the batch guard has false-block-direction tests (update-only, delete-only, one-for-one replacement); `bulk_create_availability_windows` is tested at delta>1; the "unlimited full sync" test drives `import_organization_calendar_resources` end to end and asserts `SUCCESS` **and** an empty `error_message`; and one test builds `CalendarService()` through DI and authenticates, so the container wiring is actually asserted rather than assumed by hand-built contexts.
+
+Both BLOCKER regressions were **confirmed failing against pre-fix code** by reverting each fix in place (8 failures for the promotion split, including the property test; the replacement-at-the-ceiling test for the batch).
+
+**Gates**: suite **4145 passed** (6a base 4094; +51); `mypy` **305 errors / 57 files** at baseline with **zero `type: ignore` / `noqa` added**; `ruff check` + `format --check` clean (485 files); `makemigrations --check` clean with `0041` applied; `check --deploy` unchanged at the 5 pre-existing dev-settings warnings.
+
+**Out of scope, spotted while fixing**: `CalendarQuerySet.update()` (`calendar_integration/querysets.py`) raises `AttributeError: 'CalendarQuerySet' object has no attribute '_meta'` — it reads `self._meta` where it means `self.model._meta`, so **any** `.update()` on a Calendar queryset is broken. Pre-existing, unrelated to this phase, not fixed here.
+
 ## Current phase
 
-**Phase 6b — Enforce pre-paid limits: calendars, groups, bundles, availability** (implementer Tier 3, reviewer Tier 4)
+**Phase 6c — Enforce pre-paid limits: webhook subscriptions and API system users** (implementer Tier 2)
 
-Base: `plan/billing-plans-and-limits/phase-6a` · Branch: `plan/billing-plans-and-limits/phase-6b`
+Base: `plan/billing-plans-and-limits/phase-6b` · Branch: `plan/billing-plans-and-limits/phase-6c`
 
-Stacked on 6a, which is open as [PR #195](https://github.com/vintasoftware/vinta-schedule-api/pull/195). If #195 merges before 6b is integrated, retarget 6b's PR to `main` — do not assume the base branch still exists, since GitHub deletes it on merge (that is what broke 6a's first PR attempt).
+Closes the "no unmetered path" objective for pre-paid resources, and adds the boolean entitlement gates (`partner_api`, `external_calendar_google` / `external_calendar_microsoft`, `white_label_branding`) at the three chokepoints the plan names.
 
-⚠️ The plan's **Review models** note for 6b: the bulk sync writers at `calendar_integration/services/calendar_sync_service.py` are **the single most likely place for an unmetered path to survive**, and the plan's objective 1 depends on them. The bulk paths must check headroom *before* the write and import up to the ceiling with a recorded partial-import warning — the spec accepts partial import over unmetered creation.
+⚠️ **Carry 6b's lesson forward.** Before guarding a creation path, write down which usage counter it feeds and check that any predicate the guard uses to decide what is "new" is the *same* predicate that counter counts with — ideally by literally reusing it from the queryset. Four defects in this plan have come from two predicates that were supposed to agree and did not, most recently one that let an entire provider's calendar list be created unmetered.
 
 ## Remaining phases
 
