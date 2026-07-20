@@ -2282,10 +2282,18 @@ class ExternalEventChangeRequestMutations:
             )
 
         # Authenticate the CalendarService and resolve the write adapter.
-        deps.calendar_service.authenticate(
-            account=owner_social_account,
-            organization=org,
-        )
+        # Phase 6c: authenticate() raises OverLimitError when the organization lacks the
+        # entitlement for the calendar's provider (external_calendar_google /
+        # external_calendar_microsoft). Rendered via raise_over_limit_graphql_error (also
+        # rolls back the request transaction -- see that function's docstring for why
+        # that matters under ATOMIC_REQUESTS).
+        try:
+            deps.calendar_service.authenticate(
+                account=owner_social_account,
+                organization=org,
+            )
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         write_adapter = deps.calendar_service._get_write_adapter_for_calendar(calendar)
         if write_adapter is None:
             raise GraphQLError("Could not resolve a write adapter for the calendar's provider.")

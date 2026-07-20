@@ -618,5 +618,17 @@ class TestHasEntitlement:
         """
         assert service.has_entitlement(organization, Entitlement.WHITE_LABEL_BRANDING) is False
 
-    def test_missing_subscription_denies(self, service, organization):
-        assert service.has_entitlement(organization, Entitlement.PARTNER_API) is False
+    def test_missing_subscription_fails_open(self, service, organization):
+        """Deliberately the opposite of ``test_missing_entitlement_row_is_denied``.
+
+        A missing *row* on a real subscription is how a revoked grant is
+        represented (fail closed). A missing *subscription entirely* is the same
+        "we don't know" condition ``get_effective_limit`` already fails open on --
+        every billing root is expected to hold exactly one ``Subscription`` (the
+        "no plan-less state" invariant), so this case should be unreachable for a
+        legitimately provisioned organization. Failing closed here would turn a
+        broken invariant into a total lockout on every gated feature, which the
+        rollout's "no organization is blocked as a consequence of the rollout
+        itself" rule forbids for entitlements exactly as much as for limits.
+        """
+        assert service.has_entitlement(organization, Entitlement.PARTNER_API) is True

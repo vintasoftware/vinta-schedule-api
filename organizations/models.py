@@ -19,6 +19,7 @@ from organizations.managers import (
     OrganizationInvitationManager,
     OrganizationMembershipManager,
 )
+from payments.billing_constants import Entitlement
 
 
 if TYPE_CHECKING:
@@ -518,13 +519,45 @@ def resolve_branding(org: Organization) -> OrganizationBranding | None:
 
     If no reseller ancestor exists, returns None (vinta default branding applies).
 
+    Gated on the ``white_label_branding`` entitlement (resolved at the reseller's own
+    billing root, which may differ from the branding root when the reseller itself
+    pools against a grandparent -- see ``payments.services.subscription_service.
+    resolve_billing_root``). A reseller whose plan does not grant the entitlement is
+    treated identically to one with no branding row: every caller already falls back
+    to the vinta default in that case (``branding_for_tenant``'s ``_vinta_default_branding()``,
+    ``validate_return_url``'s not-allowed shape, ``notification_contexts``'s default
+    sender), so revoking the entitlement degrades gracefully rather than erroring.
+
+    The ``EntitlementService`` is pulled from the DI container directly (a deferred,
+    function-body-local import) rather than via ``@inject``/``Provide[...]``:
+    ``organizations/models.py`` carries ``from __future__ import annotations``, which
+    stringifies every annotation in the module, including the ``Annotated[...,
+    Provide[...]]`` marker ``@inject`` needs to introspect at wiring time. Decorating
+    this function with ``@inject`` under that combination is a *silent* no-op --
+    ``dependency_injector`` emits a ``DIWiringWarning`` and returns the function
+    unpatched, so the parameter would always take its default and the guard below
+    would never run. Precedent for the deferred-import pattern instead: the
+    ``di_container`` fixture in the root ``conftest.py``, which imports ``container``
+    the same way for the same reason (a module-level import would bind ``None``,
+    since the container is only assigned in ``DICoreConfig.ready()`` after import
+    time).
+
     Args:
         org: The Organization instance to resolve branding for.
 
     Returns:
-        The OrganizationBranding row of the reseller ancestor, or None if unset/no reseller.
+        The OrganizationBranding row of the reseller ancestor, or None if unset, no
+        reseller, or the reseller's plan does not grant ``white_label_branding``.
     """
     branding_root = org.get_branding_root()
     if branding_root is None:
+        return None
+
+    from di_core.containers import container
+
+    entitlement_service = container.entitlement_service() if container is not None else None
+    if entitlement_service is not None and not entitlement_service.has_entitlement(
+        branding_root, Entitlement.WHITE_LABEL_BRANDING
+    ):
         return None
     return getattr(branding_root, "branding", None)

@@ -139,7 +139,7 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from organizations.models import Organization, OrganizationMembership
-from payments.billing_constants import LimitedResource
+from payments.billing_constants import Entitlement, LimitedResource
 from payments.exceptions import OverLimitError
 from public_api.models import SystemUser
 from users.models import User
@@ -157,6 +157,15 @@ logger = logging.getLogger(__name__)
 
 # Sentinel for partial updates: distinguishes "omit capacity" from "explicit null"
 _UNCHANGED = object()
+
+# The boolean entitlement gating each external provider, checked in `authenticate()` --
+# the chokepoint both the Google and Microsoft connection paths flow through. Providers
+# with no entry (INTERNAL, APPLE, ICS) are ungated: the spec's `Entitlement` closed set
+# only names Google and Microsoft.
+_PROVIDER_ENTITLEMENTS: dict[str, str] = {
+    CalendarProvider.GOOGLE: Entitlement.EXTERNAL_CALENDAR_GOOGLE,
+    CalendarProvider.MICROSOFT: Entitlement.EXTERNAL_CALENDAR_MICROSOFT,
+}
 
 
 def _resolve_owner_membership_user_id(user: User, organization: Organization) -> int | None:
@@ -401,6 +410,7 @@ class CalendarService(BaseCalendarService):
         self,
         account: "User | SocialAccount | GoogleCalendarServiceAccount",
         organization: Organization,
+        bypass_limits: bool = False,
     ) -> None:
         """
         Authenticate the service with the provided account.
@@ -409,6 +419,15 @@ class CalendarService(BaseCalendarService):
             the owning ``User`` is used for record attribution (e.g.
             ``CalendarOwnership``).
         :param organization: Calendar organization instance.
+        :param bypass_limits: When True, skips the ``external_calendar_google`` /
+            ``external_calendar_microsoft`` entitlement guard below. Only management
+            commands and one-off repair scripts should pass this -- never a
+            request-handling path.
+        :raises OverLimitError: When the resolved account's provider is Google or
+            Microsoft and the organization lacks the matching entitlement. This is
+            the common chokepoint both connection paths flow through -- every caller
+            that authenticates a Google or Microsoft account, including calendar
+            sync, routes through here.
         """
         if isinstance(account, User):
             self.user_or_token = account
@@ -418,6 +437,18 @@ class CalendarService(BaseCalendarService):
             self.user_or_token = None
         self.organization = organization
         self.calendar_adapter, self.account = self.get_calendar_adapter_for_account(account)
+
+        if not bypass_limits and self.entitlement_service is not None:
+            provider = (
+                CalendarProvider.GOOGLE
+                if isinstance(self.account, GoogleCalendarServiceAccount)
+                else getattr(self.account, "provider", None)
+            )
+            entitlement_key = _PROVIDER_ENTITLEMENTS.get(provider) if provider else None
+            if entitlement_key is not None and not self.entitlement_service.has_entitlement(
+                organization, entitlement_key
+            ):
+                raise OverLimitError.from_missing_entitlement(entitlement_key)
 
         # Reset the per-instance calendar lookup cache whenever the auth context changes.
         # This ensures no stale cross-organization entries survive a re-authentication.

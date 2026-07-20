@@ -1,9 +1,15 @@
 """Tests for OrganizationBranding model and resolve_branding function (Phase 6)."""
 
+import datetime
+
+from django.utils import timezone
+
 import pytest
 from model_bakery import baker
 
 from organizations.models import Organization, OrganizationBranding, resolve_branding
+from payments.billing_constants import BillingState, Entitlement
+from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 
 
 @pytest.mark.django_db
@@ -108,3 +114,81 @@ class TestResolveBranding:
 
         # Should only have one OrganizationBranding row for this org
         assert OrganizationBranding.objects.filter(organization=reseller).count() == 1
+
+
+def _reseller_with_entitlement(entitlement_key: str, is_enabled: bool) -> Organization:
+    """A reseller organization whose subscription carries an explicit
+    ``SubscriptionEntitlement`` row for ``entitlement_key``."""
+    reseller = baker.make(Organization, can_invite_organizations=True)
+    now = timezone.now()
+    subscription = baker.make(
+        Subscription,
+        organization=reseller,
+        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        billing_state=BillingState.FREE,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
+    )
+    baker.make(
+        SubscriptionEntitlement,
+        subscription=subscription,
+        entitlement_key=entitlement_key,
+        is_enabled=is_enabled,
+    )
+    return reseller
+
+
+@pytest.mark.django_db
+class TestResolveBrandingEntitlementGate:
+    """Phase 6c: ``white_label_branding`` gates branding resolution.
+
+    A reseller whose plan does not grant the entitlement is treated identically
+    to one with no branding row at all -- every caller of ``resolve_branding``
+    already falls back to the vinta default in that case, so this degrades
+    gracefully rather than erroring.
+    """
+
+    def test_branding_is_hidden_when_the_entitlement_is_disabled(self):
+        reseller = _reseller_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=False)
+        baker.make(OrganizationBranding, organization=reseller)
+
+        assert resolve_branding(reseller) is None
+
+    def test_branding_is_hidden_when_the_entitlement_row_is_missing(self):
+        """No row at all is how a revoked grant is represented -- same outcome as
+        an explicit ``is_enabled=False`` row."""
+        reseller = baker.make(Organization, can_invite_organizations=True)
+        now = timezone.now()
+        baker.make(
+            Subscription,
+            organization=reseller,
+            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            billing_state=BillingState.FREE,
+            current_period_start=now,
+            current_period_end=now + datetime.timedelta(days=30),
+        )
+        baker.make(OrganizationBranding, organization=reseller)
+
+        assert resolve_branding(reseller) is None
+
+    def test_branding_is_returned_when_the_entitlement_is_enabled(self):
+        reseller = _reseller_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True)
+        branding = baker.make(OrganizationBranding, organization=reseller)
+
+        result = resolve_branding(reseller)
+        assert result is not None
+        assert result.id == branding.id
+
+    def test_unlimited_plan_reseller_is_never_blocked(self):
+        """The rollout's kill switch: every organization is on ``unlimited`` until
+        deliberately migrated, so this must see byte-for-byte unchanged behavior."""
+        from payments.services.subscription_service import SubscriptionService
+
+        reseller = baker.make(Organization, can_invite_organizations=True)
+        plan = BillingPlan.objects.get(slug="unlimited")
+        SubscriptionService().create_subscription_for_organization(reseller, plan=plan)
+        branding = baker.make(OrganizationBranding, organization=reseller)
+
+        result = resolve_branding(reseller)
+        assert result is not None
+        assert result.id == branding.id

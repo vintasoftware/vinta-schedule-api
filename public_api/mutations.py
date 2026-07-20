@@ -1083,7 +1083,12 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 f"Valid values are: {', '.join(sorted(valid_values))}."
             )
 
-        # Mint the system user and persist ResourceAccess rows (mirrors REST create)
+        # Mint the system user and persist ResourceAccess rows (mirrors REST create).
+        # Phase 6c: create_system_user raises OverLimitError at the organization's
+        # public_api_system_users ceiling. Caught outside the IntegrityError branch and
+        # rendered via raise_over_limit_graphql_error (also rolls back the request
+        # transaction -- see that function's docstring for why that matters under
+        # ATOMIC_REQUESTS).
         try:
             with transaction.atomic():
                 system_user, plaintext_token = deps.public_api_auth_service.create_system_user(
@@ -1097,6 +1102,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                         for resource_name in dict.fromkeys(input.resources)
                     ]
                 )
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         except IntegrityError as e:
             raise GraphQLError(
                 f"A token with integration_name '{input.integration_name}' already exists."
@@ -1169,7 +1176,12 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 f"Allowed resources are: {', '.join(sorted(PROVIDER_SCOPED_RESOURCES))}."
             )
 
-        # Create the system user and resource-access rows atomically
+        # Create the system user and resource-access rows atomically.
+        # Phase 6c: create_system_user raises OverLimitError at the organization's
+        # public_api_system_users ceiling. Caught outside the IntegrityError branch and
+        # rendered via raise_over_limit_graphql_error (also rolls back the request
+        # transaction -- see that function's docstring for why that matters under
+        # ATOMIC_REQUESTS).
         try:
             with transaction.atomic():
                 system_user, plaintext_token = deps.public_api_auth_service.create_system_user(
@@ -1184,6 +1196,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                         for resource_name in dict.fromkeys(input.available_resources)
                     ]
                 )
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         except IntegrityError as e:
             # Only convert to "already exists" when the integration_name uniqueness constraint
             # fired; a ResourceAccess constraint failure would have a different message and
@@ -1318,6 +1332,10 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
 
         headers: dict = cast(dict, input.headers) if input.headers is not None else {}
 
+        # Phase 6c: create_configuration raises OverLimitError at the organization's
+        # webhook_subscriptions ceiling. Caught before the ValueError branch and rendered
+        # via raise_over_limit_graphql_error (also rolls back the request transaction --
+        # see that function's docstring for why that matters under ATOMIC_REQUESTS).
         try:
             configuration = deps.webhook_service.create_configuration(
                 organization=org,
@@ -1325,6 +1343,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 url=input.url,
                 headers=headers,
             )
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         except ValueError as e:
             raise GraphQLError(str(e)) from e
 
