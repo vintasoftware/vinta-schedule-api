@@ -182,10 +182,11 @@ Also fixed: `accept_invitation` marked the invitation accepted outside its trans
 
 ### Phase 6b — Enforce pre-paid limits: calendars, groups, bundles, availability ✅
 
-- **Status**: review round 1 fixed
-- **Models**: implementer Tier 3; reviewer Tier 4; fixer Tier 4
-- **Branch**: `plan/billing-plans-and-limits/phase-6b` · **Base**: `plan/billing-plans-and-limits/phase-6a`
-- **Commits**: `64cf6c0` implementation, `1397738` round 1
+- **Status**: reviewed clean (3 rounds), PR open
+- **Models**: implementer Tier 3; reviewer Tier 4 all three rounds; fixer Tier 4 rounds 1–2, Tier 3 round 3
+- **Branch**: `plan/billing-plans-and-limits/phase-6b` · **Base**: `main` (developed on 6a; **#195 merged mid-review**, content diff to `main` empty so no rebase needed)
+- **PR**: https://github.com/vintasoftware/vinta-schedule-api/pull/196
+- **Commits**: `64cf6c0` implementation, `1397738` round 1, `1e44a7a` tracking, `bf1058a` round 3
 
 Guards `create_resource_calendar`, `create_group`, `create_bundle_calendar`, `create_available_time` / `bulk_create_availability_windows` / `batch_modify_available_times`, and the bulk room-import writer. **The reviewer's prediction was right**: the unmetered path did survive in the bulk sync writer, exactly where the plan said to look.
 
@@ -206,7 +207,16 @@ Also fixed: the split is read **inside** the guard lock (`EntitlementService.loc
 
 Both BLOCKER regressions were **confirmed failing against pre-fix code** by reverting each fix in place (8 failures for the promotion split, including the property test; the replacement-at-the-ceiling test for the batch).
 
-**Gates**: suite **4145 passed** (6a base 4094; +51); `mypy` **305 errors / 57 files** at baseline with **zero `type: ignore` / `noqa` added**; `ruff check` + `format --check` clean (485 files); `makemigrations --check` clean with `0041` applied; `check --deploy` unchanged at the 5 pre-existing dev-settings warnings.
+**Review round 3** found **no BLOCKERs** and declared the phase merge-safe, after verifying the split predicate by hand across all twelve `(calendar_type, visibility)` combinations — including `UNLISTED`, a third state nobody had raised, which lands correctly on both sides — and confirming the two changed test assertions are arithmetically right rather than fitted. Two SHOULD-FIXes applied:
+
+1. **The lock fix had been applied on the calendar side and not the availability side.** The batch's delete-credit was read *before* any lock, and when `delta == 0` `check_limit` was never called, so **no lock was taken at all**. Two concurrent `[delete X, create]` batches both computed `delta=0`, both skipped the guard, and under READ COMMITTED the loser's delete silently affected zero rows — both creates landed, one over the ceiling. Reproduced with a real threaded test (4 rows against a ceiling of 3) before fixing.
+2. A duplicated `external_id` in one discovery inflated the charge, producing a false partial cap.
+
+Also: the "exact complement of `live_of_type`" docstring was factually wrong (`PERSONAL/ACTIVE` is in neither set) and is now stated as the complement of *newly entering* it — the one place in this phase where a misleading predicate comment is load-bearing.
+
+**Gates** (re-run independently by the orchestrator): suite **4148 passed** (6a base 4094; +54); `mypy` **305 errors / 57 files** at baseline with **zero `type: ignore` added** (the only `noqa` are `S106` on test-only dummy credentials, matching five existing precedents); `ruff check` + `format --check` clean (486 files); `makemigrations --check` clean with `0041` applied; `check --deploy` unchanged.
+
+⚠️ **Orchestration hazard worth remembering**: one gate run silently executed in the **main checkout** instead of the worktree, because the shell's cwd had reverted and background commands do not persist `cd`. It reported 3969 passed / mypy 308-58 — the *pre-Phase-5* baseline — while looking perfectly green. Caught only because those numbers are compared against recorded baselines rather than checked for "no failures". **Pin `cd <WORKROOT>` in every gate command.**
 
 **Out of scope, spotted while fixing**: `CalendarQuerySet.update()` (`calendar_integration/querysets.py`) raises `AttributeError: 'CalendarQuerySet' object has no attribute '_meta'` — it reads `self._meta` where it means `self.model._meta`, so **any** `.update()` on a Calendar queryset is broken. Pre-existing, unrelated to this phase, not fixed here.
 
