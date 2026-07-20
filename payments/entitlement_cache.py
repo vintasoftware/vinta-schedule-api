@@ -2,14 +2,21 @@
 
 ``EntitlementService.has_entitlement`` costs a billing-root walk (a query per level of
 the ``parent`` chain) plus a subscription fetch plus an entitlement-row fetch. Phase 6c
-puts it on the two hottest surfaces in the public API:
+puts it on the two hottest call sites:
 
-- ``PublicApiSystemUserMiddleware`` checks ``partner_api`` on **every** GraphQL request.
+- ``PublicApiSystemUserMiddleware._has_partner_api_entitlement`` checks ``partner_api``
+  on every request that resolved an authenticated organization.
 - ``resolve_branding_for_display`` runs on ``brandingForTenant``, an *unauthenticated*
   public query whose ``tenant_id`` is attacker-supplied.
 
-Both are answering the same question repeatedly within one request. This memo makes the
-second and later asks free.
+The memo itself is not GraphQL-specific: ``entitlement_request_cache()`` is opened in
+``PublicApiSystemUserMiddleware.__call__``, which wraps ``self.get_response(...)`` --
+and that middleware is registered globally in ``MIDDLEWARE``, so it activates for
+*every* request the middleware stack handles, REST included, not just the ``/graphql/``
+path the two call sites above happen to be reached from.
+
+Both call sites can answer the same question repeatedly within one request. This memo
+makes the second and later asks free.
 
 **Scope is opt-in and explicit.** The cache only exists inside an
 ``entitlement_request_cache()`` block; outside one, ``has_entitlement_cached`` is a plain

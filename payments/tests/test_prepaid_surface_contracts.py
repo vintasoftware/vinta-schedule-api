@@ -11,13 +11,16 @@ So this module drives the HTTP/admin surfaces themselves for the two resources P
 added, and asserts both the status and the *shared body*
 (``OverLimitError.as_error_body()``: ``detail`` / ``code`` / ``resource`` /
 ``current_usage`` / ``limit`` / ``remedy``) -- REST as a 402 response body, GraphQL as the
-same dict carried verbatim in the error's ``extensions``, admin as a non-500 error message.
+same dict carried verbatim in the error's ``extensions``, admin (driven through
+``django.test.Client`` against the real ``admin:public_api_systemuser_add`` URL, not
+``ModelAdmin.save_model`` called directly) as a 200 re-render of the add form with the
+limit surfaced as a field error.
 """
 
 import datetime
 
-from django.contrib.admin.sites import AdminSite
-from django.contrib.messages import ERROR
+from django.contrib.auth import get_user_model
+from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
 
@@ -40,11 +43,13 @@ from payments.models import (
     SubscriptionEntitlement,
     SubscriptionPlanLimit,
 )
-from public_api.admin import SystemUserAdmin
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
+
+
+User = get_user_model()
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -94,6 +99,32 @@ def _organization_at_ceiling(
             is_enabled=True,
         )
     return organization
+
+
+def _admin_client() -> Client:
+    superuser = User.objects.create_superuser(
+        email="prepaid-surface-admin@example.com",
+        password="adminpassword",  # noqa: S106
+    )
+    client = Client()
+    client.force_login(superuser)
+    return client
+
+
+def _empty_resource_access_inline_formset_data() -> dict:
+    """Management-form data for ``SystemUserAdmin``'s ``ResourceAccessInline``.
+
+    Django admin's ``_changeform_view`` requires every inline's formset management
+    form fields in the POST body, even when adding zero inline rows -- the prefix is
+    ``ResourceAccess.system_user``'s ``related_name`` (``available_resources``), not
+    the model name.
+    """
+    return {
+        "available_resources-TOTAL_FORMS": "0",
+        "available_resources-INITIAL_FORMS": "0",
+        "available_resources-MIN_NUM_FORMS": "0",
+        "available_resources-MAX_NUM_FORMS": "1000",
+    }
 
 
 def _admin_membership(organization: Organization) -> OrganizationMembership:
@@ -295,11 +326,14 @@ class TestPublicApiSystemUserSurfaces:
         ).exists()
 
     def test_admin_create_reports_an_error_instead_of_a_500(self):
-        """``SystemUserAdmin.save_model`` must not let ``OverLimitError`` escape.
+        """The real ``admin:public_api_systemuser_add`` endpoint, over-limit.
 
-        There is no HTTP status to assert here -- an escaping exception renders Django's
-        500 debug page, so the observable contract is "``save_model`` returns, and the
-        admin user is shown an ERROR message".
+        ``SystemUserAdminForm.clean()`` must reject the create with a field error
+        *before* ``ModelAdmin._changeform_view`` ever reaches ``response_add`` --
+        which would otherwise be called with ``obj.pk is None`` (the guarded
+        ``save_model`` never ran) and 500 with ``NoReverseMatch`` reversing
+        ``admin:public_api_systemuser_change`` for a ``None`` pk, instead of the 200
+        field-error re-render asserted here.
         """
         organization = _organization_at_ceiling(LimitedResource.PUBLIC_API_SYSTEM_USERS, 1)
         baker.make(
@@ -308,19 +342,23 @@ class TestPublicApiSystemUserSurfaces:
             integration_name="admin-seed",
             long_lived_token_hash="admin-seed-hash",
         )
+        client = _admin_client()
 
-        model_admin = SystemUserAdmin(SystemUser, AdminSite())
-        request = _admin_request()
-        form = _fake_form({"integration_name": "admin-blocked", "organization": organization})
+        response = client.post(
+            reverse("admin:public_api_systemuser_add"),
+            data={
+                "organization": str(organization.pk),
+                "integration_name": "admin-blocked",
+                **_empty_resource_access_inline_formset_data(),
+            },
+        )
 
-        model_admin.save_model(request, SystemUser(), form, change=False)
-
+        assert response.status_code == status.HTTP_200_OK
         assert not SystemUser.objects.filter(
             organization=organization, integration_name="admin-blocked"
         ).exists()
-        level, message = request._messages_recorded[-1]
-        assert level == ERROR
-        assert "public api system user" in message.lower() or "limit" in message.lower()
+        content = response.content.decode()
+        assert "public api system user" in content.lower() or "limit" in content.lower()
 
     def test_admin_create_without_an_organization_still_works(self):
         """``SystemUser.organization`` is ``null=True`` and ``save_model`` branches
@@ -328,53 +366,21 @@ class TestPublicApiSystemUserSurfaces:
         must skip it rather than resolve a billing root from ``None``, which raised
         ``AttributeError`` -> admin 500 on an explicitly supported path.
         """
-        model_admin = SystemUserAdmin(SystemUser, AdminSite())
-        request = _admin_request()
-        form = _fake_form({"integration_name": "orgless-token", "organization": None})
+        client = _admin_client()
 
-        model_admin.save_model(request, SystemUser(), form, change=False)
+        response = client.post(
+            reverse("admin:public_api_systemuser_add"),
+            data={
+                "organization": "",
+                "integration_name": "orgless-token",
+                **_empty_resource_access_inline_formset_data(),
+            },
+        )
 
+        assert response.status_code == 302
         # `SystemUser.objects` refuses an unfiltered query on an OrganizationModel;
         # an org-less row has no organization to filter by, so this is the one legitimate
         # use of the unscoped manager here.
         created = SystemUser.original_manager.filter(integration_name="orgless-token").first()
         assert created is not None
         assert created.organization_id is None
-        level, message = request._messages_recorded[-1]
-        assert level != ERROR
-        assert "all organizations" in message
-
-
-# ---------------------------------------------------------------------------
-# Admin test doubles
-# ---------------------------------------------------------------------------
-
-
-class _FakeForm:
-    def __init__(self, cleaned_data):
-        self.cleaned_data = cleaned_data
-
-
-def _fake_form(cleaned_data):
-    return _FakeForm(cleaned_data)
-
-
-def _admin_request():
-    """A request object that records ``message_user`` output.
-
-    ``ModelAdmin.message_user`` goes through ``django.contrib.messages``, which needs a
-    session + message storage a bare ``RequestFactory`` request does not have. Recording
-    the calls directly keeps the test about ``save_model``'s behaviour rather than about
-    the messages framework's plumbing.
-    """
-    from django.test import RequestFactory
-
-    request = RequestFactory().post("/admin/public_api/systemuser/add/")
-    request._messages_recorded = []
-
-    class _Recorder:
-        def add(self, level, message, extra_tags=""):
-            request._messages_recorded.append((level, message))
-
-    request._messages = _Recorder()
-    return request

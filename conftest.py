@@ -189,14 +189,22 @@ def provision_default_subscription(request):
     def _provision(sender, instance, created, raw=False, **kwargs):
         if not created or raw:
             return
+        # Deferred import: `di_core.containers.container` is only *assigned* in
+        # `DICoreConfig.ready()` -- a module-level import binds `None` forever. The
+        # container-built service is what production and the rest of this phase's
+        # tests use (see e.g. `public_api/tests/test_system_user_limits.py`'s
+        # `service` fixture and `payments/tests/test_prepaid_resource_coverage.py`'s
+        # `_container()` helper) rather than a hand-constructed one.
+        from di_core.containers import container
         from payments.exceptions import NoDefaultBillingPlanError
-        from payments.services.subscription_service import SubscriptionService
 
+        assert container is not None, "DI container is only assigned in DICoreConfig.ready()"
+        subscription_service = container.subscription_service()
         try:
-            SubscriptionService().create_subscription_for_organization(instance)
+            subscription_service.create_subscription_for_organization(instance)
         except NoDefaultBillingPlanError:
             _reseed_default_billing_plan()
-            SubscriptionService().create_subscription_for_organization(instance)
+            subscription_service.create_subscription_for_organization(instance)
 
     post_save.connect(
         _provision, sender=Organization, dispatch_uid="conftest_provision_default_subscription"

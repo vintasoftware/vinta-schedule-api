@@ -6587,4 +6587,6 @@ class TestReturnUrlSurvivesBrandingDowngrade:
         response = self._post(anonymous_client, query, {"tenantId": str(reseller.id)})
 
         data = assert_graphql_success(response)
-        assert data["brandingForTenant"]["appName"] != "Downgraded App"
+        from public_api.queries import _vinta_default_branding
+
+        assert data["brandingForTenant"]["appName"] == _vinta_default_branding().app_name

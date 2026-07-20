@@ -20,7 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 def _authenticate_or_skip(calendar_service, account, organization) -> bool:
-    """Authenticate the service, treating a missing provider entitlement as a **skip**.
+    """Authenticate the service, treating a missing provider entitlement at
+    authenticate-time as a **skip**.
+
+    Only wraps ``calendar_service.authenticate(...)``: the *account's* provider
+    entitlement gate. It does not, and cannot, catch the separate, calendar-scoped
+    gate on ``_get_write_adapter_for_calendar`` -- no caller in this module reaches
+    that method today, so the distinction is not yet observable, but a future task
+    that did would need its own guard around that call, not this one.
 
     Every task in this module is scheduled, not user-triggered. An organization whose
     plan omits `external_calendar_google` / `external_calendar_microsoft` would otherwise
