@@ -52,6 +52,8 @@ from calendar_integration.services.dataclasses import (
     ResourceAllocationInputData,
 )
 from organizations.models import Organization
+from payments.billing_constants import LimitedResource
+from payments.exceptions import OverLimitError
 from users.models import User
 
 
@@ -59,6 +61,7 @@ if TYPE_CHECKING:
     from audit.services import AuditService
     from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_service import CalendarService
+    from payments.services.entitlement_service import EntitlementService
 
 
 class CalendarGroupService:
@@ -75,12 +78,16 @@ class CalendarGroupService:
         booking_policy_service: Annotated[
             "BookingPolicyService | None", Provide["booking_policy_service"]
         ] = None,
+        entitlement_service: Annotated[
+            "EntitlementService | None", Provide["entitlement_service"]
+        ] = None,
     ) -> None:
         self.organization = None
         self.calendar_service = calendar_service
         self.calendar_permission_service = calendar_permission_service
         self.audit_service = audit_service
         self.booking_policy_service = booking_policy_service
+        self.entitlement_service = entitlement_service
 
     def _audit_group_write(
         self,
@@ -218,10 +225,31 @@ class CalendarGroupService:
     # CRUD
     # ------------------------------------------------------------------
     @transaction.atomic()
-    def create_group(self, data: CalendarGroupInputData) -> CalendarGroup:
-        """Create a CalendarGroup with its slots and memberships."""
+    def create_group(
+        self, data: CalendarGroupInputData, bypass_limits: bool = False
+    ) -> CalendarGroup:
+        """Create a CalendarGroup with its slots and memberships.
+
+        :param bypass_limits: When True, skips the ``calendar_groups`` limit guard below.
+            Only management commands and one-off repair scripts should pass this -- never
+            a request-handling path.
+        :raises OverLimitError: When the organization is at its effective ``calendar_groups``
+            ceiling. Nothing is created. Checked and locked (``SELECT ... FOR UPDATE`` on the
+            billing root's subscription) inside this method's own transaction, so two
+            concurrent creates for the last unit of capacity serialize on that row.
+        """
         self._assert_initialized()
+        # _assert_initialized() raises above when None; cast narrows the type for
+        # the entitlement check below (mypy does not infer this across the call).
+        organization = cast("Organization", self.organization)
         slots_data, _ = self._validate_slots_input(data.slots)
+
+        if not bypass_limits and self.entitlement_service is not None:
+            result = self.entitlement_service.check_limit(
+                organization, LimitedResource.CALENDAR_GROUPS, lock=True
+            )
+            if not result.allowed:
+                raise OverLimitError.from_check_result(result)
 
         # When accepts_public_scheduling is provided, use it; otherwise default to False (private).
         accepts_public_scheduling = (

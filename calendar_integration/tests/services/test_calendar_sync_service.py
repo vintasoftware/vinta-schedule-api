@@ -98,6 +98,8 @@ class FakeHost:
         self,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
+        import_workflow_state: Any = None,
+        bypass_limits: bool = False,
     ) -> list[CalendarResourceData]:
         self.execute_org_import_calls.append((start_time, end_time))
         return []

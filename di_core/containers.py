@@ -197,6 +197,7 @@ class AppContainer(containers.DeclarativeContainer):
         audit_service=audit_service,
         external_event_change_request_service=external_event_change_request_service,
         booking_policy_service=booking_policy_service,
+        entitlement_service=entitlement_service,
     )
 
     bookable_slots_service = providers.Factory(
@@ -210,6 +211,7 @@ class AppContainer(containers.DeclarativeContainer):
         calendar_permission_service=calendar_permission_service,
         audit_service=audit_service,
         booking_policy_service=booking_policy_service,
+        entitlement_service=entitlement_service,
     )
 
     organization_service = providers.Factory(

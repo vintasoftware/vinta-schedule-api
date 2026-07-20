@@ -1448,6 +1448,10 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         """
         calendar_service, _org = _get_org_and_init_calendar_service(info)
 
+        # Phase 6b: create_resource_calendar raises OverLimitError at the organization's
+        # resource_calendars limit. Rendered identically to the REST 402 body via
+        # raise_over_limit_graphql_error, which also rolls back the request transaction
+        # (graphql-core swallows resolver exceptions and always returns 200).
         try:
             calendar = calendar_service.create_resource_calendar(
                 name=input.name,
@@ -1457,6 +1461,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 manage_available_windows=input.manage_available_windows,
                 accepts_public_scheduling=not input.is_private,
             )
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         except (ValueError, DjangoValidationError, IntegrityError) as e:
             return CreateResourceCalendarResult(success=False, error_message=str(e))
 
@@ -1481,6 +1487,10 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         """
         calendar_service, _org = _get_org_and_init_calendar_service(info)
 
+        # Phase 6b: CalendarService.create_calendar creates a PERSONAL calendar, which
+        # is not a member of LimitedResource (only resource_calendars and
+        # bundle_calendars are limited among calendar types) -- no OverLimitError guard
+        # applies here. See CalendarService.create_calendar's docstring.
         try:
             calendar = calendar_service.create_calendar(
                 name=input.name,
@@ -1690,6 +1700,9 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 success=False, error_message="Calendar not found."
             )
 
+        # Phase 6b: create_available_time raises OverLimitError at the organization's
+        # availability_windows limit. Rendered identically to the REST 402 body via
+        # raise_over_limit_graphql_error (also rolls back the request transaction).
         try:
             available_time = calendar_service.create_available_time(
                 calendar=calendar,
@@ -1698,6 +1711,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 timezone=input.timezone,
                 rrule_string=input.rrule_string,
             )
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         except (ValueError, DjangoValidationError, CalendarIntegrationError) as e:
             return CreateAvailabilityWindowResult(success=False, error_message=str(e))
 
@@ -1898,10 +1913,15 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 op["rrule_string"] = op_input.rrule_string
             ops.append(op)
 
+        # Phase 6b: a batch containing `create` operations raises OverLimitError when it
+        # would take the organization past its availability_windows limit -- a batch of
+        # N creates is exactly the kind of bulk path a single-window guard would miss.
         try:
             available_times = calendar_service.batch_modify_available_times(
                 calendar=calendar, operations=ops
             )
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         except (
             CalendarIntegrationError,
             ValueError,
@@ -2102,6 +2122,9 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 )
             primary = next(c for c in children if c.id == input.primary_calendar_id)
 
+        # Phase 6b: create_bundle_calendar raises OverLimitError at the organization's
+        # bundle_calendars limit. Rendered identically to the REST 402 body via
+        # raise_over_limit_graphql_error (also rolls back the request transaction).
         try:
             bundle = calendar_service.create_bundle_calendar(
                 name=input.name,
@@ -2111,6 +2134,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 primary_calendar=primary,
                 accepts_public_scheduling=not input.is_private,
             )
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         except (CalendarIntegrationError, ValueError, DjangoValidationError, IntegrityError) as e:
             return CreateCalendarBundleResult(success=False, error_message=str(e))
 

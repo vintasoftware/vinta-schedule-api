@@ -80,6 +80,8 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
 from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
+from payments.billing_constants import LimitedResource
+from payments.exceptions import OverLimitError
 
 
 if TYPE_CHECKING:
@@ -457,26 +459,47 @@ class AvailabilityService:
     # Available-time writes
     # ------------------------------------------------------------------
 
+    @transaction.atomic()
     def bulk_create_availability_windows(
         self,
         calendar: Calendar,
         availability_windows: Iterable[
             tuple[datetime.datetime, datetime.datetime, str, str | None]
         ],
+        bypass_limits: bool = False,
     ) -> Iterable[AvailableTime]:
         """
         Create availability windows for a calendar (with optional recurrence support).
         :param calendar: The calendar to create the availability windows for.
         :param availability_windows: Iterable of tuples containing (start_time, end_time, rrule_string).
+        :param bypass_limits: When True, skips the ``availability_windows`` limit guard below.
+            Only management commands and one-off repair scripts should pass this -- never a
+            request-handling path.
+        :raises OverLimitError: When creating ``len(availability_windows)`` more windows would
+            take the organization past its effective ``availability_windows`` ceiling. Nothing
+            is created. Checked and locked (``SELECT ... FOR UPDATE`` on the billing root's
+            subscription) inside this method's own transaction.
         :return: List of created AvailableTime instances.
         """
-        if not is_initialized_or_authenticated_calendar_service(
-            cast("BaseCalendarService", self._context)
-        ):
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
             raise
 
         if not calendar.manage_available_windows:
             raise ValueError("This calendar does not manage available windows.")
+
+        availability_windows = list(availability_windows)
+
+        entitlement_service = self._context.entitlement_service
+        if not bypass_limits and entitlement_service is not None and availability_windows:
+            result = entitlement_service.check_limit(
+                context.organization,
+                LimitedResource.AVAILABILITY_WINDOWS,
+                delta=len(availability_windows),
+                lock=True,
+            )
+            if not result.allowed:
+                raise OverLimitError.from_check_result(result)
 
         # NOTE: batch availability writes are not individually audited (see audit rollout)
         availability_windows_to_create = []
@@ -502,6 +525,7 @@ class AvailabilityService:
         self,
         calendar: Calendar,
         operations: Iterable[dict],
+        bypass_limits: bool = False,
     ) -> list[AvailableTime]:
         """Apply a batch of create/update/delete operations to a calendar's available times.
 
@@ -509,10 +533,21 @@ class AvailabilityService:
         transaction — any failure rolls the whole batch back. Update/delete operations
         are scoped to this calendar (and organization); a missing id raises ValueError.
 
+        Phase 6b: a batch with ``create`` operations is itself a bulk-creation path --
+        without a check here, the ``availability_windows`` ceiling would be reachable
+        only through ``create_available_time`` and trivially bypassed via this endpoint.
+        Headroom for the number of ``create`` operations is checked *before* any
+        operation in the batch is applied.
+
         :param calendar: The calendar whose available times are being modified.
         :param operations: Iterable of dicts, each with an ``action`` of
             ``create`` / ``update`` / ``delete`` plus the relevant fields
             (``id``, ``start_time``, ``end_time``, ``timezone``, ``rrule_string``).
+        :param bypass_limits: When True, skips the ``availability_windows`` limit guard
+            below. Only management commands and one-off repair scripts should pass this.
+        :raises OverLimitError: When the batch's ``create`` operations would take the
+            organization past its effective ``availability_windows`` ceiling. Nothing in
+            the batch is applied.
         :return: The calendar's available times after the batch is applied.
         """
         context = cast("BaseCalendarService", self._context)
@@ -521,6 +556,20 @@ class AvailabilityService:
 
         if not calendar.manage_available_windows:
             raise ValueError("This calendar does not manage available windows.")
+
+        operations = list(operations)
+        create_count = sum(1 for operation in operations if operation["action"] == "create")
+
+        entitlement_service = self._context.entitlement_service
+        if not bypass_limits and entitlement_service is not None and create_count:
+            result = entitlement_service.check_limit(
+                context.organization,
+                LimitedResource.AVAILABILITY_WINDOWS,
+                delta=create_count,
+                lock=True,
+            )
+            if not result.allowed:
+                raise OverLimitError.from_check_result(result)
 
         # NOTE: batch availability writes are not individually audited (see audit rollout)
         scoped = AvailableTime.objects.filter_by_organization(context.organization.id).filter(
@@ -582,10 +631,19 @@ class AvailabilityService:
         end_time: datetime.datetime,
         timezone: str,
         rrule_string: str | None = None,
+        bypass_limits: bool = False,
     ) -> AvailableTime:
-        """Create a single available time (optionally recurring)."""
+        """Create a single available time (optionally recurring).
+
+        :param bypass_limits: When True, skips the ``availability_windows`` limit guard.
+            Only management commands and one-off repair scripts should pass this.
+        :raises OverLimitError: When the organization is at its effective
+            ``availability_windows`` ceiling. Nothing is created.
+        """
         result = self.bulk_create_availability_windows(
-            calendar=calendar, availability_windows=[(start_time, end_time, timezone, rrule_string)]
+            calendar=calendar,
+            availability_windows=[(start_time, end_time, timezone, rrule_string)],
+            bypass_limits=bypass_limits,
         )
         available_time = next(iter(result))
         self._audit_availability_write(AuditAction.CREATE, available_time)

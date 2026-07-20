@@ -74,6 +74,8 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from organizations.models import OrganizationMembership
+from payments.billing_constants import LimitedResource
+from payments.exceptions import OverLimitError
 from users.models import User
 
 
@@ -209,6 +211,7 @@ class CalendarBundleService:
         child_calendars: Iterable[Calendar] | None = None,
         primary_calendar: Calendar | None = None,
         accepts_public_scheduling: bool = False,
+        bypass_limits: bool = False,
     ) -> Calendar:
         """
         Create a new bundle calendar in the application without linking to an external provider.
@@ -220,6 +223,12 @@ class CalendarBundleService:
             child_calendars.
         :param accepts_public_scheduling: If True, the bundle can be booked via codeless public
             scheduling links. Defaults to False (private).
+        :param bypass_limits: When True, skips the ``bundle_calendars`` limit guard below.
+            Only management commands and one-off repair scripts should pass this -- never a
+            request-handling path.
+        :raises OverLimitError: When the organization is at its effective ``bundle_calendars``
+            ceiling. Nothing is created. Checked and locked (``SELECT ... FOR UPDATE`` on the
+            billing root's subscription) inside this method's own transaction.
         :return: Created Calendar instance.
         """
         context = cast("BaseCalendarService", self._context)
@@ -231,6 +240,14 @@ class CalendarBundleService:
         # Validate primary calendar
         if primary_calendar and primary_calendar not in child_calendars_list:
             raise ValueError("Primary calendar must be one of the child calendars")
+
+        entitlement_service = self._context.entitlement_service
+        if not bypass_limits and entitlement_service is not None:
+            result = entitlement_service.check_limit(
+                context.organization, LimitedResource.BUNDLE_CALENDARS, lock=True
+            )
+            if not result.allowed:
+                raise OverLimitError.from_check_result(result)
 
         bundle_calendar = Calendar.objects.create(
             organization=context.organization,
