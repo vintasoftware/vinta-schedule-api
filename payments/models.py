@@ -256,6 +256,15 @@ class Subscription(BaseModel):
     pending_billing_interval = models.CharField(max_length=10, choices=BillingInterval, blank=True)
     pending_plan_effective_at = models.DateTimeField(null=True, blank=True)
 
+    # Phase 9: set when `_initiate_upgrade` has driven the provider for an upgrade
+    # whose charge has not yet been confirmed by a subscription-payment webhook,
+    # and cleared by `confirm_plan_change` once it is. Guards against a *second*
+    # upgrade being initiated to a different plan before the first confirms —
+    # otherwise the first webhook would grant whatever plan `subscription.plan`
+    # currently points at (the latest requested tier), not the plan its charge
+    # actually paid for (see `SubscriptionService.request_plan_change`).
+    plan_change_pending_confirmation = models.BooleanField(default=False)
+
     limits: "RelatedManager[SubscriptionPlanLimit]"
     entitlements: "RelatedManager[SubscriptionEntitlement]"
     add_ons: "RelatedManager[SubscriptionAddOn]"

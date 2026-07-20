@@ -34,11 +34,20 @@ class BasePaymentAdapter:
         abstract = True
 
     @abstractmethod
-    def process(self, payment: Payment, payment_token: str) -> str:
+    def process(self, payment: Payment, payment_token: str, idempotency_key: str = "") -> str:
         """
         Process a payment using the payment token.
         :param payment: Payment object
         :param payment_token: Payment token
+        :param idempotency_key: A caller-supplied, stable key forwarded to the
+            provider as its own idempotency key (Stripe ``Idempotency-Key`` /
+            MercadoPago ``x-idempotency-key``). This is what makes a charge safe
+            to *retry* — the provider itself refuses to charge the same key
+            twice, independently of whether any local dedup row survived a
+            rollback or process restart. Empty falls back to a per-attempt
+            provider default (e.g. the local payment id), which does **not**
+            survive a Payment row being re-created on retry, so callers that need
+            retry-safety must pass a stable key.
         :return: External ID of the payment
         """
         raise NotImplementedError

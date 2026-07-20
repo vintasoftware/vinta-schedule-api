@@ -26,22 +26,15 @@ def assert_org_can_invite(acting_org: Organization) -> None:
         )
 
 
-def assert_target_in_subtree(acting_org: Organization, target_org: Organization) -> None:
-    """
-    Guard: raise GraphQLError unless target_org is the acting org or a descendant of it.
+def is_target_in_subtree(acting_org: Organization, target_org: Organization) -> bool:
+    """Boolean predicate: is ``target_org`` the acting org or a descendant of it?
 
-    Walks the target_org's parent chain upward looking for acting_org. Includes a cycle
-    guard (visited set) to prevent infinite loops in pathological data.
-
-    Reusable by Phases 5 and 9 (createSystemUserToken, createSystemUser) which need the
-    same subtree membership check.
-
-    Args:
-        acting_org: The organization that is performing the action (the reseller).
-        target_org: The organization that should be the acting org or a descendant.
-
-    Raises:
-        GraphQLError: if target_org is not in the acting_org's subtree.
+    Walks the target_org's parent chain upward looking for acting_org, with a
+    cycle guard (visited set) against pathological data. Transport-neutral so both
+    the GraphQL reseller mutations (via ``assert_target_in_subtree``, which raises)
+    and the REST billing permission (``IsBillingOwnerOrAdmin``, which only needs
+    the boolean) can share one walk without the REST layer importing a GraphQL
+    error type.
     """
     current: Organization | None = target_org
     visited: set[int] = set()
@@ -53,11 +46,31 @@ def assert_target_in_subtree(acting_org: Organization, target_org: Organization)
         visited.add(current.id)
 
         if current.id == acting_org.id:
-            return  # target_org is the acting org or a descendant.
+            return True  # target_org is the acting org or a descendant.
 
         current = current.parent  # type: ignore[assignment]
 
-    raise GraphQLError(
-        "The target organization is not within your organization's subtree. "
-        "You may only manage organizations within your own hierarchy."
-    )
+    return False
+
+
+def assert_target_in_subtree(acting_org: Organization, target_org: Organization) -> None:
+    """
+    Guard: raise GraphQLError unless target_org is the acting org or a descendant of it.
+
+    Thin raising wrapper over ``is_target_in_subtree`` (the shared walk).
+
+    Reusable by Phases 5 and 9 (createSystemUserToken, createSystemUser) which need the
+    same subtree membership check.
+
+    Args:
+        acting_org: The organization that is performing the action (the reseller).
+        target_org: The organization that should be the acting org or a descendant.
+
+    Raises:
+        GraphQLError: if target_org is not in the acting_org's subtree.
+    """
+    if not is_target_in_subtree(acting_org, target_org):
+        raise GraphQLError(
+            "The target organization is not within your organization's subtree. "
+            "You may only manage organizations within your own hierarchy."
+        )

@@ -383,6 +383,26 @@ class PaymentTokenRequiredError(PaymentError):
         self.organization_id = organization_id
 
 
+class UnconfirmedPlanChangeError(PaymentError):
+    """Raised when a new plan change is requested while an earlier upgrade's
+    charge is still awaiting confirmation from a subscription-payment webhook.
+
+    Applying a second change now would leave ``Subscription.plan`` pointing at
+    the newest requested tier, so the first (already-charging) upgrade's webhook
+    would grant *that* tier's capacity rather than the plan its charge paid for.
+    The caller must wait for the in-flight change to confirm (or fail) before
+    requesting another. Re-requesting the *same* plan/interval is still a no-op
+    rather than an error (it never reaches this check).
+    """
+
+    def __init__(self, organization_id: int):
+        super().__init__(
+            f"Organization {organization_id} already has a plan change awaiting "
+            "payment confirmation -- wait for it to settle before requesting another."
+        )
+        self.organization_id = organization_id
+
+
 class AddOnNotPurchasableError(PaymentError):
     """Raised when ``purchase_add_on`` is asked to sell capacity for a resource
     whose current ``SubscriptionPlanLimit`` carries no ``overage_unit_price`` —

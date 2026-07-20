@@ -237,6 +237,26 @@ def test_create_subscription_success(mock_reverse, adapter, mock_subscription):
     adapter.sdk.preapproval().create.assert_called_once_with(expected_subscription_data)
 
 
+@override_settings(SITE_DOMAIN="example.com")
+@patch("payments.services.subscription_adapters.mercadopago_subscription_adapter.reverse")
+def test_create_subscription_forwards_idempotency_key_header(
+    mock_reverse, adapter, mock_subscription
+):
+    """A stable key is threaded to MercadoPago as `x-idempotency-key` so a retried
+    first-upgrade resolves to the same preapproval instead of a second one."""
+    mock_reverse.return_value = (
+        "/api/payments/subscription-payment-update/mercadopago/subscription-123/"
+    )
+    adapter.sdk.preapproval().create.return_value = {"response": {"id": "mp-subscription-456"}}
+
+    adapter.create_subscription(mock_subscription, "test-token", idempotency_key="idem-sub-1")
+
+    call_args = adapter.sdk.preapproval().create.call_args
+    # Second positional arg is the RequestOptions carrying the idempotency header.
+    request_options = call_args.args[1]
+    assert request_options.custom_headers == {"x-idempotency-key": "idem-sub-1"}
+
+
 @override_settings(SITE_DOMAIN=None)
 def test_create_subscription_missing_site_domain(adapter, mock_subscription):
     """Test create subscription raises error when SITE_DOMAIN is not configured."""
@@ -282,6 +302,19 @@ def test_change_subscription_plan_success(adapter, mock_subscription, mock_creat
     adapter.sdk.preapproval().update.assert_called_once_with(
         "mp-subscription-456", expected_update_data
     )
+
+
+@override_settings(SITE_DOMAIN="example.com")
+def test_change_subscription_plan_forwards_idempotency_key_header(
+    adapter, mock_subscription, mock_created_plan
+):
+    adapter.change_subscription_plan(
+        mock_subscription, mock_created_plan, idempotency_key="idem-change-1"
+    )
+
+    call_args = adapter.sdk.preapproval().update.call_args
+    request_options = call_args.args[2]
+    assert request_options.custom_headers == {"x-idempotency-key": "idem-change-1"}
 
 
 @override_settings(SITE_DOMAIN=None)

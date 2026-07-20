@@ -24,13 +24,18 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.models import Organization
 from organizations.permissions import IsBillingOwnerOrAdmin
 from payments.billing_constants import BillingState, LimitedResource
-from payments.exceptions import AddOnNotPurchasableError, PaymentTokenRequiredError
+from payments.exceptions import (
+    AddOnNotPurchasableError,
+    PaymentTokenRequiredError,
+    UnconfirmedPlanChangeError,
+)
 from payments.filtersets import BillingPlanFilterSet, SubscriptionAddOnFilterSet
 from payments.models import BillingPlan, Subscription, SubscriptionAddOn
 from payments.serializers import (
@@ -137,6 +142,10 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
     #: Purchase/change actions require billing-owner-or-admin (plan's Phase 9
     #: permission rule); plain reads stay open to any authenticated member.
     write_actions = ("change_plan", "cancel")
+    #: The write actions drive real provider round trips (``change_plan`` a
+    #: charge); throttle them per the same ``ScopedRateThrottle`` bound-abuse
+    #: rationale as the inbound webhook endpoints, while leaving reads unthrottled.
+    throttle_scope = "billing-write"
 
     @inject
     def __init__(
@@ -152,6 +161,11 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
         if self.action in self.write_actions:
             return [IsAuthenticated(), IsBillingOwnerOrAdmin()]
         return super().get_permissions()
+
+    def get_throttles(self):
+        if self.action in self.write_actions:
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
 
     def get_queryset(self) -> QuerySet[Subscription]:
         # Chain the organization filter on top of the virtual-model-optimized base
@@ -206,9 +220,14 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
                 plan,
                 data["billing_interval"],
                 payment_token=data.get("payment_token", ""),
+                idempotency_key=data["idempotency_key"],
             )
         except PaymentTokenRequiredError as error:
             raise ValidationError({"payment_token": str(error)}) from error
+        except UnconfirmedPlanChangeError as error:
+            # A different plan change is already in flight and unconfirmed --
+            # 409 Conflict rather than a validation error on any one field.
+            return Response({"detail": str(error)}, status=status.HTTP_409_CONFLICT)
 
         # Re-fetched through the virtual-model-optimized queryset rather than
         # serializing the plain instance `request_plan_change` returns --
@@ -242,6 +261,11 @@ class AddOnViewSet(TenantScopedViewMixin, GenericViewSet):
     queryset = SubscriptionAddOn.objects.all()
     filterset_class = SubscriptionAddOnFilterSet
     permission_classes = (IsAuthenticated, IsBillingOwnerOrAdmin)
+    #: ``create`` drives a real one-time provider charge; throttle it (and the
+    #: recurrence-cancel ``destroy`` write) with the same shared ``billing-write``
+    #: scope the plan-change endpoint uses.
+    throttle_scope = "billing-write"
+    write_actions = ("create", "destroy")
 
     @inject
     def __init__(
@@ -252,6 +276,11 @@ class AddOnViewSet(TenantScopedViewMixin, GenericViewSet):
     ):
         super().__init__(*args, **kwargs)
         self.subscription_service = subscription_service
+
+    def get_throttles(self):
+        if self.action in self.write_actions:
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
 
     def get_queryset(self) -> QuerySet[SubscriptionAddOn]:
         queryset = super().get_queryset()

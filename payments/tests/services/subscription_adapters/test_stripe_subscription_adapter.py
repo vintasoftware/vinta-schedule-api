@@ -236,6 +236,23 @@ def test_create_subscription_success(
 
 
 @patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Subscription")
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Customer")
+def test_create_subscription_forwards_idempotency_key_to_subscription_create(
+    mock_customer, mock_subscription_resource, adapter, mock_subscription
+):
+    """A stable key guards the money-moving `Subscription.create` so a retried
+    first-upgrade does not create a second subscription. It must NOT be reused on
+    `Customer.create` (Stripe scopes a key to identical params)."""
+    mock_customer.create.return_value = Mock(id="cus_456")
+    mock_subscription_resource.create.return_value = Mock(id="sub_created_123")
+
+    adapter.create_subscription(mock_subscription, "pm_test_token", idempotency_key="idem-sub-1")
+
+    assert mock_subscription_resource.create.call_args.kwargs["idempotency_key"] == "idem-sub-1"
+    assert "idempotency_key" not in mock_customer.create.call_args.kwargs
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Subscription")
 def test_cancel_subscription_success(mock_subscription_resource, adapter, mock_subscription):
     adapter.cancel_subscription(mock_subscription)
 
@@ -259,6 +276,21 @@ def test_change_subscription_plan_success(
         proration_behavior="always_invoice",
         api_key="sk_test_123",
     )
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Subscription")
+def test_change_subscription_plan_forwards_idempotency_key_to_modify(
+    mock_subscription_resource, adapter, mock_subscription, mock_created_plan
+):
+    """The money-moving `Subscription.modify` (which invoices the proration
+    immediately) carries the idempotency key so a retried drive prorates once."""
+    mock_subscription_resource.retrieve.return_value = {"items": {"data": [{"id": "si_123"}]}}
+
+    adapter.change_subscription_plan(
+        mock_subscription, mock_created_plan, idempotency_key="idem-change-1"
+    )
+
+    assert mock_subscription_resource.modify.call_args.kwargs["idempotency_key"] == "idem-change-1"
 
 
 def test_change_subscription_plan_without_external_id(

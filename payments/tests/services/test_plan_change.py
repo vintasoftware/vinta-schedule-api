@@ -30,6 +30,7 @@ from payments.exceptions import (
     AddOnNotPurchasableError,
     IncompleteBillingPlanError,
     PaymentTokenRequiredError,
+    UnconfirmedPlanChangeError,
 )
 from payments.models import (
     BillingPlan,
@@ -144,6 +145,9 @@ class FakePaymentService:
     subscription_external_id: str = "ext-sub-1"
     payment_external_id: str = "ext-payment-1"
     calls: list[str] = field(default_factory=list)
+    #: Every idempotency key forwarded to a provider-driving call, in order, so
+    #: tests can assert the client-supplied key actually reaches the provider.
+    idempotency_keys: list[str] = field(default_factory=list)
 
     def create_subscription_plan(self, plan) -> CreatedPlan:
         self.calls.append("create_subscription_plan")
@@ -157,14 +161,20 @@ class FakePaymentService:
             external_id=self.plan_external_id,
         )
 
-    def process_subscription(self, subscription: Subscription, payment_token: str) -> Subscription:
+    def process_subscription(
+        self, subscription: Subscription, payment_token: str, idempotency_key: str = ""
+    ) -> Subscription:
         self.calls.append("process_subscription")
+        self.idempotency_keys.append(idempotency_key)
         subscription.external_id = self.subscription_external_id
         subscription.save(update_fields=["external_id"])
         return subscription
 
-    def change_subscription_plan(self, subscription: Subscription, new_plan: CreatedPlan) -> None:
+    def change_subscription_plan(
+        self, subscription: Subscription, new_plan: CreatedPlan, idempotency_key: str = ""
+    ) -> None:
         self.calls.append("change_subscription_plan")
+        self.idempotency_keys.append(idempotency_key)
 
     def create_payment(
         self,
@@ -175,8 +185,10 @@ class FakePaymentService:
         description: str,
         payment_method: str,
         payment_token: str,
+        idempotency_key: str = "",
     ) -> Payment:
         self.calls.append("create_payment")
+        self.idempotency_keys.append(idempotency_key)
         return baker.make(
             "payments.Payment",
             billing_profile=organization.billing_profile,
@@ -346,6 +358,123 @@ class TestUpgrade:
         assert result.pk == subscription.pk
         assert fake_payment_service.calls == []
 
+    def test_upgrade_forwards_idempotency_key_to_the_provider(
+        self, service, fake_payment_service, organization, billing_profile
+    ):
+        """BLOCKER 2 (provider-side guard): the client-supplied key must reach the
+        provider drive, so a crash-after-charge / retry cannot re-drive it into a
+        second subscription. Asserted at the seam regardless of transaction
+        settings -- it does not depend on any inner atomic committing."""
+        free_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
+        )
+        pro_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
+        )
+        subscription = _subscription_for(organization, free_plan)
+
+        service.request_plan_change(
+            subscription,
+            pro_plan,
+            BillingInterval.MONTHLY,
+            payment_token="tok-1",
+            idempotency_key="idem-upgrade-1",
+        )
+
+        # First-upgrade path drives `process_subscription`; the key rode along.
+        assert "idem-upgrade-1" in fake_payment_service.idempotency_keys
+
+    def test_retrying_the_same_upgrade_does_not_redrive_the_provider(
+        self, service, fake_payment_service, organization, billing_profile
+    ):
+        """A second request for the plan already initiated (e.g. a double-click,
+        or a client retry) is a no-op under the row-lock re-check -- it must not
+        drive the provider a second time."""
+        free_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
+        )
+        pro_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
+        )
+        subscription = _subscription_for(organization, free_plan)
+
+        service.request_plan_change(
+            subscription,
+            pro_plan,
+            BillingInterval.MONTHLY,
+            payment_token="tok-1",
+            idempotency_key="idem-upgrade-1",
+        )
+        calls_after_first = list(fake_payment_service.calls)
+
+        service.request_plan_change(
+            subscription,
+            pro_plan,
+            BillingInterval.MONTHLY,
+            payment_token="tok-1",
+            idempotency_key="idem-upgrade-1",
+        )
+
+        assert fake_payment_service.calls == calls_after_first
+
+    def test_second_upgrade_to_a_different_plan_while_unconfirmed_is_rejected(
+        self, service, fake_payment_service, organization, billing_profile
+    ):
+        """SHOULD-FIX 2: initiating a *different* upgrade before the first's charge
+        confirms would make the first webhook grant the later tier's capacity --
+        rejected until the in-flight change settles."""
+        free_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
+        )
+        pro_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
+        )
+        premium_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200")
+        )
+        subscription = _subscription_for(organization, free_plan)
+
+        service.request_plan_change(
+            subscription,
+            pro_plan,
+            BillingInterval.MONTHLY,
+            payment_token="tok-1",
+            idempotency_key="idem-upgrade-1",
+        )
+        calls_after_first = list(fake_payment_service.calls)
+
+        with pytest.raises(UnconfirmedPlanChangeError):
+            service.request_plan_change(
+                subscription,
+                premium_plan,
+                BillingInterval.MONTHLY,
+                idempotency_key="idem-upgrade-2",
+            )
+
+        # The rejected second attempt drove no provider call.
+        assert fake_payment_service.calls == calls_after_first
+
+    def test_a_new_upgrade_is_allowed_once_the_prior_one_confirms(
+        self, service, fake_payment_service, organization, billing_profile
+    ):
+        """The unconfirmed-change guard clears on confirmation, so a genuinely
+        sequential upgrade still works (regression guard for the reject above)."""
+        free_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
+        )
+        pro_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
+        )
+        premium_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200")
+        )
+        subscription = _subscription_for(organization, free_plan, external_id="already-on-file")
+
+        result = service.request_plan_change(subscription, pro_plan, BillingInterval.MONTHLY)
+        service.confirm_plan_change(result)
+        # Does not raise now that the first change confirmed.
+        service.request_plan_change(subscription, premium_plan, BillingInterval.MONTHLY)
+
 
 @pytest.mark.django_db
 class TestDowngrade:
@@ -400,6 +529,36 @@ class TestDowngrade:
 
         assert result.grace_period_ends_at is not None
         assert result.grace_period_ends_at >= before + datetime.timedelta(days=14)
+
+    def test_confirm_during_the_grace_window_keeps_the_lower_limits(
+        self, service, organization, billing_profile
+    ):
+        """SHOULD-FIX 1: a subscription payment confirmed ``APPROVED`` while a
+        scheduled downgrade is in its grace window must NOT restore the old
+        higher plan's limits. `subscription.plan` is still the paid higher plan,
+        but `confirm_plan_change` must sync from the pending (lower) plan."""
+        pro_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
+        )
+        free_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
+        )
+        subscription = _subscription_for(organization, pro_plan, external_id="already-on-file")
+        service.request_plan_change(subscription, free_plan, BillingInterval.MONTHLY)
+        subscription.refresh_from_db()
+
+        # A provider re-sends APPROVED (fresh event id) mid-downgrade.
+        service.confirm_plan_change(subscription)
+
+        limit = SubscriptionPlanLimit.objects.get(
+            subscription=subscription, resource_key=LimitedResource.ORGANIZATION_MEMBERS
+        )
+        # Stays at the lower (downgrade-target) ceiling, not the paid plan's 50.
+        assert limit.limit_value == 3
+        # The plan itself is untouched until the Phase 13 boundary sweep.
+        subscription.refresh_from_db()
+        assert subscription.plan_id == pro_plan.pk
+        assert subscription.pending_plan_id == free_plan.pk
 
     def test_downgrade_at_the_exact_ceiling_still_enforces_immediately(
         self, service, organization, billing_profile
@@ -531,6 +690,30 @@ class TestPurchaseAddOn:
         assert first.pk == second.pk
         assert SubscriptionAddOn.objects.filter(purchase_idempotency_key="idem-1").count() == 1
         assert fake_payment_service.calls == ["create_payment"]
+
+    def test_purchase_forwards_idempotency_key_to_the_provider(
+        self, service, fake_payment_service, organization, billing_profile
+    ):
+        """BLOCKER 1 (provider-side guard): the client key must reach
+        `create_payment` -> the provider, so a charge that succeeded before a
+        rollback is not re-issued when the dedup row vanishes and the retry
+        `get_or_create`s a fresh one. Asserted at the seam, independent of whether
+        the local dedup row committed."""
+        plan = make_complete_plan(
+            {LimitedResource.RESOURCE_CALENDARS: 3}, overage_unit_price=Decimal("2.5000")
+        )
+        subscription = _subscription_for(organization, plan)
+
+        service.purchase_add_on(
+            subscription,
+            LimitedResource.RESOURCE_CALENDARS,
+            quantity=2,
+            is_recurring=False,
+            idempotency_key="idem-add-on-key",
+            payment_token="tok-1",
+        )
+
+        assert fake_payment_service.idempotency_keys == ["idem-add-on-key"]
 
     def test_purchasing_a_resource_with_no_overage_price_is_refused(
         self, service, organization, billing_profile

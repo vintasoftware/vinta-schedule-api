@@ -94,6 +94,7 @@ class PaymentService[
         description: str,
         payment_method: str,
         payment_token: str,
+        idempotency_key: str = "",
     ) -> PaymentModel:
         try:
             billing_profile = organization.billing_profile
@@ -109,9 +110,15 @@ class PaymentService[
             status=PaymentStatuses.PENDING_SEND,
             payment_provider=self.payment_gateway.provider,
         )
+        # `idempotency_key` is threaded through to the provider (see
+        # `BasePaymentAdapter.process`) so a retried charge after a rolled-back
+        # transaction resolves to the same provider-side charge rather than a
+        # second one -- the local `Payment` row above is re-created on retry and
+        # so cannot itself dedupe across the rollback.
         external_id = self.payment_gateway.process(
             payment=self._serialize_payment(payment),
             payment_token=payment_token,
+            idempotency_key=idempotency_key,
         )
 
         payment.external_id = external_id
@@ -492,10 +499,12 @@ class PaymentService[
         self,
         subscription: SubscriptionModel,
         payment_token: str,
+        idempotency_key: str = "",
     ) -> SubscriptionModel:
         subscription.external_id = self.subscription_gateway.create_subscription(
             subscription=self._serialize_subscription(subscription),
             payment_token=payment_token,
+            idempotency_key=idempotency_key,
         )
         SubscriptionStatusUpdate.objects.create(
             subscription=subscription,
@@ -507,17 +516,18 @@ class PaymentService[
         return subscription
 
     def change_subscription_plan(
-        self, subscription: SubscriptionModel, new_plan: CreatedPlan
+        self, subscription: SubscriptionModel, new_plan: CreatedPlan, idempotency_key: str = ""
     ) -> None:
         """Move `subscription`'s provider-side subscription onto `new_plan`.
 
         Thin wrapper over the adapter -- see
         `BaseSubscriptionAdapter.change_subscription_plan` for the proration
         contract. Writes nothing locally: the outcome arrives later through the
-        subscription-payment webhook.
+        subscription-payment webhook. `idempotency_key` is forwarded so a retried
+        drive prorates at most once.
         """
         self.subscription_gateway.change_subscription_plan(
-            self._serialize_subscription(subscription), new_plan
+            self._serialize_subscription(subscription), new_plan, idempotency_key=idempotency_key
         )
 
     def cancel_subscription(self, subscription: SubscriptionModel) -> None:

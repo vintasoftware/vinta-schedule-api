@@ -7,6 +7,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.urls import reverse
 
 import mercadopago
+import mercadopago.config
 
 from payments.billing_constants import BillingInterval
 from payments.constants import PaymentProviders, PaymentStatuses
@@ -129,7 +130,9 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
         )
         return response["response"]["id"]
 
-    def create_subscription(self, subscription: Subscription, payment_token: str) -> str:
+    def create_subscription(
+        self, subscription: Subscription, payment_token: str, idempotency_key: str = ""
+    ) -> str:
         notification_url = reverse(
             "api:Payments-subscription-payment-update",
             kwargs={"provider": PaymentProviders.MERCADOPAGO, "pk": subscription.id},
@@ -140,18 +143,35 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
             raise ImproperlyConfigured(
                 "MercadoPagoAdapter requires SITE_DOMAIN to be set in settings.py"
             )
-        response = self.sdk.preapproval().create(
-            {
-                "payer_email": subscription.billing_profile.email,
-                "preapproval_plan_id": subscription.plan.external_id,
-                "back_url": f"https://{site_domain}/subscription/{subscription.id}/success",
-                "external_reference": subscription.id,
-                "card_token_id": payment_token,
-                "status": "authorized",
-                "notification_url": f"https://{site_domain}{notification_url}",
-            }
+        data = {
+            "payer_email": subscription.billing_profile.email,
+            "preapproval_plan_id": subscription.plan.external_id,
+            "back_url": f"https://{site_domain}/subscription/{subscription.id}/success",
+            "external_reference": subscription.id,
+            "card_token_id": payment_token,
+            "status": "authorized",
+            "notification_url": f"https://{site_domain}{notification_url}",
+        }
+        options = self._idempotency_options(idempotency_key)
+        response = (
+            self.sdk.preapproval().create(data, options)
+            if options is not None
+            else self.sdk.preapproval().create(data)
         )
         return response["response"]["id"]
+
+    @staticmethod
+    def _idempotency_options(idempotency_key: str):
+        """A ``RequestOptions`` carrying ``x-idempotency-key`` when a stable key
+        was supplied, else ``None`` (so the call shape is byte-identical to the
+        no-key default). Passing the header makes a retried preapproval
+        create/update resolve to the same provider-side subscription instead of a
+        second one."""
+        if not idempotency_key:
+            return None
+        request_options = mercadopago.config.RequestOptions()
+        request_options.custom_headers = {"x-idempotency-key": idempotency_key}
+        return request_options
 
     def cancel_subscription(self, subscription: Subscription) -> None:
         site_domain = getattr(settings, "SITE_DOMAIN", None)
@@ -168,28 +188,35 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
             },
         )
 
-    def change_subscription_plan(self, subscription: Subscription, new_plan: CreatedPlan) -> None:
+    def change_subscription_plan(
+        self, subscription: Subscription, new_plan: CreatedPlan, idempotency_key: str = ""
+    ) -> None:
         """
         Re-pointing a ``preapproval``'s ``preapproval_plan_id`` is MercadoPago's
         equivalent of moving a subscriber onto a different plan. Proration is
         computed by MercadoPago itself: the target plan was created with
         ``billing_day_proportional=True`` (see ``create_subscription_plan``), so
         the next charge is prorated for the remainder of the current cycle.
+
+        `idempotency_key`, when set, is forwarded so a retried drive re-points at
+        most once.
         """
         site_domain = getattr(settings, "SITE_DOMAIN", None)
         if not site_domain:
             raise ImproperlyConfigured(
                 "MercadoPagoAdapter requires SITE_DOMAIN to be set in settings.py"
             )
-        self.sdk.preapproval().update(
-            subscription.external_id,
-            {
-                "preapproval_plan_id": new_plan.external_id,
-                "back_url": f"https://{site_domain}/subscription/{subscription.id}/success",
-                "external_reference": subscription.id,
-                "status": "authorized",
-            },
-        )
+        data = {
+            "preapproval_plan_id": new_plan.external_id,
+            "back_url": f"https://{site_domain}/subscription/{subscription.id}/success",
+            "external_reference": subscription.id,
+            "status": "authorized",
+        }
+        options = self._idempotency_options(idempotency_key)
+        if options is not None:
+            self.sdk.preapproval().update(subscription.external_id, data, options)
+        else:
+            self.sdk.preapproval().update(subscription.external_id, data)
 
     def update_subscription_payment_token(
         self, subscription: Subscription, payment_token: str

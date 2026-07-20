@@ -38,7 +38,18 @@ class BaseSubscriptionAdapter:
         raise NotImplementedError
 
     @abstractmethod
-    def create_subscription(self, subscription: Subscription, payment_token: str) -> str:
+    def create_subscription(
+        self, subscription: Subscription, payment_token: str, idempotency_key: str = ""
+    ) -> str:
+        """Create the provider-side subscription (the first charge for an
+        upgrade with no instrument yet on file).
+
+        :param idempotency_key: When set, forwarded to the provider as its own
+            idempotency key so a retried first-upgrade (e.g. after the request
+            transaction that would have persisted ``external_id`` rolled back)
+            resolves to the *same* provider subscription instead of creating and
+            charging a second one. See ``BasePaymentAdapter.process``.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -50,7 +61,9 @@ class BaseSubscriptionAdapter:
         raise NotImplementedError
 
     @abstractmethod
-    def change_subscription_plan(self, subscription: Subscription, new_plan: CreatedPlan) -> None:
+    def change_subscription_plan(
+        self, subscription: Subscription, new_plan: CreatedPlan, idempotency_key: str = ""
+    ) -> None:
         """
         Move `subscription`'s already-active provider-side subscription onto
         `new_plan`, with the provider computing and applying proration
@@ -67,6 +80,9 @@ class BaseSubscriptionAdapter:
             case, which has no existing provider-side subscription to move).
         :param new_plan: The provider-side plan/price this subscription should
             move onto.
+        :param idempotency_key: When set, forwarded to the provider as its own
+            idempotency key so a retried proration drive resolves to the same
+            provider-side change instead of prorating (and charging) twice.
         """
         raise NotImplementedError
 

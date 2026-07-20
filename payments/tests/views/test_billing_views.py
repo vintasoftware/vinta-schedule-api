@@ -358,6 +358,74 @@ class TestPermissions:
         assert response.status_code == status.HTTP_200_OK
         assert response.data["billing_state"] == BillingState.CANCELLED
 
+    def test_admin_of_a_child_org_cannot_change_the_pooled_roots_plan(
+        self, auth_client, user, pro_plan
+    ):
+        """SHOULD-FIX 4: exercise the *object-level* DENY branch of
+        ``IsBillingOwnerOrAdmin``, not the coarse ``has_permission`` gate. The
+        caller is a genuine admin (so ``has_permission`` passes), but of a child
+        org that pools against a reseller root it does not administer -- the
+        subscription lives at the root, so ``has_object_permission`` must reject
+        managing it. A split permission whose object check never fires would
+        wrongly allow this."""
+        reseller_root = baker.make(Organization, parent=None, can_invite_organizations=True)
+        child = baker.make(Organization, parent=reseller_root, can_invite_organizations=False)
+        # The root (the billing root the child pools against) has the subscription.
+        root_plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 1})
+        SubscriptionService().create_subscription_for_organization(reseller_root, plan=root_plan)
+        # The caller is an ADMIN of the child only -- coarse gate passes.
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=child,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        response = auth_client.post(
+            change_plan_url(),
+            {
+                "plan_slug": pro_plan.slug,
+                "billing_interval": BillingInterval.MONTHLY,
+                "idempotency_key": "idem-1",
+                "payment_token": "tok-1",
+            },
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_admin_of_a_child_org_cannot_purchase_an_add_on_against_the_root(
+        self, auth_client, user
+    ):
+        """Same object-level DENY, exercised on the ``AddOnViewSet.create`` write
+        path (which calls ``check_object_permissions`` independently)."""
+        reseller_root = baker.make(Organization, parent=None, can_invite_organizations=True)
+        child = baker.make(Organization, parent=reseller_root, can_invite_organizations=False)
+        root_plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 3})
+        SubscriptionService().create_subscription_for_organization(reseller_root, plan=root_plan)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=child,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        response = auth_client.post(
+            add_ons_url(),
+            {
+                "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                "quantity": 1,
+                "is_recurring": False,
+                "idempotency_key": "idem-1",
+                "payment_token": "tok-1",
+            },
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
 
 @pytest.mark.django_db
 class TestUpgradeGrantsNoCapacitySynchronously:

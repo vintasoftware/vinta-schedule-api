@@ -1,6 +1,5 @@
 from typing import TYPE_CHECKING
 
-from graphql import GraphQLError
 from rest_framework.permissions import BasePermission
 
 from organizations.models import (
@@ -10,7 +9,7 @@ from organizations.models import (
     OrganizationModel,
     get_active_organization_membership,
 )
-from public_api.capabilities import assert_target_in_subtree
+from public_api.capabilities import is_target_in_subtree
 
 
 if TYPE_CHECKING:
@@ -169,9 +168,11 @@ class IsBillingOwnerOrAdmin(BasePermission):
          descendant's capacity may also manage its billing, even when the
          caller's ``X-Organization-Id``-scoped membership is to the descendant
          itself (e.g. a support/account-manager membership with no elevated role
-         there). Reuses ``public_api.capabilities.assert_target_in_subtree`` —
-         the same subtree-membership check the reseller bundle's GraphQL
-         mutations use — rather than re-deriving the walk a second time.
+         there). Reuses ``public_api.capabilities.is_target_in_subtree`` — the
+         boolean form of the same subtree-membership walk the reseller bundle's
+         GraphQL mutations use (via ``assert_target_in_subtree``) — rather than
+         re-deriving it a second time or coupling this REST layer to a GraphQL
+         error type.
 
     Read-only billing endpoints (usage, plan catalog, subscription detail) are
     intentionally **not** gated by this class — they stay open to any
@@ -223,8 +224,4 @@ class IsBillingOwnerOrAdmin(BasePermission):
             return False
         if not membership.organization.can_invite_organizations:
             return False
-        try:
-            assert_target_in_subtree(membership.organization, target_organization)
-        except GraphQLError:
-            return False
-        return True
+        return is_target_in_subtree(membership.organization, target_organization)

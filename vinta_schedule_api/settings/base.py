@@ -152,9 +152,13 @@ REST_FRAMEWORK = {
     # Scoped (not project-wide) throttles. `payment-webhook` covers the
     # unauthenticated inbound provider webhook endpoints (payments/views.py) — a
     # generous per-IP rate since it only needs to bound abuse, not normal provider
-    # retry volume.
+    # retry volume. `billing-write` covers the authenticated money-moving billing
+    # write actions (change-plan, add-on purchase/cancel in payments/billing_views.py)
+    # — each drives a real provider round trip, so it is rate-limited rather than
+    # left unbounded even behind auth.
     "DEFAULT_THROTTLE_RATES": {
         "payment-webhook": "60/min",
+        "billing-write": "30/min",
     },
 }
 

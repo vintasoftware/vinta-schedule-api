@@ -20,6 +20,7 @@ from payments.exceptions import (
     IncompleteBillingPlanError,
     NoDefaultBillingPlanError,
     PaymentTokenRequiredError,
+    UnconfirmedPlanChangeError,
 )
 from payments.models import (
     BillingPlan,
@@ -394,6 +395,7 @@ class SubscriptionService:
         plan: BillingPlan,
         billing_interval: str,
         payment_token: str = "",
+        idempotency_key: str = "",
     ) -> Subscription:
         """Move ``subscription`` toward ``plan`` — the single entry point behind
         ``POST /billing/subscription/change-plan/``.
@@ -419,21 +421,49 @@ class SubscriptionService:
 
         A request for the plan/interval ``subscription`` is *already* fully
         settled on (no pending change either) is a no-op.
+
+        **Serialized under a row lock.** The subscription row is re-read
+        ``SELECT ... FOR UPDATE`` and the settled / already-in-flight checks are
+        re-evaluated under that lock, so two concurrent first-upgrade requests
+        cannot both observe a blank ``external_id`` and each drive the provider:
+        the second blocks until the first commits, then sees its result and
+        no-ops (``already_settled``) rather than charging again. ``idempotency_key``
+        (required by ``ChangePlanRequestSerializer``) is additionally forwarded to
+        the provider as its own idempotency key, so even a crash *after* the
+        provider call but *before* the request commits — which rolls back
+        ``external_id`` and would otherwise re-drive the provider on retry —
+        cannot produce a second subscription/charge.
+
+        :raises UnconfirmedPlanChangeError: a *different* plan change was already
+            initiated and its charge is still awaiting webhook confirmation
+            (see ``Subscription.plan_change_pending_confirmation``). Re-requesting
+            the same plan/interval is a no-op, not an error.
         """
         assert_plan_is_complete(plan)
-        already_settled = (
-            subscription.plan_id == plan.pk
-            and subscription.billing_interval == billing_interval
-            and subscription.pending_plan_id is None
-        )
-        if already_settled:
-            return subscription
+        with transaction.atomic():
+            # Re-read under a row lock so the checks below run against committed
+            # state, not the possibly-stale instance the caller handed in. Under
+            # `ATOMIC_REQUESTS` the lock is held for the rest of the request
+            # (including the provider round trip in `_initiate_upgrade`), which is
+            # exactly what serializes concurrent first-upgrades.
+            subscription = Subscription.objects.select_for_update().get(pk=subscription.pk)
+            already_settled = (
+                subscription.plan_id == plan.pk
+                and subscription.billing_interval == billing_interval
+                and subscription.pending_plan_id is None
+            )
+            if already_settled:
+                return subscription
+            if subscription.plan_change_pending_confirmation:
+                raise UnconfirmedPlanChangeError(subscription.organization_id)
 
-        current_price = self._plan_price(subscription.plan, subscription.billing_interval)
-        new_price = self._plan_price(plan, billing_interval)
-        if new_price > current_price:
-            return self._initiate_upgrade(subscription, plan, billing_interval, payment_token)
-        return self._schedule_downgrade(subscription, plan, billing_interval)
+            current_price = self._plan_price(subscription.plan, subscription.billing_interval)
+            new_price = self._plan_price(plan, billing_interval)
+            if new_price > current_price:
+                return self._initiate_upgrade(
+                    subscription, plan, billing_interval, payment_token, idempotency_key
+                )
+            return self._schedule_downgrade(subscription, plan, billing_interval)
 
     def _initiate_upgrade(
         self,
@@ -441,44 +471,54 @@ class SubscriptionService:
         plan: BillingPlan,
         billing_interval: str,
         payment_token: str,
+        idempotency_key: str = "",
     ) -> Subscription:
         # Checked *before* any write: a subscription with no provider-side
         # instrument yet needs a token to attach one, and that is knowable
         # up front, with nothing to unwind if it is missing. (Everything past
         # this point does write, and depends on the caller's transaction --
-        # `ATOMIC_REQUESTS` when called from a request -- to unwind atomically
-        # on any *later* failure, same as every other provider round trip in
-        # this codebase.)
+        # `ATOMIC_REQUESTS` when called from a request, or the `request_plan_change`
+        # lock -- to unwind atomically on any *later* failure, same as every
+        # other provider round trip in this codebase.)
         if not subscription.external_id and not payment_token:
             raise PaymentTokenRequiredError(subscription.organization_id)
 
-        with transaction.atomic():
-            # An upgrade supersedes any downgrade previously scheduled.
-            subscription.pending_plan = None
-            subscription.pending_billing_interval = ""
-            subscription.pending_plan_effective_at = None
-            subscription.plan = plan
-            subscription.billing_interval = billing_interval
-            subscription.save(
-                update_fields=[
-                    "plan",
-                    "billing_interval",
-                    "pending_plan",
-                    "pending_billing_interval",
-                    "pending_plan_effective_at",
-                ]
-            )
-            # NOTE deliberately *not* called here: `_sync_limits`/`_sync_entitlements`
-            # are what grant capacity, and this method must not grant it
-            # synchronously. `subscription.plan` alone grants nothing --
-            # `EntitlementService` reads `SubscriptionPlanLimit`, not this FK.
+        # An upgrade supersedes any downgrade previously scheduled, and marks
+        # itself as awaiting confirmation so a *second*, different upgrade cannot
+        # be initiated before this one's charge confirms (which would make the
+        # confirming webhook grant the later plan's capacity rather than the plan
+        # this charge paid for). Cleared in `confirm_plan_change`.
+        subscription.pending_plan = None
+        subscription.pending_billing_interval = ""
+        subscription.pending_plan_effective_at = None
+        subscription.plan = plan
+        subscription.billing_interval = billing_interval
+        subscription.plan_change_pending_confirmation = True
+        subscription.save(
+            update_fields=[
+                "plan",
+                "billing_interval",
+                "pending_plan",
+                "pending_billing_interval",
+                "pending_plan_effective_at",
+                "plan_change_pending_confirmation",
+            ]
+        )
+        # NOTE deliberately *not* called here: `_sync_limits`/`_sync_entitlements`
+        # are what grant capacity, and this method must not grant it
+        # synchronously. `subscription.plan` alone grants nothing --
+        # `EntitlementService` reads `SubscriptionPlanLimit`, not this FK.
 
         payment_service = self._require_payment_service()
         created_plan = self._ensure_provider_plan(subscription, plan, billing_interval)
         if not subscription.external_id:
-            payment_service.process_subscription(subscription, payment_token)
+            payment_service.process_subscription(
+                subscription, payment_token, idempotency_key=idempotency_key
+            )
         else:
-            payment_service.change_subscription_plan(subscription, created_plan)
+            payment_service.change_subscription_plan(
+                subscription, created_plan, idempotency_key=idempotency_key
+            )
         return subscription
 
     def _ensure_provider_plan(
@@ -544,27 +584,62 @@ class SubscriptionService:
         return subscription
 
     def confirm_plan_change(self, subscription: Subscription) -> Subscription:
-        """Grant the capacity for ``subscription``'s current ``plan`` once a
-        charge against it is confirmed ``APPROVED`` by the provider.
+        """Grant the capacity for the plan ``subscription``'s latest charge paid
+        for, once that charge is confirmed ``APPROVED`` by the provider.
 
         Called from the subscription-payment webhook path
         (``PaymentsViewSet.subscription_payment_update``) — never synchronously
-        from the request that initiates an upgrade. Reuses ``change_plan`` to
-        re-copy against ``subscription.plan``, the exact field
-        ``_initiate_upgrade`` already set at initiation time: there is exactly
-        one place that decides which plan an upgrade is for, and this is the
-        other end of it, not a second one.
+        from the request that initiates an upgrade.
+
+        Two cases, keyed off whether a *scheduled downgrade* is currently in its
+        grace window (``pending_plan`` set, ``pending_plan_effective_at`` still in
+        the future):
+
+        - **No pending future downgrade** (an upgrade confirmation, or a routine
+          renewal): re-copy against ``subscription.plan`` via ``change_plan`` —
+          the exact field ``_initiate_upgrade`` set at initiation time.
+        - **Downgrade in its grace window**: ``_schedule_downgrade`` already
+          applied the *lower* pending plan's limits immediately while leaving
+          ``subscription.plan`` on the still-paid higher plan. A subscription
+          payment landing now must **not** restore the higher plan's limits, so
+          sync from the pending (lower) plan instead. This is the fix for a
+          redelivered APPROVED webhook silently lifting the ceiling back up
+          mid-downgrade; ``subscription.plan`` stays on the paid plan until the
+          Phase 13 boundary sweep flips it.
 
         Idempotent / safe to call on every approved subscription payment (not
-        only the first one after an upgrade) — ``change_plan`` is itself
-        idempotent (bulk upsert), so a routine renewal charge simply re-affirms
-        the org is on the plan it is already on.
+        only the first one after an upgrade) — both sync paths are bulk upserts —
+        and clears ``plan_change_pending_confirmation`` so a further plan change
+        is allowed again.
         """
-        self.change_plan(subscription, subscription.plan)
+        pending_plan = subscription.pending_plan
+        if pending_plan is not None and self._pending_downgrade_is_future(subscription):
+            self._sync_limits(subscription, pending_plan)
+            self._sync_entitlements(subscription, pending_plan)
+        else:
+            self.change_plan(subscription, subscription.plan)
+
+        update_fields = []
+        if subscription.plan_change_pending_confirmation:
+            subscription.plan_change_pending_confirmation = False
+            update_fields.append("plan_change_pending_confirmation")
         if subscription.billing_state != BillingState.ACTIVE:
             subscription.billing_state = BillingState.ACTIVE
-            subscription.save(update_fields=["billing_state"])
+            update_fields.append("billing_state")
+        if update_fields:
+            subscription.save(update_fields=update_fields)
         return subscription
+
+    def _pending_downgrade_is_future(self, subscription: Subscription) -> bool:
+        """True while a scheduled downgrade is still within its grace window --
+        ``pending_plan`` set and ``pending_plan_effective_at`` not yet reached.
+        The single predicate ``confirm_plan_change`` uses to decide it must sync
+        the *lower* pending plan's limits rather than restore ``subscription.plan``'s."""
+        return (
+            subscription.pending_plan_id is not None
+            and subscription.pending_plan_effective_at is not None
+            and subscription.pending_plan_effective_at > timezone.now()
+        )
 
     def cancel_subscription(self, subscription: Subscription) -> Subscription:
         """Cancel ``subscription``. Runs the provider-side cancellation
@@ -612,6 +687,17 @@ class SubscriptionService:
         second, independently-derived answer to either question is exactly the
         "two predicates" defect shape this plan keeps producing.
 
+        The ``get_or_create`` dedup alone is **not** durable against a crash: the
+        row only commits when the surrounding request transaction commits, and
+        under ``ATOMIC_REQUESTS`` that is *after* the provider call below, so a
+        crash between the charge and the commit rolls the row back and a retry
+        would ``create=True`` again. ``idempotency_key`` is therefore also
+        forwarded to the provider as its own idempotency key (see
+        ``PaymentService.create_payment`` / ``BasePaymentAdapter.process``), so
+        the provider itself refuses the second charge even when the local dedup
+        row did not survive -- that is what makes "at most once" hold across a
+        rollback or process restart, not merely within one committed transaction.
+
         Capacity is **not** granted here: the returned row is ``is_active=False``
         (``EntitlementService.get_effective_limit`` only sums active add-ons)
         until ``activate_add_on`` is called from the webhook path once the
@@ -647,6 +733,7 @@ class SubscriptionService:
             description=f"Add-on purchase: {quantity} x {resource_key}",
             payment_method="add_on_purchase",
             payment_token=payment_token,
+            idempotency_key=idempotency_key,
         )
         add_on.payment = payment
         add_on.external_id = payment.external_id
