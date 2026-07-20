@@ -506,6 +506,20 @@ class PaymentService[
         subscription.save(update_fields=["external_id", "status"])
         return subscription
 
+    def change_subscription_plan(
+        self, subscription: SubscriptionModel, new_plan: CreatedPlan
+    ) -> None:
+        """Move `subscription`'s provider-side subscription onto `new_plan`.
+
+        Thin wrapper over the adapter -- see
+        `BaseSubscriptionAdapter.change_subscription_plan` for the proration
+        contract. Writes nothing locally: the outcome arrives later through the
+        subscription-payment webhook.
+        """
+        self.subscription_gateway.change_subscription_plan(
+            self._serialize_subscription(subscription), new_plan
+        )
+
     def cancel_subscription(self, subscription: SubscriptionModel) -> None:
         self.subscription_gateway.cancel_subscription(self._serialize_subscription(subscription))
         SubscriptionStatusUpdate.objects.create(

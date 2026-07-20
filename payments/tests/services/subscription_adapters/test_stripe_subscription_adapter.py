@@ -243,6 +243,36 @@ def test_cancel_subscription_success(mock_subscription_resource, adapter, mock_s
 
 
 @patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Subscription")
+def test_change_subscription_plan_success(
+    mock_subscription_resource, adapter, mock_subscription, mock_created_plan
+):
+    """Moving to a new price re-uses the subscription's existing (single) line
+    item id, and lets Stripe compute + invoice the proration immediately."""
+    mock_subscription_resource.retrieve.return_value = {"items": {"data": [{"id": "si_123"}]}}
+
+    adapter.change_subscription_plan(mock_subscription, mock_created_plan)
+
+    mock_subscription_resource.retrieve.assert_called_once_with("sub_456", api_key="sk_test_123")
+    mock_subscription_resource.modify.assert_called_once_with(
+        "sub_456",
+        items=[{"id": "si_123", "price": "price_456"}],
+        proration_behavior="always_invoice",
+        api_key="sk_test_123",
+    )
+
+
+def test_change_subscription_plan_without_external_id(
+    adapter, mock_subscription, mock_created_plan
+):
+    mock_subscription.external_id = None
+
+    from payments.exceptions import PaymentAdapterError
+
+    with pytest.raises(PaymentAdapterError):
+        adapter.change_subscription_plan(mock_subscription, mock_created_plan)
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Subscription")
 def test_update_subscription_payment_token_success(
     mock_subscription_resource, adapter, mock_subscription
 ):

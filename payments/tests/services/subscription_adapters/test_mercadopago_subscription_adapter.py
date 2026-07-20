@@ -267,6 +267,32 @@ def test_cancel_subscription_missing_site_domain(adapter, mock_subscription):
 
 
 @override_settings(SITE_DOMAIN="example.com")
+def test_change_subscription_plan_success(adapter, mock_subscription, mock_created_plan):
+    """Re-pointing `preapproval_plan_id` is MercadoPago's plan-change primitive
+    -- the target plan's own `billing_day_proportional=True` is what makes the
+    next charge prorated, so this call itself carries no proration math."""
+    adapter.change_subscription_plan(mock_subscription, mock_created_plan)
+
+    expected_update_data = {
+        "preapproval_plan_id": "mp-plan-456",
+        "back_url": "https://example.com/subscription/subscription-123/success",
+        "external_reference": "subscription-123",
+        "status": "authorized",
+    }
+    adapter.sdk.preapproval().update.assert_called_once_with(
+        "mp-subscription-456", expected_update_data
+    )
+
+
+@override_settings(SITE_DOMAIN=None)
+def test_change_subscription_plan_missing_site_domain(
+    adapter, mock_subscription, mock_created_plan
+):
+    with pytest.raises(ImproperlyConfigured, match="MercadoPagoAdapter requires SITE_DOMAIN"):
+        adapter.change_subscription_plan(mock_subscription, mock_created_plan)
+
+
+@override_settings(SITE_DOMAIN="example.com")
 def test_update_subscription_payment_token_success(adapter, mock_subscription):
     """Test successful subscription payment token update."""
     adapter.update_subscription_payment_token(mock_subscription, "new-token")

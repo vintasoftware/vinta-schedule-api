@@ -196,6 +196,33 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         new_external_id = self.update_subscription_plan(plan.external_id, plan)
         return replace(plan, external_id=new_external_id)
 
+    def change_subscription_plan(self, subscription: Subscription, new_plan: CreatedPlan) -> None:
+        """
+        Stripe subscriptions are moved onto a new price by modifying the
+        subscription's existing line item (a subscription always has exactly one
+        here — this adapter creates it with a single ``items=[{"price": ...}]``
+        in ``create_subscription``) rather than by re-creating the subscription.
+        ``proration_behavior="always_invoice"`` makes Stripe compute the prorated
+        amount server-side *and* invoice + attempt to charge it immediately
+        against the subscription's default payment method, rather than only
+        crediting/debiting the next regular invoice — matching "pay now" for an
+        upgrade a user just requested.
+        """
+        if not subscription.external_id:
+            raise PaymentAdapterError(
+                f"Cannot change plan for subscription {subscription.id} with no external_id"
+            )
+        stripe_subscription = stripe.Subscription.retrieve(
+            subscription.external_id, api_key=self.api_key
+        )
+        item_id = stripe_subscription["items"]["data"][0]["id"]
+        stripe.Subscription.modify(
+            subscription.external_id,
+            items=[{"id": item_id, "price": new_plan.external_id}],
+            proration_behavior="always_invoice",
+            api_key=self.api_key,
+        )
+
     def update_subscription_payment_token(
         self, subscription: Subscription, payment_token: str
     ) -> None:

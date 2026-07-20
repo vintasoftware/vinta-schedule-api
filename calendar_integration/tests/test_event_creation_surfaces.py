@@ -62,10 +62,12 @@ from payments.billing_constants import (
     LimitKind,
     LimitRemedy,
 )
+from payments.constants import PaymentProviders
 from payments.exceptions import OverLimitError
 from payments.models import (
     BillingPlan,
     MeteredOccurrence,
+    PaymentMethod,
     Subscription,
     SubscriptionEntitlement,
     SubscriptionPlanLimit,
@@ -119,6 +121,19 @@ def _organization_with_postpaid_limit(
             is_enabled=True,
         )
     return organization, subscription
+
+
+def _attach_payment_method(organization: Organization) -> PaymentMethod:
+    """A confirmed, chargeable instrument on file for ``organization`` -- the real
+    record ``has_payment_method`` reads (Phase 9), replacing the earlier
+    ``billing_state=ACTIVE`` proxy this module used before it existed."""
+    return baker.make(
+        PaymentMethod,
+        organization=organization,
+        provider=PaymentProviders.MERCADOPAGO,
+        external_id="pm-test-token",
+        is_active=True,
+    )
 
 
 def _seed_metered_occurrences(organization: Organization, subscription: Subscription, count: int):
@@ -1606,8 +1621,7 @@ class TestSyncRecoversOnceHeadroomIsRestored:
 
         # Headroom restored (here by attaching a payment method -- the remedy the
         # refusal reports). No replay, no manual intervention: just the next pass.
-        subscription.billing_state = BillingState.ACTIVE
-        subscription.save(update_fields=["billing_state"])
+        _attach_payment_method(organization)
 
         sync_service.sync_events(calendar_sync)
         calendar_sync.refresh_from_db()

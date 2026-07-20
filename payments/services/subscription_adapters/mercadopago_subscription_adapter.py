@@ -168,6 +168,29 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
             },
         )
 
+    def change_subscription_plan(self, subscription: Subscription, new_plan: CreatedPlan) -> None:
+        """
+        Re-pointing a ``preapproval``'s ``preapproval_plan_id`` is MercadoPago's
+        equivalent of moving a subscriber onto a different plan. Proration is
+        computed by MercadoPago itself: the target plan was created with
+        ``billing_day_proportional=True`` (see ``create_subscription_plan``), so
+        the next charge is prorated for the remainder of the current cycle.
+        """
+        site_domain = getattr(settings, "SITE_DOMAIN", None)
+        if not site_domain:
+            raise ImproperlyConfigured(
+                "MercadoPagoAdapter requires SITE_DOMAIN to be set in settings.py"
+            )
+        self.sdk.preapproval().update(
+            subscription.external_id,
+            {
+                "preapproval_plan_id": new_plan.external_id,
+                "back_url": f"https://{site_domain}/subscription/{subscription.id}/success",
+                "external_reference": subscription.id,
+                "status": "authorized",
+            },
+        )
+
     def update_subscription_payment_token(
         self, subscription: Subscription, payment_token: str
     ) -> None:

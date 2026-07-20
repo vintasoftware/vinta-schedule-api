@@ -122,6 +122,7 @@ class AppContainer(containers.DeclarativeContainer):
 
     subscription_service = providers.Factory(
         SubscriptionService,
+        payment_service=payment_service,
     )
 
     entitlement_service = providers.Factory(

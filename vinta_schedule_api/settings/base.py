@@ -379,6 +379,11 @@ SPECTACULAR_SETTINGS = {
     "ENUM_NAME_OVERRIDES": {
         "FrequencyEnum": "calendar_integration.constants.RecurrenceFrequency.choices",
         "RSVPStatusEnum": "calendar_integration.constants.RSVPStatus.choices",
+        # `Subscription.pending_billing_interval` shares `BillingInterval`'s
+        # choices with `Subscription.billing_interval` -- without this,
+        # drf-spectacular mints a second, redundant enum name for the same
+        # value set (Phase 9).
+        "PendingBillingIntervalEnum": "payments.billing_constants.BillingInterval.choices",
     },
 }
 

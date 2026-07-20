@@ -50,6 +50,27 @@ class BaseSubscriptionAdapter:
         raise NotImplementedError
 
     @abstractmethod
+    def change_subscription_plan(self, subscription: Subscription, new_plan: CreatedPlan) -> None:
+        """
+        Move `subscription`'s already-active provider-side subscription onto
+        `new_plan`, with the provider computing and applying proration
+        server-side (Phase 9's "proration on upgrade computed provider-side"
+        guiding decision). This method does not return an amount and never
+        writes anything locally: the actual charge and its outcome are learned
+        asynchronously, through the same subscription-payment webhook every
+        other charge on this subscription already reports through
+        (`SubscriptionService.confirm_plan_change` is what reacts to it).
+
+        :param subscription: The subscription to move, with `external_id` set —
+            this is only ever called for a subscription the provider already
+            knows about (see `create_subscription` for the first-ever-payment
+            case, which has no existing provider-side subscription to move).
+        :param new_plan: The provider-side plan/price this subscription should
+            move onto.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def update_subscription_payment_token(
         self, subscription: Subscription, payment_token: str
     ) -> None:
