@@ -42,6 +42,12 @@ class PlanLimitInlineFormSet(BaseInlineFormSet):
             # Per-row errors already block the save; a coverage complaint on top of
             # them would be noise about a state the admin is not saving anyway.
             return
+        if self.instance.pk is not None and not self.instance.is_active:
+            # Retiring a broken plan is the escape hatch: an already-incomplete
+            # plan must still be deactivatable without first backfilling every
+            # missing row. `is_active=True` (including flipping it back on) still
+            # goes through the coverage check below.
+            return
         covered = {
             form.cleaned_data.get("resource_key")
             for form in self.forms
@@ -63,6 +69,14 @@ class PlanLimitInline(admin.TabularInline):
     formset = PlanLimitInlineFormSet
     extra = 0
     fields = ("resource_key", "limit_value", "kind", "overage_unit_price")
+
+    def get_extra(self, request: HttpRequest, obj: BillingPlan | None = None, **kwargs: Any) -> int:
+        """One blank row per missing `LimitedResource` on an already-saved plan, so
+        an incomplete plan's gaps are visible and fillable in one pass instead of
+        N manual "Add another" clicks (`extra = 0` above)."""
+        if obj is None or obj.pk is None:
+            return self.extra
+        return len(obj.get_missing_limited_resource_keys())
 
 
 class PlanEntitlementInline(admin.TabularInline):

@@ -281,3 +281,97 @@ class TestBillingPlanAdminLimitCoverage:
         )
 
         assert form.is_valid(), form.errors
+
+    def test_get_extra_pre_renders_one_blank_row_per_missing_resource(self, rf, superuser):
+        """SHOULD-FIX 1 (Phase 5 third review): with `extra = 0`, fixing an
+        incomplete plan required clicking "Add another" once per missing row
+        before a single row could be saved. One blank row per gap should already
+        be on the page."""
+        plan = baker.make(BillingPlan, is_default_for_new_organizations=False, slug="gappy-extra")
+        baker.make(
+            PlanLimit,
+            plan=plan,
+            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            limit_value=0,
+            kind=LimitKind.PREPAID,
+        )
+        missing_count = len(plan.get_missing_limited_resource_keys())
+        assert missing_count > 0
+
+        inline = PlanLimitInline(BillingPlan, AdminSite())
+        request = rf.get(f"/admin/payments/billingplan/{plan.pk}/change/")
+        request.user = superuser
+
+        assert inline.get_extra(request, plan) == missing_count
+
+    def test_an_incomplete_plan_can_be_deactivated_without_adding_rows(self, rf, superuser):
+        """SHOULD-FIX 1 (Phase 5 third review): retiring a broken plan --
+        setting `is_active=False` -- must not be blocked by the coverage check,
+        or an incomplete plan can never be taken out of service through the
+        admin without first backfilling every missing row."""
+        plan = baker.make(
+            BillingPlan,
+            is_default_for_new_organizations=False,
+            is_active=True,
+            slug="gappy-retire",
+        )
+        row = baker.make(
+            PlanLimit,
+            plan=plan,
+            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            limit_value=0,
+            kind=LimitKind.PREPAID,
+        )
+        assert plan.get_missing_limited_resource_keys()
+        plan.is_active = False
+        formset_class = self._formset_class(rf, superuser, plan)
+
+        data = {
+            "limits-TOTAL_FORMS": "1",
+            "limits-INITIAL_FORMS": "1",
+            "limits-MIN_NUM_FORMS": "0",
+            "limits-MAX_NUM_FORMS": "1000",
+            "limits-0-id": str(row.pk),
+            "limits-0-plan": str(plan.pk),
+            "limits-0-resource_key": row.resource_key,
+            "limits-0-limit_value": "0",
+            "limits-0-kind": row.kind,
+        }
+        formset = formset_class(data, instance=plan, prefix="limits")
+
+        assert formset.is_valid(), formset.errors
+
+    def test_activating_an_incomplete_plan_is_still_rejected(self, rf, superuser):
+        """The retirement escape hatch is one-directional: flipping
+        `is_active` back to `True` on an incomplete plan must still go through
+        the coverage check."""
+        plan = baker.make(
+            BillingPlan,
+            is_default_for_new_organizations=False,
+            is_active=False,
+            slug="gappy-activate",
+        )
+        row = baker.make(
+            PlanLimit,
+            plan=plan,
+            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            limit_value=0,
+            kind=LimitKind.PREPAID,
+        )
+        plan.is_active = True
+        formset_class = self._formset_class(rf, superuser, plan)
+
+        data = {
+            "limits-TOTAL_FORMS": "1",
+            "limits-INITIAL_FORMS": "1",
+            "limits-MIN_NUM_FORMS": "0",
+            "limits-MAX_NUM_FORMS": "1000",
+            "limits-0-id": str(row.pk),
+            "limits-0-plan": str(plan.pk),
+            "limits-0-resource_key": row.resource_key,
+            "limits-0-limit_value": "0",
+            "limits-0-kind": row.kind,
+        }
+        formset = formset_class(data, instance=plan, prefix="limits")
+
+        assert not formset.is_valid()

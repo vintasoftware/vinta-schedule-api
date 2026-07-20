@@ -39,6 +39,11 @@ def service():
 
 @pytest.fixture
 def entitlement_service():
+    # Deferred import: `di_core.containers.container` is `None` until
+    # `DICoreConfig.ready()` wires it during Django app startup, which runs
+    # after this module is imported at collection time -- a module-level
+    # import would bind the name to the pre-wiring `None`. The root
+    # `conftest.py`'s `di_container` fixture uses the same deferred pattern.
     from di_core.containers import container
 
     return container.entitlement_service()
@@ -418,9 +423,9 @@ class TestChangePlan:
             "The plan change must not have been applied -- the guard runs before any "
             "write, so the subscription stays coherent with the limits it carries."
         )
-        assert subscription.limits.filter(resource_key=LimitedResource.ORGANIZATION_MEMBERS).get(
-            limit_value=None
-        )
+        assert subscription.limits.filter(
+            resource_key=LimitedResource.ORGANIZATION_MEMBERS, limit_value=None
+        ).exists()
         assert entitlement_service.get_effective_limit(
             org, LimitedResource.RESOURCE_CALENDARS
         ).is_unlimited, (
@@ -503,12 +508,12 @@ class TestChangePlan:
         overridden = subscription.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
         overridden.is_overridden = True
         overridden.save()
+        overridden_limit_value = overridden.limit_value
 
         service.change_plan(subscription, make_complete_plan())
+        overridden.refresh_from_db()
 
-        assert subscription.limits.filter(
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS
-        ).exists()
+        assert overridden.limit_value == overridden_limit_value
         assert subscription.limits.filter(
             resource_key="retired_resource_from_an_older_release"
         ).exists()
