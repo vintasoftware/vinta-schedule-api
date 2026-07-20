@@ -309,22 +309,27 @@ class OrganizationService:
         # handler to roll the request transaction back (REST does; a caller that
         # does not would silently commit a rejected invitation).
         if not bypass_limits:
-            # A resend reuses the still-pending row `get_or_create` below would find
-            # (same email/organization, not yet accepted); excluding it from the count
-            # makes the resend net-zero rather than a false block at the exact ceiling.
-            existing_invitation = OrganizationInvitation.objects.filter(
-                organization=organization,
-                email=email,
-                accepted_at__isnull=True,
-                membership_user_id__isnull=True,
-            ).first()
+
+            def _resolve_existing_invitation_id() -> int | None:
+                # A resend reuses the still-pending row `get_or_create` below would
+                # find (same email/organization, not yet accepted); excluding it from
+                # the count makes the resend net-zero rather than a false block at the
+                # exact ceiling. Resolved lazily -- only called once the ceiling is
+                # known to be finite -- so an `unlimited` organization never pays for
+                # this extra query.
+                existing_invitation = OrganizationInvitation.objects.filter(
+                    organization=organization,
+                    email=email,
+                    accepted_at__isnull=True,
+                    membership_user_id__isnull=True,
+                ).first()
+                return existing_invitation.pk if existing_invitation is not None else None
+
             result = self.entitlement_service.check_limit(
                 organization,
                 LimitedResource.ORGANIZATION_MEMBERS,
                 lock=True,
-                exclude_invitation_id=(
-                    existing_invitation.pk if existing_invitation is not None else None
-                ),
+                exclude_invitation_id_resolver=_resolve_existing_invitation_id,
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)
@@ -468,37 +473,42 @@ class OrganizationService:
                     organization=invitation.organization
                 ).exists():
                     raise UserAlreadyHasMembershipError()
-                try:
-                    with transaction.atomic():
-                        # Guard first, before the membership write, inside the same
-                        # transaction as the create — see check_limit's lock docs.
-                        if not bypass_limits:
-                            check_seat_limit = (
-                                self.entitlement_service.check_seat_limit_for_invitation_accept
-                            )
-                            result = check_seat_limit(invitation)
-                            if not result.allowed:
-                                raise OverLimitError.from_check_result(result)
+                with transaction.atomic():
+                    # Guard first, before the membership write, inside the same
+                    # transaction as the create — see check_limit's lock docs.
+                    if not bypass_limits:
+                        check_seat_limit = (
+                            self.entitlement_service.check_seat_limit_for_invitation_accept
+                        )
+                        result = check_seat_limit(invitation)
+                        if not result.allowed:
+                            raise OverLimitError.from_check_result(result)
+                    # Narrowed to just the create: an IntegrityError from the
+                    # invitation.save() below is a different failure (e.g. a
+                    # constraint on the invitation row itself) and must not be
+                    # reported as "you already have a membership" — that would be
+                    # a wrong, confusing error for something unrelated.
+                    try:
                         membership = OrganizationMembership.objects.create(
                             user=user,
                             organization=invitation.organization,
                             role=invitation.role,
                         )
-                        # Marking the invitation accepted must land in the same
-                        # transaction as the guard + membership create, not a
-                        # separate autocommit write after the block exits. Outside
-                        # a request (Celery, management command, shell) there is no
-                        # outer ATOMIC_REQUESTS transaction to fold this into: the
-                        # membership create would commit and release the row lock,
-                        # then a concurrent check could see the seat still "pending"
-                        # and count it twice, before this line ever runs — and if
-                        # this write then failed, the double-count would be
-                        # permanent.
-                        invitation.accepted_at = now
-                        invitation.membership_user_id = membership.user_id
-                        invitation.save()
-                except IntegrityError as e:
-                    raise UserAlreadyHasMembershipError() from e
+                    except IntegrityError as e:
+                        raise UserAlreadyHasMembershipError() from e
+                    # Marking the invitation accepted must land in the same
+                    # transaction as the guard + membership create, not a
+                    # separate autocommit write after the block exits. Outside
+                    # a request (Celery, management command, shell) there is no
+                    # outer ATOMIC_REQUESTS transaction to fold this into: the
+                    # membership create would commit and release the row lock,
+                    # then a concurrent check could see the seat still "pending"
+                    # and count it twice, before this line ever runs — and if
+                    # this write then failed, the double-count would be
+                    # permanent.
+                    invitation.accepted_at = now
+                    invitation.membership_user_id = membership.user_id
+                    invitation.save()
                 self.webhook_membership_side_effects_service.on_member_created(membership)
 
                 # Audit: the accepting user joins the org (new membership) and the
@@ -585,26 +595,38 @@ class OrganizationService:
                 organization=pending_invitation.organization
             ).exists():
                 raise UserAlreadyHasMembershipError()
-            try:
-                with transaction.atomic():
-                    # Guard first, before the membership write, inside the same
-                    # transaction as the create — see check_limit's lock docs.
-                    if not bypass_limits:
-                        result = self.entitlement_service.check_seat_limit_for_invitation_accept(
-                            pending_invitation
-                        )
-                        if not result.allowed:
-                            raise OverLimitError.from_check_result(result)
+            with transaction.atomic():
+                # Guard first, before the membership write, inside the same
+                # transaction as the create — see check_limit's lock docs.
+                if not bypass_limits:
+                    result = self.entitlement_service.check_seat_limit_for_invitation_accept(
+                        pending_invitation
+                    )
+                    if not result.allowed:
+                        raise OverLimitError.from_check_result(result)
+                # Narrowed to just the create: an IntegrityError from the
+                # pending_invitation.save() below is a different failure and must
+                # not be reported as "you already have a membership".
+                try:
                     membership = OrganizationMembership.objects.create(
                         user=user,
                         organization=pending_invitation.organization,
                         role=pending_invitation.role,
                     )
-            except IntegrityError as e:
-                raise UserAlreadyHasMembershipError() from e
-            pending_invitation.accepted_at = now
-            pending_invitation.membership_user_id = membership.user_id
-            pending_invitation.save()
+                except IntegrityError as e:
+                    raise UserAlreadyHasMembershipError() from e
+                # Marking the invitation accepted must land in the same
+                # transaction as the guard + membership create, not a separate
+                # autocommit write after the block exits. Outside a request
+                # (Celery, management command, shell) there is no outer
+                # ATOMIC_REQUESTS transaction to fold this into: the membership
+                # create would commit and release the row lock, then a concurrent
+                # check could see the seat still "pending" and count it twice,
+                # before this line ever runs — and if this write then failed, the
+                # double-count would be permanent.
+                pending_invitation.accepted_at = now
+                pending_invitation.membership_user_id = membership.user_id
+                pending_invitation.save()
             self.webhook_membership_side_effects_service.on_member_created(membership)
 
             # Audit: user joins the inviting org via the signup path; same shape as

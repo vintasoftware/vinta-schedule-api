@@ -338,6 +338,48 @@ class TestAcceptInvitationMarksAcceptedInsideTheSameTransaction:
 
 
 @pytest.mark.django_db
+class TestProvisionTenantForUserMarksAcceptedInsideTheSameTransaction:
+    """SHOULD-FIX 1, Phase 6a verification review: ``provision_tenant_for_user``'s
+    pending-invitation (signup) branch has the exact same twin bug
+    ``accept_invitation`` had -- marking the invitation accepted after the inner
+    ``transaction.atomic()`` block that creates the membership has already exited,
+    instead of inside it. Signup is the higher-traffic of the two paths."""
+
+    def test_a_failure_marking_the_invitation_accepted_rolls_back_the_membership_too(self):
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+
+        organization = _organization_with_seat_limit(seat_limit=2, existing_active_members=0)
+        invitee = baker.make(get_user_model(), email="atomic-provision@example.com")
+        token = generate_long_lived_token()
+        baker.make(
+            OrganizationInvitation,
+            organization=organization,
+            email=invitee.email,
+            token_hash=hash_long_lived_token(token),
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership_user_id=None,
+        )
+
+        service = OrganizationService()
+        with (
+            patch.object(OrganizationInvitation, "save", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError),
+        ):
+            service.provision_tenant_for_user(invitee)
+
+        assert not OrganizationMembership.objects.filter(
+            user=invitee, organization=organization
+        ).exists(), (
+            "The membership committed even though marking the invitation accepted "
+            "failed -- the two writes must share one transaction."
+        )
+
+
+@pytest.mark.django_db
 class TestReactivationBlockedAtTheLimit:
     def test_reactivate_is_blocked_at_the_seat_limit(self):
         admin = baker.make(get_user_model(), email="reactivate-admin@example.com")
@@ -510,14 +552,16 @@ class TestUnlimitedPlanIsNeverBlocked:
         # usage counting is O(1) in queries regardless of row count, so if the
         # unlimited path started counting, both measurements would grow by the
         # same fixed amount and a relative "second == first" comparison would
-        # still pass -- it pins nothing. 10 is the query count either call
-        # makes today; checked against both calls independently instead.
+        # still pass -- it pins nothing. 9 is the exact query count either call
+        # makes today (checked against both calls independently instead of a
+        # loose ceiling, so any change -- including a regression that pushes it
+        # back up -- fails loudly instead of silently eating slack).
         for label, call in (
             ("first (empty org)", first_call),
             ("second (20 pending invitations already in the database)", second_call),
         ):
-            assert len(call.captured_queries) <= 10, (
-                f"Too many queries for the {label} invite -- the unlimited path "
+            assert len(call.captured_queries) == 9, (
+                f"Query count changed for the {label} invite -- the unlimited path "
                 f"must never count usage. Queries: {[q['sql'] for q in call.captured_queries]}"
             )
         assert not [

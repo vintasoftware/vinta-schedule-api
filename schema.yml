@@ -7912,8 +7912,8 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AcceptInvitation'
-          description: ''
+                $ref: '#/components/schemas/AcceptInvitationResponse'
+          description: Invitation accepted
         '400':
           description: Already a member, or invalid token
         '402':
@@ -12675,6 +12675,19 @@ components:
           type: string
       required:
       - token
+    AcceptInvitationResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        organization_id:
+          type: integer
+        organization_name:
+          type: string
+      required:
+      - message
+      - organization_id
+      - organization_name
     ActionEnum:
       enum:
       - create

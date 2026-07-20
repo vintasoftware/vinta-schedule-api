@@ -5,8 +5,13 @@ from typing import Annotated
 from django.db import transaction
 
 from dependency_injector.wiring import Provide, inject
-from drf_spectacular.utils import OpenApiResponse, extend_schema, extend_schema_view
-from rest_framework import generics, status, views
+from drf_spectacular.utils import (
+    OpenApiResponse,
+    extend_schema,
+    extend_schema_view,
+    inline_serializer,
+)
+from rest_framework import generics, serializers, status, views
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
@@ -842,7 +847,19 @@ class AcceptInvitationView(generics.CreateAPIView):
 
     @extend_schema(
         responses={
-            201: AcceptInvitationSerializer,
+            # `create` below returns {"message", "organization_id", "organization_name"},
+            # not an AcceptInvitationSerializer instance — describe the actual body.
+            201: OpenApiResponse(
+                response=inline_serializer(
+                    name="AcceptInvitationResponse",
+                    fields={
+                        "message": serializers.CharField(),
+                        "organization_id": serializers.IntegerField(),
+                        "organization_name": serializers.CharField(),
+                    },
+                ),
+                description="Invitation accepted",
+            ),
             400: OpenApiResponse(description="Already a member, or invalid token"),
             402: OpenApiResponse(description="Organization is at its seat limit"),
             404: OpenApiResponse(description="Invitation not found"),

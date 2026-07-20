@@ -261,6 +261,11 @@ class TestSocialAccountAdapter:
         assert not OrganizationMembership.objects.filter(
             user=new_user, organization=organization
         ).exists()
+        # The invitation must remain pending -- that is what makes the user
+        # recoverable once a seat frees up. If it were marked accepted (or
+        # otherwise consumed) here, the seat would be lost with no membership
+        # to show for it.
+        assert OrganizationInvitation.objects.get(email="dana@example.com").accepted_at is None
 
 
 @pytest.mark.django_db
@@ -413,7 +418,9 @@ class TestAccountAdapter:
         reports success and the user is left membership-less (gated)."""
         organization = _org_at_seat_limit_with_pending_invitation("erin@example.com")
         new_user = baker.make(User, email="erin@example.com")
-        Profile.objects.create(user=new_user, pending_organization_name="")
+        profile = Profile.objects.create(
+            user=new_user, pending_organization_name="Erin's Stashed Org"
+        )
         email_address = MagicMock()
         email_address.user = new_user
 
@@ -426,6 +433,14 @@ class TestAccountAdapter:
         assert not OrganizationMembership.objects.filter(
             user=new_user, organization=organization
         ).exists()
+        # The invitation must remain pending -- that is what makes the user
+        # recoverable once a seat frees up.
+        assert OrganizationInvitation.objects.get(email="erin@example.com").accepted_at is None
+        # The stashed org name must not be cleared: it is only cleared once
+        # provisioning actually succeeds (membership is not None), and here it
+        # never gets that far -- OverLimitError is raised first.
+        profile.refresh_from_db()
+        assert profile.pending_organization_name == "Erin's Stashed Org"
 
 
 @pytest.mark.django_db

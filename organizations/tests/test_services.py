@@ -879,6 +879,69 @@ class TestOrganizationService:
                 organization_service.accept_invitation(token=token, user=user)
 
     # -----------------------------------------------------------------------
+    # SHOULD-FIX 2, Phase 6a verification review: an IntegrityError raised by the
+    # *invitation* write (not the membership create) must not be reported as
+    # UserAlreadyHasMembershipError -- the ``try`` around the create is narrow
+    # enough that a failure saving the invitation propagates as itself.
+    # -----------------------------------------------------------------------
+
+    def test_accept_invitation_integrity_error_from_invitation_save_is_not_misreported(
+        self, organization_service, organization
+    ):
+        from django.db import IntegrityError as DjangoIntegrityError
+
+        from common.utils.authentication_utils import (
+            generate_long_lived_token,
+            hash_long_lived_token,
+        )
+
+        user = baker.make(User, email="accept_invitation_save_fails@example.com")
+        token = generate_long_lived_token()
+        token_hash = hash_long_lived_token(token)
+        baker.make(
+            OrganizationInvitation,
+            email=user.email,
+            organization=organization,
+            token_hash=token_hash,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership_user_id=None,
+        )
+
+        with patch.object(
+            OrganizationInvitation,
+            "save",
+            side_effect=DjangoIntegrityError("some unrelated constraint"),
+        ):
+            with pytest.raises(DjangoIntegrityError):
+                organization_service.accept_invitation(token=token, user=user)
+
+        assert not OrganizationMembership.objects.filter(
+            user=user, organization=organization
+        ).exists()
+
+    def test_provision_tenant_for_user_integrity_error_from_invitation_save_is_not_misreported(
+        self, organization_service, organization
+    ):
+        from django.db import IntegrityError as DjangoIntegrityError
+
+        inviter = baker.make(User, email="inviter_provision_save_fails@example.com")
+        invitee = baker.make(User, email="invitee_provision_save_fails@example.com")
+        self._make_invitation(email=invitee.email, organization=organization, invited_by=inviter)
+
+        with patch.object(
+            OrganizationInvitation,
+            "save",
+            side_effect=DjangoIntegrityError("some unrelated constraint"),
+        ):
+            with pytest.raises(DjangoIntegrityError):
+                organization_service.provision_tenant_for_user(invitee)
+
+        assert not OrganizationMembership.objects.filter(
+            user=invitee, organization=organization
+        ).exists()
+
+    # -----------------------------------------------------------------------
     # Savepoint hygiene tests (FIX 1)
     # Prove that the transaction is NOT left poisoned after the IntegrityError
     # backstop fires in provision_tenant_for_user.  The savepoint wrapping in
