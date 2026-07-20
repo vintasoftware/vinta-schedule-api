@@ -123,13 +123,14 @@ Round 2 found that **fixing BLOCKER 1 built the trigger for a gap BLOCKER 4's fi
 - `payments/services/payment_service.py` `create_subscription` is an unreconciled second creation path — its unconditional `objects.create` would raise `IntegrityError` on the OneToOne now that every root has a `Subscription`. Tests-only today, so latent. Marked in-code for **Phase 9**.
 - Migration `0009` imports `billing_root_filter` from a live service module rather than freezing it. A future rename of `can_invite_organizations` or `parent` would retroactively change a historical migration's behavior. Noted in AGENTS.md.
 
-## Current phase
+### Phase 5 — Effective limits and usage counting ✅
 
-**Phase 5 — Effective limits and usage counting** (implementer Tier 4, reviewer Tier 4, fixer Tier 3)
+- **Status**: reviewed clean (3 review rounds), PR open
+- **Models**: implementer Tier 4; reviewer Tier 4 on all three rounds; fixer Tier 3→4 on rounds 1–2 (stepped up: >8 files plus a design decision), Tier 3 on round 3
+- **Branch**: `plan/billing-plans-and-limits/phase-5` · **Base**: `origin/main` (`bd58606`)
+- **Commits**: `8c42486` tracking, `bd62f64` implementation, `65689f7` round 1, `8e70340` round 2, `6159122` round 3
 
-Base: `origin/main` (`bd58606`) · Branch: `plan/billing-plans-and-limits/phase-5`
-
-The engine every enforcement phase calls. Note for the implementer: Phase 5's changes list in the plan says to create `resolve_billing_root`, but **Phase 4 already shipped it** (along with `is_billing_root` and `billing_root_filter`) in `payments/services/subscription_service.py`, with `BillingRootCycleError` in `payments/exceptions.py`. Reuse them; do not write a second definition — a duplicated billing-root predicate is exactly the Phase 4 BLOCKER that cost two review rounds.
+The engine every enforcement phase calls. Phase 5's changes list in the plan says to create `resolve_billing_root`, but **Phase 4 already shipped it** (along with `is_billing_root` and `billing_root_filter`) in `payments/services/subscription_service.py`, with `BillingRootCycleError` in `payments/exceptions.py`. The implementation reuses them rather than defining a second predicate — a duplicated billing-root predicate is exactly the Phase 4 BLOCKER that cost two review rounds.
 
 **Review round 1 applied.** Three BLOCKERs, all with a test confirmed failing before the fix:
 
@@ -147,13 +148,27 @@ The engine every enforcement phase calls. Note for the implementer: Phase 5's ch
 - **Phase 6a's accept path must call `EntitlementService.check_seat_limit_for_invitation_accept(invitation)`**, not `check_limit`. Accepting is net zero on seats; without the exclusion an org can never fill its last seat. It is a named entry point precisely so an omission is a missing *call* rather than a missing kwarg — and `exclude_invitation_id` now raises (`InapplicableInvitationExclusionError`) if passed for any resource but `organization_members`, where no counter reads it.
 - `UsageSnapshot` remains deferred; rationale recorded in `payments/services/billing_dataclasses.py`.
 
-**Gates after round 2**: suite **4051 passed** (round 1: 4039; original: 4016); `mypy` **305 errors / 57 files** (unchanged from round 1); `ruff check` + `format --check` clean; `makemigrations --check` clean (**still no new migration** — `BillingPlan.clean` and the coverage helper add no fields); `check --deploy` unchanged at the same 5 pre-existing dev-settings warnings.
+**Review round 3** found **no BLOCKERs**. It verified the round-2 guard fires before `transaction.atomic` opens, that all three live creation paths (`organizations/services.py:105`, `organizations/admin.py:159`, `public_api/mutations.py:920`) route through the guarded method, that `skip_limit_coverage_validation` is set in exactly one place and `BaseModel` never calls `full_clean` on save (so the admin opt-out cannot leak), and that `IncompleteBillingPlanError` inherits `BillingError` rather than `ValueError` — so it cannot be flattened into a validation message or misrendered as the over-limit contract. Two SHOULD-FIXes applied:
+
+1. **An incomplete plan could not be retired through the admin.** The coverage check ran on every POST, so flipping `is_active=False` on a broken plan was blocked until every missing row was added — with `extra = 0`, N manual clicks during an incident. The check is now skipped for a saved plan being deactivated, and `PlanLimitInline.get_extra` pre-renders one blank row per gap. A test proves the exemption is one-directional: *activating* an incomplete plan is still rejected.
+2. **Coverage erosion introduced by round 2's own fixture change.** `make_complete_plan` carries `organization_members` at `limit_value=0`, so the overridden-row test's `.exists()` assertion passed whether or not the override survived. It now captures `limit_value` before the change and asserts it unchanged — confirmed failing when `is_overridden` handling is neutralised.
+
+One NIT was **declined with evidence**: moving `from di_core.containers import container` to module scope binds to `None`, because the container is only wired in `DICoreConfig.ready()` after test collection imports the module. Two tests broke; the repo's root `conftest.py:136-141` uses the same deferred pattern. Kept inside the fixture with the reason written down, per AGENTS.md's carve-out.
+
+**Final gates** (re-run independently by the orchestrator, not relayed): suite **4054 passed** (round 2: 4051; round 1: 4039; original: 4016; `origin/main` baseline 3969); `mypy` **305 errors / 57 files** — *below* the 308/58 baseline, with **zero `type: ignore` / `noqa` added across all four commits**; `ruff check` + `format --check` clean (479 files); `makemigrations --check` clean — **no migration in the whole phase after `0010`**; `check --deploy` unchanged at 5 pre-existing dev-settings warnings; main checkout clean; no AI co-author trailers.
+
+## Current phase
+
+**Phase 6a — Enforce pre-paid limits: seats and invitations** (implementer Tier 3)
+
+Base: `origin/main` · Branch: `plan/billing-plans-and-limits/phase-6a`
+
+⚠️ **This phase must call `EntitlementService.check_seat_limit_for_invitation_accept(invitation)` on the accept path**, not `check_limit`. See the Phase 5 carried-forward note — accepting an invitation is net zero on seats, and using the generic entry point makes an organization unable to fill its last seat.
 
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |
 |---|---|---|---|---|
-| 6a | Enforce pre-paid limits: seats and invitations | 3 | — | — |
 | 6b | Enforce pre-paid limits: calendars, groups, bundles, availability | 3 | 4 | — |
 | 6c | Enforce pre-paid limits: webhook subscriptions and API system users | 2 | — | — |
 | 7 | Meter event occurrences | 4 | 4 | — |
