@@ -184,6 +184,53 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
         """
         return self.filter(calendar_type=calendar_type).exclude_inactive()
 
+    def not_newly_counted_as_type(self, calendar_type: str) -> "CalendarQuerySet":
+        """Calendars an upsert that *forces* ``calendar_type`` would not newly count.
+
+        The complement of *newly entering* :meth:`live_of_type` -- not of
+        :meth:`live_of_type` itself; a row that is already some other live,
+        non-``calendar_type`` type (e.g. a live ``PERSONAL``/``ACTIVE`` calendar) is in
+        neither set. :meth:`live_of_type` is the predicate the ``resource_calendars`` /
+        ``bundle_calendars`` usage counters (``payments.services.entitlement_service``)
+        count with. It lives here, next to ``live_of_type``, precisely so the two cannot
+        drift apart: a bulk upsert that
+        splits "already imported" from "new" using a *different* predicate than the
+        counter it is guarding lets rows through unmetered, which is exactly what the
+        room-import writer did before this method existed.
+
+        A row is newly counted iff, after the upsert, it enters ``live_of_type``
+        without having been in it before — i.e. iff it is live *and* currently some
+        other type (a **promotion** into the counted set). So the rows that are *not*
+        newly counted are:
+
+        * already ``calendar_type`` (a true update — it was counted before and stays
+          counted), and
+        * soft-deleted (``visibility=INACTIVE``) — the upsert leaves ``visibility``
+          untouched, so the row stays outside ``live_of_type`` afterwards and the
+          count does not move.
+
+        Everything else must consume headroom.
+        """
+        return self.filter(
+            Q(calendar_type=calendar_type) | Q(visibility=CalendarVisibility.INACTIVE)
+        )
+
+    def external_ids_not_newly_counted_as_type(
+        self, external_ids: Iterable[str], calendar_type: str
+    ) -> set[str]:
+        """``external_id``s among ``external_ids`` whose upsert to ``calendar_type`` is free.
+
+        The set complement of "consumes headroom" for a bulk upsert keyed on
+        ``external_id``: an id with no row at all is absent from the result (it is a
+        create), and an id whose row is covered by :meth:`not_newly_counted_as_type`
+        is present (the write cannot increase the counted total).
+        """
+        return set(
+            self.filter(external_id__in=list(external_ids))
+            .not_newly_counted_as_type(calendar_type)
+            .values_list("external_id", flat=True)
+        )
+
     def only_listed(self):
         """Return only calendars visible in booking/public queries (visibility=active)."""
         return self.filter(visibility=CalendarVisibility.ACTIVE)
@@ -859,6 +906,21 @@ class AvailableTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
             exception_for__isnull=True,
             bulk_modification_parent__isnull=True,
             is_recurring_exception=False,
+        )
+
+    def count_counted_windows_in_calendar(self, calendar_id: int, ids: Iterable[int]) -> int:
+        """How many of ``ids`` are windows the ``availability_windows`` counter counts.
+
+        A batch that deletes rows may offset its own creates against the ceiling, but
+        only for rows the usage counter actually counts -- crediting the deletion of a
+        derived row (a recurrence exception, a split continuation) that
+        :meth:`only_user_authored` excludes would hand out capacity for freeing
+        something that was never occupying any, letting a batch grow real usage past
+        the ceiling. Expressed here, against ``only_user_authored`` itself, so the
+        credit predicate and the counter predicate cannot drift apart.
+        """
+        return (
+            self.only_user_authored().filter(calendar_fk_id=calendar_id, id__in=list(ids)).count()
         )
 
     def annotate_recurring_occurrences_on_date_range(

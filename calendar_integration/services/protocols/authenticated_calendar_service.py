@@ -77,6 +77,8 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
         self,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
+        import_workflow_state: CalendarOrganizationResourcesImport | None = None,
+        bypass_limits: bool = False,
     ) -> Iterable[CalendarResourceData]: ...
 
     def _get_existing_calendar_data(

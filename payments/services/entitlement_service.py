@@ -354,6 +354,32 @@ class EntitlementService:
             )
         )
 
+    @staticmethod
+    def _lock_billing_root_row(root: Organization) -> None:
+        """Take ``SELECT ... FOR UPDATE`` on ``root``'s ``Subscription`` row.
+
+        Discards the returned row: the point is the row lock, and every subsequent
+        read in the caller's transaction goes through the same connection.
+        """
+        Subscription.objects.select_for_update().filter(organization=root).first()
+
+    def lock_billing_root(self, organization: Organization) -> None:
+        """Acquire the guard lock for ``organization`` *before* computing a delta.
+
+        ``check_limit(lock=True)`` locks and counts in one call, which is all a
+        single-row create needs. A bulk writer that must first *read* the database to
+        work out how many rows it is about to create (e.g. the room-import writer
+        splitting discovered resources into "already counted" and "new") has to take
+        the lock before that read, or it computes its delta from a snapshot a
+        concurrent writer may already have invalidated.
+
+        Re-locking the same row later in the same transaction — which
+        ``check_limit(lock=True)`` will do — is a no-op, so the two compose. Held
+        until the caller's transaction commits; requires an open transaction, exactly
+        like ``check_limit(lock=True)``.
+        """
+        self._lock_billing_root_row(resolve_billing_root(organization))
+
     def check_limit(
         self,
         organization: Organization,
@@ -419,9 +445,7 @@ class EntitlementService:
         )
         root = resolve_billing_root(organization)
         if lock:
-            # Discard the returned row: the point is the row lock, and the
-            # subscription read below goes through the same transaction.
-            Subscription.objects.select_for_update().filter(organization=root).first()
+            self._lock_billing_root_row(root)
 
         subscription = self._get_subscription_for_root(root)
         effective_limit = self._effective_limit_for_subscription(

@@ -61,6 +61,8 @@ from calendar_integration.services.external_event_change_request_service import 
 )
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
 from organizations.models import Organization, OrganizationMembership
+from payments.exceptions import OverLimitError
+from public_api.extensions import raise_over_limit_graphql_error
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 
 
@@ -641,6 +643,10 @@ class CalendarGroupMutations:
             return CalendarGroupResult(success=False, error_message="Organization not found")
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_group_service.initialize(organization=organization)
+        # Phase 6b: create_group raises OverLimitError at the organization's
+        # calendar_groups limit. Rendered identically to the REST 402 body via
+        # raise_over_limit_graphql_error (also rolls back the request transaction --
+        # graphql-core swallows resolver exceptions and always returns 200).
         try:
             group = deps.calendar_group_service.create_group(
                 CalendarGroupInputData(
@@ -650,6 +656,8 @@ class CalendarGroupMutations:
                     accepts_public_scheduling=not input.is_private,
                 )
             )
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         except CalendarGroupError as e:
             return CalendarGroupResult(success=False, error_message=str(e))
         return CalendarGroupResult(success=True, group=group)  # type: ignore[arg-type]

@@ -139,6 +139,8 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from organizations.models import Organization, OrganizationMembership
+from payments.billing_constants import LimitedResource
+from payments.exceptions import OverLimitError
 from public_api.models import SystemUser
 from users.models import User
 
@@ -148,6 +150,7 @@ if TYPE_CHECKING:
     from calendar_integration.services.external_event_change_request_service import (
         ExternalEventChangeRequestService,
     )
+    from payments.services.entitlement_service import EntitlementService
 
 
 logger = logging.getLogger(__name__)
@@ -197,6 +200,9 @@ class CalendarService(BaseCalendarService):
         booking_policy_service: Annotated[
             "BookingPolicyService | None", Provide["booking_policy_service"]
         ] = None,
+        entitlement_service: Annotated[
+            "EntitlementService | None", Provide["entitlement_service"]
+        ] = None,
     ) -> None:
         """Initialize a CalendarService instance. Call authenticate() before using calendar operations."""
         self.organization = None
@@ -208,6 +214,7 @@ class CalendarService(BaseCalendarService):
         self.audit_service = audit_service
         self.external_event_change_request_service = external_event_change_request_service
         self.booking_policy_service = booking_policy_service
+        self.entitlement_service = entitlement_service
         # Per-instance calendar lookup cache: keyed on (organization_id, id_or_external_id).
         # This replaces the @lru_cache approach which was keyed only on id/external_id and
         # could return a cached Calendar from a different organization when the service
@@ -425,6 +432,7 @@ class CalendarService(BaseCalendarService):
             calendar_permission_service=self.calendar_permission_service,
             calendar_side_effects_service=self.calendar_side_effects_service,
             audit_service=self.audit_service,
+            entitlement_service=self.entitlement_service,
         )
 
     def initialize_without_provider(
@@ -462,6 +470,7 @@ class CalendarService(BaseCalendarService):
             calendar_permission_service=self.calendar_permission_service,
             calendar_side_effects_service=self.calendar_side_effects_service,
             audit_service=self.audit_service,
+            entitlement_service=self.entitlement_service,
         )
 
     def _build_context_snapshot(self) -> CalendarServiceContext:
@@ -481,6 +490,7 @@ class CalendarService(BaseCalendarService):
             calendar_permission_service=self.calendar_permission_service,
             calendar_side_effects_service=self.calendar_side_effects_service,
             audit_service=self.audit_service,
+            entitlement_service=self.entitlement_service,
         )
 
     def _get_event_service(self) -> CalendarEventService:
@@ -590,15 +600,25 @@ class CalendarService(BaseCalendarService):
         self,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
+        import_workflow_state: CalendarOrganizationResourcesImport | None = None,
+        bypass_limits: bool = False,
     ) -> Iterable[CalendarResourceData]:
         """Delegation: import organization calendar resources within a time range.
 
         Kept on the facade for backward compatibility with existing tests that call
         it as ``service._execute_organization_calendar_resources_import(...)``.
         Delegates to ``CalendarSyncService``.
+
+        :param import_workflow_state: When given, a partial-import warning (headroom
+            exhausted on ``resource_calendars``) is recorded on its ``error_message``.
+        :param bypass_limits: When True, skips the ``resource_calendars`` headroom guard.
+            Only management commands and one-off repair scripts should pass this.
         """
         return self._get_sync_service()._execute_organization_calendar_resources_import(
-            start_time, end_time
+            start_time,
+            end_time,
+            import_workflow_state=import_workflow_state,
+            bypass_limits=bypass_limits,
         )
 
     def create_application_calendar(
@@ -606,6 +626,12 @@ class CalendarService(BaseCalendarService):
     ) -> ApplicationCalendarData:
         """
         Create a new application calendar using the calendar adapter.
+
+        Phase 6b: **not** guarded by a limit check. ``LimitedResource`` (the closed
+        set defined in Phase 3) caps only ``resource_calendars`` (type RESOURCE) and
+        ``bundle_calendars`` (type BUNDLE) among calendar types; this method creates
+        an application-owned calendar with no ``calendar_type`` counted by either. See
+        ``create_resource_calendar`` for the guarded sibling.
         :return: Created ApplicationCalendarData instance.
         """
         if not is_authenticated_calendar_service(self):
@@ -719,6 +745,10 @@ class CalendarService(BaseCalendarService):
     ) -> Calendar:
         """
         Create a new calendar in the application without linking to an external provider.
+
+        Phase 6b: **not** guarded by a limit check -- ``calendar_type=VIRTUAL`` is not a
+        member of ``LimitedResource`` (see ``create_resource_calendar`` for the guarded
+        sibling and the closed-set rationale).
         :param name: Name of the calendar.
         :param description: Description of the calendar.
         :return: Created Calendar instance.
@@ -763,6 +793,7 @@ class CalendarService(BaseCalendarService):
         capacity: int | None = None,
         manage_available_windows: bool = False,
         accepts_public_scheduling: bool = False,
+        bypass_limits: bool = False,
     ) -> Calendar:
         """
         Create a new internal (manual) resource calendar without linking to an external provider.
@@ -777,10 +808,29 @@ class CalendarService(BaseCalendarService):
         :param manage_available_windows: Whether the calendar manages its own available windows.
         :param accepts_public_scheduling: If True, the calendar can be booked via codeless public
             scheduling links. Defaults to False (private).
+        :param bypass_limits: When True, skips the ``resource_calendars`` limit guard below.
+            Only management commands and one-off repair scripts should pass this -- never a
+            request-handling path.
+        :raises OverLimitError: When the organization is at its effective ``resource_calendars``
+            ceiling. Nothing is created. Checked and locked (``SELECT ... FOR UPDATE`` on the
+            billing root's subscription) inside this method's own transaction, so two concurrent
+            creates for the last unit of capacity serialize on that row.
         :return: Created Calendar instance.
         """
+        # Read before the type-guard narrows `self` below: the narrowed Protocol
+        # type doesn't declare `entitlement_service` (it isn't part of the
+        # authentication-state contract those protocols exist to describe).
+        entitlement_service = self.entitlement_service
+
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
+
+        if not bypass_limits and entitlement_service is not None:
+            result = entitlement_service.check_limit(
+                self.organization, LimitedResource.RESOURCE_CALENDARS, lock=True
+            )
+            if not result.allowed:
+                raise OverLimitError.from_check_result(result)
 
         calendar = Calendar.objects.create(
             organization=self.organization,
@@ -826,6 +876,10 @@ class CalendarService(BaseCalendarService):
         Plain calendars are owned directly by the organization (``provider=INTERNAL``,
         ``calendar_type=PERSONAL``). Unlike resource or bundle calendars, they carry no
         capacity or availability-window management semantics.
+
+        Phase 6b: **not** guarded by a limit check -- ``calendar_type=PERSONAL`` is not a
+        member of ``LimitedResource`` (see ``create_resource_calendar`` for the guarded
+        sibling and the closed-set rationale).
 
         :param name: Name of the calendar.
         :param description: Description of the calendar.
@@ -1104,6 +1158,7 @@ class CalendarService(BaseCalendarService):
         child_calendars: Iterable[Calendar] | None = None,
         primary_calendar: Calendar | None = None,
         accepts_public_scheduling: bool = False,
+        bypass_limits: bool = False,
     ) -> Calendar:
         """
         Create a new bundle calendar in the application without linking to an external provider.
@@ -1113,6 +1168,10 @@ class CalendarService(BaseCalendarService):
         :param primary_calendar: The child calendar to be designated as primary. Must be in child_calendars.
         :param accepts_public_scheduling: If True, the bundle can be booked via codeless public
             scheduling links. Defaults to False (private).
+        :param bypass_limits: When True, skips the ``bundle_calendars`` limit guard. Only
+            management commands and one-off repair scripts should pass this.
+        :raises OverLimitError: When the organization is at its effective ``bundle_calendars``
+            ceiling. Nothing is created.
         :return: Created Calendar instance.
         """
         return self._get_bundle_service().create_bundle_calendar(
@@ -1121,6 +1180,7 @@ class CalendarService(BaseCalendarService):
             child_calendars=child_calendars,
             primary_calendar=primary_calendar,
             accepts_public_scheduling=accepts_public_scheduling,
+            bypass_limits=bypass_limits,
         )
 
     def update_bundle_calendar(
@@ -1796,21 +1856,28 @@ class CalendarService(BaseCalendarService):
         availability_windows: Iterable[
             tuple[datetime.datetime, datetime.datetime, str, str | None]
         ],
+        bypass_limits: bool = False,
     ) -> Iterable[AvailableTime]:
         """
         Create availability windows for a calendar (with optional recurrence support).
         :param calendar: The calendar to create the availability windows for.
         :param availability_windows: Iterable of tuples containing (start_time, end_time, rrule_string).
+        :param bypass_limits: When True, skips the ``availability_windows`` limit guard. Only
+            management commands and one-off repair scripts should pass this.
+        :raises OverLimitError: When creating ``len(availability_windows)`` more windows would
+            take the organization past its effective ``availability_windows`` ceiling. Nothing
+            is created.
         :return: List of created AvailableTime instances.
         """
         return self._get_availability_service().bulk_create_availability_windows(
-            calendar, availability_windows
+            calendar, availability_windows, bypass_limits=bypass_limits
         )
 
     def batch_modify_available_times(
         self,
         calendar: Calendar,
         operations: Iterable[dict],
+        bypass_limits: bool = False,
     ) -> list[AvailableTime]:
         """Apply a batch of create/update/delete operations to a calendar's available times.
 
@@ -1822,9 +1889,17 @@ class CalendarService(BaseCalendarService):
         :param operations: Iterable of dicts, each with an ``action`` of
             ``create`` / ``update`` / ``delete`` plus the relevant fields
             (``id``, ``start_time``, ``end_time``, ``timezone``, ``rrule_string``).
+        :param bypass_limits: When True, skips the ``availability_windows`` limit guard on
+            the batch's ``create`` operations. Only management commands and one-off repair
+            scripts should pass this.
+        :raises OverLimitError: When the batch's ``create`` operations would take the
+            organization past its effective ``availability_windows`` ceiling. Nothing in
+            the batch is applied.
         :return: The calendar's available times after the batch is applied.
         """
-        return self._get_availability_service().batch_modify_available_times(calendar, operations)
+        return self._get_availability_service().batch_modify_available_times(
+            calendar, operations, bypass_limits=bypass_limits
+        )
 
     @transaction.atomic()
     def bulk_create_manual_blocked_times(
@@ -1946,14 +2021,22 @@ class CalendarService(BaseCalendarService):
         end_time: datetime.datetime,
         timezone: str,
         rrule_string: str | None = None,
+        bypass_limits: bool = False,
     ) -> AvailableTime:
-        """Create a single available time (optionally recurring)."""
+        """Create a single available time (optionally recurring).
+
+        :param bypass_limits: When True, skips the ``availability_windows`` limit guard.
+            Only management commands and one-off repair scripts should pass this.
+        :raises OverLimitError: When the organization is at its effective
+            ``availability_windows`` ceiling. Nothing is created.
+        """
         return self._get_availability_service().create_available_time(
             calendar=calendar,
             start_time=start_time,
             end_time=end_time,
             timezone=timezone,
             rrule_string=rrule_string,
+            bypass_limits=bypass_limits,
         )
 
     def get_blocked_times_expanded(

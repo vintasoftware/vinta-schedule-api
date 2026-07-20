@@ -647,7 +647,9 @@ def test_import_organization_calendar_resources(
     # Check side effects
     import_state.refresh_from_db()
     assert import_state.status == "success"
-    mock_execute.assert_called_once_with(start_time=start_time, end_time=end_time)
+    mock_execute.assert_called_once_with(
+        start_time=start_time, end_time=end_time, import_workflow_state=import_state
+    )
 
 
 @pytest.mark.django_db

@@ -75,6 +75,7 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
 )
 from calendar_integration.services.type_guards import is_authenticated_calendar_service
 from organizations.models import ExternalEventUpdatePolicy, OrganizationMembership
+from payments.billing_constants import LimitedResource
 from users.models import User
 
 
@@ -89,9 +90,25 @@ if TYPE_CHECKING:
     from calendar_integration.services.external_event_change_request_service import (
         ExternalEventChangeRequestService,
     )
+    from organizations.models import Organization
 
 
 logger = logging.getLogger(__name__)
+
+#: How many skipped ``external_id``s a partial-import warning names before eliding.
+#: The warning goes into a log line *and* a ``TextField`` on the import workflow
+#: state; a 5000-room organization would otherwise write a multi-hundred-KB string
+#: to the database on every capped import.
+MAX_SKIPPED_EXTERNAL_IDS_IN_WARNING = 20
+
+
+def _summarize_external_ids(resources: list[CalendarResourceData]) -> str:
+    """Render at most ``MAX_SKIPPED_EXTERNAL_IDS_IN_WARNING`` ids, eliding the rest."""
+    shown = [r.external_id for r in resources[:MAX_SKIPPED_EXTERNAL_IDS_IN_WARNING]]
+    remaining = len(resources) - len(shown)
+    if remaining > 0:
+        return f"{shown} ... and {remaining} more"
+    return f"{shown}"
 
 
 class SyncServiceHost(Protocol):
@@ -146,6 +163,8 @@ class SyncServiceHost(Protocol):
         self,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
+        import_workflow_state: CalendarOrganizationResourcesImport | None = None,
+        bypass_limits: bool = False,
     ) -> Iterable[CalendarResourceData]: ...
 
 
@@ -216,9 +235,15 @@ class CalendarSyncService:
     ) -> None:
         """
         Import organization calendar resources within a specified time range.
-        :param start_time: Start time for the availability check.
-        :param end_time: End time for the availability check.
-        :return: List of available resources.
+
+        Terminal status is ``FAILED`` when the import raised, ``PARTIAL`` when the
+        organization's ``resource_calendars`` headroom forced some discovered rooms to
+        be dropped (the warning naming them is on ``error_message``), and ``SUCCESS``
+        only when everything discovered was imported. ``PARTIAL`` exists so a consumer
+        can tell a clean import from a silently truncated one without string-matching
+        an error column, which is not a contract anybody can rely on.
+
+        :param import_workflow_state: The import to run and record terminal status on.
         """
         if not is_authenticated_calendar_service(cast("BaseCalendarService", self._context)):
             raise
@@ -231,6 +256,7 @@ class CalendarSyncService:
                 self._host._execute_organization_calendar_resources_import(
                     start_time=import_workflow_state.start_time,
                     end_time=import_workflow_state.end_time,
+                    import_workflow_state=import_workflow_state,
                 )
         except Exception as e:  # noqa: BLE001
             import_workflow_state.status = CalendarOrganizationResourceImportStatus.FAILED
@@ -238,19 +264,162 @@ class CalendarSyncService:
             import_workflow_state.save(update_fields=["status", "error_message"])
             return
 
+        # Re-read rather than trusting the in-memory instance: the executor is reached
+        # through the host, which the facade may route to a different service instance
+        # (and which the test suite patches), so PARTIAL may have been recorded against
+        # a different Python object than this one.
+        import_workflow_state.refresh_from_db(fields=["status"])
+        if import_workflow_state.status == CalendarOrganizationResourceImportStatus.PARTIAL:
+            return
+
         import_workflow_state.status = CalendarOrganizationResourceImportStatus.SUCCESS
         import_workflow_state.save(update_fields=["status"])
 
+    def _cap_resources_to_resource_calendar_headroom(
+        self,
+        organization: Organization,
+        resources: list[CalendarResourceData],
+        bypass_limits: bool,
+    ) -> tuple[list[CalendarResourceData], str | None]:
+        """Cap ``resources`` to the organization's remaining ``resource_calendars`` headroom.
+
+        Phase 6b: the bulk room-import writer is a request-scoped guard's blind spot --
+        it loops ``Calendar.objects.update_or_create`` with no per-row check, so it is
+        the "single most likely place for an unmetered path to survive" the plan calls
+        out. This is checked and capped *before* the bulk write, not per-row after it.
+
+        The rule is **"will this write increase**
+        ``payments.services.entitlement_service._count_resource_calendars``**?"** -- not
+        "does a ``Calendar`` row already exist for this org + external_id?". Those two
+        differ, and in the permissive direction: the write loop below puts
+        ``calendar_type=RESOURCE`` in ``update_or_create``'s ``defaults``, so matching a
+        *non*-RESOURCE row (a PERSONAL calendar imported by ``import_account_calendars``,
+        which keys on the very same ``(organization, external_id)``) **promotes** that row
+        into the counted set. Treating it as "already imported" therefore consumed no
+        headroom while raising usage by one -- unbounded unmetered RESOURCE calendars, and
+        for Microsoft a total bypass rather than an edge case, since
+        ``get_account_calendars`` and ``get_calendar_resources`` both list the same
+        calendars with the same ``external_id`` space.
+
+        The split predicate consequently lives on ``CalendarQuerySet`` as
+        ``external_ids_not_newly_counted_as_type`` / ``not_newly_counted_as_type``, defined
+        immediately next to the ``live_of_type`` the usage counter counts with, as the
+        complement of *newly entering* it (not of ``live_of_type`` itself -- a row already
+        live as some other type is in neither set), so the two cannot drift apart again.
+
+        A resource that does not increase the count -- an already-RESOURCE row, or a
+        soft-deleted row the upsert leaves soft-deleted -- is free; every other one
+        (no row at all, or a live row of another type) consumes headroom. When the
+        chargeable resources do not all fit, as many as fit are imported (not zero, not
+        all-or-nothing) and a human-readable warning is returned for the caller to
+        record -- the spec accepts a partial import over an unmetered one, never the
+        reverse.
+
+        Checked and locked (``SELECT ... FOR UPDATE`` on the billing root's
+        subscription) inside the caller's own transaction, so two concurrent imports for
+        the same organization's last unit of capacity serialize on that row exactly like
+        every other guarded creation path in this phase. The lock is taken *before* the
+        split query, not by ``check_limit`` after it: the delta itself is derived from
+        that read, so reading it outside the lock lets the loser of a race compute its
+        headroom from a snapshot the winner has already invalidated.
+
+        :return: ``(resources_to_import, warning)`` -- ``resources_to_import`` is the
+            subset of ``resources`` (the free ones plus as many chargeable ones as fit)
+            that should actually be written; ``warning`` is ``None`` unless the import
+            had to be capped.
+        """
+        entitlement_service = self._context.entitlement_service
+        if bypass_limits or entitlement_service is None or not resources:
+            return resources, None
+
+        # A provider that returns the same external_id twice in one discovery must not
+        # be charged twice for it: ``chargeable_resources`` below is built by membership
+        # in ``resources``, so an undeduplicated list inflates ``delta`` and can produce
+        # a false partial cap. First occurrence wins, matching the write loop's
+        # ``update_or_create`` semantics (later duplicates would just re-write the same
+        # row anyway).
+        resources = list({resource.external_id: resource for resource in resources}.values())
+
+        # Take the guard lock before the split read below -- see the docstring.
+        entitlement_service.lock_billing_root(organization)
+
+        free_ids = Calendar.objects.filter_by_organization(
+            organization.id
+        ).external_ids_not_newly_counted_as_type(
+            (resource.external_id for resource in resources), CalendarType.RESOURCE
+        )
+        chargeable_resources = [r for r in resources if r.external_id not in free_ids]
+        if not chargeable_resources:
+            # Nothing this run writes can raise the counted total (every discovered
+            # resource is either already a live RESOURCE calendar or a soft-deleted row
+            # that stays soft-deleted), so it consumes no headroom.
+            return resources, None
+
+        result = entitlement_service.check_limit(
+            organization,
+            LimitedResource.RESOURCE_CALENDARS,
+            delta=len(chargeable_resources),
+            lock=True,
+        )
+        if result.allowed:
+            return resources, None
+
+        # Blocked -> current_usage/ceiling are guaranteed non-None (see
+        # LimitCheckResult's docstring).
+        headroom = max((result.ceiling or 0) - (result.current_usage or 0), 0)
+        importable_ids = {r.external_id for r in chargeable_resources[:headroom]}
+        skipped = [r for r in chargeable_resources if r.external_id not in importable_ids]
+        resources_to_import = [
+            r for r in resources if r.external_id in free_ids or r.external_id in importable_ids
+        ]
+        warning = (
+            f"Partial resource-calendar import for organization {organization.id}: at its "
+            f"resource_calendars ceiling ({result.ceiling}, currently using "
+            f"{result.current_usage}). Imported {len(importable_ids)} of "
+            f"{len(chargeable_resources)} new resource calendars; skipped {len(skipped)} "
+            f"({_summarize_external_ids(skipped)})."
+        )
+        logger.warning(warning)
+        return resources_to_import, warning
+
+    @transaction.atomic()
     def _execute_organization_calendar_resources_import(
         self,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
+        import_workflow_state: CalendarOrganizationResourcesImport | None = None,
+        bypass_limits: bool = False,
     ) -> Iterable[CalendarResourceData]:
         """
         Import organization calendar resources within a specified time range.
+
+        The whole method runs in one transaction, which means the guard lock taken by
+        ``_cap_resources_to_resource_calendar_headroom`` (a row lock on the billing
+        root's ``Subscription``) is held across the write loop below. Not narrowed
+        here: the invariant is that each authorized write commits with the lock that
+        authorized it (see ``EntitlementService.check_limit``'s ``lock`` docs), not
+        that the whole import must share one transaction -- a chunked version that
+        re-locked and re-checked headroom per chunk would preserve that invariant too,
+        and is tracked as a follow-up (see the phase's tracking doc) rather than
+        implemented here. As shipped, the cost is real for a reseller billing root --
+        every guarded creation path in its subtree serializes for the duration of a
+        large import -- and is bounded deliberately: the loop does database work only
+        (an upsert plus a ``CalendarSync`` row per resource; the provider call and
+        every Celery dispatch happen outside it, the former before the lock is taken
+        and the latter on commit), and this runs from a background import task rather
+        than a request hot path.
+
         :param start_time: Start time for the availability check.
         :param end_time: End time for the availability check.
-        :return: List of available resources.
+        :param import_workflow_state: When given, a partial-import warning (headroom
+            exhausted on ``resource_calendars``) is recorded on its ``error_message``
+            and its status set to ``PARTIAL``, both persisted immediately -- the import
+            is not failed, per the spec's "partial import over unmetered creation" rule.
+        :param bypass_limits: When True, skips the ``resource_calendars`` headroom guard.
+            Only management commands and one-off repair scripts should pass this.
+        :return: The resources actually imported -- the provider's discovery minus
+            anything a partial-import cap dropped. Not the raw discovery: a caller that
+            cannot tell the two apart has no way to know the import was truncated.
         """
         context = cast("BaseCalendarService", self._context)
         if not is_authenticated_calendar_service(context):
@@ -261,8 +430,21 @@ class CalendarSyncService:
                 "Calendar adapter is not implemented for the current account provider."
             )
 
-        resources = context.calendar_adapter.get_available_calendar_resources(start_time, end_time)
-        for resource in resources:
+        resources = list(
+            context.calendar_adapter.get_available_calendar_resources(start_time, end_time)
+        )
+
+        # Check remaining headroom *before* the bulk write -- a per-row check after the
+        # fact is exactly the unmetered path this phase closes.
+        resources_to_import, warning = self._cap_resources_to_resource_calendar_headroom(
+            context.organization, resources, bypass_limits
+        )
+        if warning and import_workflow_state is not None:
+            import_workflow_state.error_message = warning
+            import_workflow_state.status = CalendarOrganizationResourceImportStatus.PARTIAL
+            import_workflow_state.save(update_fields=["error_message", "status"])
+
+        for resource in resources_to_import:
             self._host.request_calendar_sync(
                 calendar=Calendar.objects.update_or_create(
                     external_id=resource.external_id,
@@ -279,7 +461,7 @@ class CalendarSyncService:
                 end_datetime=end_time,
                 should_update_events=True,
             )
-        return resources
+        return resources_to_import
 
     # ------------------------------------------------------------------
     # Account-calendar import
@@ -339,6 +521,27 @@ class CalendarSyncService:
         """
         Import calendars associated with the authenticated account and create them as Calendar
         records.
+
+        Phase 6b: **not** guarded by a limit check. Every calendar this method creates is
+        seeded with ``calendar_type=PERSONAL`` (``create_defaults`` below); it never sets
+        ``calendar_type=RESOURCE``, so it never creates anything counted by the
+        ``resource_calendars`` member of ``LimitedResource`` (the closed set from Phase 3).
+        A pre-existing RESOURCE calendar that also shows up in this account's calendar list
+        (e.g. a domain-wide account listing a room mailbox) is matched by ``update_or_create``
+        and only *updated* -- ``calendar_type`` is not in ``defaults`` below, so its type is
+        left untouched and it is skipped just below (the ``calendar_type == RESOURCE:
+        continue`` branch) without consuming headroom.
+
+        What this method must **not** be read as claiming is that the rows it creates can
+        never become metered ones. It keys ``update_or_create`` on ``(organization,
+        external_id)`` -- the exact key the room-import writer keys on -- and for Microsoft
+        both providers' listings share one id space (``get_account_calendars`` and
+        ``get_calendar_resources`` both enumerate ``client.list_calendars()``), so a
+        PERSONAL row created here is routinely the same row a later rooms import promotes
+        to RESOURCE. Metering that promotion is the *importer's* job, and it does so by
+        charging headroom for any live non-RESOURCE row it retypes (see
+        ``_cap_resources_to_resource_calendar_headroom``); an earlier version of that split
+        classified such a row as "already imported" and let the promotion through free.
 
         :param sync_after_import: When True (default), enqueue an event sync for each
             imported calendar that has sync enabled. The per-calendar ``sync_enabled``
