@@ -108,6 +108,10 @@ class CalendarManager(BaseOrganizationModelManager):
     def get_queryset(self) -> CalendarQuerySet:
         return CalendarQuerySet(self.model, using=self._db)
 
+    def live_of_type(self, calendar_type: str) -> CalendarQuerySet:
+        """Wraps :meth:`CalendarQuerySet.live_of_type`."""
+        return self.get_queryset().live_of_type(calendar_type)
+
     def only_virtual_calendars(self):
         """
         Returns all virtual calendars.
@@ -201,6 +205,10 @@ class AvailableTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
         from calendar_integration.querysets import AvailableTimeQuerySet
 
         return AvailableTimeQuerySet(self.model, using=self._db)
+
+    def only_user_authored(self):
+        """Wraps :meth:`AvailableTimeQuerySet.only_user_authored`."""
+        return self.get_queryset().only_user_authored()
 
 
 class CalendarGroupManager(BaseOrganizationModelManager):

@@ -1,5 +1,27 @@
-class PaymentError(ValueError):
-    pass
+from payments.billing_constants import LimitedResource
+
+
+class BillingError(Exception):
+    """Root of everything the ``payments`` app raises.
+
+    Deliberately **not** a ``ValueError``. Large parts of the codebase wrap service
+    calls in ``except ValueError as e: raise GraphQLError(str(e))`` (e.g.
+    ``public_api/mutations.py``) or the REST equivalent, which flattens an
+    exception down to its message. Any payments error that must survive that
+    journey with its structured fields intact — ``OverLimitError`` above all —
+    hangs off this class and *only* this class.
+
+    ``PaymentError`` keeps the ``ValueError`` lineage for backwards compatibility
+    with those existing handlers; new structured errors should not.
+    """
+
+
+class PaymentError(BillingError, ValueError):
+    """Payment-gateway and billing-data errors.
+
+    Still a ``ValueError`` because callers across the codebase have caught it that
+    way since before this tree existed; narrowing that is out of scope here.
+    """
 
 
 class PaymentAdapterError(PaymentError):
@@ -82,6 +104,135 @@ class MissingSeedBillingPlanError(PaymentError):
             "and seed data before re-running."
         )
         self.slug = slug
+
+
+class InapplicableInvitationExclusionError(BillingError):
+    """Raised when ``exclude_invitation_id`` is passed for a resource whose usage
+    counter does not read it — i.e. anything but ``organization_members``.
+
+    A programming error, not a runtime condition: the caller believes a pending
+    invitation was excluded from the count and it was not, so the number they get
+    back is wrong in a direction nothing else will contradict.
+    """
+
+    def __init__(self, resource_key: str):
+        super().__init__(
+            f"exclude_invitation_id is only meaningful for "
+            f"{LimitedResource.ORGANIZATION_MEMBERS!r}, not {resource_key!r}: no other usage "
+            "counter reads it, so it would be silently ignored."
+        )
+        self.resource_key = resource_key
+
+
+class IncompleteBillingPlanError(BillingError):
+    """Raised when a ``BillingPlan`` a subscription is being placed on carries no
+    ``PlanLimit`` row for some ``LimitedResource`` member.
+
+    The catalog never expresses "this plan does not include X" by omission — it
+    expresses it with an explicit row (``limit_value=0``), exactly as the seeded
+    ``free`` plan does for ``public_api_system_users``. Omission is therefore a
+    catalog *authoring* error, and there is no safe way to interpret it at
+    runtime: an absent (or stale ``limit_value=None``) row reads as **unlimited**
+    in ``EntitlementService``, so letting the plan change through would hand the
+    omitted resource an infinite ceiling on a downgrade; materializing it as
+    ``limit_value=0`` would instead block an organization on a resource nobody
+    agreed to restrict, which the rollout forbids.
+
+    So the plan change is refused and the gap is surfaced to whoever authored it.
+    ``BillingPlan.clean`` and ``BillingPlanAdmin``'s limit inline raise the same
+    condition as a ``ValidationError`` at authoring time, which is where a support
+    admin can actually act on it; this exception is the runtime backstop for a plan
+    that reached the database some other way.
+
+    Inherits ``BillingError`` rather than ``PaymentError`` (a ``ValueError``) so
+    the ``except ValueError`` wrappers around service calls cannot flatten a
+    catalog-integrity failure into a user-facing validation message.
+    """
+
+    def __init__(self, plan_slug: str, missing_resource_keys: list[str]):
+        super().__init__(
+            f"BillingPlan {plan_slug!r} carries no PlanLimit row for "
+            f"{missing_resource_keys}. Every plan must carry a row for every "
+            "LimitedResource member — 'not included' is limit_value=0, never omission, "
+            "because an omitted row reads as unlimited."
+        )
+        self.plan_slug = plan_slug
+        self.missing_resource_keys = missing_resource_keys
+
+
+class OverLimitError(BillingError):
+    """Raised by a guarded service method when creating one more of a resource
+    would take the organization past its effective ceiling.
+
+    Inherits ``BillingError`` rather than ``PaymentError`` precisely because
+    ``PaymentError`` is a ``ValueError``: ``public_api/mutations.py`` and
+    ``calendar_integration/views.py`` both wrap service calls in
+    ``except ValueError as e: raise ...(str(e))``, which would downgrade this to a
+    message-only error and drop ``code`` / ``resource`` / ``current_usage`` /
+    ``limit`` / ``remedy``. Several of those wrapped call sites guard resources
+    that are ``LimitedResource`` members (``webhook_subscriptions`` among them), so
+    the byte-identical-across-surfaces contract below depends on this base class.
+
+    Carries the four fields of the plan's shared over-limit error contract so
+    every surface — DRF (via ``common.exception_handlers.vinta_exception_handler``)
+    and the public GraphQL API — renders a byte-identical body:
+
+    .. code-block:: json
+
+        {
+          "detail": "Organization is at its limit for organization members.",
+          "code": "limit_exceeded",
+          "resource": "organization_members",
+          "current_usage": 10,
+          "limit": 10,
+          "remedy": "purchase_add_on"
+        }
+
+    Rendered as HTTP 402 Payment Required rather than 403, so a client can tell
+    "you may not do this" apart from "you have run out of capacity".
+    """
+
+    code = "limit_exceeded"
+
+    def __init__(
+        self,
+        resource_key: str,
+        current_usage: int,
+        limit: int,
+        remedy: str,
+        detail: str | None = None,
+    ):
+        self.resource_key = resource_key
+        self.current_usage = current_usage
+        self.limit = limit
+        self.remedy = remedy
+        self.detail = detail or self.build_detail(resource_key)
+        super().__init__(self.detail)
+
+    @staticmethod
+    def build_detail(resource_key: str) -> str:
+        """Human-readable half of the error body.
+
+        Uses the ``LimitedResource`` label when the key is a known member and falls
+        back to the raw key otherwise, so an unrecognized key degrades to a usable
+        message instead of raising while building an error.
+        """
+        try:
+            label = LimitedResource(resource_key).label.lower()
+        except ValueError:
+            label = resource_key
+        return f"Organization is at its limit for {label}."
+
+    def as_error_body(self) -> dict:
+        """The shared contract body, used by every rendering surface."""
+        return {
+            "detail": self.detail,
+            "code": self.code,
+            "resource": self.resource_key,
+            "current_usage": self.current_usage,
+            "limit": self.limit,
+            "remedy": self.remedy,
+        }
 
 
 class NoDefaultBillingPlanError(PaymentError):

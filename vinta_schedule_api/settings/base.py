@@ -145,6 +145,10 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_FILTER_BACKENDS": ("django_filters.rest_framework.DjangoFilterBackend",),
     "DEFAULT_SCHEMA_CLASS": "common.openapi.TenantScopedAutoSchema",
+    # Delegates to DRF's default handler for everything except the domain
+    # exceptions it explicitly knows about (currently `OverLimitError` -> 402),
+    # so no existing error rendering changes.
+    "EXCEPTION_HANDLER": "common.exception_handlers.vinta_exception_handler",
     # Scoped (not project-wide) throttles. `payment-webhook` covers the
     # unauthenticated inbound provider webhook endpoints (payments/views.py) — a
     # generous per-IP rate since it only needs to bound abuse, not normal provider

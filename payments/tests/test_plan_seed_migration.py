@@ -68,6 +68,39 @@ class TestPlanSeedMigration:
         assert limit.limit_value is not None
         assert limit.overage_unit_price is not None
 
+    def test_every_seeded_plan_covers_every_limited_resource(self):
+        """The plan-completeness invariant, stated once for the whole catalog.
+
+        `SubscriptionService.assert_plan_is_complete` enforces this at runtime for
+        *any* plan a subscription is placed on, including one authored through the
+        admin. This test is the seed-data half: it proves no shipped plan trips that
+        guard, so nobody is refused a plan change on catalog data we control.
+
+        The invariant itself: a plan carrying a row for every `LimitedResource`
+        member can never leave a subscription in the absent-row state on a plan
+        change, and absent-row (like a stale `limit_value=None`) is what
+        `EntitlementService.get_effective_limit` reads as **unlimited**. Without it,
+        adding a resource to `LimitedResource` and forgetting one plan would let a
+        downgrade onto that plan hand the resource an infinite ceiling (BLOCKER 3,
+        Phase 5 review).
+
+        Enumerated over every seeded plan, not just `unlimited`, so a plan added to
+        the catalog later is held to the same rule.
+        """
+        assert BillingPlan.objects.exists(), (
+            "No seeded plans at all — without this guard the loop below passes "
+            "vacuously and asserts nothing."
+        )
+        expected = set(LimitedResource.values)
+        for plan in BillingPlan.objects.all():
+            covered = set(plan.limits.values_list("resource_key", flat=True))
+            assert expected <= covered, (
+                f"BillingPlan {plan.slug!r} has no PlanLimit row for "
+                f"{sorted(expected - covered)}. Every plan must carry a row for every "
+                "LimitedResource member -- 'not included' is limit_value=0, never "
+                "omission, because an omitted row reads as unlimited."
+            )
+
     def test_only_one_default_plan_across_the_seeded_catalog(self):
         assert BillingPlan.objects.filter(is_default_for_new_organizations=True).count() == 1
 

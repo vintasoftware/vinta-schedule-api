@@ -6,6 +6,7 @@ from common.fields import OrganizationMembershipForeignKey
 from common.models import BaseModel
 from organizations.models import OrganizationModel
 from public_api.constants import PublicAPIResources
+from public_api.managers import SystemUserManager
 
 
 class SystemUser(OrganizationModel):
@@ -13,6 +14,8 @@ class SystemUser(OrganizationModel):
     Represents a system user in the application.
     This model is used to manage system-level users that interact with the application.
     """
+
+    objects: SystemUserManager = SystemUserManager()
 
     organization = models.ForeignKey(
         "organizations.Organization",

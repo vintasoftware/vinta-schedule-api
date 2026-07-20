@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING, ClassVar
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q, UniqueConstraint
 
@@ -69,6 +70,11 @@ class BillingPlan(BaseModel):
     limits: "RelatedManager[PlanLimit]"
     entitlements: "RelatedManager[PlanEntitlement]"
 
+    #: Per-instance opt-out of the limit-coverage check in ``clean`` — set by
+    #: ``BillingPlanAdmin``'s form, which validates coverage on the inline formset
+    #: instead (the only place that can see the rows the save is about to write).
+    skip_limit_coverage_validation: bool = False
+
     class Meta(BaseModel.Meta):
         constraints: ClassVar = [
             UniqueConstraint(
@@ -80,6 +86,52 @@ class BillingPlan(BaseModel):
 
     def __str__(self):
         return self.name
+
+    def get_missing_limited_resource_keys(self) -> list[str]:
+        """``LimitedResource`` members this plan carries no ``PlanLimit`` row for.
+
+        A plan is *complete* when this is empty. Completeness is an invariant, not
+        a preference: an absent ``PlanLimit`` row (or a stale
+        ``SubscriptionPlanLimit`` left over from a previous plan with
+        ``limit_value=None``) reads as **unlimited** in ``EntitlementService``, so
+        an incomplete plan silently grants an infinite ceiling on the resource it
+        omits. "Not included" is expressed with ``limit_value=0``, never omission.
+
+        An unsaved plan has no rows to read (the related manager raises on an
+        instance with no pk), so it is reported as missing everything — which is
+        what ``clean`` should say about it.
+        """
+        expected = set(LimitedResource.values)
+        if self.pk is None:
+            return sorted(expected)
+        covered = set(self.limits.values_list("resource_key", flat=True))
+        return sorted(expected - covered)
+
+    def clean(self) -> None:
+        """Reject an incomplete plan at authoring time rather than at downgrade time.
+
+        ``BillingPlanAdmin`` skips this one check (see
+        ``BillingPlanAdmin.form``) because the parent form is validated *before*
+        its ``PlanLimit`` inline formset is saved — the rows that would make the
+        plan complete are still pending, so this would reject the very edit that
+        fixes it, with no way out. The admin runs the equivalent check on the
+        inline formset instead, against the rows the save is about to produce.
+        """
+        super().clean()
+        if self.skip_limit_coverage_validation:
+            return
+        missing = self.get_missing_limited_resource_keys()
+        if missing:
+            raise ValidationError(
+                {
+                    "__all__": (
+                        f"This plan has no PlanLimit row for {missing}. Every plan must "
+                        "carry a row for every limited resource — 'not included' is "
+                        "limit_value=0, never omission, because an omitted row reads as "
+                        "unlimited."
+                    )
+                }
+            )
 
 
 class PlanLimit(BaseModel):
@@ -188,6 +240,7 @@ class Subscription(BaseModel):
 
     limits: "RelatedManager[SubscriptionPlanLimit]"
     entitlements: "RelatedManager[SubscriptionEntitlement]"
+    add_ons: "RelatedManager[SubscriptionAddOn]"
 
     def __str__(self):
         return (
@@ -254,6 +307,34 @@ class SubscriptionEntitlement(BaseModel):
 
     def __str__(self):
         return f"{self.subscription} - {self.entitlement_key} - {self.is_enabled}"
+
+
+class SubscriptionAddOn(BaseModel):
+    """Extra capacity bought on top of a ``Subscription``'s plan limits.
+
+    An active add-on's ``quantity`` is added to the matching
+    ``SubscriptionPlanLimit.limit_value`` when resolving the effective ceiling
+    (``EntitlementService.get_effective_limit``). An add-on on a resource whose
+    limit is NULL (unlimited) changes nothing — unlimited plus anything is still
+    unlimited.
+
+    ``purchase_idempotency_key`` is unique so a retried purchase (a double-clicked
+    button, a Celery task re-delivered under ``CELERY_TASK_ACKS_LATE``) neither
+    grants capacity twice nor charges twice. The purchase flow that populates it
+    lands in a later phase; the constraint exists from the start so no code path
+    can be written against a non-idempotent shape.
+    """
+
+    subscription = models.ForeignKey(Subscription, on_delete=models.CASCADE, related_name="add_ons")
+    resource_key = models.CharField(max_length=100, choices=LimitedResource)
+    quantity = models.PositiveIntegerField()
+    is_recurring = models.BooleanField()
+    is_active = models.BooleanField(default=True, db_index=True)
+    external_id = models.CharField(max_length=255, blank=True)
+    purchase_idempotency_key = models.CharField(max_length=255, unique=True)
+
+    def __str__(self):
+        return f"{self.subscription} - {self.resource_key} - +{self.quantity}"
 
 
 class Payment(BaseModel):
