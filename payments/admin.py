@@ -1,4 +1,8 @@
+from typing import Any
+
 from django.contrib import admin
+from django.forms.models import BaseInlineFormSet
+from django.http import HttpRequest
 
 from payments.models import (
     BillingAddress,
@@ -12,6 +16,8 @@ from payments.models import (
     Refund,
     RefundStatusUpdate,
     Subscription,
+    SubscriptionEntitlement,
+    SubscriptionPlanLimit,
     SubscriptionStatusUpdate,
 )
 
@@ -63,6 +69,38 @@ class BillingProfileAdmin(admin.ModelAdmin):
     readonly_fields = ("created", "modified")
 
 
+class SubscriptionPlanLimitInline(admin.TabularInline):
+    """Editable per-subscription limit copy — the support lever for a stuck
+    organization. A row an admin edits here is stamped ``is_overridden=True`` on
+    save (see ``SubscriptionAdmin.save_formset``) so it survives the next plan
+    change untouched, which is what makes this the intended enforcement bypass
+    instead of a code-level one.
+
+    ``is_overridden`` itself is editable (not in ``readonly_fields``): a support
+    grant is meant to be temporary, and the way to clear it — put the row back
+    under normal plan-change control — is to uncheck it here. ``save_formset``
+    special-cases this: a save where ``is_overridden`` is the *only* field that
+    changed is not re-stamped ``True``, so unchecking the box actually clears it.
+    Any other edit (changing the limit value, kind, etc.) is still stamped
+    ``True``, since touching a row's data is itself the act of overriding it.
+    """
+
+    model = SubscriptionPlanLimit
+    extra = 0
+    fields = ("resource_key", "limit_value", "kind", "overage_unit_price", "is_overridden")
+
+
+class SubscriptionEntitlementInline(admin.TabularInline):
+    """Editable per-subscription entitlement copy — same support-lever semantics
+    as ``SubscriptionPlanLimitInline``. Without this, a stuck entitlement (e.g. an
+    org that needs ``PARTNER_API`` enabled ahead of a plan change) had no support
+    lever at all, unlike limits."""
+
+    model = SubscriptionEntitlement
+    extra = 0
+    fields = ("entitlement_key", "is_enabled", "is_overridden")
+
+
 @admin.register(Subscription)
 class SubscriptionAdmin(admin.ModelAdmin):
     list_display = (
@@ -78,6 +116,40 @@ class SubscriptionAdmin(admin.ModelAdmin):
     list_filter = ("status", "billing_state", "billing_interval", "payment_provider")
     search_fields = ("organization__name", "external_id")
     readonly_fields = ("created", "modified")
+    inlines = (SubscriptionPlanLimitInline, SubscriptionEntitlementInline)
+
+    def save_formset(
+        self, request: HttpRequest, form: Any, formset: BaseInlineFormSet, change: bool
+    ) -> None:
+        """`SubscriptionPlanLimit` / `SubscriptionEntitlement` rows an admin
+        creates or edits here are hand-edited by definition — mark them
+        `is_overridden=True` so a later plan change (`SubscriptionService.change_plan`)
+        leaves them untouched. Rows the admin merely viewed without changing are
+        not returned by `formset.save(commit=False)` and are left alone.
+
+        Exception: a row whose *only* changed field is `is_overridden` itself is
+        not re-stamped — it is left at whatever value the admin just set. Without
+        this, unchecking the box to clear a support override would make
+        `form.has_changed()` true, the row would still come back from
+        `formset.save(commit=False)`, and the loop below would immediately
+        re-stamp it `True`, making the override permanently one-way.
+        """
+        if formset.model in (SubscriptionPlanLimit, SubscriptionEntitlement):
+            instances = formset.save(commit=False)
+            override_only_pks = {
+                obj.pk
+                for obj, changed_fields in formset.changed_objects
+                if changed_fields == ["is_overridden"]
+            }
+            for instance in instances:
+                if instance.pk not in override_only_pks:
+                    instance.is_overridden = True
+                instance.save()
+            for obj in formset.deleted_objects:
+                obj.delete()
+            formset.save_m2m()
+        else:
+            super().save_formset(request, form, formset, change)
 
 
 @admin.register(Payment)

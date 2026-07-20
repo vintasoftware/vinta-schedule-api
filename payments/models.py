@@ -186,10 +186,74 @@ class Subscription(BaseModel):
     plan_external_id = models.CharField(max_length=255, blank=True)
     payment_provider = models.CharField(max_length=50, choices=PaymentProviders)
 
+    limits: "RelatedManager[SubscriptionPlanLimit]"
+    entitlements: "RelatedManager[SubscriptionEntitlement]"
+
     def __str__(self):
         return (
             f"{self.id} - {self.status} - {self.current_period_start} - {self.current_period_end}"
         )
+
+
+class SubscriptionPlanLimit(BaseModel):
+    """Per-subscription copy of a ``PlanLimit`` row — the support lever.
+
+    Copied from the catalog ``PlanLimit`` on subscription creation and re-copied on
+    plan change (``SubscriptionService.change_plan``). Catalog edits to ``PlanLimit``
+    never propagate here — an organization keeps what it was sold, and a catalog typo
+    cannot silently lower limits for every subscriber at once.
+
+    ``is_overridden=True`` marks a row an admin edited by hand in Django admin (see
+    ``payments/admin.py``'s ``SubscriptionPlanLimitInline``) — this is the support
+    lever for a stuck organization, and it is why there is no support-facing
+    enforcement bypass elsewhere. A plan change re-copies every non-overridden row
+    from the new plan's ``PlanLimit`` set and leaves ``is_overridden=True`` rows
+    untouched.
+    """
+
+    subscription = models.ForeignKey(Subscription, on_delete=models.CASCADE, related_name="limits")
+    resource_key = models.CharField(max_length=100, choices=LimitedResource)
+    limit_value = models.PositiveIntegerField(null=True, blank=True)
+    kind = models.CharField(max_length=20, choices=LimitKind)
+    overage_unit_price = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    is_overridden = models.BooleanField(default=False)
+
+    class Meta(BaseModel.Meta):
+        constraints: ClassVar = [
+            UniqueConstraint(
+                fields=["subscription", "resource_key"],
+                name="uniq_sub_limit_resource",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.subscription} - {self.resource_key} - {self.limit_value}"
+
+
+class SubscriptionEntitlement(BaseModel):
+    """Per-subscription copy of a ``PlanEntitlement`` row.
+
+    Mirrors ``SubscriptionPlanLimit``'s override semantics: catalog edits do not
+    propagate, and ``is_overridden=True`` rows survive a plan change untouched.
+    """
+
+    subscription = models.ForeignKey(
+        Subscription, on_delete=models.CASCADE, related_name="entitlements"
+    )
+    entitlement_key = models.CharField(max_length=100, choices=Entitlement)
+    is_enabled = models.BooleanField(default=False)
+    is_overridden = models.BooleanField(default=False)
+
+    class Meta(BaseModel.Meta):
+        constraints: ClassVar = [
+            UniqueConstraint(
+                fields=["subscription", "entitlement_key"],
+                name="uniq_sub_entitlement_key",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.subscription} - {self.entitlement_key} - {self.is_enabled}"
 
 
 class Payment(BaseModel):

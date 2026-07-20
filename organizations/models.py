@@ -240,6 +240,20 @@ class OrganizationMembership(BaseModel):
             "read unchanged."
         ),
     )
+    is_billing_owner = models.BooleanField(
+        default=False,
+        db_default=False,
+        help_text=(
+            "Whether this membership may manage the organization's billing (change "
+            "plan, purchase add-ons, manage payment method) in addition to admins. "
+            "The permission that reads this flag (IsBillingOwnerOrAdmin) lands in a "
+            "later phase; this field only marks the membership. No db_index yet "
+            "(Phase 4 review finding 10) — nothing reads this field until Phase 9, "
+            "and a boolean index on this table takes a SHARE lock for no present "
+            "benefit. Add it (via AddIndexConcurrently in a non-atomic migration, "
+            "given table size) alongside the phase that starts querying it."
+        ),
+    )
 
     # Composite primary key on (user, organization) — a membership's identity is the
     # (user, org) pair. The implicit ``id`` BigAutoField is dropped in the Phase 7b

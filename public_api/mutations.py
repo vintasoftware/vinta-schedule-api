@@ -50,6 +50,7 @@ from calendar_integration.services.dataclasses import (
 from organizations.exceptions import NoServiceAccountConfiguredError, UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from organizations.services import OrganizationService
+from payments.services.subscription_service import SubscriptionService
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
@@ -102,6 +103,7 @@ class MutationDependencies:
     public_api_auth_service: PublicAPIAuthService
     organization_service: OrganizationService
     webhook_service: "WebhookService"
+    subscription_service: SubscriptionService
 
 
 @inject
@@ -113,8 +115,16 @@ def get_mutation_dependencies(
         OrganizationService | None, Provide["organization_service"]
     ] = None,
     webhook_service: Annotated["WebhookService | None", Provide["webhook_service"]] = None,
+    subscription_service: Annotated[
+        SubscriptionService | None, Provide["subscription_service"]
+    ] = None,
 ) -> MutationDependencies:
-    required_dependencies = [public_api_auth_service, organization_service, webhook_service]
+    required_dependencies = [
+        public_api_auth_service,
+        organization_service,
+        webhook_service,
+        subscription_service,
+    ]
     if any(dep is None for dep in required_dependencies):
         raise GraphQLError(
             f"Missing required dependency {', '.join([str(dep) for dep in required_dependencies if dep is None])}"
@@ -124,6 +134,7 @@ def get_mutation_dependencies(
         public_api_auth_service=cast(PublicAPIAuthService, public_api_auth_service),
         organization_service=cast(OrganizationService, organization_service),
         webhook_service=cast("WebhookService", webhook_service),
+        subscription_service=cast(SubscriptionService, subscription_service),
     )
 
 
@@ -893,6 +904,20 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError(
                 f"An organization with name '{input.name}' already exists under this parent."
             ) from e
+
+        # Every organization always has exactly one active plan — there is no
+        # plan-less state. This raw insert bypasses OrganizationService entirely, so
+        # unlike the REST/signup paths this hook has to be called explicitly here.
+        # It is a no-op today: assert_org_can_invite above guarantees acting_org is
+        # a billing root, and child_org is always created with parent=acting_org and
+        # can_invite_organizations=False, so it never satisfies is_billing_root
+        # (see payments.services.subscription_service) and always pools against
+        # acting_org's subscription instead of getting its own. Kept as
+        # defence-in-depth: if this mutation body is ever changed to create a
+        # parent-less or reseller child, this call is what stops it from ending up
+        # plan-less rather than a second, disconnected invariant to keep in sync.
+        deps = get_mutation_dependencies()
+        deps.subscription_service.create_subscription_for_organization(child_org)
 
         return CreateOrganizationResult(
             organization=OrganizationResult(id=child_org.id, name=child_org.name)

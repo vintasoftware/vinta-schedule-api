@@ -46,3 +46,52 @@ class BillingProfileContactEmailMissingError(PaymentError):
         "to the payment gateway",
     ):
         super().__init__(message)
+
+
+class BillingRootCycleError(PaymentError):
+    """Raised by ``resolve_billing_root`` when the ``parent`` chain starting from
+    an organization revisits an organization it already walked through.
+
+    ``parent`` is user-mutable data (Django admin), so a cycle is reachable in
+    practice. Returning an arbitrary node from the cycle (as opposed to raising)
+    would silently leave every organization on the cycle without a resolvable
+    billing root, which Phase 5's ``get_effective_limit`` would then be handed.
+    """
+
+    def __init__(self, organization_id: int, visited_ids: set[int]):
+        super().__init__(
+            f"Cycle detected while resolving the billing root for organization "
+            f"{organization_id}: revisited organization ids {sorted(visited_ids)}"
+        )
+        self.organization_id = organization_id
+        self.visited_ids = visited_ids
+
+
+class MissingSeedBillingPlanError(PaymentError):
+    """Raised when a ``BillingPlan`` slug a migration/backfill depends on (e.g. the
+    ``unlimited`` plan seeded by ``payments.0007``) is missing at runtime.
+
+    A missing seeded plan means a corrupted or out-of-order deploy — this must
+    fail loudly rather than silently leave every organization plan-less with no
+    signal and no re-run path.
+    """
+
+    def __init__(self, slug: str):
+        super().__init__(
+            f"Required seed BillingPlan {slug!r} is missing. Check migration order "
+            "and seed data before re-running."
+        )
+        self.slug = slug
+
+
+class NoDefaultBillingPlanError(PaymentError):
+    """Raised when no active ``BillingPlan`` has
+    ``is_default_for_new_organizations=True`` — e.g. the default plan was
+    deactivated in admin without a replacement being marked default first.
+    """
+
+    def __init__(
+        self,
+        message="No active BillingPlan is marked is_default_for_new_organizations=True",
+    ):
+        super().__init__(message)

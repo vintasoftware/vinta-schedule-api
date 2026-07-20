@@ -158,6 +158,7 @@ Custom DB-defined code is versioned via the framework in `common/raw_sql_migrati
 - **New structure:** create a directory named after the structure under the appropriate type directory; add `0001.sql` with the body. Then define a migration manager in `__init__.py` inheriting from the manager classes in `common/raw_sql_migration_managers.py`. Then create a Django migration whose `operations` calls `manager.migration(...)`.
 - **Update an existing structure:** add the next-numbered SQL file (`0002.sql`, `0003.sql`, ...) and create a Django migration whose `operations` calls `manager.migrate(...)` referencing the new version name.
 - Examples: `calendar_integration/migrations/sql/functions/calculate_recurring_events`, `.../get_event_occurrences_json`.
+- Data migrations should normally re-derive their logic against `apps.get_model(...)` historical models, not import from a live service module — `payments/migrations/0009_backfill_unlimited_subscriptions.py` is a deliberate, documented exception (imports `billing_root_filter` from `payments/services/subscription_service.py`), so a future rename of `can_invite_organizations` / `parent` would retroactively change that historical migration's behavior; keep that in mind before renaming either field.
 
 ### Testing
 

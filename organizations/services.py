@@ -41,6 +41,7 @@ from organizations.models import (
     OrganizationMembership,
     OrganizationRole,
 )
+from payments.services.subscription_service import SubscriptionService
 from users.models import User
 from webhooks.services.webhook_membership_side_effects import WebhookMembershipSideEffectsService
 
@@ -59,12 +60,15 @@ class OrganizationService:
             Provide["webhook_membership_side_effects_service"],
         ],
         audit_service: Annotated[AuditService, Provide["audit_service"]],
+        subscription_service: Annotated[SubscriptionService, Provide["subscription_service"]],
     ):
         self.calendar_service = calendar_service
         self.notification_service = notification_service
         self.webhook_membership_side_effects_service = webhook_membership_side_effects_service
         self.audit_service = audit_service
+        self.subscription_service = subscription_service
 
+    @transaction.atomic()
     def create_organization(
         self,
         creator: User,
@@ -79,6 +83,13 @@ class OrganizationService:
         :param external_event_update_policy: Policy for inbound external provider
             edits/deletions. When ``None`` the model's default is used.
         :return: Created Organization instance.
+
+        Wrapped in its own transaction (rather than relying on the caller's) so the
+        "no plan-less state" invariant does not depend on the call site: under
+        ``ATOMIC_REQUESTS`` the DRF/view caller already wraps this, but a
+        management command, shell, or Celery task calling this directly would
+        otherwise be able to commit the ``Organization`` row and then fail on
+        subscription creation, leaving a plan-less organization behind.
         """
         create_kwargs: dict = {
             "name": name,
@@ -87,6 +98,11 @@ class OrganizationService:
         if external_event_update_policy is not None:
             create_kwargs["external_event_update_policy"] = external_event_update_policy
         self.organization = Organization.objects.create(**create_kwargs)
+        # Every organization always has exactly one active plan, from creation —
+        # there is no plan-less state (billing plans and limits plan, objective 2).
+        # A no-op for a reseller child (parent set): it pools against its root's
+        # subscription instead. See SubscriptionService.create_subscription_for_organization.
+        self.subscription_service.create_subscription_for_organization(self.organization)
         # The creator of the organization is its first admin — every org must
         # have at least one admin, and no one else exists yet to promote them.
         admin_membership = OrganizationMembership.objects.create(
