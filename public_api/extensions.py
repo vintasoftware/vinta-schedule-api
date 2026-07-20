@@ -8,10 +8,40 @@ from pyrate_limiter import (
     Duration,
     Rate,
 )
+from rest_framework.views import set_rollback
 from strawberry.extensions import SchemaExtension
 from strawberry.utils.await_maybe import AsyncIteratorOrIterator
 
 from common.redis import ResilientLimiter
+from payments.exceptions import OverLimitError
+
+
+def over_limit_graphql_error(exc: OverLimitError) -> GraphQLError:
+    """Render ``OverLimitError`` as a GraphQL error, byte-identical to the REST body.
+
+    The shared over-limit contract (``OverLimitError.as_error_body()``) is carried
+    verbatim in the GraphQL error's ``extensions`` — the GraphQL spec's own
+    mechanism for attaching structured, machine-readable data to an error — so a
+    client handling the REST 402 body and a client handling this error's
+    ``extensions`` see the identical ``detail`` / ``code`` / ``resource`` /
+    ``current_usage`` / ``limit`` / ``remedy`` fields without either surface
+    restating the shape (mirrors ``common.exception_handlers.vinta_exception_handler``,
+    which renders the same dict as the REST response body).
+
+    Also rolls back the request transaction. Under ``ATOMIC_REQUESTS``, a REST
+    view relies on an *unhandled* exception propagating out of the view to
+    trigger a rollback — which is exactly what
+    ``common.exception_handlers.vinta_exception_handler`` compensates for by
+    calling ``set_rollback()`` before returning a ``Response``. GraphQL has the
+    same problem for a different reason: graphql-core catches every resolver
+    exception internally and always returns a normal 200 response with the
+    error embedded in ``errors``, so the view itself never sees an exception to
+    propagate. Without this, a write a guarded service made before it reached
+    the limit check (e.g. ``invite_user_to_organization``'s invitation row)
+    would commit while the client is told the request was rejected.
+    """
+    set_rollback()
+    return GraphQLError(exc.detail, extensions=exc.as_error_body())
 
 
 class OrganizationRateLimiter(SchemaExtension):

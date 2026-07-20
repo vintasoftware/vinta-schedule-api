@@ -218,6 +218,7 @@ class AppContainer(containers.DeclarativeContainer):
         webhook_membership_side_effects_service=webhook_membership_side_effects_service,
         audit_service=audit_service,
         subscription_service=subscription_service,
+        entitlement_service=entitlement_service,
     )
 
     public_api_auth_service = providers.Factory(

@@ -8582,7 +8582,13 @@ paths:
       description: |-
         Reactivate a member (set is_active=True).
 
-        No guards — re-enabling is always safe.
+        Guards: reactivating occupies a seat again (``OrganizationMembershipQuerySet
+        .occupying_a_seat`` only counts ``is_active=True`` rows), so — unlike every other
+        member of this viewset — it is a capacity-raising write with no accompanying
+        ``OrganizationInvitation``/membership *create*, and would otherwise be an unmetered
+        path onto the ``organization_members`` limit. Only checked when the member is
+        currently inactive: an already-active member is a no-op and must stay one even if
+        the organization is at its limit for an unrelated reason.
 
         Idempotency: reactivating an already-active member is a no-op success.
       summary: Reactivate an organization member
@@ -8625,6 +8631,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
+        '402':
+          description: Organization is at its seat limit
         '403':
           description: Not an admin
         '404':
@@ -8635,7 +8643,13 @@ paths:
       description: |-
         Reactivate a member (set is_active=True).
 
-        No guards — re-enabling is always safe.
+        Guards: reactivating occupies a seat again (``OrganizationMembershipQuerySet
+        .occupying_a_seat`` only counts ``is_active=True`` rows), so — unlike every other
+        member of this viewset — it is a capacity-raising write with no accompanying
+        ``OrganizationInvitation``/membership *create*, and would otherwise be an unmetered
+        path onto the ``organization_members`` limit. Only checked when the member is
+        currently inactive: an already-active member is a no-op and must stay one even if
+        the organization is at its limit for an unrelated reason.
 
         Idempotency: reactivating an already-active member is a no-op success.
       summary: Reactivate an organization member
@@ -8685,6 +8699,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
+        '402':
+          description: Organization is at its seat limit
         '403':
           description: Not an admin
         '404':

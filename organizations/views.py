@@ -60,6 +60,9 @@ from organizations.serializers import (
     UpdateMembershipRoleSerializer,
 )
 from organizations.services import OrganizationService
+from payments.billing_constants import LimitedResource
+from payments.exceptions import OverLimitError
+from payments.services.entitlement_service import EntitlementService
 
 
 logger = logging.getLogger(__name__)
@@ -657,6 +660,16 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     # detail-route lookup instead of the (now non-existent) scalar pk.
     lookup_field = "user_id"
 
+    @inject
+    def __init__(
+        self,
+        *args,
+        entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.entitlement_service = entitlement_service
+
     def get_queryset(self):
         """Org-scoped queryset: return members of the caller's organization only."""
         user = self.request.user
@@ -735,21 +748,36 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         summary="Reactivate an organization member",
         responses={
             200: OrganizationMembershipSerializer,
+            402: OpenApiResponse(description="Organization is at its seat limit"),
             403: OpenApiResponse(description="Not an admin"),
             404: OpenApiResponse(description="Member not found or cross-org"),
         },
     )
     @action(detail=True, methods=["post"], url_path="reactivate")
+    @transaction.atomic()
     def reactivate(self, request, user_id=None):
         """Reactivate a member (set is_active=True).
 
-        No guards — re-enabling is always safe.
+        Guards: reactivating occupies a seat again (``OrganizationMembershipQuerySet
+        .occupying_a_seat`` only counts ``is_active=True`` rows), so — unlike every other
+        member of this viewset — it is a capacity-raising write with no accompanying
+        ``OrganizationInvitation``/membership *create*, and would otherwise be an unmetered
+        path onto the ``organization_members`` limit. Only checked when the member is
+        currently inactive: an already-active member is a no-op and must stay one even if
+        the organization is at its limit for an unrelated reason.
 
         Idempotency: reactivating an already-active member is a no-op success.
         """
         target = (
             self.get_object()
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
+
+        if not target.is_active:
+            result = self.entitlement_service.check_limit(
+                target.organization, LimitedResource.ORGANIZATION_MEMBERS, lock=True
+            )
+            if not result.allowed:
+                raise OverLimitError.from_check_result(result)
 
         # Reactivate (idempotent: no-op if already active)
         target.is_active = True
