@@ -161,7 +161,9 @@ One NIT was **declined with evidence**: moving `from di_core.containers import c
 
 **Phase 6a — Enforce pre-paid limits: seats and invitations** (implementer Tier 3)
 
-Base: `origin/main` · Branch: `plan/billing-plans-and-limits/phase-6a`
+Base: `plan/billing-plans-and-limits/phase-5` · Branch: `plan/billing-plans-and-limits/phase-6a`
+
+Stacked on phase-5 rather than `main`, because phase-5 is still open as [PR #194](https://github.com/vintasoftware/vinta-schedule-api/pull/194). Phases 3 and 4 could target `main` only because their predecessors had already merged; that no longer holds. If #194 merges before 6a is integrated, rebase 6a onto `main` so its PR diff shows only 6a's work.
 
 ⚠️ **This phase must call `EntitlementService.check_seat_limit_for_invitation_accept(invitation)` on the accept path**, not `check_limit`. See the Phase 5 carried-forward note — accepting an invitation is net zero on seats, and using the generic entry point makes an organization unable to fill its last seat.
 
