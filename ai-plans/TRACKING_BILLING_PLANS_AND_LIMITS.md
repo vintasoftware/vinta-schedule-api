@@ -253,22 +253,13 @@ Also: `resolve_branding` had to be **split** rather than gated — it also backs
 
 ## Current phase
 
-**None — paused after Phase 6c for a human decision.** See "Stack depth" below.
+**Phase 7 — Meter event occurrences** (implementer Tier 4, reviewer Tier 4)
 
-## Stack depth — needs a human call
+Base: `plan/billing-plans-and-limits/phase-6c` · Branch: `plan/billing-plans-and-limits/phase-7`
 
-Phases 6b ([#196](https://github.com/vintasoftware/vinta-schedule-api/pull/196)) and 6c ([#197](https://github.com/vintasoftware/vinta-schedule-api/pull/197)) are **open and not yet reviewed by a human**. Phases 1–5 and 6a are merged.
+Third unreviewed phase in the stack — **user decision at the 6c checkpoint was to continue**. Phases 6b (#196) and 6c (#197) are open and not yet human-reviewed; a change required by either forces a rebase of 7 and everything above it.
 
-Continuing to Phase 7 would stack a third unreviewed phase on top. Phase 7 (Meter event occurrences, Tier 4) introduces the post-paid metering model that Phases 8 and 13 build on, so a human review of 6b/6c that requires changes would force a rebase of everything above it.
-
-⚠️ **Carry 6b's lesson forward.** Before guarding a creation path, write down which usage counter it feeds and check that any predicate the guard uses to decide what is "new" is the *same* predicate that counter counts with — ideally by literally reusing it from the queryset. Four defects in this plan have come from two predicates that were supposed to agree and did not, most recently one that let an entire provider's calendar list be created unmetered.
-
-**Carried forward from 6c:**
-
-- ⚠️ **`Entitlement.ADVANCED_SCHEDULING` is declared but ungated.** It is a member of the closed `Entitlement` set in `payments/billing_constants.py` and is seeded on both plans (`True` on `unlimited`, `False` on `free`), but **no code anywhere checks it**. Phase 6c gated the four entitlements its body names; this fifth one was out of scope. Recorded here so the "all entitlements are enforced" reading of 6c's acceptance is not made by mistake — an organization on a plan that omits `advanced_scheduling` is not restricted in any way today. Needs either a gate (its own phase) or removal from the enum.
-- **Entitlements now have two enforcement points for external calendars**, not one. `CalendarService.authenticate` gates the *authenticated account's* provider; `CalendarService._get_write_adapter_for_calendar` gates the *calendar's* provider, which can differ (an actor authenticated with Google writing to a Microsoft calendar owned by someone else). Anyone adding a third path that resolves a provider adapter must gate it too — "authenticate is the single chokepoint" is false and is pinned as false by `TestWriteAdapterProviderGate`.
-- **`resolve_branding` is deliberately split in two.** `resolve_branding_for_display` carries the `white_label_branding` gate and is for presentation callers; plain `resolve_branding` is ungated and is what `validate_return_url` reads, because gating an OAuth allowlist on a cosmetic entitlement turns a downgrade into an auth-flow lockout for a reseller's whole subtree. Do not merge them back.
-- **Test fixtures now provision subscriptions automatically.** `conftest.py`'s autouse `provision_default_subscription` gives every `Organization` created in a test the `unlimited` subscription production's `OrganizationService` would have given it — because `has_entitlement` fails closed on a plan-less organization and ~640 tests were building organizations production cannot produce. Modules that manage their own `Subscription` rows opt out with `@pytest.mark.no_auto_subscription`.
+⚠️ **The spec's highest-severity risk.** A double-count here is silent revenue drift or overcharging, and it is invisible until a customer disputes a bill. The unique constraint on `(organization, event_id, occurrence_start)` is what makes re-running a window harmless; `is_within_allowance` and `unit_price` are stamped at meter time so a later limit change cannot retroactively reprice already-metered occurrences.
 
 ## Remaining phases
 
