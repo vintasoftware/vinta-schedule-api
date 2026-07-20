@@ -10,7 +10,8 @@ these tests are what stop it.
 import datetime
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import connection, transaction
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 import pytest
@@ -353,16 +354,178 @@ class TestCheckLimit:
         assert result.allowed is False
         assert result.remedy == LimitRemedy.RESOLVE_BILLING
 
-    def test_lock_takes_a_row_lock_on_the_subscription(
-        self, service, organization, subscription, django_assert_num_queries
-    ):
-        """Sanity check that ``lock=True`` runs and issues an extra query; that it
-        actually serializes is proven in ``test_limit_concurrency.py``."""
+    def test_lock_takes_a_row_lock_on_the_subscription(self, service, organization, subscription):
+        """``lock=True`` must issue ``SELECT ... FOR UPDATE`` against the
+        *subscription* table, not merely run without error.
+
+        This assertion used to be vacuous: it requested ``django_assert_num_queries``
+        and never used it, and its only check (``allowed is True``) passed
+        identically if ``lock=True`` were ignored outright. Since the whole
+        concurrency guarantee of this phase rests on this one statement being
+        emitted against the right row, the SQL itself is what gets asserted.
+        """
         make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
 
-        with transaction.atomic():
+        with transaction.atomic(), CaptureQueriesContext(connection) as captured:
             result = service.check_limit(organization, LimitedResource.CALENDAR_GROUPS, lock=True)
 
+        assert result.allowed is True
+        locking_queries = [
+            query["sql"]
+            for query in captured.captured_queries
+            if "FOR UPDATE" in query["sql"] and "payments_subscription" in query["sql"]
+        ]
+        assert locking_queries, (
+            "check_limit(lock=True) issued no SELECT ... FOR UPDATE against "
+            "payments_subscription. Queries seen: "
+            f"{[query['sql'] for query in captured.captured_queries]}"
+        )
+
+    def test_no_lock_takes_no_row_lock(self, service, organization, subscription):
+        """The negative half — otherwise the assertion above could pass on a lock
+        somebody took unconditionally."""
+        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
+
+        with transaction.atomic(), CaptureQueriesContext(connection) as captured:
+            service.check_limit(organization, LimitedResource.CALENDAR_GROUPS, lock=False)
+
+        assert not [query for query in captured.captured_queries if "FOR UPDATE" in query["sql"]]
+
+    def test_unlimited_does_not_count_usage_at_all(self, service, organization, subscription):
+        """SHOULD-FIX 3, Phase 5 review.
+
+        Every organization is on the ``unlimited`` plan for the whole rollout, so
+        every guarded create in Phases 6a/6b runs this path. Counting usage there
+        buys nothing — the answer cannot depend on it — and Phase 6a's required test
+        pins "no change in behavior **or query count**" for an unlimited org.
+
+        Asserted as "no query touched the counted tables", which is what actually
+        matters, rather than a brittle absolute query number.
+        """
+        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, None)
+        baker.make(CalendarGroup, organization=organization, _quantity=3)
+
+        with CaptureQueriesContext(connection) as captured:
+            result = service.check_limit(organization, LimitedResource.CALENDAR_GROUPS)
+
+        assert result.allowed is True
+        assert result.ceiling is None
+        assert result.current_usage is None, (
+            "Usage must be reported as 'not measured', not as a fabricated 0."
+        )
+        assert not [
+            query
+            for query in captured.captured_queries
+            if "calendar_integration_calendargroup" in query["sql"]
+        ], "The unlimited path counted usage nobody reads."
+
+    def test_check_limit_resolves_the_billing_root_and_subscription_once(
+        self, service, subscription
+    ):
+        """SHOULD-FIX 4, Phase 5 review.
+
+        ``resolve_billing_root`` walks ``parent`` with one query per level and used
+        to run three times per ``check_limit``, with the subscription re-fetched
+        twice more on top. On a three-level tree that is ~9 avoidable queries on a
+        guarded create path.
+
+        Pinned as an upper bound on subscription reads rather than an exact total,
+        so unrelated query changes elsewhere do not make this test brittle.
+        """
+        root = subscription.organization
+        mid = baker.make(Organization, parent=root, can_invite_organizations=False)
+        leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
+        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
+
+        with CaptureQueriesContext(connection) as captured:
+            service.check_limit(leaf, LimitedResource.CALENDAR_GROUPS)
+
+        subscription_reads = [
+            query
+            for query in captured.captured_queries
+            if 'FROM "payments_subscription"' in query["sql"]
+        ]
+        assert len(subscription_reads) == 1, (
+            f"Expected the subscription to be fetched once, got {len(subscription_reads)}: "
+            f"{[query['sql'] for query in subscription_reads]}"
+        )
+
+
+@pytest.mark.django_db
+class TestSeatCountingOnTheAcceptPath:
+    """SHOULD-FIX 2, Phase 5 review — accepting an invitation is net zero.
+
+    ``_count_organization_members`` counts pending invitations *and* active
+    memberships, which is right for the invite path (an outstanding invitation is a
+    reserved seat) and wrong for the accept path: the invitation being accepted is
+    already counted, so ``check_limit(delta=1)`` at the ceiling would reject a
+    change that does not move the total. An organization could invite up to its
+    limit and then never let the last person in.
+    """
+
+    def _make_pending_invitation(self, organization):
+        return baker.make(
+            OrganizationInvitation,
+            organization=organization,
+            accepted_at=None,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+        )
+
+    def test_the_invitation_being_accepted_is_excluded_from_usage(
+        self, service, organization, subscription
+    ):
+        baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=4)
+        invitation = self._make_pending_invitation(organization)
+
+        assert service.get_current_usage(organization, LimitedResource.ORGANIZATION_MEMBERS) == 5
+        assert (
+            service.get_current_usage(
+                organization,
+                LimitedResource.ORGANIZATION_MEMBERS,
+                exclude_invitation_id=invitation.pk,
+            )
+            == 4
+        )
+
+    def test_an_organization_at_its_ceiling_can_still_accept_its_last_invitation(
+        self, service, organization, subscription
+    ):
+        """The concrete lockout: seat limit 5, four members plus one pending invite.
+        Without the exclusion the accept sees 5 + 1 > 5 and is refused, so the org
+        can never reach its own ceiling."""
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
+        baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=4)
+        invitation = self._make_pending_invitation(organization)
+
+        assert not service.check_limit(
+            organization, LimitedResource.ORGANIZATION_MEMBERS
+        ).allowed, "A sixth *new* invite must still be blocked."
+
+        result = service.check_limit(
+            organization,
+            LimitedResource.ORGANIZATION_MEMBERS,
+            exclude_invitation_id=invitation.pk,
+        )
+
+        assert result.allowed is True
+        assert result.current_usage == 4
+
+    def test_the_exclusion_does_not_hide_other_pending_invitations(
+        self, service, organization, subscription
+    ):
+        """It must exclude exactly one invitation, not all of them."""
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
+        baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=3)
+        accepted = self._make_pending_invitation(organization)
+        self._make_pending_invitation(organization)
+
+        result = service.check_limit(
+            organization,
+            LimitedResource.ORGANIZATION_MEMBERS,
+            exclude_invitation_id=accepted.pk,
+        )
+
+        assert result.current_usage == 4
         assert result.allowed is True
 
 

@@ -173,6 +173,17 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
         """Exclude soft-deleted calendars (visibility=inactive). Includes active and unlisted."""
         return self.exclude(visibility=CalendarVisibility.INACTIVE)
 
+    def live_of_type(self, calendar_type: str) -> "CalendarQuerySet":
+        """Calendars of ``calendar_type`` that still exist from the user's point of view.
+
+        ``DELETE /calendars/{id}/`` sets ``visibility=INACTIVE`` rather than removing
+        the row, so "how many resource calendars does this organization have" must
+        exclude that state or deleting a room never frees anything. Keeping the
+        soft-delete definition next to the model that defines it, rather than
+        restating it in each consumer.
+        """
+        return self.filter(calendar_type=calendar_type).exclude_inactive()
+
     def only_listed(self):
         """Return only calendars visible in booking/public queries (visibility=active)."""
         return self.filter(visibility=CalendarVisibility.ACTIVE)
@@ -812,6 +823,39 @@ class AvailableTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
     """
     Custom QuerySet for AvailableTime model to handle specific queries.
     """
+
+    def only_user_authored(self) -> "AvailableTimeQuerySet":
+        """Exclude rows the recurrence machinery derived from another row.
+
+        One availability window the user created can end up as several
+        ``AvailableTime`` rows, because editing a recurring series is implemented
+        by *inserting* rows rather than mutating occurrences in place:
+
+        * ``AvailabilityService.create_recurring_available_time_exception`` inserts a
+          standalone row for a modified occurrence and links it back through
+          ``AvailableTimeRecurrenceException.modified_available_time`` (reverse
+          accessor ``exception_for``), also flagging it ``is_recurring_exception``.
+        * ``create_recurring_bulk_modification`` inserts a continuation row for the
+          remainder of a split series, linked by ``bulk_modification_parent``.
+
+        Counting those as separate windows over-reports usage — an organization
+        that created three recurring windows and edited three occurrences would
+        read as six. Every caller that wants "how many availability windows does
+        this organization have" (the billing usage counter above all) wants this
+        queryset, not a bare ``filter(...)``.
+
+        Known gap: when the edited occurrence is the *first* one, the recurrence
+        manager truncates the master row and creates a fresh series row with no
+        link back to it (``recurrence_manager.create_recurrence_exception_generic``,
+        the ``exception_date == parent.start_time.date()`` branch). That second row
+        is indistinguishable from a genuinely new window in the current schema, so
+        it is still counted. Closing it needs a new column, not a filter.
+        """
+        return self.filter(
+            exception_for__isnull=True,
+            bulk_modification_parent__isnull=True,
+            is_recurring_exception=False,
+        )
 
     def annotate_recurring_occurrences_on_date_range(
         self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000, overlap=False

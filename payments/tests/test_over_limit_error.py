@@ -83,9 +83,48 @@ class TestExceptionHandler:
         assert vinta_exception_handler(ValueError("boom"), {}) is None
 
 
-def test_over_limit_error_is_a_payment_error():
+def test_over_limit_error_is_a_billing_error():
     """Keeps it catchable alongside the rest of the payments exception tree."""
-    from payments.exceptions import PaymentError
+    from payments.exceptions import BillingError
 
-    with pytest.raises(PaymentError):
+    with pytest.raises(BillingError):
         raise build_error()
+
+
+def test_over_limit_error_is_not_a_value_error():
+    """SHOULD-FIX 1, Phase 5 review.
+
+    ``public_api/mutations.py`` (:1319, :1379) and ``calendar_integration/views.py``
+    (:833, :1392, :1501, :1632, :1697, :1741, :1861) wrap service calls in
+    ``except ValueError as e: raise ...(str(e))``, which flattens an exception to
+    its message. Several of those call sites touch resources that are
+    ``LimitedResource`` members -- ``webhook_subscriptions`` among them -- so the
+    moment a later phase guards one, a ``ValueError`` lineage would silently drop
+    ``code`` / ``resource`` / ``current_usage`` / ``limit`` / ``remedy`` and break
+    the byte-identical-across-surfaces contract this error exists to provide.
+
+    Written as an explicit non-membership assertion rather than a comment on
+    ``OverLimitError``'s bases, because a future refactor that reparents it onto
+    ``PaymentError`` (which *is* a ``ValueError``) would otherwise pass silently.
+    """
+    assert not isinstance(build_error(), ValueError)
+
+    # And the shape that actually bites: the wrapper idiom used at those call sites
+    # must not swallow it.
+    caught_as_value_error = False
+    try:
+        raise build_error()
+    except ValueError:
+        caught_as_value_error = True
+    except OverLimitError:
+        pass
+    assert caught_as_value_error is False
+
+
+def test_payment_error_keeps_its_value_error_lineage():
+    """The rest of the tree is unchanged: existing ``except ValueError`` handlers
+    around payment-gateway calls must keep working."""
+    from payments.exceptions import MissingBillingProfileError, PaymentError
+
+    assert issubclass(PaymentError, ValueError)
+    assert issubclass(MissingBillingProfileError, ValueError)

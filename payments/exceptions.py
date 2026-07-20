@@ -1,5 +1,27 @@
-class PaymentError(ValueError):
-    pass
+from payments.billing_constants import LimitedResource
+
+
+class BillingError(Exception):
+    """Root of everything the ``payments`` app raises.
+
+    Deliberately **not** a ``ValueError``. Large parts of the codebase wrap service
+    calls in ``except ValueError as e: raise GraphQLError(str(e))`` (e.g.
+    ``public_api/mutations.py``) or the REST equivalent, which flattens an
+    exception down to its message. Any payments error that must survive that
+    journey with its structured fields intact — ``OverLimitError`` above all —
+    hangs off this class and *only* this class.
+
+    ``PaymentError`` keeps the ``ValueError`` lineage for backwards compatibility
+    with those existing handlers; new structured errors should not.
+    """
+
+
+class PaymentError(BillingError, ValueError):
+    """Payment-gateway and billing-data errors.
+
+    Still a ``ValueError`` because callers across the codebase have caught it that
+    way since before this tree existed; narrowing that is out of scope here.
+    """
 
 
 class PaymentAdapterError(PaymentError):
@@ -84,9 +106,18 @@ class MissingSeedBillingPlanError(PaymentError):
         self.slug = slug
 
 
-class OverLimitError(PaymentError):
+class OverLimitError(BillingError):
     """Raised by a guarded service method when creating one more of a resource
     would take the organization past its effective ceiling.
+
+    Inherits ``BillingError`` rather than ``PaymentError`` precisely because
+    ``PaymentError`` is a ``ValueError``: ``public_api/mutations.py`` and
+    ``calendar_integration/views.py`` both wrap service calls in
+    ``except ValueError as e: raise ...(str(e))``, which would downgrade this to a
+    message-only error and drop ``code`` / ``resource`` / ``current_usage`` /
+    ``limit`` / ``remedy``. Several of those wrapped call sites guard resources
+    that are ``LimitedResource`` members (``webhook_subscriptions`` among them), so
+    the byte-identical-across-surfaces contract below depends on this base class.
 
     Carries the four fields of the plan's shared over-limit error contract so
     every surface — DRF (via ``common.exception_handlers.vinta_exception_handler``)
@@ -132,8 +163,6 @@ class OverLimitError(PaymentError):
         back to the raw key otherwise, so an unrecognized key degrades to a usable
         message instead of raising while building an error.
         """
-        from payments.billing_constants import LimitedResource
-
         try:
             label = LimitedResource(resource_key).label.lower()
         except ValueError:

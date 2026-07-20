@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
 from django.db.models.query import QuerySet
+from django.utils import timezone
 
 
 if TYPE_CHECKING:
@@ -12,6 +14,17 @@ if TYPE_CHECKING:
 
 class OrganizationMembershipQuerySet(QuerySet):
     """QuerySet for OrganizationMembership with domain-specific filtering methods."""
+
+    def occupying_a_seat(self, organization_ids: Sequence[int]) -> OrganizationMembershipQuerySet:
+        """Memberships in ``organization_ids`` that consume a licensed seat.
+
+        Only ``is_active=True`` memberships count: deactivating a member is how a
+        seat is freed, so counting inactive rows would make removal fail to free
+        capacity. Lives here rather than in the billing service because
+        "``is_active=False`` is this model's soft delete" is a fact about
+        ``OrganizationMembership``, not about billing.
+        """
+        return self.filter(organization_id__in=organization_ids, is_active=True)
 
     def active_for_user(self, user: User) -> OrganizationMembershipQuerySet:
         """Return all active memberships for *user*, with organization pre-fetched.
@@ -25,6 +38,36 @@ class OrganizationMembershipQuerySet(QuerySet):
             .select_related("organization")
             .order_by("created")
         )
+
+
+class OrganizationInvitationQuerySet(QuerySet):
+    """QuerySet for OrganizationInvitation with domain-specific filtering methods."""
+
+    def pending(
+        self,
+        organization_ids: Sequence[int],
+        exclude_id: int | None = None,
+    ) -> OrganizationInvitationQuerySet:
+        """Invitations in ``organization_ids`` that can still turn into a seat.
+
+        Neither an already-accepted invitation (its seat is the membership row) nor
+        an expired one (it can never be accepted) can become a seat, so both are
+        excluded.
+
+        :param exclude_id: An invitation to leave out of the result. Used by the
+            accept path, which is net-zero on seat count — the invitation being
+            accepted stops being pending and becomes the membership it is already
+            reserving capacity for. Without it, an organization sitting exactly at
+            its ceiling could never accept its own last outstanding invitation.
+        """
+        queryset = self.filter(
+            organization_id__in=organization_ids,
+            accepted_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        )
+        if exclude_id is not None:
+            queryset = queryset.exclude(pk=exclude_id)
+        return queryset
 
 
 class BaseOrganizationModelQuerySet(QuerySet):

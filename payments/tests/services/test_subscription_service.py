@@ -14,7 +14,14 @@ from model_bakery import baker
 from organizations.models import Organization
 from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
 from payments.exceptions import BillingRootCycleError, NoDefaultBillingPlanError
-from payments.models import BillingPlan, PlanEntitlement, PlanLimit, Subscription
+from payments.models import (
+    BillingPlan,
+    PlanEntitlement,
+    PlanLimit,
+    Subscription,
+    SubscriptionPlanLimit,
+)
+from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import (
     SubscriptionService,
     is_billing_root,
@@ -293,27 +300,17 @@ class TestChangePlan:
         sub_limit = subscription.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
         assert sub_limit.limit_value == 5
 
-    def test_downgrade_removes_stale_non_overridden_rows_absent_from_new_plan(self, service):
-        """SHOULD-FIX 4, Phase 4 review: a `SubscriptionPlanLimit` /
-        `SubscriptionEntitlement` row whose resource/entitlement key has no row on
-        the new plan, and was never hand-overridden, is a grant the org no longer
-        pays for -- it must not survive a plan change."""
+    def test_downgrade_revokes_an_entitlement_absent_from_the_new_plan(self, service):
+        """SHOULD-FIX 4, Phase 4 review: a non-overridden `SubscriptionEntitlement`
+        whose key the new plan does not carry is a grant the org no longer pays for.
+
+        Entitlements fail *closed* in `has_entitlement` -- absence means "not
+        granted" -- so deleting the row is exactly a revocation. The limits side
+        cannot do the same thing; see
+        `test_downgrade_does_not_turn_an_omitted_limit_into_an_unlimited_ceiling`.
+        """
         org = baker.make(Organization, parent=None)
         old_plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
-        baker.make(
-            PlanLimit,
-            plan=old_plan,
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
-            limit_value=5,
-            kind=LimitKind.PREPAID,
-        )
-        baker.make(
-            PlanLimit,
-            plan=old_plan,
-            resource_key=LimitedResource.RESOURCE_CALENDARS,
-            limit_value=3,
-            kind=LimitKind.PREPAID,
-        )
         baker.make(
             PlanEntitlement,
             plan=old_plan,
@@ -321,9 +318,74 @@ class TestChangePlan:
             is_enabled=True,
         )
         subscription = service.create_subscription_for_organization(org, plan=old_plan)
-        assert subscription.limits.filter(resource_key=LimitedResource.RESOURCE_CALENDARS).exists()
+        assert subscription.entitlements.filter(entitlement_key=Entitlement.PARTNER_API).exists()
 
-        # new_plan omits RESOURCE_CALENDARS and PARTNER_API entirely.
+        # new_plan omits PARTNER_API entirely.
+        new_plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+
+        service.change_plan(subscription, new_plan)
+
+        assert not subscription.entitlements.filter(
+            entitlement_key=Entitlement.PARTNER_API
+        ).exists()
+
+    def test_downgrade_drops_a_retired_resource_key(self, service):
+        """A `resource_key` that is no longer a `LimitedResource` member can never
+        be consulted again -- nothing looks it up, so the row is pure dead weight
+        and is deleted. This is what the prune branch is *for*, now that
+        `LimitedResource` members are exempt from it."""
+        org = baker.make(Organization, parent=None)
+        plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+        subscription = service.create_subscription_for_organization(org, plan=plan)
+        baker.make(
+            SubscriptionPlanLimit,
+            subscription=subscription,
+            resource_key="retired_resource_from_an_older_release",
+            limit_value=3,
+            kind=LimitKind.PREPAID,
+            is_overridden=False,
+        )
+
+        service.change_plan(subscription, plan)
+
+        assert not subscription.limits.filter(
+            resource_key="retired_resource_from_an_older_release"
+        ).exists()
+
+    def test_downgrade_does_not_turn_an_omitted_limit_into_an_unlimited_ceiling(self, service):
+        """BLOCKER 3, Phase 5 review -- the composition bug.
+
+        `_sync_limits` used to *delete* rows the new plan omits, and
+        `EntitlementService.get_effective_limit` treats an absent row as
+        **unlimited**. Each half is correct alone; composed, downgrading to a plan
+        that omits a resource *granted that resource an infinite ceiling* -- the
+        exact inverse of a downgrade.
+
+        Asserted end to end (`change_plan` -> `get_effective_limit`) rather than on
+        the row count, because the row count is what was already asserted while the
+        invariant was broken.
+        """
+        org = baker.make(Organization, parent=None)
+        old_plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+        baker.make(
+            PlanLimit,
+            plan=old_plan,
+            resource_key=LimitedResource.RESOURCE_CALENDARS,
+            limit_value=3,
+            kind=LimitKind.PREPAID,
+        )
+        subscription = service.create_subscription_for_organization(org, plan=old_plan)
+        assert (
+            EntitlementService()
+            .get_effective_limit(org, LimitedResource.RESOURCE_CALENDARS)
+            .limit_value
+            == 3
+        )
+
+        # An incomplete plan: it carries no PlanLimit row for RESOURCE_CALENDARS at
+        # all. The catalog expresses "not included" with an explicit limit_value=0
+        # row (as the seeded `free` plan does for public_api_system_users), never by
+        # omission -- so omission is a data gap, not a revocation.
         new_plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
         baker.make(
             PlanLimit,
@@ -335,15 +397,14 @@ class TestChangePlan:
 
         service.change_plan(subscription, new_plan)
 
-        assert not subscription.limits.filter(
-            resource_key=LimitedResource.RESOURCE_CALENDARS
-        ).exists()
-        assert not subscription.entitlements.filter(
-            entitlement_key=Entitlement.PARTNER_API
-        ).exists()
-        assert subscription.limits.filter(
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS
-        ).exists()
+        effective = EntitlementService().get_effective_limit(
+            org, LimitedResource.RESOURCE_CALENDARS
+        )
+        assert effective.is_unlimited is False, (
+            "Downgrading onto a plan that omits a resource must not hand that "
+            "resource an infinite ceiling."
+        )
+        assert effective.limit_value == 3
 
     def test_downgrade_keeps_overridden_row_even_when_absent_from_new_plan(self, service, plan):
         org = baker.make(Organization, parent=None)

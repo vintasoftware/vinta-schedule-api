@@ -10,3 +10,7 @@ class WebhookConfigurationManager(BaseOrganizationModelManager):
 
     def filter_by_organization(self, organization_id: int) -> WebhookConfigurationQuerySet:
         return self.get_queryset().filter(organization_id=organization_id)  # type: ignore[return-value]
+
+    def live(self) -> WebhookConfigurationQuerySet:
+        """Wraps :meth:`WebhookConfigurationQuerySet.live`."""
+        return self.get_queryset().live()

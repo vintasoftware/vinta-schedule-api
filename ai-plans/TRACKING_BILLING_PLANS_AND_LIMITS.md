@@ -131,6 +131,24 @@ Base: `origin/main` (`bd58606`) · Branch: `plan/billing-plans-and-limits/phase-
 
 The engine every enforcement phase calls. Note for the implementer: Phase 5's changes list in the plan says to create `resolve_billing_root`, but **Phase 4 already shipped it** (along with `is_billing_root` and `billing_root_filter`) in `payments/services/subscription_service.py`, with `BillingRootCycleError` in `payments/exceptions.py`. Reuse them; do not write a second definition — a duplicated billing-root predicate is exactly the Phase 4 BLOCKER that cost two review rounds.
 
+**Review round 1 applied.** Three BLOCKERs, all with a test confirmed failing before the fix:
+
+1. **`OverLimitError` committed the request transaction.** `common/exception_handlers.py` returned a `Response` without `rest_framework.views.set_rollback()`, so under `ATOMIC_REQUESTS` the swallowed exception *committed* everything a guarded service wrote before the check — the invitation row, the `is_active` flip, the audit entries Phase 6a writes ahead of its guard. Proven through a real request, not a direct handler call.
+2. **`_count_availability_windows` counted recurrence-derived rows.** Editing one occurrence of a recurring window *inserts* an `AvailableTime` row (`create_recurring_available_time_exception` → `create_available_time`); so does a series split. An org that made 3 recurring windows and edited 3 occurrences read as 6 — a lockout *below* real usage, which goal 6 forbids.
+3. **Plan downgrade granted an infinite ceiling.** `_sync_limits` deleted rows the new plan omits; `get_effective_limit` reads an absent row as *unlimited*. Each correct alone; composed, downgrading onto a plan that omits a resource uncapped it. Same shape as Phase 2's BLOCKER.
+
+**Decision on BLOCKER 3** (deviates slightly from the reviewer's suggestion — recorded because it changed a shipped test): the catalog never expresses "not included" by omission, it uses an explicit `limit_value=0` row (the seeded `free` plan does exactly that for `public_api_system_users`). Omission therefore means *incomplete plan*, which is the same data-gap condition the fail-open exists for. So `_prune_stale_limits` now deletes only **retired** resource keys — ones no longer in `LimitedResource` — and retains + logs a `LimitedResource` member the new plan omits. `test_downgrade_removes_stale_non_overridden_rows_absent_from_new_plan` was split into three tests reflecting this; the entitlements half is unchanged, since entitlements fail *closed* and deleting there really is a revocation.
+
+**Carried forward:**
+- ⚠️ **Residual gap in the availability counter.** When the edited occurrence is the *first* one, `recurrence_manager` truncates the master and creates a replacement series row with **no link back to it** — indistinguishable from a genuinely new window in the current schema. That case still over-counts by one. Closing it needs a column, not a filter. Documented on `AvailableTimeQuerySet.only_user_authored`.
+- The add-on aggregate has no period/expiry filter, so a one-time add-on raises the ceiling forever. Owned by the add-on **purchase** phase (9), which is what introduces one-time purchases. Marked in-code.
+- `SystemUser.organization` is nullable, so an org-less system user is invisible to that counter and entirely unmetered. Pinned by a test so whoever makes the column non-nullable revisits it deliberately.
+- `LimitCheckResult.current_usage` is now `int | None`; it is `None` on the unlimited path, where usage is deliberately **not counted**. Phase 6a's "no change in query count for an unlimited org" test depends on this.
+- `check_limit(..., exclude_invitation_id=...)` exists for the accept path and **Phase 6a must pass it** — accepting is net zero on seats, and without it an org can never fill its last seat.
+- `UsageSnapshot` remains deferred; rationale recorded in `payments/services/billing_dataclasses.py`.
+
+**Gates after the fixes**: suite **4039 passed** (was 4016); `mypy` **305 errors / 57 files** (under the 308/58 cap); `ruff check` + `format --check` clean; `makemigrations --check` clean (**no new migration** — the new managers are not `use_in_migrations`); `check --deploy` unchanged at the same 5 pre-existing dev-settings warnings.
+
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |

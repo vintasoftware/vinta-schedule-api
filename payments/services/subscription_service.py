@@ -8,7 +8,7 @@ from django.utils import timezone
 from dateutil.relativedelta import relativedelta
 
 from organizations.models import Organization
-from payments.billing_constants import BillingInterval, BillingState
+from payments.billing_constants import BillingInterval, BillingState, LimitedResource
 from payments.constants import PaymentProviders
 from payments.exceptions import BillingRootCycleError, NoDefaultBillingPlanError
 from payments.models import (
@@ -219,14 +219,64 @@ class SubscriptionService:
                 update_fields=["limit_value", "kind", "overage_unit_price", "is_overridden"],
                 unique_fields=["subscription", "resource_key"],
             )
-        # A resource_key with no PlanLimit row on the new plan, and never
-        # hand-overridden, is a grant the organization no longer pays for — leaving
-        # it behind on a downgrade would silently keep an entitlement (or a NULL /
-        # unlimited row) alive. Overridden rows are exempt: the support lever must
-        # survive a plan change untouched.
-        subscription.limits.exclude(resource_key__in=plan_resource_keys).filter(
+        self._prune_stale_limits(subscription, plan, plan_resource_keys)
+
+    def _prune_stale_limits(
+        self,
+        subscription: Subscription,
+        plan: BillingPlan,
+        plan_resource_keys: set[str],
+    ) -> None:
+        """Drop ``SubscriptionPlanLimit`` rows the new plan no longer accounts for.
+
+        **Only rows whose ``resource_key`` is not a ``LimitedResource`` member.**
+        Those are retired keys — a resource that left the enum — and nothing can
+        ever consult them again, so deleting is the only sensible outcome.
+
+        A key that *is* a ``LimitedResource`` member but is missing from ``plan`` is
+        a different animal, and deleting it used to be an exploitable composition:
+        ``EntitlementService.get_effective_limit`` treats an absent row as
+        **unlimited** (the deliberate fail-open that stops a missing seed row
+        locking an organization out). Delete-on-downgrade plus fail-open-on-absence
+        meant *downgrading to a plan that omits a resource handed that resource an
+        infinite ceiling* — the exact inverse of what a downgrade means. Each half
+        was correct alone; only together were they wrong.
+
+        The catalog never expresses "this plan does not include X" by omission — it
+        expresses it with an explicit row, exactly as the seeded ``free`` plan does
+        with ``public_api_system_users: limit_value=0``. Omission means the plan is
+        *incomplete*, i.e. a catalog data gap, which is the same condition the
+        fail-open exists for. So the row is retained (a bounded, stale ceiling) and
+        the gap is logged, rather than silently converted into no ceiling at all.
+        A complete plan — every seeded plan, asserted by
+        ``test_seeded_plans_cover_every_limited_resource`` — overwrites the row in
+        ``bulk_create`` above and never reaches here.
+
+        Overridden rows are exempt from both branches: the support lever for a
+        stuck organization must survive a plan change untouched.
+        """
+        known_resource_keys = set(LimitedResource.values)
+        stale_rows = subscription.limits.exclude(resource_key__in=plan_resource_keys).filter(
             is_overridden=False
-        ).delete()
+        )
+
+        retained = sorted(
+            set(stale_rows.values_list("resource_key", flat=True)) & known_resource_keys
+        )
+        if retained:
+            logger.warning(
+                "BillingPlan %s (id=%s) carries no PlanLimit row for %s, which are "
+                "LimitedResource members. Keeping subscription %s's existing rows rather "
+                "than deleting them: an absent row reads as *unlimited*, so deleting here "
+                "would raise the ceiling on a downgrade. Add explicit PlanLimit rows to "
+                "this plan (limit_value=0 for 'not included').",
+                plan.slug,
+                plan.pk,
+                retained,
+                subscription.pk,
+            )
+
+        stale_rows.exclude(resource_key__in=known_resource_keys).delete()
 
     def _sync_entitlements(self, subscription: Subscription, plan: BillingPlan) -> None:
         overridden_keys = set(
@@ -258,7 +308,11 @@ class SubscriptionService:
                 update_fields=["is_enabled", "is_overridden"],
                 unique_fields=["subscription", "entitlement_key"],
             )
-        # Same stale-grant cleanup as `_sync_limits`, keyed on entitlement_key.
+        # Unconditional delete here, unlike `_prune_stale_limits`. Entitlements fail
+        # *closed* in `EntitlementService.has_entitlement` — an absent row means "not
+        # granted" — so deleting a row the new plan omits revokes the grant, which is
+        # what a downgrade means. The limits side cannot do this because absence
+        # there means "unlimited"; see `_prune_stale_limits`.
         subscription.entitlements.exclude(entitlement_key__in=plan_entitlement_keys).filter(
             is_overridden=False
         ).delete()

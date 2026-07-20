@@ -14,7 +14,11 @@ from common.fields import (
     TenantSafeOneToOneField,
 )
 from common.models import BaseModel
-from organizations.managers import BaseOrganizationModelManager, OrganizationMembershipManager
+from organizations.managers import (
+    BaseOrganizationModelManager,
+    OrganizationInvitationManager,
+    OrganizationMembershipManager,
+)
 
 
 if TYPE_CHECKING:
@@ -296,6 +300,8 @@ class OrganizationInvitation(BaseModel):
     accept, Phase 4). A duplicate invite to the *same* org is still rejected by the
     ``uniq_invitation_email_organization`` constraint.
     """
+
+    objects: OrganizationInvitationManager = OrganizationInvitationManager()
 
     email = models.EmailField()
     first_name = models.CharField(max_length=150, blank=True)

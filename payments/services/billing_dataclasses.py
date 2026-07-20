@@ -5,6 +5,13 @@ Kept separate from ``payments/services/dataclasses.py`` (which models the
 limits/entitlements domain and are consumed by non-payments callers — the
 organization, calendar, webhooks, and public-API services that ask "may I create
 one more of these?".
+
+Deferred from this phase: ``UsageSnapshot``. The plan's data-model section names it
+as the periodic materialization of ``EntitlementService.get_current_usage`` (so
+dashboards and invoices do not each re-run the subtree aggregate), but nothing
+reads a snapshot yet — every consumer in Phases 5-6 wants a point-in-time count,
+and a stale snapshot behind a *guard* would be an enforcement bug rather than an
+optimization. It belongs with the phase that introduces the first reader.
 """
 
 from dataclasses import dataclass
@@ -46,10 +53,19 @@ class LimitCheckResult:
     ``ceiling is None`` means unlimited, in which case ``allowed`` is always
     ``True``. ``remedy`` is populated only when ``allowed`` is ``False``; it is one
     of ``LimitRemedy`` and is what the over-limit error body surfaces to clients.
+
+    ``current_usage is None`` means **usage was not counted**, which happens on
+    exactly one path: an unlimited ceiling, where the answer cannot depend on it
+    and counting would make every guarded create on the ``unlimited`` plan (i.e.
+    every organization, for the whole rollout) pay for several queries nobody
+    reads. It is ``None`` rather than ``0`` so a caller cannot mistake "not
+    measured" for "measured, and it was zero". It is always an ``int`` on the
+    branch that matters — ``allowed is False`` — which is the only branch the
+    over-limit error body is built from.
     """
 
     allowed: bool
     resource_key: str
-    current_usage: int
+    current_usage: int | None
     ceiling: int | None
     remedy: str | None = None
