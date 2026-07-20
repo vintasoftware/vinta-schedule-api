@@ -99,6 +99,7 @@ from calendar_integration.services.type_guards import (
     is_authenticated_calendar_service,
     is_initialized_or_authenticated_calendar_service,
 )
+from payments.exceptions import OverLimitError
 from public_api.models import SystemUser
 from users.models import User
 
@@ -403,11 +404,24 @@ class CalendarEventService:
     # ------------------------------------------------------------------
 
     @transaction.atomic()
-    def create_event(self, calendar_id: int, event_data: CalendarEventInputData) -> CalendarEvent:
+    def create_event(
+        self,
+        calendar_id: int,
+        event_data: CalendarEventInputData,
+        *,
+        _check_postpaid_allowance: bool = True,
+    ) -> CalendarEvent:
         """
         Create a new event in the calendar.
         :param calendar_id: Internal ID of the calendar
         :param event_data: Dictionary containing event details.
+        :param _check_postpaid_allowance: Internal flag; callers must NOT pass this.
+            Set to ``False`` by the bundle fan-out (``CalendarBundleService.create_bundle_event``),
+            which already checked headroom once for the whole fan-out count before
+            creating anything -- re-checking per child here would ask the same
+            question against an unchanged ``MeteredOccurrence`` count (nothing is
+            metered until a Celery sweep runs) and add nothing but redundant row
+            locks.
         :return: Response from the calendar client.
         """
         context = cast("BaseCalendarService", self._context)
@@ -468,6 +482,28 @@ class CalendarEventService:
 
         if calendar.calendar_type == CalendarType.BUNDLE:
             return self._host._create_bundle_event(bundle_calendar=calendar, event_data=event_data)
+
+        # Postpaid ``event_occurrences`` allowance guard. ``event_data.parent_event_id``
+        # set means this create is a recurrence *exception* -- a modification of an
+        # occurrence slot the owning master's rule already accounts for, not a new
+        # one (``calculate_recurring_events`` substitutes the exception row in place
+        # of the original occurrence; see ``MeteringService.expand_occurrence_identities``).
+        # It is deliberately excluded here with the exact predicate
+        # ``occurrence_bearing_masters_in_range`` uses to exclude the same rows
+        # (``parent_recurring_object__isnull=True``) -- checking it as a new unit
+        # would disagree with what the meter will ever bill for it. Every other
+        # create here (a one-off event, a new recurring master, or a
+        # bulk-modification continuation) is a genuinely new master and is checked.
+        if (
+            _check_postpaid_allowance
+            and event_data.parent_event_id is None
+            and self._context.entitlement_service is not None
+        ):
+            result = self._context.entitlement_service.check_postpaid_allowance(
+                context.organization, lock=True
+            )
+            if not result.allowed:
+                raise OverLimitError.from_check_result(result)
 
         available_windows = self._host.get_availability_windows_in_range(
             calendar,

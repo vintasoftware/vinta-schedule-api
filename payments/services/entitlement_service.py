@@ -526,6 +526,130 @@ class EntitlementService:
             exclude_invitation_id=invitation.pk,
         )
 
+    def has_payment_method(self, organization: Organization) -> bool:
+        """Does the billing root have a payment method on file?
+
+        Resolved at the billing root, like every other check in this service, so a
+        reseller child asks the same question its root would answer.
+
+        No dedicated "payment method" record exists yet — Phase 9 (add-on
+        purchase / plan change) and Phase 10 (dunning) are what actually attach and
+        track one against a payment provider. ``Subscription.billing_state`` is the
+        only currently-persisted signal that distinguishes "never paid" from "on a
+        paid path": ``FREE`` is the state every subscription is created into and
+        never leaves without a successful payment round-trip
+        (``SubscriptionService.change_plan``), so every other state (``ACTIVE``,
+        ``GRACE``, ``RESTRICTED``, ``CANCELLED``) implies a payment method was, at
+        some point, successfully attached. ``GRACE``/``RESTRICTED`` specifically
+        mean a *later* charge failed, not that no payment method was ever
+        provided, so this still reads ``True`` for them: an org already mid-dunning
+        is not additionally interrupted by this guard while its payment problem is
+        being resolved through the separate grace/restricted machinery
+        (Phase 10/11), which is what actually blocks writes on that state.
+
+        No subscription resolves to ``False`` — the fail-closed side of postpaid
+        enforcement (see ``check_postpaid_allowance``).
+        """
+        return self._has_payment_method_for_subscription(self._get_root_subscription(organization))
+
+    @staticmethod
+    def _has_payment_method_for_subscription(subscription: Subscription | None) -> bool:
+        if subscription is None:
+            return False
+        return subscription.billing_state != BillingState.FREE
+
+    def check_postpaid_allowance(
+        self,
+        organization: Organization,
+        delta: int = 1,
+        lock: bool = False,
+    ) -> LimitCheckResult:
+        """Would creating ``delta`` more ``event_occurrences`` need a payment method
+        this organization does not have?
+
+        The only postpaid ``LimitedResource`` member, so unlike ``check_limit`` this
+        never takes a ``resource_key`` — there is only one to ask about.
+
+        Unlike a prepaid ceiling, the allowance is not a hard cap. An organization
+        **with** a payment method is let straight through even past it — the
+        excess accrues as overage (billed at ``PlanLimit.overage_unit_price`` when
+        ``MeteringService`` later meters it; this method never writes, it only
+        decides whether creation may proceed). An organization **without** one is
+        blocked the moment ``delta`` would take it to or past the allowance,
+        because there is nothing to charge the overage to. This is the plan's
+        "an organization with a payment method accrues past its included allowance
+        and is never interrupted; one without a payment method is blocked at the
+        allowance" contract.
+
+        On the unlimited path (``limit_value is None``), usage is not counted at
+        all and ``current_usage``/``ceiling`` are ``None`` — identical to
+        ``check_limit``'s unlimited branch, and for the same reason: every
+        organization is on the ``unlimited`` plan for this whole rollout, so this
+        method can never block anybody today. See the phase's own tests for that
+        inertness guarantee on every guarded path.
+
+        ``delta`` must be the same "one booking" unit
+        ``MeteringService.expand_occurrence_identities`` will eventually count for
+        this creation — 1 for a single event, a new recurring master, or a
+        bulk-modification continuation, and ``1 + n_internal_children`` for a
+        bundle-event fan-out (the Phase 7 binding decision: a bundle booking is
+        billed as the primary calendar's event plus one more per
+        ``CalendarProvider.INTERNAL`` child, never per member calendar). A caller
+        that invents its own number here reproduces the "two predicates that must
+        agree" defect this plan keeps producing — derive it from the same
+        provider/parent predicates the meter and the fan-out writer use, never
+        recompute it independently.
+
+        :param lock: Same contract as ``check_limit``'s ``lock`` — ``SELECT ... FOR
+            UPDATE`` on the billing root's ``Subscription`` row before counting, so
+            two racing creates at the allowance boundary serialize on one row.
+            Requires an open transaction; see ``check_limit`` for the full isolation-
+            level discussion.
+        """
+        root = resolve_billing_root(organization)
+        if lock:
+            self._lock_billing_root_row(root)
+
+        subscription = self._get_subscription_for_root(root)
+        effective_limit = self._effective_limit_for_subscription(
+            subscription,
+            LimitedResource.EVENT_OCCURRENCES,
+            root.pk,
+            asked_for_organization_pk=organization.pk,
+        )
+        if effective_limit.is_unlimited:
+            return LimitCheckResult(
+                allowed=True,
+                resource_key=LimitedResource.EVENT_OCCURRENCES,
+                current_usage=None,
+                ceiling=None,
+            )
+
+        # Narrowed by the ``is_unlimited`` return above: limit_value is not None here.
+        ceiling = effective_limit.limit_value or 0
+        current_usage = self._count_usage(root, LimitedResource.EVENT_OCCURRENCES, subscription)
+        within_allowance = current_usage + delta <= ceiling
+        if within_allowance or self._has_payment_method_for_subscription(subscription):
+            return LimitCheckResult(
+                allowed=True,
+                resource_key=LimitedResource.EVENT_OCCURRENCES,
+                current_usage=current_usage,
+                ceiling=ceiling,
+            )
+        # The only way to reach here is ``has_payment_method`` being False, which
+        # (see its docstring) only happens when ``billing_state == FREE`` — a
+        # grace/restricted organization already has one and was let through above.
+        # So the remedy is always "go get a payment method", never
+        # ``_resolve_remedy_for``'s billing-first branch: there is no billing
+        # problem to resolve here, there is no payment method to begin with.
+        return LimitCheckResult(
+            allowed=False,
+            resource_key=LimitedResource.EVENT_OCCURRENCES,
+            current_usage=current_usage,
+            ceiling=ceiling,
+            remedy=LimitRemedy.ADD_PAYMENT_METHOD,
+        )
+
     def has_entitlement(self, organization: Organization, entitlement_key: str) -> bool:
         """Is the boolean feature gate ``entitlement_key`` granted to ``organization``?
 

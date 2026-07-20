@@ -1461,6 +1461,7 @@ class CalendarService(BaseCalendarService):
         event_data: CalendarEventInputData,
         *,
         _enforce_policy: bool = True,
+        _check_postpaid_allowance: bool = True,
     ) -> CalendarEvent:
         """
         Create a new event in the calendar.
@@ -1471,6 +1472,11 @@ class CalendarService(BaseCalendarService):
             top-level entry point (using ``resolve_for_bundle``), not again for each
             child create (which would use ``resolve_for_calendar`` on the child and
             could falsely reject bookings the bundle policy permits).
+        :param _check_postpaid_allowance: Internal flag; callers must NOT pass this.
+            Forwarded verbatim to ``CalendarEventService.create_event`` -- see its
+            docstring. Set to ``False`` by the bundle fan-out for the same reason as
+            ``_enforce_policy``: it already checked headroom once for the whole
+            fan-out count.
         :return: Response from the calendar client.
         """
         if _enforce_policy and self.organization is not None:
@@ -1482,7 +1488,9 @@ class CalendarService(BaseCalendarService):
                 )
             except Calendar.DoesNotExist:
                 # Let the event service raise the not-found; do not hide the error.
-                return self._get_event_service().create_event(calendar_id, event_data)
+                return self._get_event_service().create_event(
+                    calendar_id, event_data, _check_postpaid_allowance=_check_postpaid_allowance
+                )
             self._check_booking_policy(
                 calendar,
                 start_time=event_data.start_time,
@@ -1493,7 +1501,9 @@ class CalendarService(BaseCalendarService):
             # same row. The cache is keyed on (organization_id, calendar_id) — the same
             # shape used by _get_calendar_by_id_util.
             self._calendar_cache[(self.organization.id, calendar_id)] = calendar
-        return self._get_event_service().create_event(calendar_id, event_data)
+        return self._get_event_service().create_event(
+            calendar_id, event_data, _check_postpaid_allowance=_check_postpaid_allowance
+        )
 
     def _update_bundle_event(
         self, bundle_event: CalendarEvent, event_data: "CalendarEventInputData"
