@@ -817,47 +817,6 @@ class RecurringMixin(OrganizationModel):
         overlap=False,
     ) -> list[Self]:
         """Get occurrences of this recurring available time in a date range."""
-        return [
-            instance
-            for _slot_start, instance in self._get_occurrence_slots_in_range(
-                modified_instance_id_field_name=modified_instance_id_field_name,
-                start_date=start_date,
-                end_date=end_date,
-                include_self=include_self,
-                include_exceptions=include_exceptions,
-                max_occurrences=max_occurrences,
-                overlap=overlap,
-            )
-        ]
-
-    def _get_occurrence_slots_in_range(
-        self,
-        modified_instance_id_field_name: str,
-        start_date: datetime.datetime,
-        end_date: datetime.datetime,
-        include_self=True,
-        include_exceptions=True,
-        max_occurrences=10000,
-        overlap=False,
-    ) -> list[tuple[datetime.datetime, Self]]:
-        """Occurrences in a range, each paired with **the recurrence slot it occupies**.
-
-        The slot is the instant the series' own rule generated, which is not always
-        the instant the occurrence ends up at: editing one occurrence of a series
-        writes a separate row that may sit at a different time, and this still
-        reports it against the slot it replaced.
-
-        That distinction exists for exactly one caller today —
-        ``payments.services.metering_service`` — and it is load-bearing there. Usage
-        metering needs an occurrence's identity to survive an edit: if a metered
-        occurrence were re-identified by the new row's own pk and time, re-reading an
-        already-metered stretch would record it a second time and bill the customer
-        twice, and the ledger's unique constraint could not catch it because the two
-        rows genuinely differ.
-
-        ``_get_occurrences_in_range`` is this function with the slots discarded, so
-        there is one expansion, not two that must be kept in agreement.
-        """
         if not self.is_recurring:
             return []
 
@@ -885,7 +844,7 @@ class RecurringMixin(OrganizationModel):
             )
         }
 
-        slots: list[tuple[datetime.datetime, Self]] = []
+        instances: list[Self] = []
         for occurrence in occurrences:
             occurrence_start_time = datetime.datetime.fromisoformat(occurrence["start_time"])
             occurrence_end_time = datetime.datetime.fromisoformat(occurrence["end_time"])
@@ -894,7 +853,7 @@ class RecurringMixin(OrganizationModel):
                 and occurrence_start_time == self.start_time
                 and occurrence_end_time == self.end_time
             ):
-                slots.append((occurrence_start_time, self))
+                instances.append(self)
                 continue
 
             if occurrence["exception_type"] == "cancelled":
@@ -906,20 +865,17 @@ class RecurringMixin(OrganizationModel):
                 )
             ):
                 if include_exceptions:
-                    slots.append((occurrence_start_time, exception_event))
+                    instances.append(exception_event)
                 continue
 
-            slots.append(
-                (
+            instances.append(
+                self.create_instance_from_occurrence(
                     occurrence_start_time,
-                    self.create_instance_from_occurrence(
-                        occurrence_start_time,
-                        occurrence_end_time,
-                    ),
+                    occurrence_end_time,
                 )
             )
 
-        return slots
+        return instances
 
     def get_occurrences_in_range(
         self,
@@ -1223,32 +1179,6 @@ class CalendarEvent(RecurringMixin):
         overlap=False,
     ) -> list[Self]:
         return self._get_occurrences_in_range(
-            modified_instance_id_field_name="modified_event_id",
-            start_date=start_date,
-            end_date=end_date,
-            include_self=include_self,
-            include_exceptions=include_exceptions,
-            max_occurrences=max_occurrences,
-            overlap=overlap,
-        )
-
-    def get_occurrence_slots_in_range(
-        self,
-        start_date: datetime.datetime,
-        end_date: datetime.datetime,
-        include_self=True,
-        include_exceptions=True,
-        max_occurrences=10000,
-        overlap=False,
-    ) -> list[tuple[datetime.datetime, Self]]:
-        """``get_occurrences_in_range``, keeping each occurrence's recurrence slot.
-
-        See ``RecurringMixin._get_occurrence_slots_in_range`` for why the slot is
-        kept: it is the only identity for an occurrence that survives the
-        occurrence being edited, which is what usage metering needs to avoid
-        billing the same occurrence twice.
-        """
-        return self._get_occurrence_slots_in_range(
             modified_instance_id_field_name="modified_event_id",
             start_date=start_date,
             end_date=end_date,

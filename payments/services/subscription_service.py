@@ -147,6 +147,44 @@ def resolve_billing_period(
     return start, end
 
 
+def resolve_billing_period_start(
+    subscription: Subscription, moment: datetime.datetime
+) -> datetime.datetime:
+    """The ``billing_period_start`` that ``moment`` belongs to.
+
+    ``resolve_billing_period``'s first element, as a named function, because the
+    *stamp* and the *read-back* of ``MeteredOccurrence.billing_period_start`` must
+    be the same expression and previously were not. ``MeteringService`` stamped
+    ``resolve_billing_period(subscription, occurrence_start)[0]`` while the
+    ``event_occurrences`` usage counter read back
+    ``subscription.current_period_start`` directly. Those agree only while the
+    stored period happens to contain "now" — and nothing advances
+    ``current_period_start`` (cycle close is Phase 13), so once the stored period
+    elapses the meter writes one period and the counter asks for another, and the
+    counter reads zero forever.
+
+    Callers differ only in the ``moment`` they pass: the meter passes each
+    occurrence's own start (so an occurrence is billed to the cycle it happened
+    in), the counter passes ``timezone.now()`` (the cycle in progress). Anything
+    needing "the current cycle" should go through
+    ``current_billing_period_start`` rather than reading the column.
+    """
+    period_start, _period_end = resolve_billing_period(subscription, moment)
+    return period_start
+
+
+def current_billing_period_start(subscription: Subscription) -> datetime.datetime:
+    """The start of the cycle in progress *now*.
+
+    Deliberately derived from ``timezone.now()`` rather than read off
+    ``Subscription.current_period_start``. That column records the cycle the
+    subscription was created or last advanced into; until Phase 13 introduces
+    cycle close, nothing ever moves it forward, so it goes stale as soon as one
+    interval elapses.
+    """
+    return resolve_billing_period_start(subscription, timezone.now())
+
+
 def assert_plan_is_complete(plan: BillingPlan) -> None:
     """Refuse to place a subscription on a plan that omits a ``LimitedResource``.
 

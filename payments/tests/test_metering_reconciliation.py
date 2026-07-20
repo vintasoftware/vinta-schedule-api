@@ -525,6 +525,41 @@ class TestBulkModificationContinuationCountedOnce:
         assert set(attribution) == set(ALL_MONDAYS)
         assert set(attribution.values()) == {weekly_series.pk}
 
+    def test_a_title_only_split_is_the_vacuous_case(
+        self,
+        metering_service: MeteringService,
+        event_service: CalendarEventService,
+        social_account: SocialAccount,
+        subscription: Subscription,
+        weekly_series: CalendarEvent,
+    ):
+        """Why the three tests above prove less than they appear to.
+
+        Each passes ``modified_title`` only. A title change leaves every occurrence
+        at the time it already had, so parent and continuation generate the *same
+        instants*, and the identity tuple collapses the two into one row by
+        coincidence rather than by design. The dedup being asserted is real but
+        vacuous: it would hold under almost any identity scheme.
+
+        The arguments that make ``create_recurring_event_bulk_modification`` worth
+        having — ``modified_start_time_offset`` and ``modification_rrule_string`` —
+        move occurrences, and are exercised in
+        ``TestBulkModificationWithOffsetOverBills`` below, where the dedup does not
+        hold. This test exists to stop a reader generalising from the easy case.
+        """
+        _grant_event_owner_token(weekly_series, social_account)
+        event_service.create_recurring_event_bulk_modification(
+            parent_event=weekly_series,
+            modification_start_date=ALL_MONDAYS[2],
+            modified_title="Renamed tail",
+        )
+
+        _meter_the_period(metering_service, subscription)
+
+        # The continuation's occurrences land on instants the parent already
+        # generated, so there is nothing for identity to distinguish.
+        assert _occurrence_starts(subscription) == ALL_MONDAYS
+
     def test_a_split_after_metering_does_not_re_bill_the_first_half(
         self,
         metering_service: MeteringService,
@@ -675,3 +710,207 @@ class TestFirstOccurrenceSplitIsNotDeduplicated:
         assert report.drift == 4
         assert len(report.orphaned) == 4
         assert report.unmetered == ()
+
+
+@pytest.mark.django_db
+class TestBulkModificationWithOffsetOverBills:
+    """Characterization of a **known, unfixed** over-count, measured exactly.
+
+    ``create_recurring_event_bulk_modification`` with a
+    ``modified_start_time_offset`` is an ordinary owner action: "from next Monday,
+    the standup moves to 10:30". Applied to a five-occurrence weekly series it
+    produces **eight** billable occurrences, and applied to a stretch that has
+    already been metered, **nine**.
+
+    The mechanism is *not* the identity churn this phase was designed around, and
+    saying so precisely matters because it changes the size of the exposure:
+
+    ``truncate_parent`` rewrites a ``COUNT``-bounded parent's rule by decrementing
+    ``COUNT`` by one, rather than clamping it at the split index. Splitting a
+    ``COUNT=5`` weekly series at its **second** occurrence leaves the parent on
+    ``COUNT=4`` — still generating Mondays 1-4 — while the continuation generates
+    four more at the offset time. Parent and continuation therefore **overlap by
+    three weeks** instead of tiling, which is the opposite of what
+    ``CalendarEventQuerySet.occurrence_bearing_masters_in_range`` documents.
+
+    **This is an upstream recurrence defect, not a metering one.**
+    ``get_calendar_events_expanded`` returns the same eight events, so the calendar
+    genuinely contains them and the meter is faithfully billing what it is shown.
+    Fixing it belongs in ``CalendarEventService``, not here.
+
+    The consequences for billing are what these tests pin down, and one of them is
+    materially worse than the first-occurrence hazard in
+    ``TestFirstOccurrenceSplitIsNotDeduplicated``:
+
+    - The over-count does **not** require the period to have been metered before.
+      A single fresh sweep over-bills 8/5. The first-occurrence hazard needs an
+      already-metered window; this does not.
+    - ``reconcile_period`` cannot see it. Reconciliation recomputes from the same
+      calendar state, which also says eight, so it reports ``drift == 0,
+      is_clean == True``. The ``orphaned`` surfacing that mitigates every other
+      identity-churn path is **absent** here.
+
+    These tests assert the current, wrong numbers on purpose so the exposure is
+    written down and a failing test tells whoever fixes ``truncate_parent`` that
+    this file needs revisiting. They are not an endorsement of the behavior.
+    """
+
+    @staticmethod
+    def _split_with_offset(
+        event_service: CalendarEventService,
+        social_account: SocialAccount,
+        weekly_series: CalendarEvent,
+    ) -> CalendarEvent | None:
+        """Move the series 30 minutes later, from the second Monday onwards."""
+        _grant_event_owner_token(weekly_series, social_account)
+        return event_service.create_recurring_event_bulk_modification(
+            parent_event=weekly_series,
+            modification_start_date=ALL_MONDAYS[1],
+            modified_start_time_offset=datetime.timedelta(minutes=30),
+        )
+
+    def test_a_fresh_sweep_bills_eight_occurrences_for_a_five_occurrence_series(
+        self,
+        metering_service: MeteringService,
+        event_service: CalendarEventService,
+        social_account: SocialAccount,
+        subscription: Subscription,
+        weekly_series: CalendarEvent,
+    ):
+        """The worst case: over-billing with **no prior metering at all**.
+
+        Nothing has been swept before the edit, so no identity churn is possible.
+        The very first sweep still records eight rows for a month that contains
+        five real occurrences — a 60% over-bill on this series — because the
+        calendar itself now contains eight events.
+        """
+        self._split_with_offset(event_service, social_account, weekly_series)
+
+        _meter_the_period(metering_service, subscription)
+
+        assert _occurrence_starts(subscription) == [
+            ALL_MONDAYS[0],  # 10:00, parent
+            ALL_MONDAYS[1],  # 10:00, parent — should not exist, split was here
+            ALL_MONDAYS[1] + datetime.timedelta(minutes=30),  # 10:30, continuation
+            ALL_MONDAYS[2],  # 10:00, parent — should not exist
+            ALL_MONDAYS[2] + datetime.timedelta(minutes=30),
+            ALL_MONDAYS[3],  # 10:00, parent — should not exist
+            ALL_MONDAYS[3] + datetime.timedelta(minutes=30),
+            ALL_MONDAYS[4] + datetime.timedelta(minutes=30),
+        ]
+        assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 8
+
+    def test_reconciliation_is_blind_to_the_fresh_sweep_over_count(
+        self,
+        metering_service: MeteringService,
+        event_service: CalendarEventService,
+        social_account: SocialAccount,
+        subscription: Subscription,
+        weekly_series: CalendarEvent,
+    ):
+        """The part that makes this worse than the first-occurrence hazard.
+
+        ``reconcile_period`` compares the ledger against a fresh expansion of the
+        same calendar. Both say eight, so it reports a clean period. There is no
+        ``orphaned`` signal for finance to act on — the over-bill is genuinely
+        silent, which is the failure mode this phase's module docstring opens by
+        naming.
+        """
+        self._split_with_offset(event_service, social_account, weekly_series)
+        _meter_the_period(metering_service, subscription)
+
+        report = metering_service.reconcile_period(subscription, PERIOD_START)
+
+        assert report.expected_count == 8
+        assert report.metered_count == 8
+        assert report.drift == 0
+        assert report.is_clean, "reconciliation cannot see this class of over-bill"
+
+    def test_a_split_over_an_already_metered_month_bills_nine(
+        self,
+        metering_service: MeteringService,
+        event_service: CalendarEventService,
+        social_account: SocialAccount,
+        subscription: Subscription,
+        weekly_series: CalendarEvent,
+    ):
+        """The realistic sweep order, and the one row that *is* identity churn.
+
+        Metering first, then editing, gives nine rows. The decomposition matters:
+
+        - **5** are the occurrences that genuinely happened;
+        - **3** are the upstream ``truncate_parent`` overlap (Mondays 2-4 at 10:00),
+          which a fresh sweep would also have recorded — see the test above;
+        - **1** is true identity churn: Monday 5 at 10:00 was billed before the
+          edit and the series no longer generates it, because the occurrence moved
+          to 10:30 and a moved occurrence has a different identity.
+
+        Only that last row is the hazard this phase's design is responsible for,
+        and it behaves exactly as documented: bounded by an already-metered window,
+        and surfaced as ``orphaned``.
+        """
+        _meter_the_period(metering_service, subscription)
+        assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 5
+
+        self._split_with_offset(event_service, social_account, weekly_series)
+        _meter_the_period(metering_service, subscription)
+
+        assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 9
+
+    def test_reconciliation_reports_only_the_identity_churn_row(
+        self,
+        metering_service: MeteringService,
+        event_service: CalendarEventService,
+        social_account: SocialAccount,
+        subscription: Subscription,
+        weekly_series: CalendarEvent,
+    ):
+        """Reconciliation understates the over-bill by design, not by accident.
+
+        Nine rows are recorded where five occurrences happened, but only **one** is
+        reported as drift — the moved occurrence's superseded row. The other three
+        extra rows are inside ``expected``, because the calendar really does contain
+        them. An operator reading ``drift == 1`` would materially underestimate the
+        problem; that is precisely why the upstream ``truncate_parent`` defect is a
+        Phase 13 gating precondition rather than something reconciliation covers.
+        """
+        _meter_the_period(metering_service, subscription)
+        self._split_with_offset(event_service, social_account, weekly_series)
+        _meter_the_period(metering_service, subscription)
+
+        report = metering_service.reconcile_period(subscription, PERIOD_START)
+
+        assert report.metered_count == 9
+        assert report.expected_count == 8
+        assert report.drift == 1
+        assert [identity.occurrence_start for identity in report.orphaned] == [ALL_MONDAYS[4]]
+        assert report.unmetered == ()
+
+    def test_the_whole_series_stays_attributed_to_the_series_root(
+        self,
+        metering_service: MeteringService,
+        event_service: CalendarEventService,
+        social_account: SocialAccount,
+        subscription: Subscription,
+        weekly_series: CalendarEvent,
+    ):
+        """The half of identity that *does* hold, isolated from the half that does not.
+
+        Every one of the nine rows — including the spurious ones — is recorded
+        under the original master's pk, never the continuation's. The series-root
+        walk in ``_resolve_series_root_ids`` works; the over-count is entirely in
+        the ``occurrence_start`` component. Worth asserting separately so a future
+        reader does not conclude from the wrong totals that root resolution is
+        broken and "fix" the wrong thing.
+        """
+        _meter_the_period(metering_service, subscription)
+        continuation = self._split_with_offset(event_service, social_account, weekly_series)
+        _meter_the_period(metering_service, subscription)
+
+        assert continuation is not None
+        assert continuation.pk != weekly_series.pk
+        assert set(
+            MeteredOccurrence.objects.filter(subscription=subscription).values_list(
+                "event_id", flat=True
+            )
+        ) == {weekly_series.pk}

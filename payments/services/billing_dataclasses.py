@@ -81,11 +81,11 @@ class OccurrenceIdentity:
     reconciliation recomputes" cannot drift into two different notions of identity.
 
     ``event_id`` is the pk of the **series root** — the original master, following
-    ``bulk_modification_parent`` back through any splits — and ``occurrence_start``
-    is the **recurrence slot** the occurrence occupies, not necessarily the instant
-    it was finally scheduled at. Both are deliberate: an occurrence's identity has to
-    survive the occurrence being edited and the series being split, or re-reading an
-    already-metered stretch of time bills the customer twice. See
+    ``bulk_modification_parent`` back through any splits — so splitting a series
+    does not re-bill its tail. ``occurrence_start`` is the occurrence's **current
+    start time**; there is no durable "slot" behind it, so re-timing an occurrence
+    produces a different identity and a second billable row. That asymmetry is a
+    known, deferred defect rather than a design property — see
     ``MeteringService.expand_occurrence_identities``.
 
     Times are always the timezone-aware ``start_time`` generated column, never the

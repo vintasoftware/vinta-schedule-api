@@ -625,16 +625,54 @@ class CalendarEventQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
           ``start_time``. Enumerating them here as well would produce the identical
           occurrence from two sources.
         - **A bulk-modification continuation is a master in its own right** and *is*
-          enumerated, while its parent has been truncated (``UNTIL`` set to the
-          occurrence before the split). The two therefore tile the timeline without
-          overlapping. This is also why callers must use ``get_occurrences_in_range``
-          and **not** ``get_occurrences_in_range_with_bulk_modifications``: the latter
-          walks ``bulk_modifications`` from the parent and would return the
-          continuation's occurrences a second time.
+          enumerated, alongside its truncated parent. This is why callers must use
+          ``get_occurrences_in_range`` and **not**
+          ``get_occurrences_in_range_with_bulk_modifications``: the latter walks
+          ``bulk_modifications`` from the parent and would return the continuation's
+          occurrences a second time.
+
+          The parent and continuation do **not** reliably tile the timeline.
+          ``CalendarEventService.create_recurring_event_bulk_modification``
+          truncates a ``COUNT``-bounded parent by decrementing ``COUNT`` by one
+          rather than clamping it at the split index, so splitting a five-occurrence
+          weekly series at its second occurrence leaves the parent generating four
+          occurrences and the continuation generating four more — eight where five
+          exist. When the modification also carries a time offset those eight land
+          at eight distinct times, so nothing downstream collapses them. This is an
+          upstream recurrence defect, not a metering one: ``get_calendar_events_expanded``
+          returns the same eight, so the calendar genuinely contains them and the
+          meter is faithful to it. Recorded here because this method is where a
+          reader would otherwise conclude the two rows cannot overlap. Measured in
+          ``payments/tests/test_metering_reconciliation.py``.
 
         The result is annotated with ``recurring_occurrences`` so a caller iterating it
         and calling ``get_occurrences_in_range`` pays one query for the whole set
         rather than one per master.
+
+        **Cost, measured rather than bounded.** Every recurring master with
+        ``until IS NULL`` and ``start_time < end`` is re-selected and re-expanded on
+        every sweep — every 15 minutes, forever. Two things about that were checked
+        rather than assumed:
+
+        - Expansion is **not** proportional to the series' age.
+          ``calculate_recurring_events`` fast-forwards to ``p_start_date``
+          arithmetically per frequency (see its ``IF v_range_start >
+          v_event.start_time`` branch) instead of stepping from ``start_time``, so a
+          series created in 2019 costs the same to expand over a 6-hour window as
+          one created yesterday.
+        - The cost that *does* grow is the **row count**: this is O(open-ended
+          masters in the pooled subtree), and that set only ever grows. It includes
+          series that are long finished — a ``COUNT``-bounded rule leaves ``until``
+          NULL, so a weekly standup that ended in 2019 is still selected and still
+          expanded (to zero occurrences) on every sweep.
+
+        No cheap lower bound is available in the predicate itself: deciding whether a
+        rule can still yield an occurrence after ``start`` requires the rule
+        arithmetic that lives in the SQL function, not something expressible as an
+        indexable ``WHERE``. Materializing a ``last_occurrence_at`` column on
+        ``RecurrenceRule`` at write time is the real fix and is deliberately not done
+        here — it is a schema change on a hot calendar path, for a cost that is
+        currently one cheap function call per stale master.
         """
         return (
             self.filter(parent_recurring_object__isnull=True)

@@ -20,15 +20,19 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
+from dateutil.relativedelta import relativedelta
+from freezegun import freeze_time
 
 from calendar_integration.constants import CalendarProvider, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar, CalendarEvent
 from organizations.models import Organization
 from payments.billing_constants import LimitedResource
+from payments.exceptions import BillingPeriodResolutionError
 from payments.models import MeteredOccurrence, Subscription
 from payments.services.entitlement_service import EntitlementService
-from payments.services.metering_service import MeteringService
+from payments.services.metering_service import MAX_SERIES_CHAIN_DEPTH, MeteringService
+from payments.services.subscription_service import resolve_billing_period
 
 
 #: A whole calendar month used as the subscription's billing period, chosen so the
@@ -38,6 +42,13 @@ from payments.services.metering_service import MeteringService
 PERIOD_START = datetime.datetime(2025, 6, 1, 0, 0, tzinfo=datetime.UTC)
 PERIOD_END = datetime.datetime(2025, 7, 1, 0, 0, tzinfo=datetime.UTC)
 FIRST_MONDAY = datetime.datetime(2025, 6, 2, 10, 0, tzinfo=datetime.UTC)
+
+#: A moment inside ``[PERIOD_START, PERIOD_END)``, for freezing "now" whenever a
+#: test exercises something that resolves *the current* billing cycle. The usage
+#: counter derives its period from ``timezone.now()`` rather than from the stored
+#: ``current_period_start`` (see ``current_billing_period_start``), so without
+#: freezing, these assertions would depend on the date the suite runs.
+INSIDE_PERIOD = datetime.datetime(2025, 6, 17, 12, 0, tzinfo=datetime.UTC)
 
 
 @pytest.fixture
@@ -333,7 +344,16 @@ class TestAllowanceAndPriceStamping:
         subscription: Subscription,
         open_ended_weekly_event: CalendarEvent,
     ):
-        """Allowance is consumed chronologically: the first two are included."""
+        """The first two occurrences of the period are included, the rest are overage.
+
+        Chronological *here* only because this is a single sweep, which sorts its
+        new identities by ``occurrence_start`` before assigning positions. Allowance
+        is consumed in **insertion order** in general — rows an earlier sweep
+        recorded are counted, not re-ranked — so an occurrence back-dated into an
+        already-swept period lands after everything recorded before it. Harmless
+        while one price applies to a whole period; see ``MeteringService._record``
+        for why Phase 9 has to change it.
+        """
         self._set_allowance(subscription, 2, "0.2500")
 
         metering_service.meter_occurrences_for_period(subscription, PERIOD_START, PERIOD_END)
@@ -435,7 +455,14 @@ class TestAllowanceAndPriceStamping:
 
 @pytest.mark.django_db
 class TestUsageCounterReadsTheMeter:
-    """The counter and the meter must not be two opinions."""
+    """The counter and the meter must not be two opinions.
+
+    Every test here pins "now" with ``freeze_time``. That is not incidental: the
+    counter's billing period is derived from ``timezone.now()``, so a test that let
+    the wall clock decide would be asserting against whichever cycle the suite
+    happened to run in. It is also the bug these tests previously hid — see
+    ``test_the_counter_still_reads_the_meter_when_the_stored_period_is_stale``.
+    """
 
     def test_event_occurrences_usage_is_the_metered_row_count(
         self,
@@ -445,17 +472,83 @@ class TestUsageCounterReadsTheMeter:
         open_ended_weekly_event: CalendarEvent,
     ):
         entitlement_service = EntitlementService()
-        assert (
-            entitlement_service.get_current_usage(organization, LimitedResource.EVENT_OCCURRENCES)
-            == 0
+        with freeze_time(INSIDE_PERIOD):
+            assert (
+                entitlement_service.get_current_usage(
+                    organization, LimitedResource.EVENT_OCCURRENCES
+                )
+                == 0
+            )
+
+            metering_service.meter_occurrences_for_period(subscription, PERIOD_START, PERIOD_END)
+
+            assert (
+                entitlement_service.get_current_usage(
+                    organization, LimitedResource.EVENT_OCCURRENCES
+                )
+                == 5
+            )
+
+    def test_the_counter_still_reads_the_meter_when_the_stored_period_is_stale(
+        self,
+        metering_service: MeteringService,
+        subscription: Subscription,
+        organization: Organization,
+        calendar: Calendar,
+    ):
+        """The counter and the meter must derive "this period" the same way.
+
+        ``Subscription.current_period_start`` is written once at creation and never
+        advanced — cycle close is Phase 13 — so it goes stale the moment one billing
+        interval elapses. The meter has never depended on it: it stamps
+        ``billing_period_start`` by resolving each occurrence's *own* start time
+        through ``resolve_billing_period``, which steps whole intervals from the
+        stored anchor and therefore keeps working. The counter used to read the
+        stale column directly.
+
+        The consequence was total, not marginal: once the stored period elapsed the
+        meter wrote (say) August rows while the counter asked for July, and the
+        counter returned **0 permanently** — a customer-facing usage number frozen
+        at zero, and a post-paid guard (Phase 8) that could never fire.
+
+        Here the subscription's stored period is June 2025 while "now" is two months
+        later. Occurrences are metered in that later month; the counter must see
+        them. Against the old implementation this returns 0.
+        """
+        stale_period_start = PERIOD_START + relativedelta(months=2)
+        stale_period_end = PERIOD_END + relativedelta(months=2)
+        assert subscription.current_period_start == PERIOD_START, (
+            "fixture precondition: the stored period is the June cycle"
         )
 
-        metering_service.meter_occurrences_for_period(subscription, PERIOD_START, PERIOD_END)
-
-        assert (
-            entitlement_service.get_current_usage(organization, LimitedResource.EVENT_OCCURRENCES)
-            == 5
+        occurrence_moment = stale_period_start + datetime.timedelta(days=3, hours=10)
+        CalendarEventFactory.create_recurring_event(
+            calendar=calendar,
+            title="Two cycles later",
+            description="",
+            start_time=occurrence_moment,
+            end_time=occurrence_moment + datetime.timedelta(hours=1),
+            frequency=RecurrenceFrequency.WEEKLY,
+            count=1,
+            external_id="stale_period_event",
         )
+
+        metering_service.meter_occurrences_for_period(
+            subscription, stale_period_start, stale_period_end
+        )
+
+        row = MeteredOccurrence.objects.get(subscription=subscription)
+        assert row.billing_period_start == stale_period_start, (
+            "the meter stamps the period the occurrence fell in, not the stored one"
+        )
+
+        with freeze_time(occurrence_moment):
+            assert (
+                EntitlementService().get_current_usage(
+                    organization, LimitedResource.EVENT_OCCURRENCES
+                )
+                == 1
+            )
 
     def test_usage_is_scoped_to_the_current_billing_period(
         self,
@@ -490,10 +583,13 @@ class TestUsageCounterReadsTheMeter:
             MeteredOccurrence.objects.get(subscription=subscription).billing_period_start
             < PERIOD_START
         )
-        assert (
-            EntitlementService().get_current_usage(organization, LimitedResource.EVENT_OCCURRENCES)
-            == 0
-        )
+        with freeze_time(INSIDE_PERIOD):
+            assert (
+                EntitlementService().get_current_usage(
+                    organization, LimitedResource.EVENT_OCCURRENCES
+                )
+                == 0
+            )
 
 
 @pytest.mark.django_db
@@ -571,3 +667,287 @@ class TestRecurrenceInstanceRowsAreNotEnumeratedSeparately:
             ).count()
             == 1
         )
+
+
+@pytest.mark.django_db
+class TestBillingPeriodBoundary:
+    """A window that straddles a cycle boundary restarts the allowance.
+
+    ``_record`` keys its allowance arithmetic on a ``dict`` of billing period
+    rather than a single running counter, specifically so occurrences either side
+    of a boundary consume *different* allowances. Nothing exercised that branch:
+    every other test meters wholly inside one cycle, so the dict never held more
+    than one key and a single counter would have passed identically.
+    """
+
+    def test_a_straddling_window_splits_into_two_periods_with_independent_allowances(
+        self,
+        metering_service: MeteringService,
+        subscription: Subscription,
+        calendar: Calendar,
+    ):
+        """Meter ``[PERIOD_START - 3h, PERIOD_START + 3h)``.
+
+        Two occurrences, one on each side of the June boundary, with an allowance
+        of exactly 1. If the allowance were global to the call, the second would
+        fall into overage. Because it belongs to the next cycle it gets that
+        cycle's fresh allowance, and both are included at zero.
+        """
+        subscription.limits.filter(resource_key=LimitedResource.EVENT_OCCURRENCES).update(
+            limit_value=1, overage_unit_price=Decimal("0.5000")
+        )
+        previous_period_start = PERIOD_START - relativedelta(months=1)
+
+        before_boundary = PERIOD_START - datetime.timedelta(hours=2)
+        after_boundary = PERIOD_START + datetime.timedelta(hours=2)
+        for label, moment in (("before", before_boundary), ("after", after_boundary)):
+            CalendarEvent.objects.create(
+                calendar_fk=calendar,
+                organization=calendar.organization,
+                title=f"Straddle {label}",
+                description="",
+                start_time_tz_unaware=moment,
+                end_time_tz_unaware=moment + datetime.timedelta(minutes=30),
+                timezone="UTC",
+                external_id=f"straddle_{label}",
+            )
+
+        result = metering_service.meter_occurrences_for_period(
+            subscription,
+            PERIOD_START - datetime.timedelta(hours=3),
+            PERIOD_START + datetime.timedelta(hours=3),
+        )
+
+        assert result.occurrences_recorded == 2
+        rows = list(
+            MeteredOccurrence.objects.filter(subscription=subscription).order_by("occurrence_start")
+        )
+        assert [row.billing_period_start for row in rows] == [
+            previous_period_start,
+            PERIOD_START,
+        ], "the two occurrences must be stamped to two different cycles"
+        assert [row.is_within_allowance for row in rows] == [True, True], (
+            "each cycle grants its own allowance of 1; neither occurrence is overage"
+        )
+        assert [row.unit_price for row in rows] == [Decimal("0.0000"), Decimal("0.0000")]
+
+    def test_the_second_occurrence_in_one_period_is_overage(
+        self,
+        metering_service: MeteringService,
+        subscription: Subscription,
+        calendar: Calendar,
+    ):
+        """The control for the test above.
+
+        Same allowance of 1 and same two occurrences, but both placed *inside* June
+        — so they share one cycle's allowance and the second is overage. Without
+        this, the test above would pass just as well if `billing_period_start` were
+        ignored entirely and everything were always within allowance.
+        """
+        subscription.limits.filter(resource_key=LimitedResource.EVENT_OCCURRENCES).update(
+            limit_value=1, overage_unit_price=Decimal("0.5000")
+        )
+        for label, offset in (("first", 2), ("second", 4)):
+            moment = PERIOD_START + datetime.timedelta(hours=offset)
+            CalendarEvent.objects.create(
+                calendar_fk=calendar,
+                organization=calendar.organization,
+                title=f"Same period {label}",
+                description="",
+                start_time_tz_unaware=moment,
+                end_time_tz_unaware=moment + datetime.timedelta(minutes=30),
+                timezone="UTC",
+                external_id=f"same_period_{label}",
+            )
+
+        metering_service.meter_occurrences_for_period(
+            subscription, PERIOD_START, PERIOD_START + datetime.timedelta(hours=6)
+        )
+
+        rows = list(
+            MeteredOccurrence.objects.filter(subscription=subscription).order_by("occurrence_start")
+        )
+        assert {row.billing_period_start for row in rows} == {PERIOD_START}
+        assert [row.is_within_allowance for row in rows] == [True, False]
+        assert [row.unit_price for row in rows] == [Decimal("0.0000"), Decimal("0.5000")]
+
+
+@pytest.mark.django_db
+class TestSafetyNets:
+    """The guards that only fire on corrupt data.
+
+    Each of these exists because the data it defends against is user-mutable and
+    the failure mode without it is a hang or a wrong invoice rather than an error.
+    None of them was exercised, which is the same class of gap as a unique
+    constraint that is never actually hit by a test: the mechanism is asserted
+    only where it does nothing.
+    """
+
+    def test_a_cycle_in_the_bulk_modification_chain_terminates(
+        self,
+        metering_service: MeteringService,
+        subscription: Subscription,
+        calendar: Calendar,
+    ):
+        """``bulk_modification_parent`` is ordinary mutable data; a cycle must not hang.
+
+        Two events pointing at each other is not reachable through the service
+        layer, but it is reachable through the admin or a bad migration. The walk
+        in ``_resolve_series_root_ids`` carries a ``seen`` set precisely for this;
+        without it the ``while`` loop never terminates and the sweep wedges.
+        """
+        first = CalendarEvent.objects.create(
+            calendar_fk=calendar,
+            organization=calendar.organization,
+            title="Cycle A",
+            description="",
+            start_time_tz_unaware=FIRST_MONDAY,
+            end_time_tz_unaware=FIRST_MONDAY + datetime.timedelta(hours=1),
+            timezone="UTC",
+            external_id="cycle_a",
+        )
+        second_moment = FIRST_MONDAY + datetime.timedelta(days=1)
+        second = CalendarEvent.objects.create(
+            calendar_fk=calendar,
+            organization=calendar.organization,
+            title="Cycle B",
+            description="",
+            start_time_tz_unaware=second_moment,
+            end_time_tz_unaware=second_moment + datetime.timedelta(hours=1),
+            timezone="UTC",
+            external_id="cycle_b",
+        )
+        # The cycle: each is the other's bulk-modification parent.
+        CalendarEvent.objects.filter(pk=first.pk).update(bulk_modification_parent_fk=second)
+        CalendarEvent.objects.filter(pk=second.pk).update(bulk_modification_parent_fk=first)
+
+        result = metering_service.meter_occurrences_for_period(
+            subscription, PERIOD_START, PERIOD_END
+        )
+
+        # It terminates, and both occurrences are still recorded — the guard falls
+        # back to a reachable ancestor rather than dropping usage.
+        assert result.occurrences_recorded == 2
+        assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 2
+
+    def test_a_chain_longer_than_the_depth_bound_still_records_every_occurrence(
+        self,
+        metering_service: MeteringService,
+        subscription: Subscription,
+        calendar: Calendar,
+    ):
+        """Exceeding ``MAX_SERIES_CHAIN_DEPTH`` must over-count, never lose a record.
+
+        The documented fallback is "the deepest ancestor reached, which over-counts
+        at worst and never loses a record". A chain longer than the bound is built
+        here explicitly; the assertion is that every occurrence still produces a
+        row, because losing a billable record is unrecoverable while an
+        attribution that stops short is merely wrong in a visible way.
+        """
+        chain: list[CalendarEvent] = []
+        for index in range(MAX_SERIES_CHAIN_DEPTH + 5):
+            moment = FIRST_MONDAY + datetime.timedelta(minutes=index)
+            chain.append(
+                CalendarEvent.objects.create(
+                    calendar_fk=calendar,
+                    organization=calendar.organization,
+                    title=f"Chain {index}",
+                    description="",
+                    start_time_tz_unaware=moment,
+                    end_time_tz_unaware=moment + datetime.timedelta(seconds=30),
+                    timezone="UTC",
+                    external_id=f"chain_{index}",
+                )
+            )
+        for index in range(1, len(chain)):
+            CalendarEvent.objects.filter(pk=chain[index].pk).update(
+                bulk_modification_parent_fk=chain[index - 1]
+            )
+
+        result = metering_service.meter_occurrences_for_period(
+            subscription, PERIOD_START, PERIOD_END
+        )
+
+        assert result.occurrences_recorded == len(chain), (
+            "every occurrence is recorded even when root resolution gives up early"
+        )
+
+    def test_an_inverted_stored_period_self_corrects_rather_than_raising(
+        self,
+        subscription: Subscription,
+    ):
+        """Documenting what the guard does *not* catch.
+
+        ``BillingPeriodResolutionError``'s own docstring offers
+        ``current_period_end <= current_period_start`` as the likely trigger. It is
+        not one: the backwards branch reassigns ``end, start = start, start - step``,
+        which repairs the inversion on the first iteration and then terminates
+        normally. Asserted so nobody "fixes" a guard that is already working by
+        chasing a case that cannot reach it.
+        """
+        Subscription.objects.filter(pk=subscription.pk).update(
+            current_period_start=PERIOD_END, current_period_end=PERIOD_START
+        )
+        subscription.refresh_from_db()
+
+        assert resolve_billing_period(subscription, FIRST_MONDAY) == (PERIOD_START, PERIOD_END)
+
+    def test_an_unreachably_distant_moment_raises_rather_than_spinning(
+        self,
+        subscription: Subscription,
+    ):
+        """The case the step bound actually defends against.
+
+        ``resolve_billing_period`` reconstructs neighbouring cycles by stepping
+        whole intervals from the stored anchor, one iteration per interval. A
+        moment thousands of intervals away — an event scheduled centuries out,
+        whether by a client bug or a hostile input — would otherwise spin through
+        that loop inside the sweep's transaction, holding the billing root's row
+        lock. ``MAX_BILLING_PERIOD_STEPS`` converts that into a fast, loud failure.
+
+        Raising is right rather than clamping: stamping ``billing_period_start``
+        with whichever cycle the loop stopped on bills real usage to the wrong
+        invoice, and is invisible until a customer disputes it.
+        """
+        far_future = PERIOD_START + relativedelta(years=200)
+
+        with pytest.raises(BillingPeriodResolutionError) as exc_info:
+            resolve_billing_period(subscription, far_future)
+
+        assert exc_info.value.subscription_id == subscription.pk
+
+    def test_a_metering_failure_leaves_no_partially_stamped_ledger(
+        self,
+        metering_service: MeteringService,
+        subscription: Subscription,
+        calendar: Calendar,
+    ):
+        """A period that cannot be resolved must abort the whole sweep.
+
+        ``meter_occurrences_for_period`` stamps rows one occurrence at a time
+        inside a single ``transaction.atomic``. If resolving the period for the
+        *second* occurrence raises, the first must not survive — a half-written
+        sweep is worse than no sweep, because the missing half looks metered to the
+        next run's pre-filter and is never revisited.
+        """
+        for label, moment in (
+            ("normal", FIRST_MONDAY),
+            ("distant", PERIOD_START + relativedelta(years=200)),
+        ):
+            CalendarEvent.objects.create(
+                calendar_fk=calendar,
+                organization=calendar.organization,
+                title=f"Partial {label}",
+                description="",
+                start_time_tz_unaware=moment,
+                end_time_tz_unaware=moment + datetime.timedelta(hours=1),
+                timezone="UTC",
+                external_id=f"partial_{label}",
+            )
+
+        with pytest.raises(BillingPeriodResolutionError):
+            metering_service.meter_occurrences_for_period(
+                subscription, PERIOD_START, PERIOD_START + relativedelta(years=201)
+            )
+
+        assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 0

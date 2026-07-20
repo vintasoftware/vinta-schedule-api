@@ -37,7 +37,11 @@ from payments.billing_constants import (
 from payments.exceptions import InapplicableInvitationExclusionError
 from payments.models import MeteredOccurrence, Subscription
 from payments.services.billing_dataclasses import EffectiveLimit, LimitCheckResult
-from payments.services.subscription_service import is_billing_root, resolve_billing_root
+from payments.services.subscription_service import (
+    current_billing_period_start,
+    is_billing_root,
+    resolve_billing_root,
+)
 from public_api.models import SystemUser
 from webhooks.models import WebhookConfiguration
 
@@ -166,13 +170,22 @@ def _count_event_occurrences(context: UsageContext) -> int:
     thing. A subscription-less pool (a broken invariant, warned about elsewhere)
     reports zero: this resource is post-paid, so under-reporting cannot block
     anybody.
+
+    The period comes from ``current_billing_period_start`` — derived from
+    ``timezone.now()`` — and **not** from ``Subscription.current_period_start``.
+    Reading the column directly is the bug this replaced: the meter stamps
+    ``billing_period_start`` by resolving each occurrence's own start time, and
+    nothing advances the stored column (cycle close is Phase 13), so once the
+    stored period elapsed the meter wrote one period while this counter asked for
+    an earlier one and got zero permanently. Both sides now go through
+    ``resolve_billing_period_start``.
     """
     subscription = context.subscription
     if subscription is None:
         return 0
     return (
         MeteredOccurrence.objects.for_billing_period(
-            subscription.pk, subscription.current_period_start
+            subscription.pk, current_billing_period_start(subscription)
         )
         .for_organizations(context.organization_ids)
         .count()

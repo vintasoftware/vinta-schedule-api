@@ -31,6 +31,16 @@ logger = logging.getLogger(__name__)
 #:
 #: Widening this is cheap and safe; narrowing it below the beat interval would
 #: leave gaps that are silently never billed.
+#:
+#: **Operator action after an outage longer than this.** Self-healing stops at six
+#: hours; beyond that the un-swept stretch is never billed, and nothing raises,
+#: because the next sweep only ever looks six hours back. There is no backfill
+#: management command. Re-meter the gap by calling
+#: ``MeteringService.meter_occurrences_for_period(subscription, gap_start, gap_end)``
+#: for each subscription in ``MeteringService.subscriptions_to_sweep()`` — it is
+#: idempotent, so an over-wide window is safe — then confirm with
+#: ``reconcile_period``, which reports the recovered stretch as ``unmetered``
+#: before the backfill and clean after it.
 METERING_SWEEP_WINDOW = datetime.timedelta(hours=6)
 
 

@@ -94,6 +94,17 @@ class RecurrenceManager:
         if not parent_object.is_recurring:
             raise ValueError(f"Cannot create exception for non-recurring {object_type_name}")
 
+        # Coerce defensively: `datetime.datetime` *subclasses* `datetime.date`, so
+        # the `exception_date: datetime.date` annotation does not stop a caller
+        # passing a datetime and mypy will not flag it. Left uncoerced, the
+        # comparison below silently never matches (a datetime never equals a date),
+        # so an exception on the first occurrence quietly takes the
+        # future-occurrence branch and produces a different shape of edit than the
+        # caller asked for. `combine` already accepts either, so only the comparison
+        # was ever at risk.
+        if isinstance(exception_date, datetime.datetime):
+            exception_date = exception_date.date()
+
         exception_datetime = datetime.datetime.combine(
             exception_date, parent_object.start_time.time(), tzinfo=parent_object.start_time.tzinfo
         )

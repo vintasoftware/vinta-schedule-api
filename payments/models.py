@@ -467,15 +467,17 @@ class MeteredOccurrence(BaseModel):
     billed. An occurrence is billed at most once *ever*, and that fact has to
     outlive the event.
 
-    What the two identity columns actually hold is narrower than their names
-    suggest, and the constraint only works because of it. ``event_id`` is the
-    **series root** (the original master, following ``bulk_modification_parent``
-    back through any splits) and ``occurrence_start`` is the **recurrence slot** the
-    occurrence occupies — not the row that currently represents it, nor the time it
-    was ultimately moved to. Editing an occurrence writes a new ``CalendarEvent``,
-    and splitting a series moves later occurrences onto a new one; identifying by
-    those rows would make an already-billed occurrence look new. See
-    ``MeteringService.expand_occurrence_identities``.
+    What the two identity columns hold, precisely. ``event_id`` is the **series
+    root** — the original master, following ``bulk_modification_parent`` back
+    through any splits — so moving later occurrences onto a continuation row does
+    not make already-billed occurrences look new. ``occurrence_start`` is the
+    occurrence's **current start time**, nothing cleverer: the expansion has no
+    notion of a "slot" distinct from ``start_time`` to key on
+    (``calculate_recurring_events`` emits a modified exception as the moved row's
+    own ``me.start_time``). Re-timing an occurrence therefore mints a new identity
+    and bills it again — a known, deferred defect, characterised in
+    ``payments/tests/test_metering_reconciliation.py`` and reported by
+    ``MeteringService.reconcile_period`` as ``orphaned`` drift.
 
     ``is_within_allowance`` and ``unit_price`` are stamped **at meter time** against
     the allowance and overage price in force at that moment, so a later plan change

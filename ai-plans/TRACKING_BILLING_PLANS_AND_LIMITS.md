@@ -261,6 +261,42 @@ Third unreviewed phase in the stack — **user decision at the 6c checkpoint was
 
 ⚠️ **The spec's highest-severity risk.** A double-count here is silent revenue drift or overcharging, and it is invisible until a customer disputes a bill. The unique constraint on `(organization, event_id, occurrence_start)` is what makes re-running a window harmless; `is_within_allowance` and `unit_price` are stamped at meter time so a later limit change cannot retroactively reprice already-metered occurrences.
 
+#### Decision: what a bundle booking costs (binding on Phase 8)
+
+**One bundle booking is billed as `1 + n_internal_children` occurrences.** Not changed in Phase 7; recorded here so Phase 8's guard counts the same number rather than re-deciding.
+
+`CalendarBundleService` (`calendar_bundle_service.py:470-505`) creates a primary `CalendarEvent` plus, for each child calendar, either a full `CalendarEvent` (when `provider == INTERNAL`) or a `BlockedTime` (every other provider). The meter counts `CalendarEvent` rows, so the same user-facing action costs a different amount depending on which providers the bundle's children use: **1** occurrence across five Google calendars, **5** across five internal ones.
+
+Rationale for leaving it:
+
+- It is not arbitrary. An internal child event is a real, independently editable `CalendarEvent` that consumes the same storage and expansion cost as any other; a `BlockedTime` is not billable anywhere in this plan. Billing what exists is defensible and needs no special case.
+- Suppressing child events at meter time means teaching the meter about `bundle_primary_event`, i.e. a billing-specific exception inside the one expansion this phase exists to keep single-definition. That is exactly the second-predicate shape that has produced a defect in every phase of this plan.
+- Nobody is currently charged: every organization is on `unlimited` for the whole rollout, so the number is only visible in usage readouts until Phase 8.
+
+**Revisit trigger.** If product decides a bundle booking should be one billable unit regardless of child providers, the change belongs in `MeteringService.expand_occurrence_identities` (skip `bundle_primary_event__isnull=False`), **and** the same predicate must be added to Phase 8's guard and Phase 12's usage readout in the same change — three places, or the meter and the guard disagree.
+
+#### Phase 13 gating precondition: identity churn and series truncation
+
+Widened from "first-occurrence split" to **all identity-churn paths**, plus one defect that is not identity churn at all and is materially larger. Both are characterised with measured numbers in `payments/tests/test_metering_reconciliation.py`.
+
+Identity is `(series root pk, occurrence start time)`. The series-root half is durable and tested. **The start-time half is not**: re-timing an occurrence mints a new identity, so an edit applied to an already-metered stretch bills the moved occurrence again. Measured: re-timing one occurrence of a 5-occurrence month → **6** rows. Bounded by an already-metered window, and surfaced by `reconcile_period` as `orphaned` drift.
+
+**Larger, and not previously known — `truncate_parent` does not truncate.** `create_recurring_event_bulk_modification` rewrites a `COUNT`-bounded parent by decrementing `COUNT` by one instead of clamping it at the split index. Splitting a `COUNT=5` weekly series at its second occurrence leaves the parent on `COUNT=4` (Mondays 1-4) while the continuation generates four more — they **overlap by three weeks** rather than tiling, contradicting what `occurrence_bearing_masters_in_range` documented.
+
+Measured, with a `+30min` offset on the modification:
+
+| Scenario | Real occurrences | Billed | `reconcile_period` |
+|---|---|---|---|
+| Modify, then sweep once (**no prior metering**) | 5 | **8** | `drift == 0`, `is_clean == True` |
+| Sweep, then modify, then sweep | 5 | **9** | `drift == 1`, 1 `orphaned` |
+
+Two things make this worse than the bound previously accepted:
+
+1. **It does not need an already-metered window.** A single fresh sweep over-bills 8/5. The first-occurrence hazard cannot do this.
+2. **Reconciliation is blind to it.** The recompute reads the same calendar, which also says eight, so it reports a clean period. In the already-metered case it reports `drift == 1` against a 4-row over-bill — an operator would materially underestimate it.
+
+**It is an upstream recurrence defect, not a metering one.** `get_calendar_events_expanded` returns the same eight events, so the calendar genuinely contains them and the meter is faithful to what it is shown. The fix belongs in `CalendarEventService.create_recurring_event_bulk_modification`, and Phase 8 must not enforce a post-paid ceiling until it lands — a customer would be blocked on usage that never happened.
+
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |
