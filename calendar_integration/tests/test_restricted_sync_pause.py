@@ -310,6 +310,138 @@ class TestTaskBodiesEarlyReturnWhileRestricted:
 
 
 # ---------------------------------------------------------------------------
+# A reseller child's sync pauses when only the *root* is RESTRICTED
+# ---------------------------------------------------------------------------
+
+
+def _reseller_tree(root_billing_state: str) -> tuple[Organization, Organization]:
+    """A reseller root on ``root_billing_state`` plus one ordinary (non-billing-root)
+    child pooling against it. The child has no ``Subscription`` of its own --
+    ``resolve_billing_root`` routes it to the root, exactly as production does."""
+    root = baker.make(Organization, parent=None, can_invite_organizations=True)
+    now = timezone.now()
+    baker.make(
+        Subscription,
+        organization=root,
+        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        billing_state=root_billing_state,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
+    )
+    child = baker.make(Organization, parent=root, can_invite_organizations=False)
+    return root, child
+
+
+@pytest.mark.django_db
+class TestResellerChildSyncPausesWithRestrictedRoot:
+    """The sync-pause half of the reseller cascade: a restricted *root* pauses the
+    *child's* background sync too -- the child asks
+    ``is_billing_root_restricted`` and gets the root's answer, so nothing about
+    the cascade is re-implemented here. Proven at both the ``request_*`` enqueue
+    guard and the directly-invoked task body, mirroring the standalone-org tests
+    above but at the pooled-child level (the write-block cascade is proven
+    separately in ``payments/tests/test_reseller_restriction.py``)."""
+
+    def test_child_request_calendar_sync_is_paused_by_the_roots_restriction(self):
+        _root, child = _reseller_tree(BillingState.RESTRICTED)
+        calendar = baker.make(
+            Calendar,
+            organization=child,
+            provider=CalendarProvider.GOOGLE,
+            external_id="reseller-child-sync-cal",
+        )
+        context = CalendarServiceContext(
+            organization=child,
+            user_or_token=None,
+            account=MagicMock(),
+            calendar_adapter=MagicMock(),
+            calendar_permission_service=None,
+            calendar_side_effects_service=None,
+            entitlement_service=EntitlementService(),
+        )
+        service = CalendarSyncService(context=context, calendar_cache={}, host=MagicMock())
+
+        with patch(
+            "calendar_integration.tasks.calendar_sync_tasks.sync_calendar_task.delay"
+        ) as dispatched:
+            with pytest.raises(OverLimitError) as exc_info:
+                service.request_calendar_sync(
+                    calendar=calendar,
+                    start_datetime=timezone.now(),
+                    end_datetime=timezone.now() + datetime.timedelta(days=1),
+                )
+
+        assert exc_info.value.remedy == "resolve_billing"
+        dispatched.assert_not_called()
+        assert not CalendarSync.objects.filter(calendar=calendar).exists()
+
+    def test_child_sync_calendar_task_early_returns_when_the_root_is_restricted(self):
+        _root, child = _reseller_tree(BillingState.RESTRICTED)
+        account = _google_account(child, "reseller-child-sync-task@example.com")
+        calendar = baker.make(
+            Calendar,
+            organization=child,
+            provider=CalendarProvider.GOOGLE,
+            external_id="reseller-child-task-cal",
+        )
+        calendar_sync = baker.make(
+            CalendarSync,
+            organization=child,
+            calendar=calendar,
+            status=CalendarSyncStatus.NOT_STARTED,
+            start_datetime=timezone.now(),
+            end_datetime=timezone.now() + datetime.timedelta(days=1),
+        )
+
+        with patch.object(CalendarService, "sync_events") as synced:
+            sync_calendar_task(
+                account_type="social_account",
+                account_id=account.id,
+                calendar_sync_id=calendar_sync.id,
+                organization_id=child.id,
+            )
+
+        synced.assert_not_called()
+
+    def test_child_sync_is_not_paused_when_the_root_is_only_in_grace(self):
+        """The pause is specific to RESTRICTED -- a GRACE root must not pause the
+        child's sync (the same GRACE-is-not-blocked rule the write guard follows,
+        proven here at the pooled-child level). The ``request_*`` guard lets the
+        request through and the ``CalendarSync`` row is created (the actual
+        ``sync_calendar_task.delay`` is a deferred ``transaction.on_commit`` that a
+        non-transactional test never fires -- creation of the row is what proves
+        the billing guard did not block)."""
+        _root, child = _reseller_tree(BillingState.GRACE)
+        calendar = baker.make(
+            Calendar,
+            organization=child,
+            provider=CalendarProvider.GOOGLE,
+            external_id="reseller-child-grace-cal",
+        )
+        context = CalendarServiceContext(
+            organization=child,
+            user_or_token=None,
+            account=MagicMock(),
+            calendar_adapter=MagicMock(),
+            calendar_permission_service=None,
+            calendar_side_effects_service=None,
+            entitlement_service=EntitlementService(),
+        )
+        service = CalendarSyncService(context=context, calendar_cache={}, host=MagicMock())
+
+        result = service.request_calendar_sync(
+            calendar=calendar,
+            start_datetime=timezone.now(),
+            end_datetime=timezone.now() + datetime.timedelta(days=1),
+        )
+
+        # A GRACE root does not pause the child: the request is not blocked and the
+        # sync row is created (a RESTRICTED root would have raised before this).
+        assert result is not None
+        assert CalendarSync.objects.filter(calendar=calendar).exists()
+
+
+# ---------------------------------------------------------------------------
 # Resync on recovery: dispatch
 # ---------------------------------------------------------------------------
 

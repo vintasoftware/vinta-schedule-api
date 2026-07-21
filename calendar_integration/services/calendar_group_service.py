@@ -140,6 +140,24 @@ class CalendarGroupService:
                 "CalendarGroupService requires an organization. Call initialize()."
             )
 
+    def _check_not_restricted(self) -> None:
+        """Raise ``OverLimitError`` if this service's organization's billing root is
+        ``RESTRICTED`` (Phase 11) -- the same guard the sibling
+        ``CalendarService._check_not_restricted`` makes before an update/delete write.
+
+        Honors the same bypass source those siblings do: a no-op when no
+        ``entitlement_service`` is injected, or when the bound ``calendar_service``
+        is in bypass mode (``authenticate(bypass_limits=True)``). Every other guarded
+        service short-circuits on that bypass flag; checking it here too keeps a
+        legitimate bypass path (management commands, repair scripts) from being
+        stopped at this one guard while every peer guard lets it through.
+        """
+        if self.entitlement_service is None:
+            return
+        if getattr(self.calendar_service, "_bypass_entitlement_limits", False):
+            return
+        self.entitlement_service.check_not_restricted(cast("Organization", self.organization))
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -274,8 +292,7 @@ class CalendarGroupService:
         existing slot's pool, is refused if any future-booked event references it.
         """
         self._assert_initialized()
-        if self.entitlement_service is not None:
-            self.entitlement_service.check_not_restricted(cast("Organization", self.organization))
+        self._check_not_restricted()
         group = self._get_group_by_id(group_id)
         slots_data, _ = self._validate_slots_input(data.slots)
 
@@ -325,8 +342,7 @@ class CalendarGroupService:
         """Delete a CalendarGroup. Refuses if any events (past or future) reference
         it, matching the PROTECT FK on `CalendarEvent.calendar_group`."""
         self._assert_initialized()
-        if self.entitlement_service is not None:
-            self.entitlement_service.check_not_restricted(cast("Organization", self.organization))
+        self._check_not_restricted()
         group = self._get_group_by_id(group_id)
 
         if (
@@ -739,8 +755,7 @@ class CalendarGroupService:
         # method's own deletes already ran outside of any transaction this method
         # itself opens. Failing here first avoids that partial-delete window
         # entirely rather than relying on a caller's surrounding transaction.
-        if self.entitlement_service is not None:
-            self.entitlement_service.check_not_restricted(cast("Organization", self.organization))
+        self._check_not_restricted()
         if self.calendar_service is None:
             raise CalendarGroupValidationError(
                 "CalendarGroupService.calendar_service must be provided to cancel grouped events."
@@ -818,8 +833,7 @@ class CalendarGroupService:
         # ``cancel_grouped_event`` above -- this method writes non-primary
         # BlockedTime rows itself, ahead of (and outside of) the guarded
         # ``calendar_service.update_event`` call below.
-        if self.entitlement_service is not None:
-            self.entitlement_service.check_not_restricted(cast("Organization", self.organization))
+        self._check_not_restricted()
         if self.calendar_service is None:
             raise CalendarGroupValidationError(
                 "CalendarGroupService.calendar_service must be provided to reschedule grouped events."

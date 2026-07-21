@@ -20,6 +20,8 @@ from organizations.models import (
     OrganizationMembership,
     OrganizationRole,
 )
+from payments.billing_constants import BillingState
+from payments.models import Subscription
 
 
 User = get_user_model()
@@ -3341,6 +3343,129 @@ class TestPhase20ServiceAccountCRUD:
         response = anonymous_client.get(url)
 
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+
+@pytest.mark.django_db
+class TestPhase11ServiceAccountRestrictedGuard:
+    """Phase 11: a ``RESTRICTED`` organization cannot write its service account.
+
+    ``GoogleCalendarServiceAccount`` is an ``OrganizationModel`` subclass, so
+    create/rotate/delete of the org-level service account are real user-initiated
+    writes that the restricted-state guard must block -- consulting the same
+    ``EntitlementService.check_not_restricted`` predicate every other guarded write
+    uses. ``ACTIVE`` and ``GRACE`` organizations keep writing normally (only
+    ``RESTRICTED`` blocks).
+    """
+
+    def _make_admin(self, user, organization):
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _create_account(self, organization):
+        return GoogleCalendarServiceAccount.objects.create(
+            organization=organization,
+            calendar_fk=None,
+            email="svc@example.iam.gserviceaccount.com",
+            admin_email="admin@example.com",
+            private_key_id="kid",
+            private_key="secret",  # noqa: S106 - dummy value, not a credential
+        )
+
+    def _set_billing_state(self, organization, billing_state):
+        # Every ``baker.make(Organization)`` gets the autouse default subscription
+        # (unlimited plan); flip only its billing_state for this guard test.
+        subscription = Subscription.objects.get(organization=organization)
+        subscription.billing_state = billing_state
+        subscription.save(update_fields=["billing_state"])
+
+    def test_restricted_org_cannot_create_service_account(self, user):
+        org = baker.make(Organization, name="Restricted Create Org")
+        self._set_billing_state(org, BillingState.RESTRICTED)
+        client = self._make_admin(user, org)
+
+        url = reverse("api:ServiceAccounts-list")
+        response = client.post(url, _SA_PAYLOAD, format="json")
+
+        assert_response_status_code(response, status.HTTP_402_PAYMENT_REQUIRED)
+        assert not (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(org.id)
+            .filter(calendar_fk__isnull=True)
+            .exists()
+        )
+
+    def test_restricted_org_cannot_rotate_service_account(self, user):
+        org = baker.make(Organization, name="Restricted Rotate Org")
+        account = self._create_account(org)
+        self._set_billing_state(org, BillingState.RESTRICTED)
+        client = self._make_admin(user, org)
+
+        new_payload = dict(_SA_PAYLOAD)
+        new_payload["email"] = "rotated@example.iam.gserviceaccount.com"
+        url = reverse("api:ServiceAccounts-detail", kwargs={"pk": account.id})
+        response = client.put(url, new_payload, format="json")
+
+        assert_response_status_code(response, status.HTTP_402_PAYMENT_REQUIRED)
+        account.refresh_from_db()
+        assert account.email == "svc@example.iam.gserviceaccount.com"
+
+    def test_restricted_org_cannot_patch_service_account(self, user):
+        org = baker.make(Organization, name="Restricted Patch Org")
+        account = self._create_account(org)
+        self._set_billing_state(org, BillingState.RESTRICTED)
+        client = self._make_admin(user, org)
+
+        url = reverse("api:ServiceAccounts-detail", kwargs={"pk": account.id})
+        response = client.patch(
+            url, {"email": "patched@example.iam.gserviceaccount.com"}, format="json"
+        )
+
+        assert_response_status_code(response, status.HTTP_402_PAYMENT_REQUIRED)
+        account.refresh_from_db()
+        assert account.email == "svc@example.iam.gserviceaccount.com"
+
+    def test_restricted_org_cannot_delete_service_account(self, user):
+        org = baker.make(Organization, name="Restricted Delete Org")
+        account = self._create_account(org)
+        self._set_billing_state(org, BillingState.RESTRICTED)
+        client = self._make_admin(user, org)
+
+        url = reverse("api:ServiceAccounts-detail", kwargs={"pk": account.id})
+        response = client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_402_PAYMENT_REQUIRED)
+        assert GoogleCalendarServiceAccount.objects.filter(id=account.id).exists()
+
+    @pytest.mark.parametrize("billing_state", [BillingState.ACTIVE, BillingState.GRACE])
+    def test_non_restricted_org_can_create_service_account(self, user, billing_state):
+        org = baker.make(Organization, name="Unblocked Create Org")
+        self._set_billing_state(org, billing_state)
+        client = self._make_admin(user, org)
+
+        url = reverse("api:ServiceAccounts-list")
+        response = client.post(url, _SA_PAYLOAD, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+
+    @pytest.mark.parametrize("billing_state", [BillingState.ACTIVE, BillingState.GRACE])
+    def test_non_restricted_org_can_delete_service_account(self, user, billing_state):
+        org = baker.make(Organization, name="Unblocked Delete Org")
+        account = self._create_account(org)
+        self._set_billing_state(org, billing_state)
+        client = self._make_admin(user, org)
+
+        url = reverse("api:ServiceAccounts-detail", kwargs={"pk": account.id})
+        response = client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+        assert not GoogleCalendarServiceAccount.objects.filter(id=account.id).exists()
 
 
 @pytest.mark.django_db

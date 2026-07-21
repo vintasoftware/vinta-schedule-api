@@ -412,6 +412,12 @@ Makes `RESTRICTED` actually restrict: the state Phase 10 transitions *into* on g
 
 **Watch for the plan's recurring failure shape** — the block predicate and the pause predicate must agree on *what RESTRICTED means*. If write-enforcement keys off `billing_state == RESTRICTED` but sync-pause keys off something else (a flag, a limit check), the two can diverge and an org can be write-blocked while still syncing, or vice versa. One definition of "restricted", consulted by both.
 
+**Carried forward from 11:** (two judgment calls recorded here, not fixed — both inert today because every org is on `unlimited`, so no voluntary downgrade-over-limit and no real renewal charge happens yet. No code changed for either.)
+
+- **A — `_is_downgrade_grace` conflates two grace reasons (money-collection miss).** `DunningService._is_downgrade_grace` treats `Subscription.pending_plan_id is not None` as "this grace episode is a voluntary downgrade, so skip the charge-retry ladder." A genuine **renewal-charge failure that lands while a downgrade is already pending** therefore reads as downgrade-origin and its retry is skipped — a silently dropped collection attempt. Rare and inert today (no real renewal charges yet), but a real money-collection miss once real plans ship. The clean fix is a dedicated `Subscription` grace-reason field (payment-failure vs downgrade-over-limit) rather than inferring intent from `pending_plan_id`. **Gate to Phase 14** (when real plans make it reachable) or a dedicated follow-up.
+
+- **B — voluntary downgrade-over-limit escalates to `RESTRICTED` with payment-failure copy (needs product sign-off).** The Item-2 downgrade→GRACE driver means a *healthy, paying* customer who voluntarily downgrades but still holds more resources than the new plan allows is moved `ACTIVE → GRACE` and, at grace expiry if still over limit, `GRACE → RESTRICTED` — fully write-blocked and sync-paused. That reuses `RESTRICTED`, which the spec's Use-case 5 defines as the *payment-failure* state, and the `RESTRICTED`/dunning notification copy (`templates/payments/emails/dunning_restricted.body.html` and the grace emails) reads as "your payment failed," which is wrong for this cohort. **Needs product input** on whether voluntary downgrade-over-limit should reach `RESTRICTED` at all; if so, the notification copy must branch on grace reason (ties into Deferral A's reason field). Inert until real plans exist.
+
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |

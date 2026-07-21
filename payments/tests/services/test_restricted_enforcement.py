@@ -368,14 +368,55 @@ def _delete_only_available_time_batch(organization: Organization) -> None:
     )
 
 
-#: Registered probes for a representative slice of the guarded write surface:
-#: every ``kind=prepaid`` resource ``test_prepaid_resource_coverage.py`` covers
-#: for creation, plus the postpaid ``event_occurrences`` resource, each with an
-#: update and/or delete probe where the guarded service exposes one. Not every
-#: single write method across the codebase is enumerated here (see the phase
-#: report for the drawn scope boundary) -- this proves the *pattern* holds
-#: across prepaid, postpaid, and org-membership resources alike, at both
-#: create and update/delete.
+def _create_bundle_calendar(organization: Organization) -> None:
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+    service.create_bundle_calendar(name="Blocked Bundle", description="")
+
+
+def _update_bundle_calendar(organization: Organization) -> None:
+    bundle = baker.make(
+        Calendar,
+        organization=organization,
+        calendar_type=CalendarType.BUNDLE,
+        provider=CalendarProvider.INTERNAL,
+        external_id="restricted-update-bundle",
+    )
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+    service.update_bundle_calendar(bundle_calendar=bundle, child_calendars=[])
+
+
+def _disable_bundle_calendar(organization: Organization) -> None:
+    bundle = baker.make(
+        Calendar,
+        organization=organization,
+        calendar_type=CalendarType.BUNDLE,
+        provider=CalendarProvider.INTERNAL,
+        external_id="restricted-delete-bundle",
+    )
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+    service.disable_bundle_calendar(bundle.id)
+
+
+def _create_system_user(organization: Organization) -> None:
+    _container().public_api_auth_service().create_system_user(
+        integration_name=f"restricted-guard-{organization.pk}",
+        organization=organization,
+    )
+
+
+#: Registered probes for the guarded write surface: **every** ``LimitedResource``
+#: member has a create-path probe here (bound to the enum by
+#: ``TestRestrictedWriteProbeCoverage`` below, so a new member added without a probe
+#: fails CI rather than silently escaping this proof), plus an update and/or delete
+#: probe wherever the guarded service exposes a *service-level* mutating method. A
+#: handful of guarded mutations live at the view/GraphQL layer instead
+#: (``public_api`` system-user revoke/update, the org service-account CRUD); those
+#: are proven in their own app's tests and are intentionally out of this
+#: service-level probe set -- see ``GUARDED_MUTATING_SERVICE_METHODS`` for the
+#: enumerated service-level update/delete surface this file pins.
 RESTRICTED_WRITE_PROBES: dict[str, WriteProbe] = {
     LimitedResource.ORGANIZATION_MEMBERS: WriteProbe(
         create=_invite_member, update=_reactivate_member, delete=_revoke_invitation
@@ -390,6 +431,11 @@ RESTRICTED_WRITE_PROBES: dict[str, WriteProbe] = {
         update=_update_calendar_group,
         delete=_delete_calendar_group,
     ),
+    LimitedResource.BUNDLE_CALENDARS: WriteProbe(
+        create=_create_bundle_calendar,
+        update=_update_bundle_calendar,
+        delete=_disable_bundle_calendar,
+    ),
     LimitedResource.WEBHOOK_SUBSCRIPTIONS: WriteProbe(
         create=_create_webhook_configuration,
         update=_update_webhook_configuration,
@@ -398,10 +444,34 @@ RESTRICTED_WRITE_PROBES: dict[str, WriteProbe] = {
     LimitedResource.AVAILABILITY_WINDOWS: WriteProbe(
         create=_create_available_time, delete=_delete_only_available_time_batch
     ),
+    LimitedResource.PUBLIC_API_SYSTEM_USERS: WriteProbe(
+        create=_create_system_user,
+    ),
     LimitedResource.EVENT_OCCURRENCES: WriteProbe(
         create=_create_event, update=_update_event, delete=_delete_event
     ),
 }
+
+
+#: The guarded update/delete **service-level** methods behind the restricted write
+#: guard, enumerated explicitly and checked against the code by
+#: ``TestRestrictedWriteProbeCoverage`` so a rename or removal fails CI instead of
+#: silently dropping a guarded path. Each entry is ``(service class, method name)``.
+#: These are the same methods the update/delete probes above drive; pinning them by
+#: name here means a guarded mutation that is renamed without updating its probe is
+#: caught, not passed silently.
+GUARDED_MUTATING_SERVICE_METHODS: list[tuple[type, str]] = [
+    (CalendarService, "update_resource_calendar"),
+    (CalendarService, "disable_resource_calendar"),
+    (CalendarService, "update_bundle_calendar"),
+    (CalendarService, "disable_bundle_calendar"),
+    (CalendarService, "update_event"),
+    (CalendarService, "delete_event"),
+    (CalendarGroupService, "update_group"),
+    (CalendarGroupService, "delete_group"),
+    (WebhookService, "update_configuration"),
+    (WebhookService, "delete_configuration"),
+]
 
 
 def _probe_ids() -> list[str]:
@@ -424,6 +494,59 @@ def _probe_params() -> list[tuple[str, Callable[[Organization], None]]]:
         if probe.delete is not None:
             params.append((resource_key, probe.delete))
     return params
+
+
+class TestRestrictedWriteProbeCoverage:
+    """Bind the hand-written probe set to the real guarded surface, so a future
+    unguarded (or un-probed) write fails CI instead of passing silently -- the
+    same silent-escape shape Phase 6c's ``test_prepaid_resource_coverage`` closes
+    for the create half, applied here to the restricted write guard.
+    """
+
+    def test_every_limited_resource_has_a_create_probe(self):
+        """Every ``LimitedResource`` member must have a create-path probe, and the
+        probe set must not carry a key that is not a ``LimitedResource`` -- so a
+        new member added without a probe (the ``BUNDLE_CALENDARS`` /
+        ``PUBLIC_API_SYSTEM_USERS`` gap that motivated this test) fails loudly, and
+        a probe left behind for a renamed/removed resource fails the other way."""
+        resource_keys = set(LimitedResource.values)
+        probe_keys = set(RESTRICTED_WRITE_PROBES)
+
+        missing = resource_keys - probe_keys
+        assert not missing, (
+            f"No restricted-write probe registered for {sorted(missing)}. Every "
+            "LimitedResource member must have a create-path probe in "
+            "RESTRICTED_WRITE_PROBES so its restricted-state write guard is proven, "
+            "not assumed."
+        )
+
+        stale = probe_keys - resource_keys
+        assert not stale, (
+            f"RESTRICTED_WRITE_PROBES has probes for {sorted(stale)}, which are not "
+            "LimitedResource members. Remove them, or fix the resource key."
+        )
+
+    def test_every_create_probe_is_callable(self):
+        """A registered probe with no real ``create`` callable would report false
+        coverage above; pin that each one is actually wired."""
+        for resource_key, probe in RESTRICTED_WRITE_PROBES.items():
+            assert callable(probe.create), (
+                f"{resource_key} has no callable create probe -- coverage above would "
+                "be reported for a path nothing drives."
+            )
+
+    def test_enumerated_guarded_mutating_methods_exist(self):
+        """The explicit list of guarded update/delete *service* methods is checked
+        against the code: a rename or removal of any of them fails here, forcing
+        the probe set (and its owning guard) to be revisited rather than silently
+        losing a guarded mutation path."""
+        for service_cls, method_name in GUARDED_MUTATING_SERVICE_METHODS:
+            assert callable(getattr(service_cls, method_name, None)), (
+                f"{service_cls.__name__}.{method_name} is enumerated as a guarded "
+                "update/delete surface but no longer exists (renamed or removed). "
+                "Update GUARDED_MUTATING_SERVICE_METHODS and confirm the restricted "
+                "guard still fires on the new path."
+            )
 
 
 @pytest.mark.django_db

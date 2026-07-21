@@ -413,15 +413,24 @@ class EntitlementService:
         automatic from that alone; nothing about the cascade needs reimplementing
         anywhere else.
 
-        This is the **one** definition both halves of Phase 11 consult: the write
-        guard (``check_limit`` / ``check_postpaid_allowance`` below, plus every
-        explicit ``check_not_restricted`` call site on an update/delete path those
-        two do not cover) and every calendar-sync-pause site
-        (``calendar_integration.tasks.calendar_sync_tasks``, the ``request_*``
-        methods on ``CalendarSyncService``, and ``CalendarWebhookService``'s
-        webhook-triggered sync). Two independently-derived answers to "is this org
-        restricted" is exactly the plan's recurring two-predicates defect; there is
-        only ever this one.
+        This is the **one** semantic definition of "restricted" both halves of
+        Phase 11 consult: the write guard (every explicit ``check_not_restricted``
+        call site on an update/delete path, which routes through here) and every
+        calendar-sync-pause site (``calendar_integration.tasks.calendar_sync_tasks``,
+        the ``request_*`` methods on ``CalendarSyncService``, and
+        ``CalendarWebhookService``'s webhook-triggered sync). Two *independently
+        derived* answers to "is this org restricted" is exactly the plan's recurring
+        two-predicates defect; the definition here is the only one.
+
+        Two hot-path guards -- ``check_limit`` and ``check_postpaid_allowance``
+        below -- do **not** call this method; they inline the identical
+        ``subscription.billing_state == BillingState.RESTRICTED`` test on the
+        ``root`` / ``Subscription`` they have *already* resolved once, purely to
+        avoid re-walking the ``parent`` chain and re-fetching the subscription on
+        the two hottest create paths in the product. That is a deliberate copy of
+        the same test against the same resolved state -- not an independently
+        derived predicate -- so it cannot disagree with this one; each such site
+        carries a comment pointing back here.
 
         **``GRACE`` is not restricted.** Only ``RESTRICTED`` blocks -- a ``GRACE``
         organization stays fully writable and its sync keeps running; escalation is
@@ -525,9 +534,12 @@ class EntitlementService:
         # numeric ceiling below -- an organization whose plan carries no ceiling at
         # all (``unlimited``, every organization's actual plan for this whole
         # rollout) could otherwise create freely while RESTRICTED, since the
-        # ``is_unlimited`` branch below never even looks at ``billing_state``. See
-        # ``is_billing_root_restricted`` for why this is the one place both this
-        # method and every other write guard resolve "restricted" from.
+        # ``is_unlimited`` branch below never even looks at ``billing_state``.
+        # This is the identical test ``is_billing_root_restricted`` performs,
+        # inlined here against the ``root`` / ``subscription`` already resolved
+        # above so this hot create path does not re-walk the ``parent`` chain and
+        # re-fetch the subscription just to re-ask the same question -- see that
+        # method's docstring for why the copy is deliberate and cannot diverge.
         # ``current_usage``/``ceiling`` are ``0``/``0`` sentinels here -- this
         # block is not about capacity, so there is no meaningful count to report;
         # ``remedy`` is always ``resolve_billing``, which supersedes whatever
@@ -733,9 +745,12 @@ class EntitlementService:
         root = resolve_billing_root(organization)
         subscription = self._get_subscription_for_root(root)
         # Phase 11: RESTRICTED blocks outright, ahead of the unlimited check and
-        # the payment-method check both -- see ``is_billing_root_restricted`` and
-        # this method's own docstring. Sentinel 0/0 usage/ceiling, same convention
-        # as ``check_limit``'s restricted short-circuit.
+        # the payment-method check both. The identical test
+        # ``is_billing_root_restricted`` performs, inlined here against the already
+        # resolved ``root`` / ``subscription`` so this hot event-creation path does
+        # not re-walk the ``parent`` chain and re-fetch the subscription to re-ask
+        # the same question -- see that method's docstring. Sentinel 0/0
+        # usage/ceiling, same convention as ``check_limit``'s restricted short-circuit.
         if subscription is not None and subscription.billing_state == BillingState.RESTRICTED:
             return LimitCheckResult(
                 allowed=False,
