@@ -2,12 +2,78 @@ import django_virtual_models as v
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
-from payments.models import BillingAddress, BillingProfile, Subscription
+from payments.billing_constants import BillingInterval, LimitedResource
+from payments.models import (
+    BillingAddress,
+    BillingPlan,
+    BillingProfile,
+    PlanEntitlement,
+    PlanLimit,
+    Subscription,
+    SubscriptionAddOn,
+)
 from payments.virtual_models import (
     BillingAddressVirtualModel,
+    BillingPlanVirtualModel,
     BillingProfileVirtualModel,
     SubscriptionVirtualModel,
 )
+
+
+class PlanLimitSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlanLimit
+        fields = ("resource_key", "limit_value", "kind", "overage_unit_price")
+        read_only_fields = fields
+
+
+class PlanEntitlementSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlanEntitlement
+        fields = ("entitlement_key", "is_enabled")
+        read_only_fields = fields
+
+
+class BillingPlanSerializer(v.VirtualModelSerializer):
+    """The catalog view behind ``GET /billing/plans/`` — every active plan with
+    its limits and entitlements, so a client can render an upgrade picker
+    without a second round trip per plan."""
+
+    limits = PlanLimitSerializer(many=True, read_only=True)
+    entitlements = PlanEntitlementSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = BillingPlan
+        virtual_model = BillingPlanVirtualModel
+        fields = (
+            "id",
+            "slug",
+            "name",
+            "is_active",
+            "is_default_for_new_organizations",
+            "monthly_price",
+            "annual_price",
+            "currency",
+            "grace_period_days",
+            "limits",
+            "entitlements",
+        )
+        read_only_fields = fields
+
+
+class SubscriptionAddOnSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SubscriptionAddOn
+        fields = (
+            "id",
+            "resource_key",
+            "quantity",
+            "is_recurring",
+            "is_active",
+            "external_id",
+            "created",
+        )
+        read_only_fields = fields
 
 
 class SubscriptionSerializer(v.VirtualModelSerializer):
@@ -15,21 +81,85 @@ class SubscriptionSerializer(v.VirtualModelSerializer):
     Serializer for Subscription virtual model.
     """
 
+    plan = BillingPlanSerializer(read_only=True)
+    pending_plan_slug: serializers.SlugRelatedField = serializers.SlugRelatedField(
+        source="pending_plan", slug_field="slug", read_only=True
+    )
+    add_ons = SubscriptionAddOnSerializer(many=True, read_only=True)
+
     class Meta:
         model = Subscription
         virtual_model = SubscriptionVirtualModel
         fields = (
             "id",
+            "plan",
             "billing_state",
+            "billing_interval",
+            "payment_provider",
             "current_period_start",
             "current_period_end",
+            "grace_period_ends_at",
+            "pending_plan_slug",
+            "pending_billing_interval",
+            "pending_plan_effective_at",
+            "add_ons",
         )
-        read_only_fields = (
-            "id",
-            "billing_state",
-            "current_period_start",
-            "current_period_end",
-        )
+        read_only_fields = fields
+
+
+class ChangePlanRequestSerializer(serializers.Serializer):
+    """Body of ``POST /billing/subscription/change-plan/``.
+
+    ``payment_token`` is not in the plan's documented request body (``API
+    Design`` lists only ``plan_slug``/``billing_interval``/``idempotency_key``)
+    but is required in practice the *first* time a billing root ever attaches a
+    payment instrument -- there is otherwise no provider-facing card/token to
+    create the provider-side subscription against. Optional here (blank by
+    default) because it is only actually required when
+    ``Subscription.external_id`` is still blank; see
+    ``SubscriptionService._initiate_upgrade`` for the exact condition and
+    ``PaymentTokenRequiredError`` for the 400 a caller gets if it omits the
+    token when one was needed. Documented in the phase report as a deliberate
+    deviation from the plan's literal request shape.
+    """
+
+    plan_slug = serializers.SlugField()
+    billing_interval = serializers.ChoiceField(
+        choices=BillingInterval.choices, default=BillingInterval.MONTHLY
+    )
+    idempotency_key = serializers.CharField(max_length=255)
+    payment_token = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
+
+class AddOnPurchaseRequestSerializer(serializers.Serializer):
+    """Body of ``POST /billing/add-ons/``. See ``ChangePlanRequestSerializer``
+    for why ``payment_token`` is present despite not being in the plan's
+    literal request shape -- an add-on purchase is a one-time charge and needs
+    an instrument to charge, exactly like a first-ever plan upgrade does."""
+
+    resource_key = serializers.ChoiceField(choices=LimitedResource.choices)
+    quantity = serializers.IntegerField(min_value=1)
+    is_recurring = serializers.BooleanField(default=True)
+    idempotency_key = serializers.CharField(max_length=255)
+    payment_token = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
+
+class EffectiveLimitUsageSerializer(serializers.Serializer):
+    """One row of ``GET /billing/usage/`` -- an ``EffectiveLimit`` paired with the
+    ``current_usage`` ``EntitlementService.check_limit`` would compare it
+    against. Not a ``ModelSerializer``: the source is a dataclass plus a
+    separately-fetched usage count, not one model instance."""
+
+    resource_key = serializers.CharField()
+    kind = serializers.CharField(allow_null=True)
+    limit_value = serializers.IntegerField(allow_null=True)
+    current_usage = serializers.IntegerField(allow_null=True)
+    overage_unit_price = serializers.DecimalField(max_digits=10, decimal_places=4, allow_null=True)
+
+
+class UsageResponseSerializer(serializers.Serializer):
+    billing_state = serializers.CharField()
+    limits = EffectiveLimitUsageSerializer(many=True)
 
 
 class BillingAddressSerializer(v.VirtualModelSerializer):

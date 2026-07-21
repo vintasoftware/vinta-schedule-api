@@ -38,7 +38,18 @@ class BaseSubscriptionAdapter:
         raise NotImplementedError
 
     @abstractmethod
-    def create_subscription(self, subscription: Subscription, payment_token: str) -> str:
+    def create_subscription(
+        self, subscription: Subscription, payment_token: str, idempotency_key: str = ""
+    ) -> str:
+        """Create the provider-side subscription (the first charge for an
+        upgrade with no instrument yet on file).
+
+        :param idempotency_key: When set, forwarded to the provider as its own
+            idempotency key so a retried first-upgrade (e.g. after the request
+            transaction that would have persisted ``external_id`` rolled back)
+            resolves to the *same* provider subscription instead of creating and
+            charging a second one. See ``BasePaymentAdapter.process``.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -47,6 +58,32 @@ class BaseSubscriptionAdapter:
 
     @abstractmethod
     def update_plan(self, plan: CreatedPlan) -> CreatedPlan:
+        raise NotImplementedError
+
+    @abstractmethod
+    def change_subscription_plan(
+        self, subscription: Subscription, new_plan: CreatedPlan, idempotency_key: str = ""
+    ) -> None:
+        """
+        Move `subscription`'s already-active provider-side subscription onto
+        `new_plan`, with the provider computing and applying proration
+        server-side (Phase 9's "proration on upgrade computed provider-side"
+        guiding decision). This method does not return an amount and never
+        writes anything locally: the actual charge and its outcome are learned
+        asynchronously, through the same subscription-payment webhook every
+        other charge on this subscription already reports through
+        (`SubscriptionService.confirm_plan_change` is what reacts to it).
+
+        :param subscription: The subscription to move, with `external_id` set —
+            this is only ever called for a subscription the provider already
+            knows about (see `create_subscription` for the first-ever-payment
+            case, which has no existing provider-side subscription to move).
+        :param new_plan: The provider-side plan/price this subscription should
+            move onto.
+        :param idempotency_key: When set, forwarded to the provider as its own
+            idempotency key so a retried proration drive resolves to the same
+            provider-side change instead of prorating (and charging) twice.
+        """
         raise NotImplementedError
 
     @abstractmethod

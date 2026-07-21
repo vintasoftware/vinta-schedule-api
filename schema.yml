@@ -1326,6 +1326,575 @@ paths:
               schema:
                 $ref: '#/components/schemas/BillingProfile'
           description: ''
+  /billing/add-ons/:
+    post:
+      operationId: billing_add_ons_create
+      description: |-
+        ``POST /billing/add-ons/`` (purchase capacity), ``DELETE
+        /billing/add-ons/{id}/`` (stop a recurring add-on from renewing).
+
+        ``SubscriptionAddOnSerializer`` is a plain ``ModelSerializer`` -- no
+        nested relation heavy enough to warrant a virtual model (see
+        ``payments/virtual_models.py``) -- so this does not mix in
+        ``GenericVirtualModelViewMixin``, unlike ``SubscriptionViewSet``.
+      summary: Purchase additional capacity
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - billing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddOnPurchaseRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AddOnPurchaseRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AddOnPurchaseRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionAddOn'
+          description: ''
+  /billing/add-ons{format}:
+    post:
+      operationId: billing_add_ons_formatted_create
+      description: |-
+        ``POST /billing/add-ons/`` (purchase capacity), ``DELETE
+        /billing/add-ons/{id}/`` (stop a recurring add-on from renewing).
+
+        ``SubscriptionAddOnSerializer`` is a plain ``ModelSerializer`` -- no
+        nested relation heavy enough to warrant a virtual model (see
+        ``payments/virtual_models.py``) -- so this does not mix in
+        ``GenericVirtualModelViewMixin``, unlike ``SubscriptionViewSet``.
+      summary: Purchase additional capacity
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - billing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddOnPurchaseRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AddOnPurchaseRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AddOnPurchaseRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionAddOn'
+          description: ''
+  /billing/add-ons/{id}/:
+    delete:
+      operationId: billing_add_ons_destroy
+      description: |-
+        ``POST /billing/add-ons/`` (purchase capacity), ``DELETE
+        /billing/add-ons/{id}/`` (stop a recurring add-on from renewing).
+
+        ``SubscriptionAddOnSerializer`` is a plain ``ModelSerializer`` -- no
+        nested relation heavy enough to warrant a virtual model (see
+        ``payments/virtual_models.py``) -- so this does not mix in
+        ``GenericVirtualModelViewMixin``, unlike ``SubscriptionViewSet``.
+      summary: Cancel a recurring add-on at period end
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionAddOn'
+          description: ''
+  /billing/add-ons/{id}{format}:
+    delete:
+      operationId: billing_add_ons_formatted_destroy
+      description: |-
+        ``POST /billing/add-ons/`` (purchase capacity), ``DELETE
+        /billing/add-ons/{id}/`` (stop a recurring add-on from renewing).
+
+        ``SubscriptionAddOnSerializer`` is a plain ``ModelSerializer`` -- no
+        nested relation heavy enough to warrant a virtual model (see
+        ``payments/virtual_models.py``) -- so this does not mix in
+        ``GenericVirtualModelViewMixin``, unlike ``SubscriptionViewSet``.
+      summary: Cancel a recurring add-on at period end
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionAddOn'
+          description: ''
+  /billing/plans/:
+    get:
+      operationId: billing_plans_list
+      description: |-
+        ``GET /billing/plans/`` -- the active catalog, with limits and
+        entitlements, so a client can render an upgrade picker in one round trip.
+      summary: List active billing plans
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+      - in: query
+        name: is_active
+        schema:
+          type: boolean
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBillingPlanList'
+          description: ''
+  /billing/plans{format}:
+    get:
+      operationId: billing_plans_formatted_list
+      description: |-
+        ``GET /billing/plans/`` -- the active catalog, with limits and
+        entitlements, so a client can render an upgrade picker in one round trip.
+      summary: List active billing plans
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: query
+        name: is_active
+        schema:
+          type: boolean
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBillingPlanList'
+          description: ''
+  /billing/subscription/cancel/:
+    post:
+      operationId: billing_subscription_cancel_create
+      description: |-
+        ``GET /billing/subscription/``, ``POST .../change-plan/``,
+        ``POST .../cancel/``.
+      summary: Cancel the org's subscription
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+          description: ''
+  /billing/subscription/cancel{format}:
+    post:
+      operationId: billing_subscription_cancel_formatted_create
+      description: |-
+        ``GET /billing/subscription/``, ``POST .../change-plan/``,
+        ``POST .../cancel/``.
+      summary: Cancel the org's subscription
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+          description: ''
+  /billing/subscription/change-plan/:
+    post:
+      operationId: billing_subscription_change_plan_create
+      description: |-
+        ``GET /billing/subscription/``, ``POST .../change-plan/``,
+        ``POST .../cancel/``.
+      summary: Upgrade or downgrade the org's plan
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - billing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePlanRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ChangePlanRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ChangePlanRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+          description: ''
+  /billing/subscription/change-plan{format}:
+    post:
+      operationId: billing_subscription_change_plan_formatted_create
+      description: |-
+        ``GET /billing/subscription/``, ``POST .../change-plan/``,
+        ``POST .../cancel/``.
+      summary: Upgrade or downgrade the org's plan
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - billing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePlanRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ChangePlanRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ChangePlanRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+          description: ''
+  /billing/subscription/retrieve_subscription/:
+    get:
+      operationId: billing_subscription_retrieve_subscription_retrieve
+      description: |-
+        ``GET /billing/subscription/``, ``POST .../change-plan/``,
+        ``POST .../cancel/``.
+      summary: Retrieve the org's subscription
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+          description: ''
+  /billing/subscription/retrieve_subscription{format}:
+    get:
+      operationId: billing_subscription_retrieve_subscription_formatted_retrieve
+      description: |-
+        ``GET /billing/subscription/``, ``POST .../change-plan/``,
+        ``POST .../cancel/``.
+      summary: Retrieve the org's subscription
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+          description: ''
+  /billing/usage/retrieve_usage/:
+    get:
+      operationId: billing_usage_retrieve_usage_retrieve
+      description: |-
+        ``GET /billing/usage/`` -- current usage against effective limits, per
+        resource, plus ``billing_state``. Resolved at the billing root, same as
+        every other read in this app.
+      summary: Get current usage against effective limits
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageResponse'
+          description: ''
+  /billing/usage/retrieve_usage{format}:
+    get:
+      operationId: billing_usage_retrieve_usage_formatted_retrieve
+      description: |-
+        ``GET /billing/usage/`` -- current usage against effective limits, per
+        resource, plus ``billing_state``. Resolved at the billing root, same as
+        every other read in this app.
+      summary: Get current usage against effective limits
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageResponse'
+          description: ''
   /blocked-times/:
     get:
       operationId: blocked_times_list
@@ -12698,6 +13267,32 @@ components:
         * `create` - create
         * `update` - update
         * `delete` - delete
+    AddOnPurchaseRequest:
+      type: object
+      description: |-
+        Body of ``POST /billing/add-ons/``. See ``ChangePlanRequestSerializer``
+        for why ``payment_token`` is present despite not being in the plan's
+        literal request shape -- an add-on purchase is a one-time charge and needs
+        an instrument to charge, exactly like a first-ever plan upgrade does.
+      properties:
+        resource_key:
+          $ref: '#/components/schemas/ResourceKeyEnum'
+        quantity:
+          type: integer
+          minimum: 1
+        is_recurring:
+          type: boolean
+          default: true
+        idempotency_key:
+          type: string
+          maxLength: 255
+        payment_token:
+          type: string
+          maxLength: 255
+      required:
+      - idempotency_key
+      - quantity
+      - resource_key
     AvailableResourcesEnum:
       enum:
       - calendar_event
@@ -13007,6 +13602,69 @@ components:
       - street_name
       - street_number
       - zip_code
+    BillingPlan:
+      type: object
+      description: |-
+        The catalog view behind ``GET /billing/plans/`` — every active plan with
+        its limits and entitlements, so a client can render an upgrade picker
+        without a second round trip per plan.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        slug:
+          type: string
+          readOnly: true
+          pattern: ^[-a-zA-Z0-9_]+$
+        name:
+          type: string
+          readOnly: true
+        is_active:
+          type: boolean
+          readOnly: true
+        is_default_for_new_organizations:
+          type: boolean
+          readOnly: true
+        monthly_price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        annual_price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+        currency:
+          type: string
+          readOnly: true
+        grace_period_days:
+          type: integer
+          readOnly: true
+          nullable: true
+        limits:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlanLimit'
+          readOnly: true
+        entitlements:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlanEntitlement'
+          readOnly: true
+      required:
+      - annual_price
+      - currency
+      - entitlements
+      - grace_period_days
+      - id
+      - is_active
+      - is_default_for_new_organizations
+      - limits
+      - monthly_price
+      - name
+      - slug
     BillingProfile:
       type: object
       description: Serializer for BillingProfile virtual model.
@@ -13052,6 +13710,20 @@ components:
       - document_type
       - id
       - modified
+    BillingStateEnum:
+      enum:
+      - free
+      - active
+      - grace
+      - restricted
+      - cancelled
+      type: string
+      description: |-
+        * `free` - Free
+        * `active` - Active
+        * `grace` - Grace period
+        * `restricted` - Restricted
+        * `cancelled` - Cancelled
     BlockedTime:
       type: object
       description: Serializer for BlockedTime model with recurring support.
@@ -13720,6 +14392,39 @@ components:
         * `resource` - Resource Calendar
         * `virtual` - Virtual Calendar
         * `bundle` - Bundle Calendar
+    ChangePlanRequest:
+      type: object
+      description: |-
+        Body of ``POST /billing/subscription/change-plan/``.
+
+        ``payment_token`` is not in the plan's documented request body (``API
+        Design`` lists only ``plan_slug``/``billing_interval``/``idempotency_key``)
+        but is required in practice the *first* time a billing root ever attaches a
+        payment instrument -- there is otherwise no provider-facing card/token to
+        create the provider-side subscription against. Optional here (blank by
+        default) because it is only actually required when
+        ``Subscription.external_id`` is still blank; see
+        ``SubscriptionService._initiate_upgrade`` for the exact condition and
+        ``PaymentTokenRequiredError`` for the 400 a caller gets if it omits the
+        token when one was needed. Documented in the phase report as a deliberate
+        deviation from the plan's literal request shape.
+      properties:
+        plan_slug:
+          type: string
+          pattern: ^[-a-zA-Z0-9_]+$
+        billing_interval:
+          allOf:
+          - $ref: '#/components/schemas/PendingBillingIntervalEnum'
+          default: monthly
+        idempotency_key:
+          type: string
+          maxLength: 255
+        payment_token:
+          type: string
+          maxLength: 255
+      required:
+      - idempotency_key
+      - plan_slug
     ConceptDoc:
       type: object
       description: |-
@@ -13813,6 +14518,50 @@ components:
         * `privacy_policy` - Privacy Policy
         * `terms_of_use` - Terms of Use
         * `sms_consent` - SMS Messaging Consent
+    EffectiveLimitUsage:
+      type: object
+      description: |-
+        One row of ``GET /billing/usage/`` -- an ``EffectiveLimit`` paired with the
+        ``current_usage`` ``EntitlementService.check_limit`` would compare it
+        against. Not a ``ModelSerializer``: the source is a dataclass plus a
+        separately-fetched usage count, not one model instance.
+      properties:
+        resource_key:
+          type: string
+        kind:
+          type: string
+          nullable: true
+        limit_value:
+          type: integer
+          nullable: true
+        current_usage:
+          type: integer
+          nullable: true
+        overage_unit_price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,4})?$
+          nullable: true
+      required:
+      - current_usage
+      - kind
+      - limit_value
+      - overage_unit_price
+      - resource_key
+    EntitlementKeyEnum:
+      enum:
+      - external_calendar_google
+      - external_calendar_microsoft
+      - partner_api
+      - white_label_branding
+      - advanced_scheduling
+      type: string
+      description: |-
+        * `external_calendar_google` - Google Calendar sync
+        * `external_calendar_microsoft` - Microsoft Calendar sync
+        * `partner_api` - Partner / public API access
+        * `white_label_branding` - White-label branding
+        * `advanced_scheduling` - Advanced scheduling
     EventAttendance:
       type: object
       properties:
@@ -14000,7 +14749,7 @@ components:
           readOnly: true
         kind:
           allOf:
-          - $ref: '#/components/schemas/KindEnum'
+          - $ref: '#/components/schemas/ExternalEventChangeRequestKindEnum'
           readOnly: true
         status:
           allOf:
@@ -14042,6 +14791,14 @@ components:
       - resolved_by_user_id
       - retained_values
       - status
+    ExternalEventChangeRequestKindEnum:
+      enum:
+      - update
+      - delete
+      type: string
+      description: |-
+        * `update` - Update
+        * `delete` - Delete
     ExternalEventChangeRequestStatusEnum:
       enum:
       - pending
@@ -14078,14 +14835,6 @@ components:
         * `WEEKLY` - Weekly
         * `MONTHLY` - Monthly
         * `YEARLY` - Yearly
-    KindEnum:
-      enum:
-      - update
-      - delete
-      type: string
-      description: |-
-        * `update` - Update
-        * `delete` - Delete
     MyMembership:
       type: object
       description: |-
@@ -14441,6 +15190,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AvailableTime'
+    PaginatedBillingPlanList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingPlan'
     PaginatedBlockedTimeList:
       type: object
       required:
@@ -15389,6 +16161,69 @@ components:
           format: uri
           maxLength: 2000
         headers: {}
+    PaymentProviderEnum:
+      enum:
+      - mercadopago
+      - stripe
+      type: string
+      description: |-
+        * `mercadopago` - MercadoPago
+        * `stripe` - Stripe
+    PendingBillingIntervalEnum:
+      enum:
+      - monthly
+      - annual
+      type: string
+      description: |-
+        * `monthly` - Monthly
+        * `annual` - Annual
+    PlanEntitlement:
+      type: object
+      properties:
+        entitlement_key:
+          allOf:
+          - $ref: '#/components/schemas/EntitlementKeyEnum'
+          readOnly: true
+        is_enabled:
+          type: boolean
+          readOnly: true
+      required:
+      - entitlement_key
+      - is_enabled
+    PlanLimit:
+      type: object
+      properties:
+        resource_key:
+          allOf:
+          - $ref: '#/components/schemas/ResourceKeyEnum'
+          readOnly: true
+        limit_value:
+          type: integer
+          readOnly: true
+          nullable: true
+        kind:
+          allOf:
+          - $ref: '#/components/schemas/PlanLimitKindEnum'
+          readOnly: true
+        overage_unit_price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,4})?$
+          readOnly: true
+          nullable: true
+      required:
+      - kind
+      - limit_value
+      - overage_unit_price
+      - resource_key
+    PlanLimitKindEnum:
+      enum:
+      - prepaid
+      - postpaid
+      type: string
+      description: |-
+        * `prepaid` - Prepaid
+        * `postpaid` - Postpaid
     PolicyDocument:
       type: object
       description: |-
@@ -15658,6 +16493,26 @@ components:
             it's attached to.
       required:
       - name
+    ResourceKeyEnum:
+      enum:
+      - organization_members
+      - resource_calendars
+      - calendar_groups
+      - bundle_calendars
+      - availability_windows
+      - webhook_subscriptions
+      - public_api_system_users
+      - event_occurrences
+      type: string
+      description: |-
+        * `organization_members` - Organization members
+        * `resource_calendars` - Resource calendars
+        * `calendar_groups` - Calendar groups
+        * `bundle_calendars` - Bundle calendars
+        * `availability_windows` - Availability windows
+        * `webhook_subscriptions` - Webhook subscriptions
+        * `public_api_system_users` - Public API system users
+        * `event_occurrences` - Event occurrences
     RoleEnum:
       enum:
       - member
@@ -15747,6 +16602,106 @@ components:
         * `signup_form` - Signup Form
         * `oauth_step` - OAuth Consent Step
         * `api` - API
+    Subscription:
+      type: object
+      description: Serializer for Subscription virtual model.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        plan:
+          allOf:
+          - $ref: '#/components/schemas/BillingPlan'
+          readOnly: true
+        billing_state:
+          allOf:
+          - $ref: '#/components/schemas/BillingStateEnum'
+          readOnly: true
+        billing_interval:
+          allOf:
+          - $ref: '#/components/schemas/PendingBillingIntervalEnum'
+          readOnly: true
+        payment_provider:
+          allOf:
+          - $ref: '#/components/schemas/PaymentProviderEnum'
+          readOnly: true
+        current_period_start:
+          type: string
+          format: date-time
+          readOnly: true
+        current_period_end:
+          type: string
+          format: date-time
+          readOnly: true
+        grace_period_ends_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        pending_plan_slug:
+          type: string
+          readOnly: true
+        pending_billing_interval:
+          allOf:
+          - $ref: '#/components/schemas/PendingBillingIntervalEnum'
+          readOnly: true
+        pending_plan_effective_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        add_ons:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubscriptionAddOn'
+          readOnly: true
+      required:
+      - add_ons
+      - billing_interval
+      - billing_state
+      - current_period_end
+      - current_period_start
+      - grace_period_ends_at
+      - id
+      - payment_provider
+      - pending_billing_interval
+      - pending_plan_effective_at
+      - pending_plan_slug
+      - plan
+    SubscriptionAddOn:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        resource_key:
+          allOf:
+          - $ref: '#/components/schemas/ResourceKeyEnum'
+          readOnly: true
+        quantity:
+          type: integer
+          readOnly: true
+        is_recurring:
+          type: boolean
+          readOnly: true
+        is_active:
+          type: boolean
+          readOnly: true
+        external_id:
+          type: string
+          readOnly: true
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created
+      - external_id
+      - id
+      - is_active
+      - is_recurring
+      - quantity
+      - resource_key
     SystemUserToken:
       type: object
       description: |-
@@ -15931,6 +16886,18 @@ components:
           $ref: '#/components/schemas/RoleEnum'
       required:
       - role
+    UsageResponse:
+      type: object
+      properties:
+        billing_state:
+          type: string
+        limits:
+          type: array
+          items:
+            $ref: '#/components/schemas/EffectiveLimitUsage'
+      required:
+      - billing_state
+      - limits
     UserConsent:
       type: object
       description: |-

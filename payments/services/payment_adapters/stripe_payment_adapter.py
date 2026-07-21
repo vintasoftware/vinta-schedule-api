@@ -85,12 +85,17 @@ class StripePaymentAdapter(BasePaymentAdapter):
         self.api_key = api_key
         self.webhook_secret = webhook_secret
 
-    def process(self, payment: Payment, payment_token: str) -> str:
+    def process(self, payment: Payment, payment_token: str, idempotency_key: str = "") -> str:
         """
         `payment_token` is a Stripe `PaymentMethod` id (e.g. from Stripe.js /
         Stripe Elements on the client) — the closest Stripe equivalent to
         MercadoPago's card token, both being an opaque, single-use-until-attached
         reference to payment credentials the server never sees directly.
+
+        `idempotency_key`, when set, is passed as Stripe's `Idempotency-Key` so a
+        retried charge (e.g. after the local transaction that created the dedup
+        row rolled back) resolves to the *same* PaymentIntent instead of creating
+        a second one. See `BasePaymentAdapter.process`.
         """
         params: dict = {
             "amount": to_stripe_amount(payment.value, payment.currency),
@@ -107,6 +112,8 @@ class StripePaymentAdapter(BasePaymentAdapter):
         # though the field is genuinely optional, so it's only included when set.
         if payment.billing_profile.email:
             params["receipt_email"] = payment.billing_profile.email
+        if idempotency_key:
+            params["idempotency_key"] = idempotency_key
         intent = stripe.PaymentIntent.create(**params)
         return intent.id
 

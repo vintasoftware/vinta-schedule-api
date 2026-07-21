@@ -169,6 +169,47 @@ def test_process_success(mock_request_options, mock_reverse, adapter, mock_payme
     adapter.sdk.payment().create.assert_called_once_with(expected_payment_data, mock_options)
 
 
+@patch("payments.services.payment_adapters.mercadopago_payment_adapter.reverse")
+@patch(
+    "payments.services.payment_adapters.mercadopago_payment_adapter.mercadopago.config.RequestOptions"
+)
+@override_settings(SITE_DOMAIN="example.com")
+def test_process_forwards_idempotency_key_as_header(
+    mock_request_options, mock_reverse, adapter, mock_payment
+):
+    """A client-supplied idempotency key must reach MercadoPago as the
+    `x-idempotency-key` header so a retried charge is deduped provider-side. No
+    live provider here -- assert the header value is threaded through."""
+    mock_reverse.return_value = "/payment/update/mercadopago/payment-123/"
+    mock_options = Mock()
+    mock_request_options.return_value = mock_options
+    adapter.sdk.payment().create.return_value = {"response": {"id": "mp-payment-456"}}
+
+    adapter.process(mock_payment, "test-token", idempotency_key="idem-key-1")
+
+    assert mock_options.custom_headers == {"x-idempotency-key": "idem-key-1"}
+
+
+@patch("payments.services.payment_adapters.mercadopago_payment_adapter.reverse")
+@patch(
+    "payments.services.payment_adapters.mercadopago_payment_adapter.mercadopago.config.RequestOptions"
+)
+@override_settings(SITE_DOMAIN="example.com")
+def test_process_without_idempotency_key_falls_back_to_payment_id(
+    mock_request_options, mock_reverse, adapter, mock_payment
+):
+    """Absent a caller key, the header falls back to the (stringified) local
+    payment id -- a string, not the prior `{payment.id}` set literal."""
+    mock_reverse.return_value = "/payment/update/mercadopago/payment-123/"
+    mock_options = Mock()
+    mock_request_options.return_value = mock_options
+    adapter.sdk.payment().create.return_value = {"response": {"id": "mp-payment-456"}}
+
+    adapter.process(mock_payment, "test-token")
+
+    assert mock_options.custom_headers == {"x-idempotency-key": "payment-123"}
+
+
 @override_settings(SITE_DOMAIN=None)
 def test_process_missing_site_domain(adapter, mock_payment):
     """Test process raises error when SITE_DOMAIN is not configured."""

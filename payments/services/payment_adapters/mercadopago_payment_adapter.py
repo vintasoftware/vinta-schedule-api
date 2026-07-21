@@ -70,9 +70,13 @@ class MercadoPagoPaymentAdapter(BasePaymentAdapter):
         self.sdk = mercadopago.SDK(access_token)
         self.webhook_secret = webhook_secret
 
-    def process(self, payment: Payment, payment_token: str) -> str:
+    def process(self, payment: Payment, payment_token: str, idempotency_key: str = "") -> str:
         request_options = mercadopago.config.RequestOptions()
-        request_options.custom_headers = {"x-idempotency-key": {payment.id}}
+        # A caller-supplied stable key (survives a Payment row being re-created on
+        # retry) takes precedence over the local payment id; see
+        # `BasePaymentAdapter.process`. Must be a string header value — the prior
+        # `{payment.id}` set literal serialized wrong.
+        request_options.custom_headers = {"x-idempotency-key": idempotency_key or str(payment.id)}
         notification_url = reverse(
             "api:Payments-payment-update",
             kwargs={"provider": PaymentProviders.MERCADOPAGO, "pk": payment.id},

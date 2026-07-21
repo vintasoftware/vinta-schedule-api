@@ -35,7 +35,7 @@ from payments.billing_constants import (
     LimitRemedy,
 )
 from payments.exceptions import InapplicableInvitationExclusionError
-from payments.models import MeteredOccurrence, Subscription
+from payments.models import MeteredOccurrence, PaymentMethod, Subscription
 from payments.services.billing_dataclasses import EffectiveLimit, LimitCheckResult
 from payments.services.subscription_service import (
     current_billing_period_start,
@@ -526,68 +526,51 @@ class EntitlementService:
             exclude_invitation_id=invitation.pk,
         )
 
-    #: The ``billing_state`` values that are taken to mean "a payment instrument
-    #: exists and can be charged **right now**".
-    #:
-    #: An explicit **allow-list**, deliberately, rather than ``!= FREE``. This is a
-    #: proxy (there is no payment-method record yet), and the two directions of
-    #: being wrong are not symmetric: reading ``True`` for a state with no working
-    #: instrument lets an organization accrue overage nobody can be billed for,
-    #: while reading ``False`` only asks it to attach a card. An allow-list makes a
-    #: newly-added state default to the second, safe direction; a deny-list makes it
-    #: default to the first. The plan's deferred ``TRIALING`` state
-    #: (``…IMPLEMENTATION_PLAN.md``, "no payment method to start") is exactly that
-    #: case, and would have read ``True`` under a negation.
-    PAYMENT_METHOD_BILLING_STATES = frozenset({BillingState.ACTIVE})
-
     def has_payment_method(self, organization: Organization) -> bool:
-        """Does the billing root have a chargeable payment method right now?
+        """Does the billing root have a chargeable payment method on file, right now?
 
         Resolved at the billing root, like every other check in this service, so a
         reseller child asks the same question its root would answer.
 
-        **This is a proxy, and it is temporary.** No dedicated payment-method record
-        exists yet — Phase 9 (add-on purchase / plan change) and Phase 10 (dunning)
-        are what actually attach and track one against a payment provider.
-        ``Subscription.billing_state`` is the only currently-persisted signal, so it
-        stands in. Whoever introduces the real record must re-point this method at it
-        rather than widening the allow-list (see the Phase 10 precondition recorded in
-        ``ai-plans/TRACKING_BILLING_PLANS_AND_LIMITS.md``).
+        **Queries the real record** (``PaymentMethod``, ``is_active=True``) —
+        Phase 8 answered this from a ``Subscription.billing_state`` allow-list
+        proxy (``PAYMENT_METHOD_BILLING_STATES = {ACTIVE}``), because no
+        payment-method record existed yet. Phase 9 introduces one
+        (``SubscriptionService.record_payment_method``, written from the webhook
+        path once a charge against an instrument is confirmed) and this method
+        is re-pointed at it, not widened onto more billing states: once an
+        instrument is actually persisted, ``billing_state`` stops being evidence
+        of whether one is on file at all. An organization can be ``ACTIVE`` from
+        a past cycle with no *current* instrument (e.g. after an admin removed
+        it), or hold a valid card on file while ``GRACE`` — Phase 10 moves
+        ``ACTIVE -> GRACE`` **on a failed charge**, which says nothing about
+        whether the card itself is still attached, and a ``GRACE`` organization
+        stays fully operational (only ``RESTRICTED`` write-blocks, in Phase 11).
+        Under the old proxy ``GRACE`` had to read ``False`` categorically, even
+        for an organization whose card is fine and whose *next* retry will
+        succeed; the real record answers that case correctly instead of by
+        state-based inference.
 
-        Only ``ACTIVE`` qualifies. Each exclusion is a separate decision:
-
-        - ``FREE`` — the state every subscription is created into; it never left it,
-          so no instrument was ever attached.
-        - ``GRACE`` — Phase 10 moves ``ACTIVE → GRACE`` **on a failed charge**, and a
-          ``GRACE`` organization stays fully operational (only ``RESTRICTED`` is
-          write-blocked, in Phase 11). Reading ``True`` here would give an
-          organization whose card just declined *unbounded* unbillable accrual for
-          the whole dunning window — turning the dunning ladder into the largest-bill
-          path in the system. The earlier justification for including it ("the
-          separate grace/restricted machinery is what blocks writes on that state")
-          is true of ``RESTRICTED`` and false of ``GRACE``.
-        - ``RESTRICTED`` — a later charge failed and was never resolved. Phase 11
-          blocks its writes anyway, so this costs nothing and keeps the predicate
-          honest about what it claims to know.
-        - ``CANCELLED`` — the paid relationship is over and the instrument may well
-          have been removed with it. There is no assurance anything is chargeable,
-          which is the only question this method exists to answer. (The reviewer
-          suggested keeping ``CANCELLED`` on the strength of "a payment method was
-          attached at some point"; that is the wrong tense for a guard whose whole
-          purpose is "can we bill the overage we are about to let them accrue".)
-
-        A missing subscription is ``False`` for the same reason: nothing to charge.
+        A missing subscription's organization has no billing root ``PaymentMethod``
+        row either, so this still reads ``False`` for it — nothing to charge.
         Note that on the postpaid path this rarely decides anything — a
         subscription-less pool resolves to an unlimited ceiling and returns before
         this is ever consulted (see ``check_postpaid_allowance``).
         """
-        return self._has_payment_method_for_subscription(self._get_root_subscription(organization))
+        root = resolve_billing_root(organization)
+        return self._has_payment_method_for_organization_id(root.pk)
 
     @classmethod
     def _has_payment_method_for_subscription(cls, subscription: Subscription | None) -> bool:
         if subscription is None:
             return False
-        return subscription.billing_state in cls.PAYMENT_METHOD_BILLING_STATES
+        return cls._has_payment_method_for_organization_id(subscription.organization_id)
+
+    @staticmethod
+    def _has_payment_method_for_organization_id(organization_id: int) -> bool:
+        return PaymentMethod.objects.filter(
+            organization_id=organization_id, is_active=True
+        ).exists()
 
     def check_postpaid_allowance(
         self,
@@ -699,8 +682,8 @@ class EntitlementService:
                 current_usage=current_usage,
                 ceiling=ceiling,
             )
-        # The only way to reach here is ``has_payment_method`` being False — every
-        # ``billing_state`` outside ``PAYMENT_METHOD_BILLING_STATES``. The remedy is
+        # The only way to reach here is ``has_payment_method`` being False -- no
+        # active ``PaymentMethod`` row on file for the billing root. The remedy is
         # always "go get a payment method", never ``_resolve_remedy_for``'s
         # billing-first branch, even for ``GRACE``/``RESTRICTED``: from this guard's
         # point of view there is nothing chargeable on file, and attaching a working

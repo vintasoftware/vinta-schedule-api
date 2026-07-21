@@ -154,10 +154,19 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         )
         return new_price.id
 
-    def create_subscription(self, subscription: Subscription, payment_token: str) -> str:
+    def create_subscription(
+        self, subscription: Subscription, payment_token: str, idempotency_key: str = ""
+    ) -> str:
         """
         `payment_token` is a Stripe `PaymentMethod` id — the closest Stripe
         equivalent to MercadoPago's `card_token_id`.
+
+        `idempotency_key`, when set, guards the money-moving `Subscription.create`
+        so a retried first-upgrade does not create a second subscription (and a
+        second charge). It is *not* reused for `Customer.create`: Stripe scopes an
+        idempotency key to identical request parameters, so reusing one key across
+        two different calls would make the second error — and a duplicate Customer
+        (unlike a duplicate Subscription) moves no money.
         """
         billing_profile = subscription.billing_profile
         full_name = " ".join(
@@ -176,13 +185,16 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         if full_name:
             customer_params["name"] = full_name
         customer = stripe.Customer.create(**customer_params)
-        stripe_subscription = stripe.Subscription.create(
-            customer=customer.id,
-            items=[{"price": subscription.plan.external_id}],
-            default_payment_method=payment_token,
-            metadata={"subscription_id": str(subscription.id)},
-            api_key=self.api_key,
-        )
+        subscription_params: dict = {
+            "customer": customer.id,
+            "items": [{"price": subscription.plan.external_id}],
+            "default_payment_method": payment_token,
+            "metadata": {"subscription_id": str(subscription.id)},
+            "api_key": self.api_key,
+        }
+        if idempotency_key:
+            subscription_params["idempotency_key"] = idempotency_key
+        stripe_subscription = stripe.Subscription.create(**subscription_params)
         return stripe_subscription.id
 
     def cancel_subscription(self, subscription: Subscription) -> None:
@@ -195,6 +207,41 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
     def update_plan(self, plan: CreatedPlan) -> CreatedPlan:
         new_external_id = self.update_subscription_plan(plan.external_id, plan)
         return replace(plan, external_id=new_external_id)
+
+    def change_subscription_plan(
+        self, subscription: Subscription, new_plan: CreatedPlan, idempotency_key: str = ""
+    ) -> None:
+        """
+        Stripe subscriptions are moved onto a new price by modifying the
+        subscription's existing line item (a subscription always has exactly one
+        here — this adapter creates it with a single ``items=[{"price": ...}]``
+        in ``create_subscription``) rather than by re-creating the subscription.
+        ``proration_behavior="always_invoice"`` makes Stripe compute the prorated
+        amount server-side *and* invoice + attempt to charge it immediately
+        against the subscription's default payment method, rather than only
+        crediting/debiting the next regular invoice — matching "pay now" for an
+        upgrade a user just requested.
+
+        `idempotency_key`, when set, guards the money-moving `Subscription.modify`
+        (which invoices the proration immediately) so a retried drive prorates at
+        most once. The read-only `Subscription.retrieve` above does not need it.
+        """
+        if not subscription.external_id:
+            raise PaymentAdapterError(
+                f"Cannot change plan for subscription {subscription.id} with no external_id"
+            )
+        stripe_subscription = stripe.Subscription.retrieve(
+            subscription.external_id, api_key=self.api_key
+        )
+        item_id = stripe_subscription["items"]["data"][0]["id"]
+        modify_params: dict = {
+            "items": [{"id": item_id, "price": new_plan.external_id}],
+            "proration_behavior": "always_invoice",
+            "api_key": self.api_key,
+        }
+        if idempotency_key:
+            modify_params["idempotency_key"] = idempotency_key
+        stripe.Subscription.modify(subscription.external_id, **modify_params)
 
     def update_subscription_payment_token(
         self, subscription: Subscription, payment_token: str

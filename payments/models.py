@@ -238,14 +238,84 @@ class Subscription(BaseModel):
     plan_external_id = models.CharField(max_length=255, blank=True)
     payment_provider = models.CharField(max_length=50, choices=PaymentProviders)
 
+    # Phase 9: a downgrade takes no cash refund and does not touch `plan` (or the
+    # price the org is billed) until the next period boundary — only the lower
+    # `SubscriptionPlanLimit`/`SubscriptionEntitlement` rows apply immediately (see
+    # `SubscriptionService._schedule_downgrade`). These three fields record *that a
+    # flip is owed* and to what; nothing in this phase applies it yet (there is no
+    # cycle-close sweep — that is Phase 13's job), so a scheduled downgrade sits
+    # here until Phase 13 reads it. `pending_plan` doubles as the marker: `None`
+    # means "no plan change scheduled".
+    pending_plan = models.ForeignKey(
+        BillingPlan,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    pending_billing_interval = models.CharField(max_length=10, choices=BillingInterval, blank=True)
+    pending_plan_effective_at = models.DateTimeField(null=True, blank=True)
+
+    # Phase 9: set when `_initiate_upgrade` has driven the provider for an upgrade
+    # whose charge has not yet been confirmed by a subscription-payment webhook,
+    # and cleared by `confirm_plan_change` once it is. Guards against a *second*
+    # upgrade being initiated to a different plan before the first confirms —
+    # otherwise the first webhook would grant whatever plan `subscription.plan`
+    # currently points at (the latest requested tier), not the plan its charge
+    # actually paid for (see `SubscriptionService.request_plan_change`).
+    plan_change_pending_confirmation = models.BooleanField(default=False)
+
     limits: "RelatedManager[SubscriptionPlanLimit]"
     entitlements: "RelatedManager[SubscriptionEntitlement]"
     add_ons: "RelatedManager[SubscriptionAddOn]"
+    payments: "RelatedManager[Payment]"
 
     def __str__(self):
         return (
             f"{self.id} - {self.status} - {self.current_period_start} - {self.current_period_end}"
         )
+
+
+class PaymentMethod(BaseModel):
+    """A payment instrument on file for an organization's billing root.
+
+    The real record ``EntitlementService.has_payment_method`` re-points at in
+    Phase 9, replacing the ``Subscription.billing_state`` allow-list proxy Phase 8
+    used before any instrument actually existed (see that method's docstring for
+    the full history). Deliberately decoupled from ``billing_state``: an
+    organization can be ``ACTIVE`` from a past cycle with no current instrument on
+    file (e.g. after an admin edit), or have a valid card on file while ``GRACE``
+    (Phase 10 moves ``ACTIVE -> GRACE`` on a failed *charge*, which says nothing
+    about whether the card itself is still attached) — querying this table is what
+    makes those cases resolve correctly instead of by inference from state.
+
+    Written only on **confirmed** evidence that the provider accepted the
+    instrument: the subscription-payment and payment webhook paths
+    (``PaymentsViewSet``) call ``SubscriptionService.record_payment_method`` once a
+    charge against it is reported ``APPROVED`` — never synchronously from the
+    request that merely *attempts* to attach one. Not tenant-scoped
+    (``OrganizationModel``) for the same reason as the other billing models in this
+    module: see the plan's Data Model Changes on why cross-organization billing
+    reads would force an ``original_manager`` escape at nearly every call site.
+    """
+
+    organization = models.ForeignKey(
+        "organizations.Organization", on_delete=models.CASCADE, related_name="payment_methods"
+    )
+    provider = models.CharField(max_length=50, choices=PaymentProviders)
+    external_id = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    class Meta(BaseModel.Meta):
+        constraints: ClassVar = [
+            UniqueConstraint(
+                fields=["organization", "provider", "external_id"],
+                name="uniq_payment_method",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.organization_id} - {self.provider} - {self.external_id}"
 
 
 class SubscriptionPlanLimit(BaseModel):
@@ -320,9 +390,17 @@ class SubscriptionAddOn(BaseModel):
 
     ``purchase_idempotency_key`` is unique so a retried purchase (a double-clicked
     button, a Celery task re-delivered under ``CELERY_TASK_ACKS_LATE``) neither
-    grants capacity twice nor charges twice. The purchase flow that populates it
-    lands in a later phase; the constraint exists from the start so no code path
-    can be written against a non-idempotent shape.
+    grants capacity twice nor charges twice: ``SubscriptionService.purchase_add_on``
+    ``get_or_create``s on this field before doing anything else, so the same key
+    posted twice always resolves to the same row and the provider is only ever
+    charged once — see that method's docstring for the fail-closed-for-money
+    reasoning.
+
+    ``is_active`` starts ``False`` and is flipped by
+    ``SubscriptionService.activate_add_on``, called from the webhook path once
+    ``payment`` is confirmed ``APPROVED`` — never synchronously at purchase time.
+    ``EntitlementService.get_effective_limit`` only sums ``is_active=True`` rows,
+    so an initiated-but-unconfirmed purchase grants no capacity.
     """
 
     subscription = models.ForeignKey(Subscription, on_delete=models.CASCADE, related_name="add_ons")
@@ -332,6 +410,18 @@ class SubscriptionAddOn(BaseModel):
     is_active = models.BooleanField(default=True, db_index=True)
     external_id = models.CharField(max_length=255, blank=True)
     purchase_idempotency_key = models.CharField(max_length=255, unique=True)
+    # Nullable: only set once `purchase_add_on` drives the one-time charge (it is
+    # not set at all for an add-on granted some other way, e.g. a support override
+    # made directly in admin). `on_delete=SET_NULL` rather than `CASCADE` -- a
+    # `Payment` row is a financial record and must survive independently of the
+    # add-on it happened to fund.
+    payment = models.OneToOneField(
+        "payments.Payment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="add_on",
+    )
 
     def __str__(self):
         return f"{self.subscription} - {self.resource_key} - +{self.quantity}"

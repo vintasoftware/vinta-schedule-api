@@ -361,3 +361,58 @@ class NoDefaultBillingPlanError(PaymentError):
         message="No active BillingPlan is marked is_default_for_new_organizations=True",
     ):
         super().__init__(message)
+
+
+class PaymentTokenRequiredError(PaymentError):
+    """Raised when an upgrade needs to attach a payment instrument to the
+    provider and the caller supplied no ``payment_token``.
+
+    Only reachable the *first* time a billing root ever pays: once
+    ``Subscription.external_id`` is set, later upgrades reuse the instrument
+    already on file with the provider and drive it through
+    ``BaseSubscriptionAdapter.change_subscription_plan`` instead, which takes no
+    token.
+    """
+
+    def __init__(self, organization_id: int):
+        super().__init__(
+            f"Organization {organization_id} has no payment method on file with the "
+            "provider yet -- a payment_token is required to attach one before "
+            "upgrading to a paid plan."
+        )
+        self.organization_id = organization_id
+
+
+class UnconfirmedPlanChangeError(PaymentError):
+    """Raised when a new plan change is requested while an earlier upgrade's
+    charge is still awaiting confirmation from a subscription-payment webhook.
+
+    Applying a second change now would leave ``Subscription.plan`` pointing at
+    the newest requested tier, so the first (already-charging) upgrade's webhook
+    would grant *that* tier's capacity rather than the plan its charge paid for.
+    The caller must wait for the in-flight change to confirm (or fail) before
+    requesting another. Re-requesting the *same* plan/interval is still a no-op
+    rather than an error (it never reaches this check).
+    """
+
+    def __init__(self, organization_id: int):
+        super().__init__(
+            f"Organization {organization_id} already has a plan change awaiting "
+            "payment confirmation -- wait for it to settle before requesting another."
+        )
+        self.organization_id = organization_id
+
+
+class AddOnNotPurchasableError(PaymentError):
+    """Raised when ``purchase_add_on`` is asked to sell capacity for a resource
+    whose current ``SubscriptionPlanLimit`` carries no ``overage_unit_price`` —
+    there is no catalog-derived price to charge, and inventing one here would be
+    exactly the "bespoke pricing" the plan's Non-goals rule out.
+    """
+
+    def __init__(self, resource_key: str):
+        super().__init__(
+            f"{resource_key!r} has no overage_unit_price on the subscription's current "
+            "plan, so it cannot be purchased as an add-on."
+        )
+        self.resource_key = resource_key

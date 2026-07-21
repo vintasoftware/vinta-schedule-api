@@ -76,6 +76,25 @@ class TestBillingPlanFactory:
         assert created_plan.value == billing_plan.annual_price
         assert created_plan.billing_day == 5
 
+    def test_billing_day_is_clamped_to_28(self, organization, billing_plan):
+        """Providers commonly reject or mishandle billing_day > 28 for monthly
+        recurrence (not every month has a 29th/30th/31st) -- a period anchored on
+        one of those days must still resolve to a billable day (Phase 9)."""
+        now = datetime.datetime(2026, 1, 31, tzinfo=datetime.UTC)
+        subscription = baker.make(
+            Subscription,
+            organization=organization,
+            plan=billing_plan,
+            billing_interval=BillingInterval.MONTHLY,
+            current_period_start=now,
+            current_period_end=now + datetime.timedelta(days=30),
+            payment_provider=PaymentProviders.MERCADOPAGO,
+        )
+
+        created_plan = BillingPlanFactory().make_plan_from_subscription(subscription)
+
+        assert created_plan.billing_day == 28
+
     def test_falls_back_to_monthly_price_when_annual_price_is_missing(self, organization):
         plan_without_annual_price = baker.make(
             BillingPlan, monthly_price=Decimal("50"), annual_price=None, currency="USD"

@@ -16,13 +16,16 @@ from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.permissions import IsOrganizationAdmin
+from payments.constants import PaymentStatuses
 from payments.exceptions import ProviderWebhookEventIdMissingError, UnknownPaymentProviderError
-from payments.models import BillingProfile
+from payments.models import BillingProfile, SubscriptionAddOn
+from payments.models import PaymentStatusUpdate as PaymentStatusUpdateModel
 from payments.serializers import BillingProfileSerializer
 
 
 if TYPE_CHECKING:
     from payments.services.payment_service import PaymentService
+    from payments.services.subscription_service import SubscriptionService
 
 
 logger = logging.getLogger(__name__)
@@ -56,10 +59,12 @@ class PaymentsViewSet(ViewSet):
         self,
         *args,
         payment_service: Annotated["PaymentService", Provide["payment_service"]],
+        subscription_service: Annotated["SubscriptionService", Provide["subscription_service"]],
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.payment_service = payment_service
+        self.subscription_service = subscription_service
 
     @extend_schema(
         summary="Receive payment updates",
@@ -111,14 +116,42 @@ class PaymentsViewSet(ViewSet):
             return Response({"detail": "Invalid signature."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
-            self.payment_service.handle_payment_webhook(provider, raw_body, headers, request.data)
+            status_update = self.payment_service.handle_payment_webhook(
+                provider, raw_body, headers, request.data
+            )
         except ProviderWebhookEventIdMissingError:
             return Response(
                 {"detail": "Payload is missing the notification id."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if status_update is not None:
+            self._apply_confirmed_payment_side_effects(status_update)
+
         return Response({"message": "Payment update received."})
+
+    def _apply_confirmed_payment_side_effects(
+        self, status_update: PaymentStatusUpdateModel
+    ) -> None:
+        """Phase 9: a one-time payment (``payment_update`` webhook) confirmed
+        ``APPROVED`` is what grants an add-on's capacity and records a
+        confirmed payment method -- never the request that merely *initiates*
+        the purchase. See ``SubscriptionService.purchase_add_on`` /
+        ``activate_add_on`` / ``record_payment_method`` for the guiding-decision
+        reasoning; this is the one place both are wired to a real webhook
+        delivery.
+        """
+        if status_update.status != PaymentStatuses.APPROVED:
+            return
+        payment = status_update.payment
+        organization = payment.organization
+        if organization is not None:
+            self.subscription_service.record_payment_method(
+                organization, payment.payment_provider, payment.external_id
+            )
+        add_on = SubscriptionAddOn.objects.filter(payment=payment).first()
+        if add_on is not None:
+            self.subscription_service.activate_add_on(add_on)
 
     @extend_schema(
         summary="Receive subscription payment updates",
@@ -167,7 +200,7 @@ class PaymentsViewSet(ViewSet):
             return Response({"detail": "Invalid signature."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
-            self.payment_service.handle_subscription_payment_webhook(
+            status_update = self.payment_service.handle_subscription_payment_webhook(
                 provider, raw_body, headers, request.data
             )
         except ProviderWebhookEventIdMissingError:
@@ -176,7 +209,33 @@ class PaymentsViewSet(ViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if status_update is not None:
+            self._apply_confirmed_subscription_payment_side_effects(status_update)
+
         return Response({"message": "Subscription payment update received."})
+
+    def _apply_confirmed_subscription_payment_side_effects(
+        self, status_update: PaymentStatusUpdateModel
+    ) -> None:
+        """Phase 9: a subscription charge confirmed ``APPROVED`` (the
+        ``subscription-payment-update`` webhook) is what grants the capacity
+        for whichever plan the subscription is currently on
+        (``SubscriptionService.confirm_plan_change``) and records a confirmed
+        payment method -- never the request that merely *initiates* an
+        upgrade. Runs on every approved charge, not only the first one after an
+        upgrade; both calls are idempotent (see their docstrings), so a routine
+        renewal simply re-affirms state that was already correct.
+        """
+        if status_update.status != PaymentStatuses.APPROVED:
+            return
+        payment = status_update.payment
+        subscription = payment.subscription
+        if subscription is None:
+            return
+        self.subscription_service.confirm_plan_change(subscription)
+        self.subscription_service.record_payment_method(
+            subscription.organization, subscription.payment_provider, subscription.external_id
+        )
 
 
 class BillingProfileViewSet(

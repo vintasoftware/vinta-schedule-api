@@ -12,6 +12,7 @@ from payments.models import (
     BillingPlan,
     BillingProfile,
     Payment,
+    PaymentMethod,
     PaymentStatusUpdate,
     PlanEntitlement,
     PlanLimit,
@@ -300,6 +301,19 @@ class RefundStatusUpdateAdmin(admin.ModelAdmin):
     list_display = ("id", "refund", "status", "created")
     list_filter = ("status",)
     readonly_fields = ("created", "modified")
+
+
+@admin.register(PaymentMethod)
+class PaymentMethodAdmin(admin.ModelAdmin):
+    """Read-only operational visibility into the payment-instrument ledger
+    ``EntitlementService.has_payment_method`` reads. Written only from the
+    webhook path (``SubscriptionService.record_payment_method``); nothing
+    here supports creating one by hand, so there is no meaningful "add" form."""
+
+    list_display = ("id", "organization", "provider", "external_id", "is_active", "created")
+    list_filter = ("provider", "is_active")
+    search_fields = ("organization__name", "external_id")
+    readonly_fields = ("created", "modified", "organization", "provider", "external_id")
 
 
 @admin.register(ProviderWebhookEvent)

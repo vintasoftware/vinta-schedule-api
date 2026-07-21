@@ -9,6 +9,7 @@ from organizations.models import (
     OrganizationModel,
     get_active_organization_membership,
 )
+from public_api.capabilities import is_target_in_subtree
 
 
 if TYPE_CHECKING:
@@ -132,3 +133,95 @@ class IsOrganizationAdmin(BasePermission):
             return False
 
         return user.is_organization_admin(membership.organization_id)
+
+
+class IsBillingOwnerOrAdmin(BasePermission):
+    """Permission for the billing-management endpoints (``payments/billing_views.py``):
+    change plan, purchase/cancel an add-on, cancel the subscription.
+
+    Split across ``has_permission``/``has_object_permission`` rather than doing
+    everything in ``has_permission``, deliberately: ``TenantScopedViewMixin.initial()``
+    calls ``super().initial()`` (which runs DRF's ``check_permissions()``, and
+    therefore every ``has_permission``) **before** it resolves and stashes
+    ``request.organization`` — the same ordering ``IsOrganizationAdmin`` above
+    already works around by never reading ``request.organization`` in
+    ``has_permission``. ``request.organization`` only becomes reliable once the
+    view body itself runs, which is exactly when ``has_object_permission`` runs
+    too (views call ``check_object_permissions`` explicitly against the
+    resolved billing-root ``Organization``; see ``SubscriptionViewSet`` /
+    ``AddOnViewSet``).
+
+    - ``has_permission``: coarse gate -- an active membership that is ``ADMIN``
+      **or** has ``is_billing_owner=True``, in *some* organization. Does not by
+      itself decide *which* organization; that is ``has_object_permission``'s job.
+    - ``has_object_permission``: the real gate, against ``obj`` (an
+      ``Organization`` -- the resolved billing root). Grants access when either:
+
+      1. The caller's active membership is in ``obj`` itself and is
+         ``ADMIN``-or-billing-owner — the two roles the plan names as allowed to
+         manage billing.
+      2. An **acting reseller root**: the caller's active membership is
+         ``ADMIN``-or-billing-owner in some *other* organization that both (a)
+         can invite/create organizations (``can_invite_organizations``) and (b)
+         has ``obj`` within its subtree — the same subtree relationship
+         ``resolve_billing_root`` pools usage against, so a root that pays for a
+         descendant's capacity may also manage its billing, even when the
+         caller's ``X-Organization-Id``-scoped membership is to the descendant
+         itself (e.g. a support/account-manager membership with no elevated role
+         there). Reuses ``public_api.capabilities.is_target_in_subtree`` — the
+         boolean form of the same subtree-membership walk the reseller bundle's
+         GraphQL mutations use (via ``assert_target_in_subtree``) — rather than
+         re-deriving it a second time or coupling this REST layer to a GraphQL
+         error type.
+
+    Read-only billing endpoints (usage, plan catalog, subscription detail) are
+    intentionally **not** gated by this class — they stay open to any
+    authenticated member, mirroring ``BillingProfileViewSet``'s reads-open,
+    writes-gated split.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        user: User = request.user
+        if not user or not user.is_authenticated:
+            return False
+        membership = get_active_organization_membership(user)
+        return membership is not None and (membership.is_admin or membership.is_billing_owner)
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        user: User = request.user
+        membership = get_active_organization_membership(user)
+        if membership is None:
+            return False
+        target_organization = self._resolve_target_organization(obj)
+        if target_organization is None:
+            return False
+
+        if membership.organization_id == target_organization.id and (
+            membership.is_admin or membership.is_billing_owner
+        ):
+            return True
+
+        return self._acting_reseller_root_permits(membership, target_organization)
+
+    def _resolve_target_organization(self, obj) -> Organization | None:
+        """``obj`` is either the ``Organization`` (billing root) directly, or a
+        model carrying one -- one hop (``obj.organization``) for most billing
+        models, two (``obj.subscription.organization``) for a
+        ``SubscriptionAddOn``, whose own FK is to the subscription, not the
+        organization."""
+        if isinstance(obj, Organization):
+            return obj
+        organization = getattr(obj, "organization", None)
+        if organization is not None:
+            return organization
+        subscription = getattr(obj, "subscription", None)
+        return getattr(subscription, "organization", None)
+
+    def _acting_reseller_root_permits(
+        self, membership: OrganizationMembership, target_organization: Organization
+    ) -> bool:
+        if not (membership.is_admin or membership.is_billing_owner):
+            return False
+        if not membership.organization.can_invite_organizations:
+            return False
+        return is_target_in_subtree(membership.organization, target_organization)

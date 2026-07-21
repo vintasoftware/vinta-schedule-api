@@ -24,8 +24,15 @@ from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarEventInputData
 from organizations.models import Organization
 from payments.billing_constants import BillingState, LimitedResource, LimitKind, LimitRemedy
+from payments.constants import PaymentProviders
 from payments.exceptions import OverLimitError
-from payments.models import BillingPlan, MeteredOccurrence, Subscription, SubscriptionPlanLimit
+from payments.models import (
+    BillingPlan,
+    MeteredOccurrence,
+    PaymentMethod,
+    Subscription,
+    SubscriptionPlanLimit,
+)
 from payments.services.entitlement_service import EntitlementService
 
 
@@ -82,6 +89,20 @@ def _seed_metered_occurrences(organization: Organization, subscription: Subscrip
     )
 
 
+def _attach_payment_method(organization: Organization, is_active: bool = True) -> PaymentMethod:
+    """A confirmed, chargeable instrument on file for ``organization`` -- the real
+    record ``has_payment_method`` reads (Phase 9), replacing the Phase 8
+    ``billing_state`` allow-list proxy this module used to drive through
+    ``_organization_with_postpaid_limit``'s ``billing_state`` parameter."""
+    return baker.make(
+        PaymentMethod,
+        organization=organization,
+        provider=PaymentProviders.MERCADOPAGO,
+        external_id="pm-test-token",
+        is_active=is_active,
+    )
+
+
 def _bookable_calendar(organization: Organization) -> Calendar:
     """A calendar any unauthenticated caller may book on, with no adapter round-trip.
 
@@ -125,54 +146,63 @@ def _service_for(organization: Organization) -> CalendarService:
 # ----------------------------------------------------------------------------------
 
 
-#: Every ``BillingState``, with the answer ``has_payment_method`` must give for it.
-#: Spelled out state by state rather than "ACTIVE vs. the rest" on purpose: this is
-#: the table Phase 10 (grace/dunning) and Phase 9 (real payment-method record) will
-#: be tempted to change, and each entry is a separate product decision. Adding a
-#: state without adding a row here fails ``test_every_billing_state_is_pinned``.
-EXPECTED_HAS_PAYMENT_METHOD = {
-    # Never paid: the state every subscription is created into.
-    BillingState.FREE: False,
-    # The only state that asserts a working instrument right now.
-    BillingState.ACTIVE: True,
-    # Phase 10 moves ACTIVE -> GRACE *on a failed charge*, and a GRACE organization
-    # stays fully operational (only RESTRICTED is write-blocked, in Phase 11). If this
-    # flipped to True, an organization whose card just declined would get unbounded
-    # unbillable accrual for the whole dunning window -- the dunning ladder would
-    # become the largest-bill path in the system.
-    BillingState.GRACE: False,
-    # A later charge failed and was never resolved.
-    BillingState.RESTRICTED: False,
-    # The paid relationship is over; the instrument may have been removed with it.
-    # "A card was attached at some point" is the wrong tense for a guard that decides
-    # whether overage we are about to allow can actually be billed.
-    BillingState.CANCELLED: False,
-}
+#: Every ``BillingState``, paired with whether an *organization on that state* can
+#: still answer ``has_payment_method`` correctly in both directions (card present /
+#: card absent). Phase 8 pinned this table keyed by ``billing_state`` alone, because
+#: ``billing_state`` *was* the (proxy) answer. Phase 9 re-points ``has_payment_method``
+#: at the real ``PaymentMethod`` record and deletes that proxy, so the meaningful
+#: table is no longer "state -> answer" (a card can be present or absent on *any*
+#: state) -- it is "does presence/absence of a real row still decide it correctly
+#: regardless of state", exercised below by ``TestHasPaymentMethod`` and
+#: ``TestCheckPostpaidAllowance.test_accrual_past_the_allowance_follows_the_payment_method_record``.
+#: Kept only as the enumeration of every state this module's fixtures must cover.
+ALL_BILLING_STATES = list(BillingState)
 
 
 @pytest.mark.django_db
 class TestHasPaymentMethod:
+    """Phase 9: ``has_payment_method`` reads the real ``PaymentMethod`` record, not
+    ``Subscription.billing_state`` -- these tests replace Phase 8's
+    ``EXPECTED_HAS_PAYMENT_METHOD`` (state -> answer) table, which pinned the dead
+    proxy rather than the real source of truth.
+    """
+
     @pytest.mark.parametrize(
-        "billing_state,expected",
-        list(EXPECTED_HAS_PAYMENT_METHOD.items()),
-        ids=[state.value for state in EXPECTED_HAS_PAYMENT_METHOD],
+        "billing_state",
+        ALL_BILLING_STATES,
+        ids=[state.value for state in ALL_BILLING_STATES],
     )
-    def test_each_billing_state_resolves_explicitly(self, billing_state, expected):
+    def test_active_payment_method_is_true_regardless_of_billing_state(self, billing_state):
+        """The load-bearing case the old proxy could never express: a card can be
+        on file while the subscription sits in *any* billing state -- most notably
+        ``GRACE``, which the old allow-list had to hard-pin ``False`` even when the
+        organization's card was perfectly fine and the very next retry would
+        succeed."""
         organization, _subscription = _organization_with_postpaid_limit(1, billing_state)
-        assert EntitlementService().has_payment_method(organization) is expected
+        _attach_payment_method(organization)
 
-    def test_every_billing_state_is_pinned(self):
-        """``has_payment_method`` is an allow-list, so an unpinned new state silently
-        resolves to ``False``. That is the safe direction, but it must still be a
-        decision somebody made rather than a default nobody noticed."""
-        assert set(EXPECTED_HAS_PAYMENT_METHOD) == set(BillingState)
+        assert EntitlementService().has_payment_method(organization) is True
 
-    def test_the_allow_list_matches_the_table(self):
-        """The service's own constant, against the table above -- so widening the
-        allow-list cannot pass by editing one side."""
-        assert EntitlementService.PAYMENT_METHOD_BILLING_STATES == {
-            state for state, expected in EXPECTED_HAS_PAYMENT_METHOD.items() if expected
-        }
+    @pytest.mark.parametrize(
+        "billing_state",
+        ALL_BILLING_STATES,
+        ids=[state.value for state in ALL_BILLING_STATES],
+    )
+    def test_no_payment_method_is_false_regardless_of_billing_state(self, billing_state):
+        """An organization can be ``ACTIVE`` from a past cycle with no *current*
+        instrument on file (e.g. an admin removed it) -- ``billing_state`` alone
+        must not manufacture a ``True`` answer."""
+        organization, _subscription = _organization_with_postpaid_limit(1, billing_state)
+
+        assert EntitlementService().has_payment_method(organization) is False
+
+    def test_inactive_payment_method_is_false(self):
+        """A deactivated instrument (e.g. removed/replaced) does not count, even
+        though a row for it still exists."""
+        organization, _subscription = _organization_with_postpaid_limit(1, BillingState.ACTIVE)
+        _attach_payment_method(organization, is_active=False)
+
+        assert EntitlementService().has_payment_method(organization) is False
 
     def test_no_subscription_has_no_payment_method(self):
         """Nothing to charge, so ``False``. (On the post-paid path this rarely
@@ -180,6 +210,16 @@ class TestHasPaymentMethod:
         and returns before this is consulted.)"""
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
         assert EntitlementService().has_payment_method(organization) is False
+
+    def test_payment_method_of_a_different_organization_does_not_count(self):
+        """Tenant isolation on the new record: org A's card must never answer for
+        org B."""
+        organization_a, _sub_a = _organization_with_postpaid_limit(1, BillingState.FREE)
+        organization_b, _sub_b = _organization_with_postpaid_limit(1, BillingState.FREE)
+        _attach_payment_method(organization_b)
+
+        assert EntitlementService().has_payment_method(organization_a) is False
+        assert EntitlementService().has_payment_method(organization_b) is True
 
 
 @pytest.mark.django_db
@@ -205,7 +245,8 @@ class TestCheckPostpaidAllowance:
         assert result.ceiling == 5
 
     def test_at_the_allowance_with_a_payment_method_accrues(self):
-        organization, subscription = _organization_with_postpaid_limit(5, BillingState.ACTIVE)
+        organization, subscription = _organization_with_postpaid_limit(5, BillingState.FREE)
+        _attach_payment_method(organization)
         _seed_metered_occurrences(organization, subscription, 5)
 
         result = EntitlementService().check_postpaid_allowance(organization, delta=1)
@@ -224,24 +265,37 @@ class TestCheckPostpaidAllowance:
         assert result.remedy == LimitRemedy.ADD_PAYMENT_METHOD
 
     @pytest.mark.parametrize(
-        "billing_state,expected_allowed",
-        [(state, expected) for state, expected in EXPECTED_HAS_PAYMENT_METHOD.items()],
-        ids=[state.value for state in EXPECTED_HAS_PAYMENT_METHOD],
+        "billing_state",
+        ALL_BILLING_STATES,
+        ids=[state.value for state in ALL_BILLING_STATES],
     )
-    def test_accrual_past_the_allowance_follows_the_payment_method_allow_list(
-        self, billing_state, expected_allowed
-    ):
-        """Who may accrue past the allowance is exactly ``has_payment_method``, state
-        by state. ``GRACE`` is the load-bearing row: Phase 10 will move a *failed
-        charge* into it while leaving the organization fully operational, and if that
-        state started reading as "has a payment method" the dunning window would
-        become an unbounded, unbillable accrual window."""
+    def test_accrual_past_the_allowance_follows_the_payment_method_record(self, billing_state):
+        """Who may accrue past the allowance is exactly ``has_payment_method`` --
+        which, since Phase 9, is a real ``PaymentMethod`` row, not
+        ``billing_state``. ``GRACE`` is the load-bearing case: an organization
+        whose card is still on file must accrue even while ``GRACE`` (Phase 10
+        moves ``ACTIVE -> GRACE`` on a failed *charge*, not on the card being
+        removed), proven here for every state, not only ``GRACE``."""
+        organization, subscription = _organization_with_postpaid_limit(5, billing_state)
+        _attach_payment_method(organization)
+        _seed_metered_occurrences(organization, subscription, 5)
+
+        result = EntitlementService().check_postpaid_allowance(organization, delta=1)
+
+        assert result.allowed is True
+
+    @pytest.mark.parametrize(
+        "billing_state",
+        ALL_BILLING_STATES,
+        ids=[state.value for state in ALL_BILLING_STATES],
+    )
+    def test_accrual_past_the_allowance_blocks_with_no_payment_method(self, billing_state):
         organization, subscription = _organization_with_postpaid_limit(5, billing_state)
         _seed_metered_occurrences(organization, subscription, 5)
 
         result = EntitlementService().check_postpaid_allowance(organization, delta=1)
 
-        assert result.allowed is expected_allowed
+        assert result.allowed is False
 
     def test_delta_larger_than_headroom_blocks_without_a_payment_method(self):
         """A fan-out delta (e.g. a bundle event) is checked as one unit, not one
@@ -263,7 +317,8 @@ class TestCheckPostpaidAllowance:
 @pytest.mark.django_db
 class TestCreateEventPostpaidGuard:
     def test_with_payment_method_creation_past_the_allowance_succeeds_and_accrues(self):
-        organization, subscription = _organization_with_postpaid_limit(1, BillingState.ACTIVE)
+        organization, subscription = _organization_with_postpaid_limit(1, BillingState.FREE)
+        _attach_payment_method(organization)
         _seed_metered_occurrences(organization, subscription, 1)
         calendar = _bookable_calendar(organization)
         service = _service_for(organization)

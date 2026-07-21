@@ -111,6 +111,22 @@ def test_process_success(mock_payment_intent, adapter, mock_payment):
     assert call_kwargs["payment_method"] == "pm_test_token"
     assert call_kwargs["confirm"] is True
     assert call_kwargs["api_key"] == "sk_test_123"
+    # No idempotency key supplied -> none forwarded to Stripe.
+    assert "idempotency_key" not in call_kwargs
+
+
+@patch("payments.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
+def test_process_forwards_idempotency_key_to_stripe(mock_payment_intent, adapter, mock_payment):
+    """The client-supplied key must reach Stripe as its `Idempotency-Key` so a
+    retried charge (e.g. after a rolled-back local transaction) resolves to the
+    same PaymentIntent instead of charging twice. No live Stripe here -- assert
+    the key is threaded into the SDK call (see the Phase 2b live-provider caveat)."""
+    mock_payment_intent.create.return_value = Mock(id="pi_created_123")
+
+    adapter.process(mock_payment, "pm_test_token", idempotency_key="idem-key-1")
+
+    call_kwargs = mock_payment_intent.create.call_args.kwargs
+    assert call_kwargs["idempotency_key"] == "idem-key-1"
 
 
 @patch("payments.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
