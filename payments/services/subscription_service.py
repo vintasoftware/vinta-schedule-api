@@ -122,8 +122,32 @@ def billing_interval_step(billing_interval: str) -> relativedelta:
     return relativedelta(months=1)
 
 
+def overage_settlement_step() -> relativedelta:
+    """The length of one **overage settlement** cycle: always one month.
+
+    The single definition of the spec's *Time-bounded behavior* rule — "post-paid
+    overage settles monthly regardless of whether the plan is billed annually"
+    (Billing Plans and Limits spec §4.2). ``billing_interval`` governs the
+    *recurring plan fee* (an annual plan is charged its fee once a year, by the
+    provider's own subscription), but the overage that ``CycleCloseService`` sweeps
+    settles every month for every plan — so the period cycle-close rolls forward by
+    is deliberately independent of ``billing_interval``.
+
+    Reuses ``billing_interval_step(MONTHLY)`` rather than a fresh ``relativedelta``
+    so "one month" has exactly one definition shared with subscription creation
+    (``SubscriptionService._period_end`` also anchors the stored period monthly) and
+    ``resolve_billing_period``'s monthly branch. A subscription's stored period is
+    created one month long (``create_subscription_for_organization``) and rolled one
+    month forward here, so the current period the meter and the usage counter read
+    stays monthly for every plan, matching what this step produces.
+    """
+    return billing_interval_step(BillingInterval.MONTHLY)
+
+
 def resolve_billing_period(
-    subscription: Subscription, moment: datetime.datetime
+    subscription: Subscription,
+    moment: datetime.datetime,
+    step: relativedelta | None = None,
 ) -> tuple[datetime.datetime, datetime.datetime]:
     """The ``[start, end)`` billing cycle that ``moment`` falls in.
 
@@ -145,8 +169,16 @@ def resolve_billing_period(
 
     Half-open on purpose: an occurrence starting exactly at ``current_period_end``
     belongs to the next cycle, and is billed there rather than twice or not at all.
+
+    ``step`` overrides the reconstruction stride. It defaults to
+    ``billing_interval_step(subscription.billing_interval)`` — one plan cycle — but a
+    caller reconstructing a *settlement* period (which always advances monthly, even
+    for an annually-billed plan) passes ``overage_settlement_step()`` instead; see
+    ``resolve_settlement_period``. The stride only matters when ``moment`` falls
+    outside the stored current period, since resolving the current cycle never steps.
     """
-    step = billing_interval_step(subscription.billing_interval)
+    if step is None:
+        step = billing_interval_step(subscription.billing_interval)
     start = subscription.current_period_start
     end = subscription.current_period_end
     steps = 0
@@ -161,6 +193,25 @@ def resolve_billing_period(
         if steps > MAX_BILLING_PERIOD_STEPS:
             raise BillingPeriodResolutionError(subscription.pk, moment, steps)
     return start, end
+
+
+def resolve_settlement_period(
+    subscription: Subscription, moment: datetime.datetime
+) -> tuple[datetime.datetime, datetime.datetime]:
+    """The monthly *overage settlement* period ``moment`` falls in.
+
+    Like ``resolve_billing_period`` but reconstructed with ``overage_settlement_step``
+    (one month) rather than the plan's ``billing_interval``. Overage settles monthly
+    for *every* plan, and a subscription's stored period is created one month long
+    (``create_subscription_for_organization``) and rolled one month forward at close
+    (``CycleCloseService._roll_period``) regardless of ``billing_interval`` — so an
+    annually-billed subscription's past periods must be walked back monthly, not by
+    twelve-month strides. Reconstructing an annual plan's history with the plan-cycle
+    stride lands on the wrong bounds (or overshoots into
+    ``BillingPeriodResolutionError``); this is the resolution that matches how close
+    actually rolls and how the meter stamped those historical rows.
+    """
+    return resolve_billing_period(subscription, moment, step=overage_settlement_step())
 
 
 def resolve_billing_period_start(

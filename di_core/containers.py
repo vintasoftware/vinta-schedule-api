@@ -31,6 +31,7 @@ from notifications.notification_template_renderers.django_in_app_renderer import
 )
 from organizations.services import OrganizationService
 from payments.constants import PaymentProviders
+from payments.services.cycle_close_service import CycleCloseService
 from payments.services.dunning_service import DunningService
 from payments.services.entitlement_service import EntitlementService
 from payments.services.metering_service import MeteringService
@@ -171,6 +172,14 @@ class AppContainer(containers.DeclarativeContainer):
         UsageWarningService,
         entitlement_service=entitlement_service,
         notification_service=notification_service,
+    )
+
+    cycle_close_service = providers.Factory(
+        CycleCloseService,
+        metering_service=metering_service,
+        subscription_service=subscription_service,
+        payment_service=payment_service,
+        entitlement_service=entitlement_service,
     )
 
     webhook_service = providers.Factory(

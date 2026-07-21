@@ -64,8 +64,8 @@ from payments.services.billing_dataclasses import (
 from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import (
     billing_root_filter,
-    resolve_billing_period,
     resolve_billing_period_start,
+    resolve_settlement_period,
 )
 
 
@@ -507,8 +507,13 @@ class MeteringService:
         """Recompute a billing cycle and report drift against what was metered.
 
         ``period`` is any moment inside the cycle of interest; the cycle's exact
-        bounds come from ``resolve_billing_period``, the same function the meter
-        stamped ``billing_period_start`` with.
+        bounds come from ``resolve_settlement_period`` — the monthly settlement
+        window cycle close actually rolls and settles. For a monthly plan (and for
+        every current-period reconcile, which never steps) this is identical to what
+        the meter stamped ``billing_period_start`` with; for an annually-billed plan
+        it walks the subscription's history back one month at a time rather than by
+        twelve-month strides, matching how those historical rows were stamped and how
+        close rolls.
 
         Read-only by design. A repair that ran automatically would hide the
         condition it was repairing, and the two drift directions do not have the
@@ -535,7 +540,7 @@ class MeteringService:
         plan changes force. Gated on Phase 13 alongside cycle close, which is the
         first point anything reads these columns to produce money.
         """
-        period_start, period_end = resolve_billing_period(subscription, period)
+        period_start, period_end = resolve_settlement_period(subscription, period)
         expected = set(self.expand_occurrence_identities(subscription, period_start, period_end))
         metered = {
             OccurrenceIdentity(

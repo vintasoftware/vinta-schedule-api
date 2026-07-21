@@ -40,4 +40,16 @@ CELERYBEAT_SCHEDULE = {
         "schedule": crontab(minute="*/15"),
         "task": "payments.tasks.check_approaching_limits",
     },
+    # Cycle close (Phase 13). Hourly so a subscription whose period ends is settled
+    # (accrued overage charged, period rolled, postpaid counter reset) within the
+    # hour rather than up to a day late. Idempotent per period: the rolled
+    # `current_period_start` is the durable "already closed" marker and the overage
+    # charge carries a `(subscription, period_start)` idempotency key, so an extra
+    # tick over an already-closed subscription is a no-op and never double-charges.
+    # Overage settles monthly even for annually-billed plans (the metering period is
+    # monthly regardless of `billing_interval`).
+    "close_billing_periods": {
+        "schedule": crontab(minute=30),
+        "task": "payments.tasks.close_billing_periods",
+    },
 }

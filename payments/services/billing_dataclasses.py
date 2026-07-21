@@ -117,6 +117,29 @@ class MeteringResult:
 
 
 @dataclass(frozen=True)
+class ClosedPeriod:
+    """The outcome of closing one billing period for one subscription.
+
+    Returned by ``CycleCloseService.close_subscription`` — one instance per period
+    that was actually rolled forward (a catch-up run over several elapsed months
+    returns several). ``overage_total`` is the money that was owed for the period,
+    derived from the stamped ``MeteredOccurrence.unit_price`` columns — the same
+    number ``reconcile_period`` audits the identity set of. ``charged`` is ``False``
+    when nothing was billed: an unlimited allowance (the whole rollout — see the
+    real-money gate in ``CycleCloseService._charge_overage``) or a period whose
+    overage summed to zero.
+    """
+
+    subscription_id: int
+    billing_period_start: datetime.datetime
+    billing_period_end: datetime.datetime
+    overage_total: Decimal
+    charged: bool
+    payment_id: int | None
+    reconciliation: "ReconciliationReport"
+
+
+@dataclass(frozen=True)
 class ReconciliationReport:
     """Drift between what a closed period *should* have metered and what it did.
 

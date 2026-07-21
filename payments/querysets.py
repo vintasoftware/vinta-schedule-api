@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Sequence
+from decimal import Decimal
 
-from django.db.models import QuerySet
+from django.db.models import QuerySet, Sum
 
 
 class ProviderWebhookEventQuerySet(QuerySet):
@@ -52,3 +53,28 @@ class MeteredOccurrenceQuerySet(QuerySet):
         visible at the call site.
         """
         return self.filter(organization_id__in=organization_ids)
+
+    def overage(self) -> MeteredOccurrenceQuerySet:
+        """Only the rows that fell **outside** the included allowance.
+
+        ``is_within_allowance`` is stamped at meter time (Phase 7) against the
+        effective limit in force then, so this reads the meter's own decision
+        rather than recomputing the allowance boundary at close time — a later
+        limit change must not retroactively reprice an already-metered period.
+        """
+        return self.filter(is_within_allowance=False)
+
+    def overage_total(self) -> Decimal:
+        """The money owed for this queryset's overage: the sum of the ``unit_price``
+        columns of every row outside the allowance.
+
+        **The single derivation of "how much overage does this period owe".** Cycle
+        close charges exactly this (``CycleCloseService``), and it is a sum over the
+        very same ``for_billing_period`` rows ``reconcile_period`` recomputes its
+        identity set from — so what gets charged and what reconciliation audits can
+        never be two different numbers. The total is ``sum(unit_price) where not
+        is_within_allowance``, never ``count * current_price``: the price is the one
+        stamped when each occurrence was metered, so re-pricing the plan after the
+        fact cannot change a closed period's bill.
+        """
+        return self.overage().aggregate(total=Sum("unit_price"))["total"] or Decimal("0")
