@@ -331,3 +331,48 @@ class TestBestEffort:
 
         # Both resources were attempted despite the first one's failure.
         assert flaky_notification_service.create_notification.call_count == 2
+
+    def test_notify_failure_does_not_mark_and_is_retried_on_the_next_tick(
+        self, entitlement_service, organization, subscription
+    ):
+        """A ``_notify`` failure must not leave the debounce marker claimed --
+        otherwise the warning would be silently skipped for the rest of the
+        billing cycle even though it was never actually delivered. The next
+        beat tick within the same cycle must retry and, once the send
+        succeeds, be debounced normally from then on."""
+        _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
+        _seed_members(organization, 7)  # + admin = 8 of 10 (80%)
+
+        flaky_notification_service = MagicMock()
+        flaky_notification_service.create_notification.side_effect = RuntimeError(
+            "simulated notification-send failure"
+        )
+        service = UsageWarningService(
+            entitlement_service=entitlement_service, notification_service=flaky_notification_service
+        )
+
+        with freeze_time(FREEZE_START):
+            service.check_subscription(subscription)
+
+        # The failed send must not have claimed the debounce marker.
+        assert not LimitWarningNotification.objects.filter(subscription=subscription).exists()
+
+        # Next tick within the same cycle: the send succeeds this time.
+        flaky_notification_service.create_notification.side_effect = None
+        with freeze_time(FREEZE_START + datetime.timedelta(hours=1)):
+            service.check_subscription(subscription)
+
+        assert flaky_notification_service.create_notification.call_count == 2
+        assert (
+            LimitWarningNotification.objects.filter(
+                subscription=subscription, level=LimitWarningLevel.APPROACHING
+            ).count()
+            == 1
+        )
+
+        # A further tick in the same cycle does not re-notify: the
+        # now-committed marker debounces normally.
+        with freeze_time(FREEZE_START + datetime.timedelta(hours=2)):
+            service.check_subscription(subscription)
+
+        assert flaky_notification_service.create_notification.call_count == 2

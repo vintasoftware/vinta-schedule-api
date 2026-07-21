@@ -18,6 +18,8 @@ import logging
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from django.db import transaction
+
 from vintasend.constants import NotificationTypes
 from vintasend.services.notification_service import NotificationContextDict
 
@@ -124,15 +126,26 @@ class UsageWarningService:
         if level is None:
             return
 
-        is_new = LimitWarningNotification.objects.mark_if_new(
-            subscription_id=subscription.pk,
-            resource_key=resource_key,
-            billing_period_start=billing_period_start,
-            level=level,
-        )
-        if not is_new:
-            return
-        self._notify(subscription, resource_key, level, current_usage, limit_value)
+        # Claim the marker and send inside the same transaction: if `_notify`
+        # raises, the rollback un-creates the row, so a transient send
+        # failure is retried on the next beat tick within the same cycle
+        # rather than being permanently debounced by a marker for a
+        # notification that never actually went out. The claim still closes
+        # out the same-warning race between two concurrent beat ticks the
+        # unique constraint always has: a concurrent `mark_if_new` blocks on
+        # the pending row until this transaction commits (success) or rolls
+        # back (failure, in which case the other tick's claim then goes
+        # through and it -- not this one -- sends).
+        with transaction.atomic():
+            is_new = LimitWarningNotification.objects.mark_if_new(
+                subscription_id=subscription.pk,
+                resource_key=resource_key,
+                billing_period_start=billing_period_start,
+                level=level,
+            )
+            if not is_new:
+                return
+            self._notify(subscription, resource_key, level, current_usage, limit_value)
 
     @staticmethod
     def _level_for(current_usage: int, limit_value: int) -> str | None:

@@ -185,15 +185,31 @@ class TestRestrictedOrganizationCanStillReadUsage:
             role=OrganizationRole.ADMIN,
             is_active=True,
         )
-        plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 1})
+        plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 5})
         subscription = SubscriptionService().create_subscription_for_organization(
             organization, plan=plan
         )
         assert subscription is not None
         subscription.billing_state = BillingState.RESTRICTED
         subscription.save(update_fields=["billing_state"])
+        # Real, non-zero usage on a RESTRICTED org -- `check_limit`/
+        # `check_postpaid_allowance` deliberately report a `0/0` sentinel for a
+        # RESTRICTED subscription's block-decision path; this pins that the
+        # usage view reports the organization's *true* usage/limit instead of
+        # ever being routed through that sentinel.
+        for i in range(3):
+            baker.make(
+                Calendar,
+                organization=organization,
+                calendar_type=CalendarType.RESOURCE,
+                external_id=f"restricted-org-resource-{i}",
+            )
 
         response = auth_client.get(usage_url())
 
         assert response.status_code == status.HTTP_200_OK
         assert response.data["billing_state"] == BillingState.RESTRICTED
+        rows = {row["resource_key"]: row for row in response.data["limits"]}
+        row = rows[LimitedResource.RESOURCE_CALENDARS]
+        assert row["limit_value"] == 5
+        assert row["current_usage"] == 3

@@ -639,10 +639,14 @@ class LimitWarningNotification(BaseModel):
     subscription on every beat tick; without a durable marker it would re-send
     the same warning every tick for as long as usage stays above the
     threshold. ``UsageWarningService.check_subscription`` claims the marker
-    with ``get_or_create`` *before* sending -- the row existing (created or
-    not) is the single source of truth for "have we already told this
-    organization about this?", not an in-memory flag, which would not survive
-    a beat task being retried on a different worker.
+    with ``get_or_create`` and sends inside the same ``transaction.atomic()``
+    block -- the row existing after that transaction commits is the single
+    source of truth for "have we already told this organization about this?",
+    not an in-memory flag, which would not survive a beat task being retried
+    on a different worker. If the send raises, the transaction rolls back and
+    un-claims the marker, so a transient failure is retried on the next beat
+    tick within the same cycle rather than being silently debounced for a
+    notification that never went out.
 
     ``billing_period_start`` (``current_billing_period_start`` --
     ``payments.services.subscription_service``, the same function the
