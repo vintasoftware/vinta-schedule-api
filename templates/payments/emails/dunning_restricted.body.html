@@ -5,7 +5,7 @@
 
 {% block email_content %}
 <p>
-{% blocktrans with organization_name=organization_name %}We were unable to resolve {{ organization_name }}'s outstanding payment during the grace period, so new and updated data can no longer be saved.{% endblocktrans %}
+{% blocktrans with organization_name=organization_name %}We were unable to resolve {{ organization_name }}'s outstanding payment during the grace period, so new and updated data can no longer be saved and calendar sync has stopped.{% endblocktrans %}
 </p>
 <p>
 {% blocktrans %}All of your existing data remains intact and readable. As soon as payment succeeds, your account is automatically restored and any paused background sync resumes.{% endblocktrans %}

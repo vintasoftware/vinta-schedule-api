@@ -10,6 +10,9 @@
 <p>
 {% blocktrans with grace_period_ends_at=grace_period_ends_at %}We will keep retrying automatically until {{ grace_period_ends_at }}. Your account remains fully functional in the meantime -- please make sure a valid payment method is on file before then to avoid any interruption.{% endblocktrans %}
 </p>
+<p>
+{% blocktrans %}If this is not resolved by then, your account will be restricted: new and updated data can no longer be saved, and calendar sync will stop -- your existing data stays intact and readable throughout.{% endblocktrans %}
+</p>
 {% endblock %}
 
 {% block email_footer %}

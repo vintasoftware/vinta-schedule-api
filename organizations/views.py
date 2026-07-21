@@ -65,6 +65,7 @@ from organizations.serializers import (
     UpdateMembershipRoleSerializer,
 )
 from organizations.services import OrganizationService
+from payments.services.entitlement_service import EntitlementService
 
 
 logger = logging.getLogger(__name__)
@@ -241,6 +242,11 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
 
             # Upsert the service account if provided.
             if sa_data is not None:
+                # Guard (Phase 11): a RESTRICTED organization may not write, and the
+                # service-account upsert below is a real user-initiated write on an
+                # ``OrganizationModel`` (``GoogleCalendarServiceAccount``) -- block it
+                # here, the same predicate every other guarded write consults.
+                self.organization_service.entitlement_service.check_not_restricted(instance)
                 GoogleCalendarServiceAccount.objects.filter_by_organization(instance.id).filter(
                     calendar_fk__isnull=True
                 ).delete()
@@ -455,6 +461,16 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
     permission_classes = (IsOrganizationAdmin,)
     serializer_class = ServiceAccountReadSerializer
 
+    @inject
+    def __init__(
+        self,
+        *args,
+        entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.entitlement_service = entitlement_service
+
     def get_queryset(self):  # type: ignore[override]
         """Org-scoped queryset limited to the org-level service account."""
         user = self.request.user
@@ -490,6 +506,11 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
                 {"detail": "No active organization membership."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+
+        # Guard (Phase 11): a RESTRICTED organization may not write, including
+        # provisioning a service account -- the same predicate every other guarded
+        # write consults.
+        self.entitlement_service.check_not_restricted(membership.organization)
 
         serializer = ServiceAccountWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -530,6 +551,11 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         partial = kwargs.get("partial", False)
         account = self.get_object()
 
+        # Guard (Phase 11): a RESTRICTED organization may not rotate/update its
+        # service account. ``partial_update`` routes through this method, so both
+        # PUT and PATCH are covered here.
+        self.entitlement_service.check_not_restricted(account.organization)
+
         serializer = ServiceAccountWriteSerializer(data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
 
@@ -546,6 +572,11 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
     def destroy(self, request, *args, **kwargs):
         """Delete the org-level service account. HTTP 204."""
         account = self.get_object()
+
+        # Guard (Phase 11): a RESTRICTED organization may not delete its service
+        # account -- the same predicate every other guarded write consults.
+        self.entitlement_service.check_not_restricted(account.organization)
+
         account.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -719,6 +750,14 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
         user = request.user
 
+        # Guard (Phase 11): a restricted organization may not write, including
+        # deactivating one of its own members. Checked here rather than in
+        # ``OrganizationService`` -- this write, unlike every other membership
+        # write in this module, has never gone through the service layer (see
+        # the module-level guiding decision this predates); moving the whole
+        # action there is a larger refactor than this phase's guard warrants.
+        self.organization_service.entitlement_service.check_not_restricted(target.organization)
+
         # Guard: prevent self-deactivation
         if target.user_id == user.id:
             raise PermissionDenied(detail="Cannot deactivate your own membership.")
@@ -804,6 +843,11 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         target = (
             self.get_object()
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
+
+        # Guard (Phase 11): a restricted organization may not write, including
+        # changing a member's role. See ``deactivate`` above for why this is
+        # checked directly here rather than in ``OrganizationService``.
+        self.organization_service.entitlement_service.check_not_restricted(target.organization)
 
         serializer = UpdateMembershipRoleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

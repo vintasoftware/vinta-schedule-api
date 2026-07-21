@@ -517,6 +517,107 @@ class TestExpireGrace:
         mock_notification_service.create_notification.assert_not_called()
 
 
+@pytest.mark.django_db
+class TestDowngradeOriginatedGrace:
+    """Phase 11: a GRACE episode driven by ``SubscriptionService
+    ._schedule_downgrade`` (rather than a failed charge) resolves differently
+    -- no charge to retry, and expiry checks the just-applied (lower) limits
+    rather than the catalog ``free`` plan. ``pending_plan`` being set is what
+    marks a subscription this way (``DunningService._is_downgrade_grace``);
+    these tests set it directly rather than driving the full
+    ``request_plan_change`` flow, which ``test_plan_change.py``'s
+    ``TestDowngradeDrivesGraceForTheSweep`` already covers end to end.
+    """
+
+    def test_resolves_to_active_when_usage_fits_the_new_limits(
+        self, dunning_service, organization, billing_profile
+    ):
+        plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 5})
+        subscription = _subscription_for(
+            organization,
+            plan,
+            billing_state=BillingState.GRACE,
+            grace_period_ends_at=timezone.now() + datetime.timedelta(days=1),
+        )
+        subscription.pending_plan = plan
+        subscription.save(update_fields=["pending_plan"])
+        _seed_members(organization, 2)  # well under 5
+
+        with _patch_on_commit():
+            result = dunning_service.expire_grace(subscription)
+
+        subscription.refresh_from_db()
+        assert result.billing_state == BillingState.ACTIVE
+        assert subscription.grace_period_ends_at is None
+
+    def test_resolves_to_restricted_when_still_over_the_new_limits(
+        self, dunning_service, mock_notification_service, organization, billing_profile
+    ):
+        _add_admin_membership(organization)
+        plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 1})
+        subscription = _subscription_for(
+            organization,
+            plan,
+            billing_state=BillingState.GRACE,
+            grace_period_ends_at=timezone.now() + datetime.timedelta(days=1),
+        )
+        subscription.pending_plan = plan
+        subscription.save(update_fields=["pending_plan"])
+        _seed_members(organization, 6)  # over 1
+
+        with _patch_on_commit():
+            result = dunning_service.expire_grace(subscription)
+
+        assert result.billing_state == BillingState.RESTRICTED
+        mock_notification_service.create_notification.assert_called()
+
+    def test_process_subscription_does_not_retry_a_charge_mid_window(
+        self, dunning_service, fake_payment_service, organization, billing_profile
+    ):
+        """No charge to retry for a downgrade -- unlike a payment-failure
+        grace, a tick inside the window must not drive the provider at all."""
+        plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 1})
+        subscription = _subscription_for(
+            organization,
+            plan,
+            billing_state=BillingState.GRACE,
+            grace_period_ends_at=timezone.now() + datetime.timedelta(days=5),
+        )
+        subscription.pending_plan = plan
+        subscription.save(update_fields=["pending_plan"])
+        _seed_members(organization, 6)
+
+        with _patch_on_commit():
+            dunning_service.process_subscription(subscription)
+
+        subscription.refresh_from_db()
+        assert subscription.billing_state == BillingState.GRACE
+        assert fake_payment_service.calls == []
+
+    def test_still_expires_on_the_deadline_despite_never_having_retried(
+        self, dunning_service, organization, billing_profile
+    ):
+        """The sweep the Phase 10 dead edge left unswept: a downgrade-origin
+        grace with a deadline in the past must still expire, even though
+        ``process_subscription`` never drove a charge retry for it."""
+        plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 1})
+        subscription = _subscription_for(
+            organization,
+            plan,
+            billing_state=BillingState.GRACE,
+            grace_period_ends_at=timezone.now() - datetime.timedelta(hours=1),
+        )
+        subscription.pending_plan = plan
+        subscription.save(update_fields=["pending_plan"])
+        _seed_members(organization, 6)  # still over the new limit
+
+        with _patch_on_commit():
+            dunning_service.process_subscription(subscription)
+
+        subscription.refresh_from_db()
+        assert subscription.billing_state == BillingState.RESTRICTED
+
+
 # ---------------------------------------------------------------------------
 # check_free_fallback
 # ---------------------------------------------------------------------------

@@ -432,6 +432,30 @@ class CalendarEventService:
             return None
         return self._context.entitlement_service
 
+    def _check_not_restricted(self) -> None:
+        """Raise ``OverLimitError`` if the context's organization's billing root is
+        ``RESTRICTED`` (Phase 11).
+
+        ``create_event`` and the recurring-master/exception paths already get this
+        for free through ``check_postpaid_allowance`` (see its own restricted
+        short-circuit on ``EntitlementService``). This is the explicit call for the
+        update/delete/transfer/reschedule/cancel paths on this service, which never
+        call ``check_postpaid_allowance`` at all -- an update or delete does not
+        change occurrence count, so there is nothing for that guard to meter, but a
+        restricted organization must still not be able to perform the write.
+
+        A no-op when ``entitlement_service`` is not on the context (a sub-service
+        built directly in a test without DI) or ``context.bypass_entitlement_limits``
+        put the whole service in bypass mode -- same two-source skip
+        ``_postpaid_entitlement_service`` uses.
+        """
+        if self._context.bypass_entitlement_limits:
+            return
+        entitlement_service = self._context.entitlement_service
+        if entitlement_service is None or self._context.organization is None:
+            return
+        entitlement_service.check_not_restricted(self._context.organization)
+
     @staticmethod
     def _check_new_master_postpaid_allowance(
         entitlement_service: EntitlementService, event: CalendarEvent
@@ -814,6 +838,7 @@ class CalendarEventService:
         context = cast("BaseCalendarService", self._context)
         if not is_initialized_or_authenticated_calendar_service(context):
             raise
+        self._check_not_restricted()
 
         event = CalendarEvent.objects.select_related("calendar").get(
             calendar_fk_id=calendar_id,
@@ -1478,6 +1503,7 @@ class CalendarEventService:
             The modified-occurrence ``CalendarEvent``.
         """
         context = cast("BaseCalendarService", self._context)
+        self._check_not_restricted()
         master = self._load_recurring_master_for_occurrence(calendar_id, master_event_id)
 
         # Idempotency: if a prior reschedule already materialized a modified-occurrence
@@ -1615,6 +1641,7 @@ class CalendarEventService:
             master_event_id: Internal ID of the recurring master event.
             recurrence_id: The occurrence's original start datetime.
         """
+        self._check_not_restricted()
         master = self._load_recurring_master_for_occurrence(calendar_id, master_event_id)
         master.create_exception(exception_date=recurrence_id, is_cancelled=True)
 
@@ -1895,6 +1922,7 @@ class CalendarEventService:
         context = cast("BaseCalendarService", self._context)
         if not is_initialized_or_authenticated_calendar_service(context):
             raise
+        self._check_not_restricted()
 
         event = CalendarEvent.objects.select_related("calendar").get(
             calendar_fk_id=calendar_id,
@@ -2007,6 +2035,7 @@ class CalendarEventService:
         context = cast("BaseCalendarService", self._context)
         if not is_authenticated_calendar_service(context):
             raise
+        self._check_not_restricted()
 
         event_data = context.calendar_adapter.get_event(
             event.calendar.external_id, event.external_id

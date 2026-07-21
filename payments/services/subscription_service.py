@@ -598,6 +598,32 @@ class SubscriptionService:
         usage before anything past Phase 8/6's ordinary "no new creates over the
         ceiling" enforcement applies -- nothing here evicts or deletes existing
         over-count resources; ``check_limit`` never has.
+
+        **Also drives ``billing_state`` into GRACE** (Phase 11's fix for a dead
+        edge Phase 10 left behind): before this, ``grace_period_ends_at`` was
+        stamped here but ``billing_state`` stayed ACTIVE/FREE, so
+        ``process_dunning``'s GRACE/RESTRICTED sweep (``payments/tasks.py``) never
+        looked at this row and the stamped deadline never expired -- a downgrade
+        that left an organization over its new limits could sit indefinitely with
+        a "grace window" nothing was ever going to close. Routing this write
+        through ``transition_billing_state`` like every other ``billing_state``
+        change puts it on the one path the sweep already watches:
+        ``DunningService`` tells a downgrade-originated grace episode apart from a
+        payment-failure one (``DunningService._is_downgrade_grace``) only to skip
+        the charge-retry ladder -- there is no charge to retry for a downgrade --
+        and to resolve it against the just-applied (lower) limits rather than the
+        catalog ``free`` plan at expiry (``DunningService._expire_downgrade_grace``).
+
+        ``transition_billing_state`` is idempotent on an already-GRACE
+        subscription (e.g. downgrading a second time before the first grace
+        window resolved) and legal from both ACTIVE and FREE (see
+        ``LEGAL_BILLING_STATE_TRANSITIONS``). A RESTRICTED or CANCELLED
+        subscription has no GRACE edge on the diagram from those states --
+        rather than raise and abort an otherwise-valid downgrade request (the
+        limits below must still apply), the illegal-transition case is caught
+        and logged; ``billing_state`` is left exactly as it was, matching this
+        method's behavior before this change. Escalating *out of* RESTRICTED is
+        not this method's job.
         """
         assert_plan_is_complete(plan)
         with transaction.atomic():
@@ -616,6 +642,17 @@ class SubscriptionService:
                     "grace_period_ends_at",
                 ]
             )
+            try:
+                transition_billing_state(subscription, BillingState.GRACE)
+            except IllegalBillingStateTransitionError:
+                logger.warning(
+                    "_schedule_downgrade: Subscription %s requested a downgrade while "
+                    "billing_state=%s, which has no GRACE edge on the billing lifecycle "
+                    "diagram. grace_period_ends_at/pending_plan are stamped above "
+                    "regardless; billing_state is left unchanged.",
+                    subscription.pk,
+                    subscription.billing_state,
+                )
             self._sync_limits(subscription, plan)
             self._sync_entitlements(subscription, plan)
         return subscription

@@ -200,6 +200,28 @@ class CalendarWebhookService:
         # mypy can verify .organization.id access below.
         narrowed = cast("InitializedOrAuthenticatedCalendarService", context)
 
+        # Phase 11: sync pause. A restricted organization's inbound provider
+        # webhook must not trigger a sync -- same predicate as every other sync
+        # pause site (EntitlementService.is_billing_root_restricted), consulted
+        # here rather than raised: this is a server-to-server provider push with
+        # no user to show a 402 to (Google/Microsoft would just retry against an
+        # error until the channel expires), so it degrades the same way
+        # ``process_webhook_notification`` already degrades a missing provider
+        # entitlement below -- log, skip, and let the caller record the webhook
+        # event as unactioned (``IGNORED``, via the ``calendar_sync is None``
+        # branch) rather than crash or falsely mark it ``FAILED``.
+        entitlement_service = self._context.entitlement_service
+        if (
+            entitlement_service is not None
+            and not self._context.bypass_entitlement_limits
+            and entitlement_service.is_billing_root_restricted(narrowed.organization)
+        ):
+            logger.info(
+                "Skipping webhook-triggered sync for organization %s: organization is RESTRICTED.",
+                narrowed.organization.id,
+            )
+            return None
+
         # Find calendar by external ID
         try:
             calendar = Calendar.objects.get(

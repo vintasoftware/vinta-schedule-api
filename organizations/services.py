@@ -663,13 +663,22 @@ class OrganizationService:
 
         return None
 
-    def revoke_invitation(self, invitation_id: str) -> None:
+    def revoke_invitation(self, invitation_id: str, bypass_limits: bool = False) -> None:
         """
         Revoke an invitation to join an organization.
         :param invitation_id: ID of the invitation to revoke.
+        :param bypass_limits: When True, skips the restricted-organization guard
+            below. Only management commands and one-off repair scripts should
+            pass this — never a request-handling path.
+        :raises OverLimitError: When the invitation's organization is restricted
+            (Phase 11) — a restricted org may not write, including revoking one
+            of its own invitations. Read-then-check, not check-then-read: the
+            organization to check is only known once the invitation is resolved.
         """
         try:
             invitation = OrganizationInvitation.objects.get(id=invitation_id)
+            if not bypass_limits:
+                self.entitlement_service.check_not_restricted(invitation.organization)
             old_expires_at = invitation.expires_at
             now = datetime.datetime.now(tz=datetime.UTC)
             invitation.expires_at = now

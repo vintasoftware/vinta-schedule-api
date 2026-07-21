@@ -317,6 +317,31 @@ class OverLimitError(BillingError):
         )
 
     @classmethod
+    def from_restricted_organization(cls) -> "OverLimitError":
+        """Build the error for a write attempted while the caller's billing root is
+        ``RESTRICTED`` (Phase 11) -- an expired grace window with no resolution.
+
+        Not a ``LimitedResource`` at all, so there is no unit to count:
+        ``current_usage``/``limit`` are both ``0``, the same "0 of an allowance of
+        0" convention ``from_missing_entitlement`` uses for boolean gates.
+        ``remedy`` is always ``resolve_billing`` -- the only way out of
+        ``RESTRICTED`` is paying (or the org's usage dropping back under free
+        limits, which the dunning sweep resolves on its own, not anything the
+        caller can do from here). ``resource_key`` is a sentinel, not a
+        ``LimitedResource`` member -- ``build_detail`` falls back to the raw key
+        for anything it does not recognize.
+        """
+        return cls(
+            resource_key="organization_restricted",
+            current_usage=0,
+            limit=0,
+            remedy=LimitRemedy.RESOLVE_BILLING,
+            detail=(
+                "Organization is restricted pending resolution of an outstanding billing issue."
+            ),
+        )
+
+    @classmethod
     def from_missing_entitlement(cls, entitlement_key: str) -> "OverLimitError":
         """Build the error for a denied boolean feature gate (``Entitlement``, not
         ``LimitedResource``).

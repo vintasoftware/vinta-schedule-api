@@ -158,6 +158,15 @@ def _service_for(organization: Organization) -> CalendarService:
 #: Kept only as the enumeration of every state this module's fixtures must cover.
 ALL_BILLING_STATES = list(BillingState)
 
+#: ``ALL_BILLING_STATES`` minus ``RESTRICTED`` -- Phase 11 makes ``RESTRICTED``
+#: block unconditionally, ahead of the payment-method check, so it is no longer
+#: true that a payment method lets accrual through "regardless of billing
+#: state". See ``TestCheckPostpaidAllowance.test_restricted_blocks_even_with_a_payment_method``
+#: for the ``RESTRICTED``-specific behavior this excludes.
+NON_RESTRICTED_BILLING_STATES = [
+    state for state in ALL_BILLING_STATES if state != BillingState.RESTRICTED
+]
+
 
 @pytest.mark.django_db
 class TestHasPaymentMethod:
@@ -266,8 +275,8 @@ class TestCheckPostpaidAllowance:
 
     @pytest.mark.parametrize(
         "billing_state",
-        ALL_BILLING_STATES,
-        ids=[state.value for state in ALL_BILLING_STATES],
+        NON_RESTRICTED_BILLING_STATES,
+        ids=[state.value for state in NON_RESTRICTED_BILLING_STATES],
     )
     def test_accrual_past_the_allowance_follows_the_payment_method_record(self, billing_state):
         """Who may accrue past the allowance is exactly ``has_payment_method`` --
@@ -275,7 +284,10 @@ class TestCheckPostpaidAllowance:
         ``billing_state``. ``GRACE`` is the load-bearing case: an organization
         whose card is still on file must accrue even while ``GRACE`` (Phase 10
         moves ``ACTIVE -> GRACE`` on a failed *charge*, not on the card being
-        removed), proven here for every state, not only ``GRACE``."""
+        removed), proven here for every non-``RESTRICTED`` state. ``RESTRICTED``
+        is excluded -- Phase 11 makes it block unconditionally regardless of
+        payment method, see ``test_restricted_blocks_even_with_a_payment_method``.
+        """
         organization, subscription = _organization_with_postpaid_limit(5, billing_state)
         _attach_payment_method(organization)
         _seed_metered_occurrences(organization, subscription, 5)
@@ -283,6 +295,20 @@ class TestCheckPostpaidAllowance:
         result = EntitlementService().check_postpaid_allowance(organization, delta=1)
 
         assert result.allowed is True
+
+    def test_restricted_blocks_even_with_a_payment_method(self):
+        """Phase 11: unlike every other billing state, ``RESTRICTED`` blocks
+        event creation outright -- a payment method on file does not lift it,
+        because the block is not about capacity or ability to pay; it is a
+        write block that only resolving the restriction lifts."""
+        organization, subscription = _organization_with_postpaid_limit(5, BillingState.RESTRICTED)
+        _attach_payment_method(organization)
+        _seed_metered_occurrences(organization, subscription, 5)
+
+        result = EntitlementService().check_postpaid_allowance(organization, delta=1)
+
+        assert result.allowed is False
+        assert result.remedy == LimitRemedy.RESOLVE_BILLING
 
     @pytest.mark.parametrize(
         "billing_state",
