@@ -84,3 +84,18 @@ class Entitlement(TextChoices):
     PARTNER_API = ("partner_api", _("Partner / public API access"))
     WHITE_LABEL_BRANDING = ("white_label_branding", _("White-label branding"))
     ADVANCED_SCHEDULING = ("advanced_scheduling", _("Advanced scheduling"))
+
+
+class LimitWarningLevel(TextChoices):
+    """How close usage is to the effective limit, as reported by
+    ``UsageWarningService`` (Phase 12).
+
+    Two distinct notifications, each debounced independently (see
+    ``LimitWarningNotification``'s unique constraint) so an organization gets
+    exactly one "you're close" and, separately, exactly one "you're at your
+    limit" per resource per billing cycle -- never a rising flood of duplicate
+    warnings as ``check_approaching_limits`` re-checks on every beat tick.
+    """
+
+    APPROACHING = ("approaching", _("Approaching the limit"))
+    REACHED = ("reached", _("At or over the limit"))

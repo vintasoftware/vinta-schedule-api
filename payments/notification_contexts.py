@@ -59,3 +59,44 @@ def dunning_restricted_context(organization_name: str, **kwargs: Any) -> dict[st
     """Context for the notice sent once, when the grace period expires unresolved
     and the subscription moves to RESTRICTED."""
     return {"organization_name": organization_name, **kwargs}
+
+
+@register_context("approaching_limit_context")
+def approaching_limit_context(
+    organization_name: str,
+    resource_key: str,
+    current_usage: int,
+    limit_value: int,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Context for the in-app notice ``UsageWarningService`` sends once per
+    resource per billing cycle when usage crosses
+    ``usage_warning_service.APPROACHING_LIMIT_THRESHOLD`` (default 80%) of the
+    resource's effective limit, without yet being at or over it."""
+    return {
+        "organization_name": organization_name,
+        "resource_key": resource_key,
+        "current_usage": current_usage,
+        "limit_value": limit_value,
+        **kwargs,
+    }
+
+
+@register_context("limit_reached_context")
+def limit_reached_context(
+    organization_name: str,
+    resource_key: str,
+    current_usage: int,
+    limit_value: int,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Context for the in-app notice ``UsageWarningService`` sends once per
+    resource per billing cycle once usage is at or over the resource's
+    effective limit."""
+    return {
+        "organization_name": organization_name,
+        "resource_key": resource_key,
+        "current_usage": current_usage,
+        "limit_value": limit_value,
+        **kwargs,
+    }

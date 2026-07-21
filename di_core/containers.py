@@ -45,6 +45,7 @@ from payments.services.subscription_adapters.stripe_subscription_adapter import 
 )
 from payments.services.subscription_plan_factory.billing_plan_factory import BillingPlanFactory
 from payments.services.subscription_service import SubscriptionService
+from payments.services.usage_warning_service import UsageWarningService
 from public_api.services import PublicAPIAuthService
 from vintasend_django_sms_template_renderer.services.notification_template_renderers.django_sms_template_renderer import (
     DjangoTemplatedSMSRenderer,
@@ -162,6 +163,12 @@ class AppContainer(containers.DeclarativeContainer):
     dunning_service = providers.Factory(
         DunningService,
         subscription_service=subscription_service,
+        entitlement_service=entitlement_service,
+        notification_service=notification_service,
+    )
+
+    usage_warning_service = providers.Factory(
+        UsageWarningService,
         entitlement_service=entitlement_service,
         notification_service=notification_service,
     )

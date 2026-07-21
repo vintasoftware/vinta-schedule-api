@@ -1,0 +1,1 @@
+{% load i18n %}{% blocktrans with organization_name=organization_name resource_key=resource_key current_usage=current_usage limit_value=limit_value %}{{ organization_name }} is using {{ current_usage }} of {{ limit_value }} of its {{ resource_key }} allowance. Consider upgrading your plan or purchasing additional capacity before this runs out.{% endblocktrans %}
