@@ -11,6 +11,7 @@ from payments.billing_constants import (
     Entitlement,
     LimitedResource,
     LimitKind,
+    LimitWarningLevel,
     ProviderWebhookRoute,
 )
 from payments.constants import (
@@ -19,7 +20,11 @@ from payments.constants import (
     RefundStatuses,
     SubscriptionStatuses,
 )
-from payments.managers import MeteredOccurrenceManager, ProviderWebhookEventManager
+from payments.managers import (
+    LimitWarningNotificationManager,
+    MeteredOccurrenceManager,
+    ProviderWebhookEventManager,
+)
 
 
 if TYPE_CHECKING:
@@ -622,3 +627,59 @@ class MeteredOccurrence(BaseModel):
 
     def __str__(self):
         return f"{self.organization_id}/{self.event_id} @ {self.occurrence_start.isoformat()}"
+
+
+class LimitWarningNotification(BaseModel):
+    """Durable idempotency marker for the approaching-limit / limit-reached
+    in-app notification (Phase 12's ``check_approaching_limits`` beat task).
+
+    **The unique constraint is the correctness mechanism, not the code path** --
+    the same pattern ``MeteredOccurrence`` and ``ProviderWebhookEvent`` use
+    elsewhere in this app. ``check_approaching_limits`` re-checks every
+    subscription on every beat tick; without a durable marker it would re-send
+    the same warning every tick for as long as usage stays above the
+    threshold. ``UsageWarningService.check_subscription`` claims the marker
+    with ``get_or_create`` and sends inside the same ``transaction.atomic()``
+    block -- the row existing after that transaction commits is the single
+    source of truth for "have we already told this organization about this?",
+    not an in-memory flag, which would not survive a beat task being retried
+    on a different worker. If the send raises, the transaction rolls back and
+    un-claims the marker, so a transient failure is retried on the next beat
+    tick within the same cycle rather than being silently debounced for a
+    notification that never went out.
+
+    ``billing_period_start`` (``current_billing_period_start`` --
+    ``payments.services.subscription_service``, the same function the
+    ``event_occurrences`` usage counter and the meter both anchor on) is the
+    "cycle" the debounce resets on: once a cycle rolls over, usage sitting
+    above the threshold across the boundary is allowed to warn again, rather
+    than being permanently silenced by a marker from a prior cycle. For a
+    pre-paid resource (no natural billing-period semantics of its own) this
+    still ties the debounce to the one cycle notion every other Phase 12/13
+    computation shares, rather than inventing a second one.
+
+    ``level`` (``LimitWarningLevel``) keeps "approaching" and "reached" as two
+    independently debounced markers, so crossing 80% and later crossing 100%
+    in the same cycle both notify exactly once each, rather than the second
+    crossing being silently swallowed by the first marker.
+    """
+
+    subscription = models.ForeignKey(
+        Subscription, on_delete=models.CASCADE, related_name="limit_warnings"
+    )
+    resource_key = models.CharField(max_length=100, choices=LimitedResource)
+    billing_period_start = models.DateTimeField(db_index=True)
+    level = models.CharField(max_length=20, choices=LimitWarningLevel)
+
+    objects: ClassVar[LimitWarningNotificationManager] = LimitWarningNotificationManager()
+
+    class Meta(BaseModel.Meta):
+        constraints: ClassVar = [
+            UniqueConstraint(
+                fields=["subscription", "resource_key", "billing_period_start", "level"],
+                name="uniq_limit_warning_notification",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.subscription} - {self.resource_key} - {self.level} @ {self.billing_period_start.isoformat()}"

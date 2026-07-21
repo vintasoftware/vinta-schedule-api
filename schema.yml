@@ -1833,6 +1833,20 @@ paths:
         ``GET /billing/usage/`` -- current usage against effective limits, per
         resource, plus ``billing_state``. Resolved at the billing root, same as
         every other read in this app.
+
+        Phase 12's "pull" half of Use-case 8 ("an organization can see where it
+        stands"). It reads usage through the identical
+        ``EntitlementService.get_effective_limit`` / ``get_current_usage`` methods
+        ``check_limit`` / ``check_postpaid_allowance`` count against, and that
+        ``payments.services.usage_warning_service.UsageWarningService`` (the
+        "push" half -- proactive approaching-limit notifications) also reads its
+        ceiling from -- so this endpoint, the enforcement guards, and the beat
+        warning can never disagree about a number.
+
+        No permission beyond ``IsAuthenticated``, deliberately -- a read never
+        blocks, including for a ``RESTRICTED`` organization (Phase 11 blocks
+        writes and pauses sync, never reads; an organization must be able to see
+        exactly what it needs to resolve before it can act on it).
       summary: Get current usage against effective limits
       parameters:
       - in: header
@@ -1864,6 +1878,20 @@ paths:
         ``GET /billing/usage/`` -- current usage against effective limits, per
         resource, plus ``billing_state``. Resolved at the billing root, same as
         every other read in this app.
+
+        Phase 12's "pull" half of Use-case 8 ("an organization can see where it
+        stands"). It reads usage through the identical
+        ``EntitlementService.get_effective_limit`` / ``get_current_usage`` methods
+        ``check_limit`` / ``check_postpaid_allowance`` count against, and that
+        ``payments.services.usage_warning_service.UsageWarningService`` (the
+        "push" half -- proactive approaching-limit notifications) also reads its
+        ceiling from -- so this endpoint, the enforcement guards, and the beat
+        warning can never disagree about a number.
+
+        No permission beyond ``IsAuthenticated``, deliberately -- a read never
+        blocks, including for a ``RESTRICTED`` organization (Phase 11 blocks
+        writes and pauses sync, never reads; an organization must be able to see
+        exactly what it needs to resolve before it can act on it).
       summary: Get current usage against effective limits
       parameters:
       - in: header

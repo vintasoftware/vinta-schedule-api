@@ -30,4 +30,14 @@ CELERYBEAT_SCHEDULE = {
         "schedule": crontab(minute=0),
         "task": "payments.tasks.process_dunning",
     },
+    # Proactive approaching-limit / limit-reached warnings (Phase 12). Every 15
+    # minutes, same cadence as `meter_event_occurrences` -- usage that crosses a
+    # threshold shows up as a warning within a quarter of an hour, and
+    # `LimitWarningNotification`'s per-cycle unique constraint (not the beat
+    # cadence) is what keeps a still-crossed threshold from re-notifying on
+    # every tick.
+    "check_approaching_limits": {
+        "schedule": crontab(minute="*/15"),
+        "task": "payments.tasks.check_approaching_limits",
+    },
 }

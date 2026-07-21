@@ -92,3 +92,43 @@ class MeteredOccurrenceManager(Manager):
 
     def for_organizations(self, organization_ids: Sequence[int]) -> MeteredOccurrenceQuerySet:
         return self.get_queryset().for_organizations(organization_ids)
+
+
+class LimitWarningNotificationManager(Manager):
+    """Manager for the approaching-limit / limit-reached debounce ledger
+    (Phase 12). A plain ``Manager`` -- no custom queryset, since the only query
+    this model needs is the idempotent claim below; see the model docstring
+    for why a durable row, not an in-memory flag, is what makes
+    ``check_approaching_limits`` safe to re-run every beat tick.
+    """
+
+    def mark_if_new(
+        self,
+        *,
+        subscription_id: int,
+        resource_key: str,
+        billing_period_start: datetime.datetime,
+        level: str,
+    ) -> bool:
+        """Atomically claim the ``(subscription, resource_key,
+        billing_period_start, level)`` marker.
+
+        Returns ``True`` the first time this exact marker is claimed within the
+        cycle -- the caller should send the notification only then. Returns
+        ``False`` on every subsequent call for the same marker (already
+        notified this cycle), including a redelivered/re-ticked beat run.
+
+        ``get_or_create`` rather than a separate locked read-then-write: the
+        unique constraint is what makes a concurrent double-claim resolve to
+        one row either way (Django retries the ``create`` once on
+        ``IntegrityError`` from a losing race), and two beat ticks racing to
+        send the *same* warning is a low-stakes, low-probability event this
+        does not need a row lock to close out completely.
+        """
+        _row, created = self.get_or_create(
+            subscription_id=subscription_id,
+            resource_key=resource_key,
+            billing_period_start=billing_period_start,
+            level=level,
+        )
+        return created

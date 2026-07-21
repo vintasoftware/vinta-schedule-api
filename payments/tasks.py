@@ -10,6 +10,13 @@ machine: it fans out one tick per subscription currently GRACE or RESTRICTED to
 backs the webhook handlers in ``payments/views.py`` — so the transitions this
 task can drive and the transitions the webhooks can drive are the same set,
 defined once (``payments.services.billing_state_machine``).
+
+``check_approaching_limits`` is Phase 12's beat entry point for the proactive
+usage-warning half of "an organization can see where it stands, and is warned
+before it is blocked" — it fans out one tick per subscription (excluding
+``RESTRICTED``/``CANCELLED``, see ``UsageWarningService.check_subscription``)
+to ``UsageWarningService.check_subscription``, which is where "approaching a
+limit" is actually defined.
 """
 
 import datetime
@@ -24,6 +31,7 @@ from payments.billing_constants import BillingState
 from payments.models import Subscription
 from payments.services.dunning_service import DunningService
 from payments.services.metering_service import MeteringService
+from payments.services.usage_warning_service import UsageWarningService
 from vinta_schedule_api.celery import app
 
 
@@ -160,3 +168,55 @@ def process_dunning_for_subscription(
         )
         return
     dunning_service.process_subscription(subscription)
+
+
+@app.task
+def check_approaching_limits() -> None:
+    """Beat entry point: fan out one approaching-limit check per subscription
+    that could still be warned before being blocked.
+
+    Excludes ``RESTRICTED`` (already blocked -- see
+    ``UsageWarningService.check_subscription`` for why warning it further adds
+    nothing) and ``CANCELLED`` (running out the clock to ``FREE``, not
+    accruing toward a block). ``FREE``, ``ACTIVE``, and ``GRACE`` subscriptions
+    are all in scope -- a free-tier organization approaching its seat limit
+    needs the same proactive warning as a paid one.
+    """
+    subscription_ids = list(
+        Subscription.objects.exclude(
+            billing_state__in=(BillingState.RESTRICTED, BillingState.CANCELLED)
+        ).values_list("pk", flat=True)
+    )
+    for subscription_id in subscription_ids:
+        check_approaching_limits_for_subscription.delay(subscription_id)
+
+
+@app.task
+@inject
+def check_approaching_limits_for_subscription(
+    subscription_id: int,
+    usage_warning_service: Annotated[UsageWarningService, Provide["usage_warning_service"]],
+) -> None:
+    """One approaching-limit sweep for one subscription, dispatched through
+    ``UsageWarningService.check_subscription`` -- the single place "approaching
+    a limit" is defined (see that method's docstring).
+
+    Idempotent under ``CELERY_TASK_ACKS_LATE`` redelivery and safe to re-run on
+    every beat tick: ``LimitWarningNotification``'s unique constraint, not
+    anything here, is what keeps a still-crossed threshold from re-notifying
+    every tick within the same billing cycle.
+
+    A subscription deleted between fan-out and execution is logged and skipped
+    rather than raising -- a raising task is redelivered and fails identically
+    forever, turning a benign race into a permanent stream of alerts (same
+    reasoning as ``meter_subscription_event_occurrences``/
+    ``process_dunning_for_subscription``, above).
+    """
+    subscription = Subscription.objects.filter(pk=subscription_id).first()
+    if subscription is None:
+        logger.info(
+            "Skipping approaching-limit check for subscription %s: it no longer exists.",
+            subscription_id,
+        )
+        return
+    usage_warning_service.check_subscription(subscription)
