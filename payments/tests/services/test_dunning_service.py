@@ -250,6 +250,9 @@ class TestBillingStateMachineDiagram:
                 (BillingState.RESTRICTED, BillingState.ACTIVE),
                 (BillingState.RESTRICTED, BillingState.FREE),
                 (BillingState.ACTIVE, BillingState.CANCELLED),
+                (BillingState.FREE, BillingState.CANCELLED),
+                (BillingState.GRACE, BillingState.CANCELLED),
+                (BillingState.RESTRICTED, BillingState.CANCELLED),
                 (BillingState.CANCELLED, BillingState.FREE),
             }
         )
@@ -453,10 +456,11 @@ class TestResolvePaymentSuccess:
 
 @pytest.mark.django_db
 class TestExpireGrace:
-    def test_grace_to_restricted_notifies(
+    def test_grace_to_restricted_notifies_when_usage_does_not_fit_free(
         self, dunning_service, mock_notification_service, organization, billing_profile
     ):
         _add_admin_membership(organization)
+        _seed_members(organization, 6)  # over the free plan's limit -- no free fallback
         plan = make_complete_plan()
         subscription = _subscription_for(organization, plan, billing_state=BillingState.GRACE)
 
@@ -465,6 +469,32 @@ class TestExpireGrace:
 
         assert result.billing_state == BillingState.RESTRICTED
         mock_notification_service.create_notification.assert_called()
+
+    def test_grace_to_free_at_expiry_when_usage_fits(
+        self, dunning_service, organization, billing_profile
+    ):
+        """At grace expiry an org whose usage now fits under the free plan's
+        ceilings falls back to FREE rather than RESTRICTED -- the free-fallback
+        the ladder deliberately withholds mid-window is resolved here, once the
+        window has elapsed unpaid."""
+        _seed_members(organization, 2)  # well under the free plan's limit of 5
+        plan = make_complete_plan()
+        subscription = _subscription_for(
+            organization,
+            plan,
+            billing_state=BillingState.GRACE,
+            grace_period_ends_at=timezone.now() + datetime.timedelta(days=1),
+        )
+        subscription.last_dunning_attempt_at = timezone.now()
+        subscription.save(update_fields=["last_dunning_attempt_at"])
+
+        with _patch_on_commit():
+            result = dunning_service.expire_grace(subscription)
+
+        subscription.refresh_from_db()
+        assert result.billing_state == BillingState.FREE
+        assert subscription.grace_period_ends_at is None
+        assert subscription.last_dunning_attempt_at is None
 
     @pytest.mark.parametrize(
         "billing_state",
@@ -548,22 +578,28 @@ class TestCheckFreeFallback:
 
 @pytest.mark.django_db
 class TestCancel:
-    def test_active_to_cancelled(self, dunning_service, organization, billing_profile):
+    @pytest.mark.parametrize(
+        "billing_state",
+        [
+            BillingState.ACTIVE,
+            BillingState.FREE,
+            BillingState.GRACE,
+            BillingState.RESTRICTED,
+        ],
+    )
+    def test_cancels_from_every_live_state(
+        self, dunning_service, organization, billing_profile, billing_state
+    ):
+        """The product's cancel action is offered from any live state, so all
+        four are legal cancellation sources (only ``ACTIVE -> CANCELLED`` is
+        drawn on the spec diagram; the rest are the product edges the machine
+        carries beyond it -- see ``LEGAL_BILLING_STATE_TRANSITIONS``)."""
         plan = make_complete_plan()
-        subscription = _subscription_for(organization, plan, billing_state=BillingState.ACTIVE)
+        subscription = _subscription_for(organization, plan, billing_state=billing_state)
 
         result = dunning_service.cancel(subscription)
 
         assert result.billing_state == BillingState.CANCELLED
-
-    def test_free_to_cancelled_is_not_on_the_diagram(
-        self, dunning_service, organization, billing_profile
-    ):
-        plan = make_complete_plan()
-        subscription = _subscription_for(organization, plan, billing_state=BillingState.FREE)
-
-        with pytest.raises(IllegalBillingStateTransitionError):
-            dunning_service.cancel(subscription)
 
 
 # ---------------------------------------------------------------------------

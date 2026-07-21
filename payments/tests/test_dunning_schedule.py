@@ -396,17 +396,72 @@ class TestDunningLadder:
         # No further charge attempt once resolved.
         assert mercadopago_subscription_adapter.sdk.plan().create.call_count == 1
 
-    def test_retry_idempotency_key_is_stable_within_the_same_calendar_day(
+    def test_second_retry_before_the_next_calendar_day_reaches_the_provider_with_a_distinct_key(
         self,
         subscription_service,
         mercadopago_subscription_adapter,
         organization,
         billing_profile,
     ):
-        """The retry charge's idempotency key must be derived from
-        ``(subscription, calendar date)`` -- stable across a
-        ``CELERY_TASK_ACKS_LATE`` redelivery of the same logical attempt, so the
-        provider itself refuses a second charge for it."""
+        """Regression for the grace/dunning BLOCKER: two genuine retry attempts
+        must reach the provider with *distinct* idempotency keys even when both
+        land on the same UTC calendar day.
+
+        The earlier design bucketed the key by calendar date while the retry
+        throttle opened again ``MIN_DUNNING_RETRY_INTERVAL`` (~20h) later, so a
+        first attempt landing before 04:00 UTC opened the gate a second time the
+        *same* day and the second charge was silently deduplicated by the
+        provider -- a real collection attempt dropped. Both the gate and the key
+        now derive from one retry-bucket ordinal, so a second attempt in a later
+        bucket is a genuinely distinct charge.
+        """
+        _seed_members(organization, 6)
+        plan = make_complete_plan(grace_period_days=10)
+        # First retry lands at 02:00 UTC -- inside the 00:00-03:59 window that
+        # broke the old calendar-day key. Grace began here (grace_start ==
+        # grace_period_ends_at - 10 days == this instant).
+        early = datetime.datetime(2026, 1, 1, 2, 0, tzinfo=datetime.UTC)
+
+        with freeze_time(early):
+            subscription = _subscription_for(
+                subscription_service,
+                organization,
+                plan,
+                billing_state=BillingState.GRACE,
+                grace_period_ends_at=early + datetime.timedelta(days=10),
+            )
+            process_dunning_for_subscription(subscription.pk)
+
+        update = mercadopago_subscription_adapter.sdk.preapproval().update
+        assert update.call_count == 1
+        # The idempotency key is threaded through as the third positional arg
+        # (`RequestOptions`) -- see `MercadoPagoSubscriptionAdapter.
+        # change_subscription_plan`/`_idempotency_options`.
+        first_key = update.call_args_list[-1].args[2].custom_headers["x-idempotency-key"]
+
+        # +20h, still 2026-01-01 (22:00 UTC): the gate opens for a new bucket.
+        with freeze_time(early + datetime.timedelta(hours=20)):
+            process_dunning_for_subscription(subscription.pk)
+
+        assert update.call_count == 2
+        second_key = update.call_args_list[-1].args[2].custom_headers["x-idempotency-key"]
+        # Same calendar day, yet distinct keys -- a real second charge, not a
+        # provider-deduplicated no-op.
+        assert first_key.startswith(f"dunning-retry-{subscription.pk}-")
+        assert second_key.startswith(f"dunning-retry-{subscription.pk}-")
+        assert first_key != second_key
+
+    def test_retry_idempotency_key_is_stable_across_a_same_attempt_redelivery(
+        self,
+        subscription_service,
+        mercadopago_subscription_adapter,
+        organization,
+        billing_profile,
+    ):
+        """A ``CELERY_TASK_ACKS_LATE`` redelivery of the *same* attempt (whose
+        DB write rolled back, so ``last_dunning_attempt_at`` did not persist)
+        lands in the same retry bucket and must reuse the same idempotency key,
+        so the provider itself refuses the second charge for it."""
         _seed_members(organization, 6)
         plan = make_complete_plan(grace_period_days=10)
 
@@ -420,25 +475,46 @@ class TestDunningLadder:
             )
             process_dunning_for_subscription(subscription.pk)
 
-        assert mercadopago_subscription_adapter.sdk.preapproval().update.call_count == 1
-        # The idempotency key is threaded through as the third positional arg
-        # (`RequestOptions`) -- see `MercadoPagoSubscriptionAdapter.
-        # change_subscription_plan`/`_idempotency_options`.
-        call_args = mercadopago_subscription_adapter.sdk.preapproval().update.call_args.args
-        assert len(call_args) == 3
-        assert call_args[2].custom_headers["x-idempotency-key"] == (
-            f"dunning-retry-{subscription.pk}-{FREEZE_START:%Y-%m-%d}"
-        )
+            update = mercadopago_subscription_adapter.sdk.preapproval().update
+            assert update.call_count == 1
+            first_key = update.call_args_list[-1].args[2].custom_headers["x-idempotency-key"]
+
+            # Simulate the redelivery of an attempt whose transaction rolled
+            # back: the stamped `last_dunning_attempt_at` never committed.
+            subscription.last_dunning_attempt_at = None
+            subscription.save(update_fields=["last_dunning_attempt_at"])
+
+        # A few hours later, still inside the same ~20h bucket.
+        with freeze_time(FREEZE_START + datetime.timedelta(hours=3)):
+            process_dunning_for_subscription(subscription.pk)
+
+        assert update.call_count == 2
+        second_key = update.call_args_list[-1].args[2].custom_headers["x-idempotency-key"]
+        assert second_key == first_key
 
 
 @pytest.mark.django_db
 class TestDunningLadderFreeFallback:
-    def test_falls_back_to_free_instead_of_retrying_when_usage_already_fits(
-        self, subscription_service, mercadopago_subscription_adapter, organization, billing_profile
+    def test_retries_across_grace_then_falls_back_to_free_only_at_expiry(
+        self,
+        subscription_service,
+        mercadopago_subscription_adapter,
+        organization,
+        billing_profile,
     ):
-        """An organization already back under the free plan's ceilings (e.g. an
-        admin deleted excess resources during grace) does not need a charge
-        retried at all."""
+        """A payment-failure GRACE org that happens to already fit under the free
+        plan's ceilings must still get its retry ladder -- it owes money on a
+        card on file, so free-fallback is withheld until grace *expiry*, not run
+        on the first tick.
+
+        Regression for the SHOULD-FIX: the earlier code checked free-fallback
+        before the retry on every GRACE tick and flipped such an org to FREE on
+        the very first tick, abandoning a genuine collection attempt. Now the
+        ladder runs across the window and only falls to FREE at expiry if still
+        unpaid.
+        """
+        _add_admin_membership(organization)
+        # No `_seed_members`: usage already fits under the free plan's limits.
         plan = make_complete_plan(grace_period_days=3)
         with freeze_time(FREEZE_START):
             subscription = _subscription_for(
@@ -448,8 +524,19 @@ class TestDunningLadderFreeFallback:
                 billing_state=BillingState.GRACE,
                 grace_period_ends_at=FREEZE_START + datetime.timedelta(days=3),
             )
+            # First tick, well inside the grace window: a real retry fires
+            # instead of an immediate fall to FREE.
+            process_dunning_for_subscription(subscription.pk)
+
+        subscription.refresh_from_db()
+        assert subscription.billing_state == BillingState.GRACE
+        assert mercadopago_subscription_adapter.sdk.plan().create.call_count == 1
+
+        # Past the grace deadline, still unpaid but under free limits: only now
+        # does it fall back to FREE (not RESTRICTED), and with no further charge.
+        with freeze_time(FREEZE_START + datetime.timedelta(days=3, hours=1)):
             process_dunning_for_subscription(subscription.pk)
 
         subscription.refresh_from_db()
         assert subscription.billing_state == BillingState.FREE
-        mercadopago_subscription_adapter.sdk.plan().create.assert_not_called()
+        assert mercadopago_subscription_adapter.sdk.plan().create.call_count == 1

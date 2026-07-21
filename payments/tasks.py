@@ -142,9 +142,10 @@ def process_dunning_for_subscription(
     ``billing_state`` write here (see ``payments.services.billing_state_machine``).
 
     Idempotent under ``CELERY_TASK_ACKS_LATE`` redelivery:
-    ``DunningService``'s own per-day gate (``Subscription.last_dunning_attempt_at``)
-    and the retry charge's date-derived ``idempotency_key`` are what make a
-    redelivered tick harmless, not anything here.
+    ``DunningService``'s own retry-bucket gate (``Subscription.last_dunning_attempt_at``)
+    and the retry charge's bucket-derived ``idempotency_key`` -- both views of
+    one ``_retry_attempt_ordinal`` -- are what make a redelivered tick harmless,
+    not anything here.
 
     A subscription deleted between fan-out and execution is logged and skipped
     rather than raising -- a raising task is redelivered and fails identically

@@ -389,6 +389,8 @@ A failed payment moves an org through a warned grace period with retries, into `
 
 **Watch for the plan's recurring failure shape** — the state machine is the host this time: the set of transitions the diagram permits and the set `process_dunning` can actually drive must be the same set, defined once. A transition the beat task performs that the validator does not list (or vice versa) is the two-predicates defect in state-machine form.
 
+**Known gap carried into Phase 11 — the downgrade-over-limit → GRACE driver.** `LEGAL_BILLING_STATE_TRANSITIONS` lists `(ACTIVE, GRACE)` and `(FREE, GRACE)` for two reasons each: *payment failure* (driven today by `DunningService.enter_grace`) and *downgrade leaves org over limit* (the diagram's other reason). The downgrade reason has **no driver**: `SubscriptionService._schedule_downgrade` stamps `grace_period_ends_at` but leaves `billing_state` ACTIVE/FREE, and `process_dunning` only sweeps GRACE/RESTRICTED, so a downgrade's grace deadline is stamped on a row the sweep never inspects and never expires. Building that driver is out of Phase 10's scope; the two table entries carry a `TODO(phase-11)` marker. Phase 11 (restricted enforcement) should either add the downgrade→GRACE driver or move the over-limit-after-downgrade enforcement onto a path the sweep sees.
+
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |

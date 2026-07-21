@@ -705,16 +705,28 @@ class SubscriptionService:
         (best-effort skipped when the org never attached a payment method) and
         moves ``billing_state`` to ``CANCELLED`` immediately.
 
+        The move goes through ``transition_billing_state`` like every other
+        ``billing_state`` write, not a raw field assignment, so it is validated
+        against ``LEGAL_BILLING_STATE_TRANSITIONS`` (which carries the
+        ``FREE``/``GRACE``/``RESTRICTED`` -> ``CANCELLED`` edges this action
+        needs, beyond the diagram's single ``ACTIVE -> CANCELLED``). Any dunning
+        bookkeeping (``grace_period_ends_at``/``last_dunning_attempt_at``) is
+        cleared in the same write so a cancelled row never carries a stale grace
+        deadline the dunning sweep would otherwise ignore anyway.
+
         The spec's full "runs to the end of the paid cycle, then reverts to
-        FREE" lifecycle is Phase 10's dunning state machine
-        (``BillingState`` transition table) -- this method only exposes the
-        action Phase 9's endpoint needs; it does not re-implement that machine.
+        FREE" lifecycle is Phase 13's cycle-close sweep (the
+        ``CANCELLED -> FREE`` edge) -- this method only exposes the immediate
+        cancel action Phase 9's endpoint needs.
         """
         payment_service = self._require_payment_service()
         if subscription.external_id:
             payment_service.cancel_subscription(subscription)
-        subscription.billing_state = BillingState.CANCELLED
-        subscription.save(update_fields=["billing_state"])
+        with transaction.atomic():
+            transition_billing_state(subscription, BillingState.CANCELLED)
+            subscription.grace_period_ends_at = None
+            subscription.last_dunning_attempt_at = None
+            subscription.save(update_fields=["grace_period_ends_at", "last_dunning_attempt_at"])
         return subscription
 
     def _resolve_add_on_unit_price(self, subscription: Subscription, resource_key: str) -> Decimal:

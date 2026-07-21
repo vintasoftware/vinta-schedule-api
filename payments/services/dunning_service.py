@@ -54,12 +54,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: A dunning retry younger than this is considered "already handled today" --
-#: ``process_dunning``'s per-subscription idempotency gate (see
-#: ``Subscription.last_dunning_attempt_at``). A little under 24h rather than a
-#: strict calendar-day comparison, so this needs no timezone-of-day reasoning to
-#: be correct: whatever wall-clock time the beat schedule fires at, back-to-back
-#: runs of the *same* day never re-fire, and a run the next day always does.
+#: The width of one dunning **retry bucket**: the grace window is sliced into
+#: consecutive intervals of this length, counting from the moment grace began,
+#: and at most one real retry charge is attempted per bucket. This single
+#: quantity is what both the retry throttle *and* the charge's idempotency key
+#: derive from (``_retry_attempt_ordinal``), so the gate that decides *whether*
+#: to retry and the key that decides *which* charge it is can never disagree --
+#: the earlier design quantized those two decisions independently (a 20h
+#: rolling gate vs. a calendar-day key) and, for a first attempt landing between
+#: 00:00 and 03:59 UTC, opened the gate a second time inside the *same* calendar
+#: day, so the second charge reached the provider with the first attempt's key
+#: and was silently deduplicated -- a genuine collection attempt dropped. Two
+#: attempts in different buckets now always get distinct keys; a
+#: ``CELERY_TASK_ACKS_LATE`` redelivery of the *same* attempt (same bucket)
+#: reuses one. A little under 24h so the ladder retries roughly daily.
 MIN_DUNNING_RETRY_INTERVAL = datetime.timedelta(hours=20)
 
 #: Below this much time left before ``grace_period_ends_at``, the reminder
@@ -155,9 +163,7 @@ class DunningService:
 
         with transaction.atomic():
             transition_billing_state(subscription, BillingState.GRACE)
-            grace_days = subscription.plan.grace_period_days
-            if grace_days is None:
-                grace_days = settings.BILLING_DEFAULT_GRACE_PERIOD_DAYS
+            grace_days = self._grace_period_days(subscription)
             subscription.grace_period_ends_at = timezone.now() + datetime.timedelta(days=grace_days)
             subscription.last_dunning_attempt_at = None
             update_fields = ["grace_period_ends_at", "last_dunning_attempt_at"]
@@ -214,40 +220,87 @@ class DunningService:
     def _process_grace(self, subscription: Subscription) -> None:
         """One tick's worth of GRACE handling, in priority order.
 
-        The free-fallback and expiry checks run on **every** tick, regardless
-        of ``MIN_DUNNING_RETRY_INTERVAL`` -- only the charge-retry-and-notify
-        step is throttled to roughly once a day. Getting this ordering backwards
+        The expiry check runs on **every** tick, regardless of
+        ``MIN_DUNNING_RETRY_INTERVAL`` -- only the charge-retry-and-notify step
+        is throttled to roughly once a day. Getting this ordering backwards
         (throttling the *whole* method, expiry check included) is exactly the
         defect the beat schedule's own comment (``celerybeat_schedule.py``)
         warns against: an hourly beat exists specifically so a subscription
-        whose ``grace_period_ends_at`` elapses moves to RESTRICTED within the
+        whose ``grace_period_ends_at`` elapses moves out of GRACE within the
         hour, not up to ``MIN_DUNNING_RETRY_INTERVAL`` late because the most
         recent retry happened to land close to the deadline.
+
+        Free-fallback is deliberately **not** checked here: an org that entered
+        GRACE from a *payment failure* but happens to already sit under the
+        free-plan ceilings still owes money on a card that is on file, so it
+        gets the full retry ladder across the grace window; ``expire_grace``
+        decides FREE vs. RESTRICTED only once the window is unresolved (the
+        diagram's ``Grace -> Free`` edge is the downgrade-under-limit path, not
+        the payment-failure path -- a distinction a GRACE subscription carries
+        no reason field to make mid-window, so the only safe place to collapse
+        it is at expiry).
+
+        The retry throttle and the charge's idempotency key are two views of
+        the same ``_retry_attempt_ordinal`` -- the tick fires a real charge only
+        when ``now`` falls in a *later* retry bucket than the last attempt did,
+        and the charge carries that bucket's number as its key -- so the gate
+        and the key can never disagree about whether this is a new attempt.
         """
         now = timezone.now()
-        if self.check_free_fallback(subscription):
-            return
         if (
             subscription.grace_period_ends_at is not None
             and subscription.grace_period_ends_at <= now
         ):
             self.expire_grace(subscription)
             return
+        current_ordinal = self._retry_attempt_ordinal(subscription, now)
         last_attempt = subscription.last_dunning_attempt_at
-        if last_attempt is not None and (now - last_attempt) < MIN_DUNNING_RETRY_INTERVAL:
+        if (
+            last_attempt is not None
+            and self._retry_attempt_ordinal(subscription, last_attempt) >= current_ordinal
+        ):
             return
-        self._retry_charge_and_notify(subscription, now)
+        self._retry_charge_and_notify(subscription, now, current_ordinal)
 
-    def _retry_charge_and_notify(self, subscription: Subscription, now: datetime.datetime) -> None:
+    def _retry_attempt_ordinal(self, subscription: Subscription, at: datetime.datetime) -> int:
+        """Which retry bucket ``at`` falls in, counting from the start of this
+        grace episode in ``MIN_DUNNING_RETRY_INTERVAL`` steps.
+
+        The episode's anchor is ``grace_period_ends_at`` (stamped once when
+        grace begins, cleared only when the subscription leaves GRACE, so it is
+        fixed for the whole episode) minus the plan's grace window -- i.e. the
+        moment grace began. Bucket ``floor((at - grace_start) / interval)`` is
+        the single shared quantity the throttle gate and the idempotency key
+        both read: two attempts in different buckets are two distinct charges
+        with two distinct keys; a redelivery of the same attempt lands in the
+        same bucket and reuses its key.
+        """
+        grace_ends_at = subscription.grace_period_ends_at
+        if grace_ends_at is None:
+            return 0
+        grace_start = grace_ends_at - datetime.timedelta(days=self._grace_period_days(subscription))
+        return (at - grace_start) // MIN_DUNNING_RETRY_INTERVAL
+
+    def _grace_period_days(self, subscription: Subscription) -> int:
+        grace_days = subscription.plan.grace_period_days
+        if grace_days is None:
+            grace_days = settings.BILLING_DEFAULT_GRACE_PERIOD_DAYS
+        return grace_days
+
+    def _retry_charge_and_notify(
+        self, subscription: Subscription, now: datetime.datetime, attempt_ordinal: int
+    ) -> None:
         """Retry the failed charge and send that rung of the ladder's email.
 
-        ``idempotency_key`` is derived from ``(subscription, calendar date)`` --
+        ``idempotency_key`` is derived from ``(subscription, attempt_ordinal)``
+        -- the retry bucket ``now`` falls in (``_retry_attempt_ordinal``). It is
         stable across a ``CELERY_TASK_ACKS_LATE`` redelivery of the same logical
-        attempt (so the provider itself refuses a second charge for it, per
-        Phase 9's provider-idempotency plumbing), but distinct from the previous
-        and next day's attempt.
+        attempt (a redelivery lands in the same bucket, so the provider itself
+        refuses a second charge for it, per Phase 9's provider-idempotency
+        plumbing) and distinct from the previous and next bucket's attempt, so a
+        genuinely new retry is never mistaken for a redelivery of the last one.
         """
-        idempotency_key = f"dunning-retry-{subscription.pk}-{now:%Y-%m-%d}"
+        idempotency_key = f"dunning-retry-{subscription.pk}-{attempt_ordinal}"
         urgency = self._ladder_urgency(subscription, now)
         with transaction.atomic():
             subscription.last_dunning_attempt_at = now
@@ -262,11 +315,24 @@ class DunningService:
         return "reminder"
 
     def expire_grace(self, subscription: Subscription) -> Subscription:
-        """GRACE -> RESTRICTED once the grace window has elapsed unresolved.
+        """Resolve a grace window that elapsed unpaid: GRACE -> FREE if current
+        usage now fits under the free plan's ceilings, otherwise GRACE ->
+        RESTRICTED.
+
+        Free-fallback is evaluated **here, at expiry**, not on every GRACE tick:
+        letting it run mid-window would abandon collecting from a payment-failure
+        org the instant its usage happened to fit under free limits, skipping the
+        entire retry ladder on a customer with a card on file who owes money. By
+        the time the window has elapsed unresolved, the ladder has run its full
+        course, so collapsing to the cheaper of the two terminal states is the
+        right call.
 
         Idempotent: a no-op for any state other than GRACE.
         """
         if subscription.billing_state != BillingState.GRACE:
+            return subscription
+
+        if self.check_free_fallback(subscription):
             return subscription
 
         with transaction.atomic():
@@ -330,16 +396,14 @@ class DunningService:
     # ------------------------------------------------------------------
 
     def cancel(self, subscription: Subscription) -> Subscription:
-        """ACTIVE -> CANCELLED -- the diagram's only cancellation edge, validated.
+        """-> CANCELLED, validated against the diagram's cancellation edges.
 
-        Not currently wired to ``SubscriptionService.cancel_subscription``
-        (Phase 9's existing cancellation action, which predates this validator
-        and -- by design, see that method's docstring -- allows cancelling from
-        any ``billing_state``, including ``FREE``). Kept here, tested against
-        the diagram, as the correct entry point for a future caller; rewiring
-        the live endpoint is a product decision about what "cancel" should mean
-        for an organization with nothing paid to cancel, which this phase does
-        not make. See the phase report's open questions.
+        A thin validated transition kept as an alternative entry point. The live
+        cancel action (``SubscriptionService.cancel_subscription``) routes its
+        own ``billing_state`` write through ``transition_billing_state`` too and
+        additionally clears the dunning bookkeeping, so both paths agree on which
+        source states may cancel (``ACTIVE``/``FREE``/``GRACE``/``RESTRICTED`` --
+        see ``LEGAL_BILLING_STATE_TRANSITIONS``).
         """
         transition_billing_state(subscription, BillingState.CANCELLED)
         return subscription

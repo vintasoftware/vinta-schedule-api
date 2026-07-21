@@ -1,13 +1,17 @@
 """The single definition of which ``BillingState`` transitions are legal.
 
-Mirrors the spec's lifecycle diagram exactly (Billing Plans and Limits spec,
-Use-case 5's ``stateDiagram-v2``) -- **the diagram is the authority on which
-edges exist**, this module is only its executable form. Every place in the
-codebase that changes ``Subscription.billing_state`` (``DunningService``,
-``SubscriptionService.confirm_plan_change``) goes through
-``transition_billing_state`` rather than writing the field directly, so the set
-of transitions the diagram permits and the set the code can actually perform are
-the same set, defined exactly once. This is deliberately a bare module-level
+Encodes the spec's lifecycle diagram (Billing Plans and Limits spec, Use-case
+5's ``stateDiagram-v2``) -- **the diagram is the authority on which edges
+exist** -- plus the handful of cancellation edges the product's cancel action
+requires beyond the single ``ACTIVE -> CANCELLED`` the diagram draws (each
+called out inline in ``LEGAL_BILLING_STATE_TRANSITIONS`` with its own
+justification). Every place in the codebase that changes
+``Subscription.billing_state`` (``DunningService``,
+``SubscriptionService.confirm_plan_change`` / ``cancel_subscription``) goes
+through ``transition_billing_state`` rather than writing the field directly, so
+the set of transitions the code can actually perform and the set this table
+permits are the same set, defined exactly once. This is deliberately a bare
+module-level
 function with no DI dependency (not a method on a service class): both
 ``DunningService`` (payment-provider/dunning-driven transitions) and
 ``SubscriptionService`` (plan-change-driven transitions) need it, and neither
@@ -40,14 +44,29 @@ LEGAL_BILLING_STATE_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
     {
         (BillingState.FREE, BillingState.ACTIVE),  # upgrade paid
         (BillingState.ACTIVE, BillingState.ACTIVE),  # renewal succeeds
-        (BillingState.ACTIVE, BillingState.GRACE),  # payment fails / downgrade over limit
-        (BillingState.FREE, BillingState.GRACE),  # downgrade leaves org over limit
+        # payment fails (driven by DunningService.enter_grace).
+        # TODO(phase-11): the diagram's second reason for this edge -- "downgrade
+        # leaves org over limit" -- has no driver yet; _schedule_downgrade stamps
+        # grace_period_ends_at but leaves billing_state ACTIVE, so process_dunning
+        # never sweeps it. Payment-failure is the only reason that reaches it today.
+        (BillingState.ACTIVE, BillingState.GRACE),
+        # payment fails on a first-upgrade charge (driven by DunningService.enter_grace).
+        # TODO(phase-11): the diagram's "downgrade leaves org over limit" reason for
+        # this edge has no driver yet -- same gap as (ACTIVE, GRACE) above.
+        (BillingState.FREE, BillingState.GRACE),
         (BillingState.GRACE, BillingState.ACTIVE),  # payment succeeds
         (BillingState.GRACE, BillingState.FREE),  # org returns under free limits
         (BillingState.GRACE, BillingState.RESTRICTED),  # grace period expires
         (BillingState.RESTRICTED, BillingState.ACTIVE),  # payment succeeds
         (BillingState.RESTRICTED, BillingState.FREE),  # org returns under free limits
         (BillingState.ACTIVE, BillingState.CANCELLED),  # cancellation
+        # Cancellation from the other live states. The spec diagram draws only
+        # ACTIVE -> CANCELLED, but the product's cancel action (Phase 9's endpoint,
+        # SubscriptionService.cancel_subscription) is offered from any live state,
+        # so the machine must be able to perform what the product does:
+        (BillingState.FREE, BillingState.CANCELLED),  # cancel a free-tier subscription
+        (BillingState.GRACE, BillingState.CANCELLED),  # give up on dunning and cancel
+        (BillingState.RESTRICTED, BillingState.CANCELLED),  # cancel instead of paying to recover
         (BillingState.CANCELLED, BillingState.FREE),  # cycle ends (Phase 13 sweep)
     }
 )
