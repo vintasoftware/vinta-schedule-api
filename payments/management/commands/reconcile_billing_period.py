@@ -18,7 +18,7 @@ from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.utils import timezone
 
 from payments.models import MeteredOccurrence, Subscription
-from payments.services.subscription_service import resolve_billing_period
+from payments.services.subscription_service import resolve_settlement_period
 
 
 class Command(BaseCommand):
@@ -41,8 +41,10 @@ class Command(BaseCommand):
                 "Any moment inside the billing period to reconcile, as an ISO 8601 "
                 "datetime (e.g. 2025-06-15 or 2025-06-15T12:00:00+00:00). The exact "
                 "cycle bounds are resolved from the subscription via "
-                "resolve_billing_period, the same function the meter stamped the "
-                "period with."
+                "resolve_settlement_period — the monthly settlement window cycle "
+                "close rolls and settles, walked back from the subscription's stored "
+                "period. For a monthly plan this matches how the meter stamped the "
+                "period; for an annually-billed plan overage still settles monthly."
             ),
         )
 
@@ -69,7 +71,7 @@ class Command(BaseCommand):
             raise CommandError("DI container is not wired.")
         metering_service = container.metering_service()
 
-        period_start, period_end = resolve_billing_period(subscription, moment)
+        period_start, period_end = resolve_settlement_period(subscription, moment)
         report = metering_service.reconcile_period(subscription, moment)
         overage_total = MeteredOccurrence.objects.for_billing_period(
             subscription.pk, period_start

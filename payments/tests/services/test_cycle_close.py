@@ -310,6 +310,96 @@ class TestRollAndCatchUp:
         subscription.refresh_from_db()
         assert subscription.current_period_start == PERIOD_START + relativedelta(months=3)
 
+    def test_catch_up_charges_each_elapsed_period_with_a_distinct_key(
+        self,
+        cycle_close_service: CycleCloseService,
+        subscription: Subscription,
+        organization: Organization,
+        fake_payment_service: FakePaymentService,
+    ):
+        """The catch-up path must NOT collapse N elapsed periods into one charge, nor
+        double-charge a period: it settles each period on its own
+        ``(subscription, period_start)`` idempotency key, for that period's own
+        stamped overage total.
+
+        Three months elapsed with a *finite* allowance and overage rows stamped into
+        each month at distinct totals (0.50 / 0.75 / 0.25). One close call must issue
+        exactly three charges, with three distinct keys (one per ``period_start``),
+        each equal to that period's stamped overage — proving the per-period-distinct-key
+        property the ``unlimited`` catch-up test (which charges nothing) cannot."""
+        period_one_start = PERIOD_START
+        period_two_start = PERIOD_START + relativedelta(months=1)
+        period_three_start = PERIOD_START + relativedelta(months=2)
+
+        # A finite allowance so the real-money path is exercised. The charge amount is
+        # the sum of the *stamped* overage rows, not the limit value.
+        _set_allowance(subscription, 0, "0.2500")
+        # Period 1 -> 0.50, period 2 -> 0.75, period 3 -> 0.25 (distinct per period).
+        _meter_row(
+            subscription,
+            organization,
+            event_id=1,
+            within=False,
+            price="0.2500",
+            period_start=period_one_start,
+        )
+        _meter_row(
+            subscription,
+            organization,
+            event_id=2,
+            within=False,
+            price="0.2500",
+            period_start=period_one_start,
+        )
+        _meter_row(
+            subscription,
+            organization,
+            event_id=3,
+            within=False,
+            price="0.2500",
+            period_start=period_two_start,
+        )
+        _meter_row(
+            subscription,
+            organization,
+            event_id=4,
+            within=False,
+            price="0.2500",
+            period_start=period_two_start,
+        )
+        _meter_row(
+            subscription,
+            organization,
+            event_id=5,
+            within=False,
+            price="0.2500",
+            period_start=period_two_start,
+        )
+        _meter_row(
+            subscription,
+            organization,
+            event_id=6,
+            within=False,
+            price="0.2500",
+            period_start=period_three_start,
+        )
+
+        three_months_later = PERIOD_START + relativedelta(months=3, days=1)
+        closed = cycle_close_service.close_subscription(subscription, now=three_months_later)
+
+        assert len(closed) == 3
+        # (a) exactly N charges — one per elapsed period, not one collapsed charge.
+        assert len(fake_payment_service.charges) == 3
+        # (b) N *distinct* idempotency keys, one per period_start.
+        keys_to_amounts = {c["idempotency_key"]: c["amount"] for c in fake_payment_service.charges}
+        assert len(keys_to_amounts) == 3
+        # (c) each period's charge equals that period's stamped overage total.
+        assert keys_to_amounts == {
+            overage_idempotency_key(subscription, period_one_start): Decimal("0.5000"),
+            overage_idempotency_key(subscription, period_two_start): Decimal("0.7500"),
+            overage_idempotency_key(subscription, period_three_start): Decimal("0.2500"),
+        }
+
 
 @pytest.mark.django_db
 class TestDeferredBoundaryActions:
@@ -317,14 +407,32 @@ class TestDeferredBoundaryActions:
         self,
         cycle_close_service: CycleCloseService,
         subscription: Subscription,
+        organization: Organization,
+        fake_payment_service: FakePaymentService,
     ):
         """A CANCELLED subscription runs to the end of its paid cycle, then the
-        period-close sweep moves it to FREE."""
+        period-close sweep moves it to FREE — but its *final* period's overage must
+        be charged before the flip, not dropped on the floor.
+
+        Finite allowance + overage rows stamped into the closing period: the single
+        ``close_subscription`` pass that flips the state to FREE must ALSO issue that
+        period's one overage charge. Charge-before-roll ordering means the money is
+        settled in the same pass the cancellation takes effect."""
         subscription.billing_state = BillingState.CANCELLED
         subscription.save(update_fields=["billing_state"])
+        _set_allowance(subscription, 0, "0.2500")
+        _meter_row(subscription, organization, event_id=1, within=False, price="0.2500")
+        _meter_row(subscription, organization, event_id=2, within=False, price="0.2500")
 
         cycle_close_service.close_subscription(subscription, now=AFTER_PERIOD)
 
+        # The final period's overage was charged (not dropped by the cancellation)...
+        assert len(fake_payment_service.charges) == 1
+        assert fake_payment_service.charges[0]["amount"] == Decimal("0.5000")
+        assert fake_payment_service.charges[0]["idempotency_key"] == overage_idempotency_key(
+            subscription, PERIOD_START
+        )
+        # ...and only then did the subscription flip to FREE.
         subscription.refresh_from_db()
         assert subscription.billing_state == BillingState.FREE
 

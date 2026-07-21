@@ -9,6 +9,7 @@ from django.core.management import CommandError, call_command
 import pytest
 
 from organizations.models import Organization
+from payments.billing_constants import BillingInterval
 from payments.models import MeteredOccurrence, Subscription
 
 
@@ -76,6 +77,40 @@ def test_reports_drift_and_the_overage_total(
     assert "DRIFT DETECTED" in output
     assert "orphaned=1" in output
     assert "overage owed" in output
+    assert "0.5000" in output
+
+
+@pytest.mark.django_db
+def test_annual_subscription_reconstructs_a_monthly_settlement_period(
+    subscription: Subscription,
+    organization: Organization,
+):
+    """An annually-billed subscription's overage still settles monthly, and its
+    stored period is one month long. Reconstructing a *past* period must walk back
+    one month at a time (``resolve_settlement_period``), not by twelve-month strides
+    — otherwise finance gets a full-year span with the wrong overage. The current
+    period is [2025-06-01, 2025-07-01); auditing a moment in April must resolve
+    [2025-04-01, 2025-05-01), not [2024-06-01, 2025-06-01)."""
+    subscription.billing_interval = BillingInterval.ANNUAL
+    subscription.save(update_fields=["billing_interval"])
+    april_start = datetime.datetime(2025, 4, 1, 0, 0, tzinfo=datetime.UTC)
+    may_start = datetime.datetime(2025, 5, 1, 0, 0, tzinfo=datetime.UTC)
+    MeteredOccurrence.objects.create(
+        organization=organization,
+        subscription=subscription,
+        event_id=1,
+        occurrence_start=april_start + datetime.timedelta(days=5),
+        billing_period_start=april_start,
+        is_within_allowance=False,
+        unit_price=Decimal("0.5000"),
+    )
+
+    output = _run(subscription.pk, "2025-04-15")
+
+    # Correct monthly bounds, NOT a 12-month span.
+    assert f"[{april_start.isoformat()}, {may_start.isoformat()})" in output
+    assert "2024-06-01" not in output
+    # The overage total is summed for the reconstructed monthly period's rows.
     assert "0.5000" in output
 
 
