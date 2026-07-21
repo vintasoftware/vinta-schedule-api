@@ -421,23 +421,39 @@ Resync-on-recovery is real: `RESTRICTED → ACTIVE` fans `resync_organization_ca
 
 - **B — voluntary downgrade-over-limit escalates to `RESTRICTED` with payment-failure copy (needs product sign-off).** The Item-2 downgrade→GRACE driver means a *healthy, paying* customer who voluntarily downgrades but still holds more resources than the new plan allows is moved `ACTIVE → GRACE` and, at grace expiry if still over limit, `GRACE → RESTRICTED` — fully write-blocked and sync-paused. That reuses `RESTRICTED`, which the spec's Use-case 5 defines as the *payment-failure* state, and the `RESTRICTED`/dunning notification copy (`templates/payments/emails/dunning_restricted.body.html` and the grace emails) reads as "your payment failed," which is wrong for this cohort. **Needs product input** on whether voluntary downgrade-over-limit should reach `RESTRICTED` at all; if so, the notification copy must branch on grace reason (ties into Deferral A's reason field). Inert until real plans exist.
 
+### Phase 12 — Usage API and approaching-limit warnings ✅
+
+- **Status**: reviewed clean (no BLOCKER; 3 SHOULD-FIX + 1 NIT fixed), gates green, ready to integrate
+- **Models**: implementer Tier 2 (relaunched once — first run implemented fully but its turn ended waiting on a background gate, uncommitted; a second implementer verified + committed); reviewer Tier 3 (stalled on the watchdog mid-review, resumed with context intact and delivered a full verdict); fixer Tier 2
+- **Branch**: `plan/billing-plans-and-limits/phase-12` · **Base**: `plan/billing-plans-and-limits/phase-11` (unmerged — #202 open)
+- **Commits**: `3630553` implementation, `a8fb1c5` review fixes · **Migration**: `0015` (`LimitWarningNotification` debounce ledger) — reverses cleanly
+
+**Gates** (implementer, then re-run independently, then fixer): suite **4595 passed / 0 failed**; `mypy` **305 / 57** at ceiling; `ruff` clean (519); `makemigrations --check` clean; `schema.yml` regenerated.
+
+`GET /billing/usage/` reports, per `LimitedResource`, usage against the effective limit + the root's `billing_state`, resolved at the billing root, and stays open under `RESTRICTED` (reads never block — a restricted org must see why it's blocked). **The anti-drift property — this phase's whole point — is machine-checked:** the usage number comes only from `EntitlementService.get_current_usage` / `get_effective_limit` (and the meter's `MeteredOccurrence` count for `event_occurrences`), with no second counting path, and `test_usage_view.py` derives its resource set from `LimitedResource` and compares the API figure against the actual `check_limit` / `check_postpaid_allowance` guard entry points for every member (not against itself). Unlimited → `null` not `0`; reseller child → pooled root figures.
+
+`check_approaching_limits` beat task warns at 80% of the same effective limit the guard enforces, debounced once per resource per cycle via `LimitWarningNotification` (durable, unique on `(subscription, resource_key, billing_period_start, level)`, anchored on the same `current_billing_period_start` the meter uses, so it resets on rollover). The fixer changed the debounce from mark-before-send to a **claim-and-send-in-one-transaction that rolls back on send failure** — a transient notification failure no longer silently drops the warning for the whole cycle (it retries next tick), while the DB unique constraint still prevents a concurrent double-send. Reviewer confirmed no BLOCKER and all four core properties correct.
+
 ## Current phase
 
-**Phase 12 — Usage API and approaching-limit warnings** (implementer Tier 2)
+**Phase 13 — Cycle close, overage charge, and reconciliation** (implementer Tier 4, reviewer Tier 4, fixer Tier 3)
 
-Base: `plan/billing-plans-and-limits/phase-11` · Branch: `plan/billing-plans-and-limits/phase-12`
+Base: `plan/billing-plans-and-limits/phase-12` · Branch: `plan/billing-plans-and-limits/phase-13`
 
-A read-only usage surface plus proactive approaching-limit warnings — the lightest phase (Tier 2, no reviewer override). Read the plan's Phase 12 body (~line 692) for the endpoint shape and warning thresholds.
+The last phase, and the highest-stakes: `close_billing_periods` sums `MeteredOccurrence` rows outside the allowance, **charges the total through the adapter**, rolls the period forward, resets the postpaid counters; `reconcile` proves no unexplained drift. Spec objective 3. Read the plan's Phase 13 body (~line 725).
 
-**Watch for the plan's recurring failure shape** — the usage number the API reports and the number the enforcement guards actually count against must be the **same** derivation. If the usage readout computes usage one way and `check_limit` / `check_postpaid_allowance` / the meter compute it another, the API will tell a customer they have headroom the guard then denies (or vice versa). Reuse `EntitlementService.get_current_usage` / `get_effective_limit` and `MeteringService`'s existing expansion — do not re-implement counting. **Note the standing Phase 7 rule:** if the bundle-booking unit is ever revisited, the usage readout is one of the three places (meter, Phase 8 guard, Phase 12 readout) that must change together.
+**Inert today, but this is where over-counted usage becomes money — three preconditions converge here:**
+1. **The recurrence pk-aliasing bug (from Phase 7) gates the overage charge.** `RecurrenceRuleSplitter`/`RecurrenceManager` use `copy.deepcopy` on saved models, preserving the pk, so a bulk modification's continuation `UPDATE`s the parent's rule row and erases the truncation — an **open-ended series duplicates indefinitely**, inflating the metered occurrence count. Phase 13 turns that count into a charge. **This charge must NOT go live against real plans until the recurrence bug is fixed** — an org would be billed for occurrences that never happened. It is inert today (every org `unlimited`, NULL `event_occurrences`), so Phase 13's machinery can be *built and reconciled*, but its real-money activation is gated to **Phase 14** alongside the recurrence fix. State this in the phase's own output and tests.
+2. **The bundle fan-out still counts masters, not occurrences** (Phase 8 residual): a recurring bundle event is under-charged. Same gate — the overage sum must be in occurrence units on every path before real charging.
+3. **Reconciliation is the safety net for #1 and #2.** It recomputes from the calendar and reports drift — but note the Phase 7 finding that in the *modify-then-sweep* case reconciliation reads the same inflated calendar and reports a period **clean**. Build reconciliation so it surfaces the identity-churn drift it *can* see (the already-metered `orphaned` case) and does not falsely certify the case it can't; document the blind spot rather than papering over it.
 
-The warning half is proactive (approaching-limit), so it must define "approaching" once and read the same effective limit the guard enforces — another instance of the same one-definition discipline.
+**Watch for the plan's recurring failure shape** — the sum that gets charged and the number reconciliation recomputes must be the **same** derivation of "occurrences outside the allowance," and the period boundary the close uses must be the same `current_billing_period_start`/`resolve_billing_period` the meter and counters already anchor on. A second period-derivation or a second overage-sum is the two-predicates defect in its most expensive form — it charges real money.
+
+**Also lands here (from earlier phases):** the `pending_plan` scheduled-downgrade flip Phase 9 deferred to the cycle-close sweep, and the `CANCELLED → FREE` period-close transition Phase 10 left as a hook. Wire both into `close_billing_periods` (they are period-boundary actions), routing the state change through `transition_billing_state`.
 
 ## Remaining phases
 
-| Phase | Title | Impl | Reviewer | Fixer |
-|---|---|---|---|---|
-| 13 | Cycle close, overage charge, and reconciliation | 4 | 4 | 3 |
+_(none — Phase 13 is the last executable phase; Phase 14 is deferred, see below)_
 
 ## Deferred phases
 
