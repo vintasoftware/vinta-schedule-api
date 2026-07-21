@@ -34,7 +34,7 @@ from payments.billing_constants import (
     LimitKind,
     LimitRemedy,
 )
-from payments.exceptions import InapplicableInvitationExclusionError
+from payments.exceptions import InapplicableInvitationExclusionError, OverLimitError
 from payments.models import MeteredOccurrence, PaymentMethod, Subscription
 from payments.services.billing_dataclasses import EffectiveLimit, LimitCheckResult
 from payments.services.subscription_service import (
@@ -402,6 +402,57 @@ class EntitlementService:
         """
         self._lock_billing_root_row(resolve_billing_root(organization))
 
+    def is_billing_root_restricted(self, organization: Organization) -> bool:
+        """The single predicate for "must this organization's writes be blocked and
+        its calendar sync paused?" (Phase 11) -- ``True`` only when the *billing
+        root*'s ``Subscription.billing_state`` is ``RESTRICTED``.
+
+        Resolved at the billing root, like every other check in this service, so a
+        reseller child answers exactly the question its root would -- the reseller
+        cascade (``resolve_billing_root`` already routes children to the root) is
+        automatic from that alone; nothing about the cascade needs reimplementing
+        anywhere else.
+
+        This is the **one** definition both halves of Phase 11 consult: the write
+        guard (``check_limit`` / ``check_postpaid_allowance`` below, plus every
+        explicit ``check_not_restricted`` call site on an update/delete path those
+        two do not cover) and every calendar-sync-pause site
+        (``calendar_integration.tasks.calendar_sync_tasks``, the ``request_*``
+        methods on ``CalendarSyncService``, and ``CalendarWebhookService``'s
+        webhook-triggered sync). Two independently-derived answers to "is this org
+        restricted" is exactly the plan's recurring two-predicates defect; there is
+        only ever this one.
+
+        **``GRACE`` is not restricted.** Only ``RESTRICTED`` blocks -- a ``GRACE``
+        organization stays fully writable and its sync keeps running; escalation is
+        the dunning ladder (``DunningService``), never a write/sync block. Do not
+        widen this to any other ``BillingState``.
+
+        A missing subscription reads as **not restricted** (``False``), never
+        restricted -- ``billing_state`` only exists on a real row, and an
+        organization with no billing set up at all (a broken invariant, not a
+        restricted one) must not be caught by this check; that would conflate "we
+        don't know" with "we know, and the answer is blocked", which the fail-open
+        convention the rest of this service follows forbids.
+        """
+        root = resolve_billing_root(organization)
+        subscription = self._get_subscription_for_root(root)
+        return subscription is not None and subscription.billing_state == BillingState.RESTRICTED
+
+    def check_not_restricted(self, organization: Organization) -> None:
+        """Raise ``OverLimitError`` (``remedy=resolve_billing``) when
+        ``organization``'s billing root is ``RESTRICTED``; otherwise a no-op.
+
+        The entry point every guarded create/update/delete method that does not
+        already route through ``check_limit`` / ``check_postpaid_allowance``
+        (which fold ``is_billing_root_restricted`` in directly, see their
+        docstrings) calls before writing an ``OrganizationModel`` row on a guarded
+        resource. See ``is_billing_root_restricted`` for what "restricted" means
+        and why it is defined exactly once.
+        """
+        if self.is_billing_root_restricted(organization):
+            raise OverLimitError.from_restricted_organization()
+
     def check_limit(
         self,
         organization: Organization,
@@ -470,6 +521,27 @@ class EntitlementService:
             self._lock_billing_root_row(root)
 
         subscription = self._get_subscription_for_root(root)
+        # Phase 11: RESTRICTED blocks every write outright, independent of the
+        # numeric ceiling below -- an organization whose plan carries no ceiling at
+        # all (``unlimited``, every organization's actual plan for this whole
+        # rollout) could otherwise create freely while RESTRICTED, since the
+        # ``is_unlimited`` branch below never even looks at ``billing_state``. See
+        # ``is_billing_root_restricted`` for why this is the one place both this
+        # method and every other write guard resolve "restricted" from.
+        # ``current_usage``/``ceiling`` are ``0``/``0`` sentinels here -- this
+        # block is not about capacity, so there is no meaningful count to report;
+        # ``remedy`` is always ``resolve_billing``, which supersedes whatever
+        # ``_resolve_remedy_for`` would otherwise have picked (below, unreached
+        # for a RESTRICTED subscription now that this short-circuit exists).
+        if subscription is not None and subscription.billing_state == BillingState.RESTRICTED:
+            return LimitCheckResult(
+                allowed=False,
+                resource_key=resource_key,
+                current_usage=0,
+                ceiling=0,
+                remedy=LimitRemedy.RESOLVE_BILLING,
+            )
+
         effective_limit = self._effective_limit_for_subscription(
             subscription, resource_key, root.pk, asked_for_organization_pk=organization.pk
         )
@@ -603,6 +675,14 @@ class EntitlementService:
         method can never block anybody today. See the phase's own tests for that
         inertness guarantee on every guarded path.
 
+        **Phase 11 exception to all of the above: a ``RESTRICTED`` billing root
+        blocks unconditionally**, before the unlimited check, before counting
+        usage, and regardless of whether a payment method is on file — a
+        ``RESTRICTED`` organization may not create more events even if it could
+        technically pay for them; the only way out is resolving the restriction
+        (``remedy=resolve_billing``), not adding a card. See
+        ``is_billing_root_restricted``.
+
         ``delta`` must be in the same unit ``current_usage`` is measured in: the
         number of ``MeteredOccurrence`` rows this creation will eventually cause —
         **occurrences, not masters**. For a one-off event those coincide (1). For a
@@ -652,6 +732,19 @@ class EntitlementService:
         """
         root = resolve_billing_root(organization)
         subscription = self._get_subscription_for_root(root)
+        # Phase 11: RESTRICTED blocks outright, ahead of the unlimited check and
+        # the payment-method check both -- see ``is_billing_root_restricted`` and
+        # this method's own docstring. Sentinel 0/0 usage/ceiling, same convention
+        # as ``check_limit``'s restricted short-circuit.
+        if subscription is not None and subscription.billing_state == BillingState.RESTRICTED:
+            return LimitCheckResult(
+                allowed=False,
+                resource_key=LimitedResource.EVENT_OCCURRENCES,
+                current_usage=0,
+                ceiling=0,
+                remedy=LimitRemedy.RESOLVE_BILLING,
+            )
+
         effective_limit = self._effective_limit_for_subscription(
             subscription,
             LimitedResource.EVENT_OCCURRENCES,
@@ -685,9 +778,11 @@ class EntitlementService:
         # The only way to reach here is ``has_payment_method`` being False -- no
         # active ``PaymentMethod`` row on file for the billing root. The remedy is
         # always "go get a payment method", never ``_resolve_remedy_for``'s
-        # billing-first branch, even for ``GRACE``/``RESTRICTED``: from this guard's
-        # point of view there is nothing chargeable on file, and attaching a working
-        # instrument is what both resolves the dunning and lifts this block.
+        # billing-first branch, even for ``GRACE``: from this guard's point of view
+        # there is nothing chargeable on file, and attaching a working instrument is
+        # what both resolves the dunning and lifts this block. ``RESTRICTED`` never
+        # reaches this branch at all -- it is short-circuited above, unconditionally,
+        # before payment-method is ever consulted.
         return LimitCheckResult(
             allowed=False,
             resource_key=LimitedResource.EVENT_OCCURRENCES,
@@ -725,13 +820,21 @@ class EntitlementService:
     ) -> str:
         """Pick the ``LimitRemedy`` that will actually unblock this caller.
 
-        An organization in grace or restricted has a payment problem in front of
-        any capacity problem, so it is pointed at billing first. Otherwise a
-        pre-paid ceiling is liftable by buying capacity, while a post-paid
-        allowance is not — only a bigger plan raises it.
+        An organization in grace (or, defensively, restricted) has a payment
+        problem in front of any capacity problem, so it is pointed at billing
+        first. Otherwise a pre-paid ceiling is liftable by buying capacity, while
+        a post-paid allowance is not — only a bigger plan raises it.
 
         Takes the already-resolved ``subscription`` rather than re-fetching it: this
         runs on the blocked branch of ``check_limit``, which has one in hand.
+
+        The ``RESTRICTED`` half of the ``in (...)`` below is unreachable in
+        practice as of Phase 11: ``check_limit`` now short-circuits a ``RESTRICTED``
+        subscription unconditionally, before this is ever called (see
+        ``is_billing_root_restricted``). Left in rather than narrowed to
+        ``GRACE`` alone — both source the same remedy, and removing it would make
+        this function's correctness depend on exactly where its one caller happens
+        to short-circuit, which is a coincidence worth not encoding twice.
         """
         if subscription is not None and subscription.billing_state in (
             BillingState.GRACE,

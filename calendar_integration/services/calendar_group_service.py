@@ -274,6 +274,8 @@ class CalendarGroupService:
         existing slot's pool, is refused if any future-booked event references it.
         """
         self._assert_initialized()
+        if self.entitlement_service is not None:
+            self.entitlement_service.check_not_restricted(cast("Organization", self.organization))
         group = self._get_group_by_id(group_id)
         slots_data, _ = self._validate_slots_input(data.slots)
 
@@ -323,6 +325,8 @@ class CalendarGroupService:
         """Delete a CalendarGroup. Refuses if any events (past or future) reference
         it, matching the PROTECT FK on `CalendarEvent.calendar_group`."""
         self._assert_initialized()
+        if self.entitlement_service is not None:
+            self.entitlement_service.check_not_restricted(cast("Organization", self.organization))
         group = self._get_group_by_id(group_id)
 
         if (
@@ -729,6 +733,14 @@ class CalendarGroupService:
             (``calendar_group_fk`` set) belonging to this service's organization.
         """
         self._assert_initialized()
+        # Phase 11: checked explicitly, and before any write -- ``delete_event``
+        # below (called after this method has already deleted the non-primary
+        # BlockedTime rows) would catch a RESTRICTED org too, but only after this
+        # method's own deletes already ran outside of any transaction this method
+        # itself opens. Failing here first avoids that partial-delete window
+        # entirely rather than relying on a caller's surrounding transaction.
+        if self.entitlement_service is not None:
+            self.entitlement_service.check_not_restricted(cast("Organization", self.organization))
         if self.calendar_service is None:
             raise CalendarGroupValidationError(
                 "CalendarGroupService.calendar_service must be provided to cancel grouped events."
@@ -802,6 +814,12 @@ class CalendarGroupService:
         intentionally unenforced for this time-only reschedule path.
         """
         self._assert_initialized()
+        # Phase 11: checked explicitly and first, for the same reason as
+        # ``cancel_grouped_event`` above -- this method writes non-primary
+        # BlockedTime rows itself, ahead of (and outside of) the guarded
+        # ``calendar_service.update_event`` call below.
+        if self.entitlement_service is not None:
+            self.entitlement_service.check_not_restricted(cast("Organization", self.organization))
         if self.calendar_service is None:
             raise CalendarGroupValidationError(
                 "CalendarGroupService.calendar_service must be provided to reschedule grouped events."

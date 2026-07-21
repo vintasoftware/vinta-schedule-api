@@ -13,7 +13,7 @@
 </p>
 {% if urgency == "final_warning" %}
 <p>
-{% blocktrans with grace_period_ends_at=grace_period_ends_at %}Your account will be restricted on {{ grace_period_ends_at }} if this is not resolved. Once restricted, new and updated data cannot be saved until payment succeeds -- your existing data stays intact and readable.{% endblocktrans %}
+{% blocktrans with grace_period_ends_at=grace_period_ends_at %}Your account will be restricted on {{ grace_period_ends_at }} if this is not resolved. Once restricted, new and updated data cannot be saved and calendar sync will stop until payment succeeds -- your existing data stays intact and readable.{% endblocktrans %}
 </p>
 {% else %}
 <p>

@@ -584,6 +584,117 @@ class TestDowngrade:
 
 
 @pytest.mark.django_db
+class TestDowngradeDrivesGraceForTheSweep:
+    """Phase 11's fix for the Phase 10 dead-edge gap: before this,
+    ``_schedule_downgrade`` stamped ``grace_period_ends_at`` but left
+    ``billing_state`` untouched, so ``process_dunning``'s GRACE/RESTRICTED
+    sweep never looked at the row and the deadline never expired. Now the
+    downgrade drives ``billing_state`` into GRACE too, putting it on the one
+    path the sweep already watches -- proven here at the driver; the sweep
+    side (``DunningService._process_grace`` skipping the charge retry, and
+    ``expire_grace`` resolving against the just-applied limits) is proven in
+    ``test_dunning_service.py``.
+    """
+
+    def test_downgrade_from_active_moves_billing_state_to_grace(
+        self, service, organization, billing_profile
+    ):
+        pro_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
+        )
+        free_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0")
+        )
+        subscription = _subscription_for(
+            organization, pro_plan, external_id="already-on-file", billing_state=BillingState.ACTIVE
+        )
+
+        service.request_plan_change(subscription, free_plan, BillingInterval.MONTHLY)
+
+        subscription.refresh_from_db()
+        assert subscription.billing_state == BillingState.GRACE
+        # The stamped deadline is now on a row process_dunning actually sweeps.
+        assert subscription.grace_period_ends_at is not None
+
+    def test_downgrade_while_restricted_does_not_crash_and_leaves_billing_state_unchanged(
+        self, service, organization, billing_profile
+    ):
+        """RESTRICTED has no GRACE edge on the diagram
+        (``LEGAL_BILLING_STATE_TRANSITIONS``) -- the downgrade itself (limits,
+        ``pending_plan``, ``grace_period_ends_at``) must still apply; only the
+        ``billing_state`` write is refused and swallowed."""
+        pro_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
+        )
+        free_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0")
+        )
+        subscription = _subscription_for(
+            organization,
+            pro_plan,
+            external_id="already-on-file",
+            billing_state=BillingState.RESTRICTED,
+        )
+
+        result = service.request_plan_change(subscription, free_plan, BillingInterval.MONTHLY)
+
+        result.refresh_from_db()
+        assert result.billing_state == BillingState.RESTRICTED
+        assert result.pending_plan_id == free_plan.pk
+        assert result.grace_period_ends_at is not None
+        limit = SubscriptionPlanLimit.objects.get(
+            subscription=subscription, resource_key=LimitedResource.ORGANIZATION_MEMBERS
+        )
+        assert limit.limit_value == 1
+
+    def test_downgrade_from_free_moves_billing_state_to_grace(
+        self, service, organization, billing_profile
+    ):
+        """The ``(FREE, GRACE)`` edge, not only ``(ACTIVE, GRACE)`` -- a
+        downgrade can be requested from FREE too (e.g. a reseller moving a
+        pooled child's effective plan down)."""
+        pro_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
+        )
+        free_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0")
+        )
+        subscription = _subscription_for(
+            organization, pro_plan, external_id="already-on-file", billing_state=BillingState.FREE
+        )
+
+        service.request_plan_change(subscription, free_plan, BillingInterval.MONTHLY)
+
+        subscription.refresh_from_db()
+        assert subscription.billing_state == BillingState.GRACE
+
+    def test_downgrading_twice_before_the_first_grace_window_resolves_is_idempotent(
+        self, service, organization, billing_profile
+    ):
+        """A second downgrade requested while already GRACE from the first one
+        must not raise (GRACE -> GRACE is the machine's same-state no-op)."""
+        pro_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
+        )
+        mid_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 10}, monthly_price=Decimal("10")
+        )
+        free_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0")
+        )
+        subscription = _subscription_for(organization, pro_plan, external_id="already-on-file")
+
+        service.request_plan_change(subscription, mid_plan, BillingInterval.MONTHLY)
+        subscription.refresh_from_db()
+        assert subscription.billing_state == BillingState.GRACE
+
+        service.request_plan_change(subscription, free_plan, BillingInterval.MONTHLY)
+        subscription.refresh_from_db()
+        assert subscription.billing_state == BillingState.GRACE
+        assert subscription.pending_plan_id == free_plan.pk
+
+
+@pytest.mark.django_db
 class TestCancelSubscription:
     def test_cancel_moves_to_cancelled_and_drives_the_provider_when_attached(
         self, service, fake_payment_service, organization, billing_profile

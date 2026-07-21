@@ -190,12 +190,57 @@ class DunningService:
         if subscription.billing_state not in (BillingState.GRACE, BillingState.RESTRICTED):
             return subscription
 
+        was_restricted = subscription.billing_state == BillingState.RESTRICTED
         with transaction.atomic():
             transition_billing_state(subscription, BillingState.ACTIVE)
             subscription.grace_period_ends_at = None
             subscription.last_dunning_attempt_at = None
             subscription.save(update_fields=["grace_period_ends_at", "last_dunning_attempt_at"])
+            if was_restricted:
+                self._trigger_resync_after_recovery(subscription)
         return subscription
+
+    def _trigger_resync_after_recovery(self, subscription: Subscription) -> None:
+        """Queue a resync of every calendar this billing root's pooled subtree
+        owns (Phase 11's resync-on-recovery), once ``subscription`` has just left
+        ``RESTRICTED`` for a live state.
+
+        Callers pass this **only** when the *prior* state was ``RESTRICTED`` --
+        sync was never paused for a ``GRACE`` organization (only ``RESTRICTED``
+        write-blocks and sync-pauses; see
+        ``EntitlementService.is_billing_root_restricted``), so leaving ``GRACE``
+        has nothing to reconcile.
+
+        Fanned out per pooled organization (``EntitlementService
+        .get_pooled_organization_ids``) -- the exact set every usage counter and
+        the sync-pause guard itself resolve against -- not per calendar directly;
+        each fanned-out task (``resync_organization_calendars_task``) resolves
+        its own organization's calendars. Deferred import: ``calendar_integration
+        .tasks`` is not imported at module level, mirroring the same
+        avoid-a-module-level-cross-app-import convention
+        ``CalendarSyncService.request_calendar_sync`` already uses for its own
+        Celery task import.
+
+        Called from inside the caller's ``transaction.atomic()`` block, wrapped
+        in ``transaction.on_commit`` here so the fan-out cannot race the
+        transaction that actually moved ``billing_state`` off RESTRICTED --
+        queuing before commit would let a worker pick up the resync and find the
+        subscription still (as far as an uncommitted read is concerned)
+        RESTRICTED.
+        """
+        from calendar_integration.tasks.calendar_sync_tasks import (
+            resync_organization_calendars_task,
+        )
+
+        organization_ids = self.entitlement_service.get_pooled_organization_ids(
+            subscription.organization
+        )
+        transaction.on_commit(
+            lambda: [
+                resync_organization_calendars_task.delay(organization_id=organization_id)
+                for organization_id in organization_ids
+            ]
+        )
 
     # ------------------------------------------------------------------
     # process_dunning-driven transitions
@@ -240,6 +285,15 @@ class DunningService:
         no reason field to make mid-window, so the only safe place to collapse
         it is at expiry).
 
+        A **downgrade-originated** grace episode (``_is_downgrade_grace``,
+        Phase 11) skips the charge-retry-and-notify step entirely, every tick,
+        not only past expiry: unlike a payment-failure grace there is no failed
+        charge to retry -- ``SubscriptionService._schedule_downgrade`` already
+        applied the lower ceiling immediately, and this window exists solely to
+        give the organization time to reduce usage (or upgrade back) before
+        RESTRICTED. It is still evaluated for expiry on every tick, identically
+        to a payment-failure grace.
+
         The retry throttle and the charge's idempotency key are two views of
         the same ``_retry_attempt_ordinal`` -- the tick fires a real charge only
         when ``now`` falls in a *later* retry bucket than the last attempt did,
@@ -252,6 +306,8 @@ class DunningService:
             and subscription.grace_period_ends_at <= now
         ):
             self.expire_grace(subscription)
+            return
+        if self._is_downgrade_grace(subscription):
             return
         current_ordinal = self._retry_attempt_ordinal(subscription, now)
         last_attempt = subscription.last_dunning_attempt_at
@@ -327,10 +383,21 @@ class DunningService:
         course, so collapsing to the cheaper of the two terminal states is the
         right call.
 
+        A **downgrade-originated** grace episode (``_is_downgrade_grace``, Phase
+        11) resolves differently: ``_expire_downgrade_grace`` checks against the
+        limits ``SubscriptionService._schedule_downgrade`` already applied (the
+        pending, lower plan's), not the catalog ``free`` plan -- the org may have
+        downgraded to any paid tier, not necessarily ``free`` -- and restores
+        ACTIVE rather than FREE when resolved, since the org remains a paying
+        subscriber of its still-active (pre-boundary) plan.
+
         Idempotent: a no-op for any state other than GRACE.
         """
         if subscription.billing_state != BillingState.GRACE:
             return subscription
+
+        if self._is_downgrade_grace(subscription):
+            return self._expire_downgrade_grace(subscription)
 
         if self.check_free_fallback(subscription):
             return subscription
@@ -339,6 +406,96 @@ class DunningService:
             transition_billing_state(subscription, BillingState.RESTRICTED)
             transaction.on_commit(lambda: self._notify_restricted(subscription))
         return subscription
+
+    def _expire_downgrade_grace(self, subscription: Subscription) -> Subscription:
+        """Resolve a downgrade-originated grace window (Phase 11) that elapsed
+        with the organization still over its new, lower limits: GRACE -> ACTIVE
+        if usage now fits, otherwise GRACE -> RESTRICTED.
+
+        Checked against ``_fits_under_current_limits`` -- the limits
+        ``_schedule_downgrade`` already synced onto ``subscription`` immediately
+        when the downgrade was requested -- rather than
+        ``check_free_fallback``'s catalog ``free`` plan: an organization
+        downgrading from, say, ``pro`` to a mid-tier paid plan is never going to
+        "fit under free" as its resolution condition, and checking the wrong
+        plan would restrict organizations that already did exactly what the
+        downgrade asked of them.
+
+        ACTIVE, not FREE, on the resolved branch: unlike a payment-failure grace
+        (which only ever reaches FREE by fitting under the *catalog's* free
+        ceilings), an organization here remains a paying subscriber of its
+        still-active, pre-boundary ``subscription.plan`` -- the downgrade itself
+        has not taken effect yet (that is Phase 13's cycle-close sweep). Both
+        ``(GRACE, ACTIVE)`` and ``(GRACE, RESTRICTED)`` are already legal edges
+        on the diagram; no new edge is needed for this branch.
+        """
+        if self._fits_under_current_limits(subscription):
+            with transaction.atomic():
+                transition_billing_state(subscription, BillingState.ACTIVE)
+                subscription.grace_period_ends_at = None
+                subscription.last_dunning_attempt_at = None
+                subscription.save(update_fields=["grace_period_ends_at", "last_dunning_attempt_at"])
+            return subscription
+
+        with transaction.atomic():
+            transition_billing_state(subscription, BillingState.RESTRICTED)
+            transaction.on_commit(lambda: self._notify_restricted(subscription))
+        return subscription
+
+    @staticmethod
+    def _is_downgrade_grace(subscription: Subscription) -> bool:
+        """True when this GRACE episode originated from a scheduled downgrade
+        (``SubscriptionService._schedule_downgrade``, Phase 11) rather than a
+        failed recurring charge (``enter_grace``).
+
+        Inferred from ``pending_plan_id`` being set -- only ``_schedule_downgrade``
+        stamps it; ``enter_grace`` never touches it. It is cleared once a later
+        upgrade supersedes the scheduled downgrade (``_initiate_upgrade`` clears
+        ``pending_plan``) or, once Phase 13 ships cycle close, once the downgrade
+        is applied at the boundary.
+
+        **Known limitation**, accepted as out of this phase's scope: an
+        organization with a downgrade already scheduled whose *currently active*
+        (still higher, pre-boundary) plan then also fails a renewal charge reads
+        as a downgrade-grace here too, and the genuinely failed charge does not
+        get retried. Disambiguating the two reasons unambiguously would need a
+        dedicated reason field on ``Subscription`` -- a larger schema change than
+        the dead-edge gap this method exists to close warrants. The compound case
+        is rare (a renewal charge landing inside a downgrade's typically
+        much-shorter grace window) and, either way, the organization still lands
+        on a state the sweep inspects and can expire -- it no longer sits
+        forever on an unswept row, which is the gap this phase closes.
+        """
+        return subscription.pending_plan_id is not None
+
+    def _fits_under_current_limits(self, subscription: Subscription) -> bool:
+        """Does current usage already fit under ``subscription``'s **currently
+        synced** ``SubscriptionPlanLimit`` ceilings (including active add-ons)?
+
+        Unlike ``_fits_under_plan`` (checked against a specific catalog
+        ``BillingPlan`` -- the ``free`` tier, for a payment-failure grace's
+        fallback), this reads back the *effective* limit
+        (``EntitlementService.get_effective_limit``, which folds in add-ons) for
+        whatever resource keys ``subscription.limits`` carries right now. For a
+        downgrade-originated grace episode those rows are exactly the *lower*
+        (pending) plan's, already synced by ``_schedule_downgrade`` the moment
+        the downgrade was requested -- so "fits" here means the overage that
+        triggered this grace episode has actually been resolved (by deleting
+        resources, buying an add-on, etc.), without assuming the organization
+        downgraded to the catalog's ``free`` tier specifically, which it may not
+        have.
+        """
+        organization = subscription.organization
+        for resource_key in subscription.limits.values_list("resource_key", flat=True):
+            effective_limit = self.entitlement_service.get_effective_limit(
+                organization, resource_key
+            )
+            if effective_limit.limit_value is None:
+                continue
+            usage = self.entitlement_service.get_current_usage(organization, resource_key)
+            if usage > effective_limit.limit_value:
+                return False
+        return True
 
     def check_free_fallback(self, subscription: Subscription) -> bool:
         """GRACE|RESTRICTED -> FREE once current usage fits under the catalog's
@@ -369,11 +526,14 @@ class DunningService:
         if free_plan is None or not self._fits_under_plan(subscription, free_plan):
             return False
 
+        was_restricted = subscription.billing_state == BillingState.RESTRICTED
         with transaction.atomic():
             transition_billing_state(subscription, BillingState.FREE)
             subscription.grace_period_ends_at = None
             subscription.last_dunning_attempt_at = None
             subscription.save(update_fields=["grace_period_ends_at", "last_dunning_attempt_at"])
+            if was_restricted:
+                self._trigger_resync_after_recovery(subscription)
         return True
 
     def _free_plan(self) -> BillingPlan | None:

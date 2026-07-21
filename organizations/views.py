@@ -719,6 +719,14 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
         user = request.user
 
+        # Guard (Phase 11): a restricted organization may not write, including
+        # deactivating one of its own members. Checked here rather than in
+        # ``OrganizationService`` -- this write, unlike every other membership
+        # write in this module, has never gone through the service layer (see
+        # the module-level guiding decision this predates); moving the whole
+        # action there is a larger refactor than this phase's guard warrants.
+        self.organization_service.entitlement_service.check_not_restricted(target.organization)
+
         # Guard: prevent self-deactivation
         if target.user_id == user.id:
             raise PermissionDenied(detail="Cannot deactivate your own membership.")
@@ -804,6 +812,11 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         target = (
             self.get_object()
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
+
+        # Guard (Phase 11): a restricted organization may not write, including
+        # changing a member's role. See ``deactivate`` above for why this is
+        # checked directly here rather than in ``OrganizationService``.
+        self.organization_service.entitlement_service.check_not_restricted(target.organization)
 
         serializer = UpdateMembershipRoleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

@@ -105,7 +105,18 @@ class WebhookService:
         event_type: str,
         url: str,
         headers: dict,
+        bypass_limits: bool = False,
     ) -> WebhookConfiguration:
+        """Update ``configuration``.
+
+        :param bypass_limits: When True, skips the restricted-organization guard
+            below. Only management commands and one-off repair scripts should
+            pass this -- never a request-handling path.
+        :raises OverLimitError: When ``configuration``'s organization is
+            restricted (Phase 11).
+        """
+        if not bypass_limits and self.entitlement_service is not None:
+            self.entitlement_service.check_not_restricted(configuration.organization)
         self._validate_config_fields(event_type, url)
         configuration.url = url
         configuration.event_type = event_type
@@ -113,7 +124,19 @@ class WebhookService:
         configuration.save()
         return configuration
 
-    def delete_configuration(self, configuration: WebhookConfiguration) -> bool:
+    def delete_configuration(
+        self, configuration: WebhookConfiguration, bypass_limits: bool = False
+    ) -> bool:
+        """Soft-delete ``configuration``.
+
+        :param bypass_limits: When True, skips the restricted-organization guard
+            below. Only management commands and one-off repair scripts should
+            pass this -- never a request-handling path.
+        :raises OverLimitError: When ``configuration``'s organization is
+            restricted (Phase 11).
+        """
+        if not bypass_limits and self.entitlement_service is not None:
+            self.entitlement_service.check_not_restricted(configuration.organization)
         configuration.deleted_at = datetime.datetime.now(tz=datetime.UTC)
         configuration.save()
         return True

@@ -576,6 +576,16 @@ class AvailabilityService:
         ]
 
         entitlement_service = self._context.entitlement_service
+        # Phase 11: RESTRICTED must block this batch outright, including an
+        # update-only or delete-only batch -- the ``delta``-gated ``check_limit``
+        # call further below is skipped entirely when the batch creates nothing
+        # net (a pure update/delete batch always has ``delta == 0``), so it alone
+        # would never catch a restricted organization editing or deleting its
+        # existing windows. Checked unconditionally whenever the batch is
+        # non-empty, ahead of any of the net-growth arithmetic.
+        if not bypass_limits and entitlement_service is not None and operations:
+            entitlement_service.check_not_restricted(context.organization)
+
         # A credit is about to be granted (create_count and delete_ids), which means the
         # delete-credit read below can race a concurrent batch computing the same credit
         # from the same pre-write snapshot. Lock *before* that read -- not after, guarded

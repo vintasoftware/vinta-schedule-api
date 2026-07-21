@@ -1,7 +1,9 @@
 import logging
+from typing import Annotated
 
 from django.db import transaction
 
+from dependency_injector.wiring import Provide, inject
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
@@ -14,6 +16,7 @@ from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from organizations.models import get_active_organization_membership
 from organizations.permissions import IsOrganizationAdmin
+from payments.services.entitlement_service import EntitlementService
 from public_api.constants import PROVIDER_SCOPED_RESOURCES
 from public_api.docs_content import get_concept_doc, list_concept_docs
 from public_api.models import ResourceAccess, SystemUser
@@ -48,6 +51,16 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
 
     permission_classes = (IsOrganizationAdmin,)
     serializer_class = SystemUserTokenCreateSerializer
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.entitlement_service = entitlement_service
 
     def get_queryset(self):  # type: ignore[override]
         """Org-scoped queryset with prefetched ResourceAccess rows for list/retrieve.
@@ -119,6 +132,8 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
         exist or belongs to another organization; HTTP 401 for unauthenticated.
         """
         system_user = self.get_object()
+        if system_user.organization_id is not None:
+            self.entitlement_service.check_not_restricted(system_user.organization)
         system_user.is_active = False
         system_user.save(update_fields=["is_active"])
 
@@ -143,6 +158,8 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
         exist or belongs to another organization; HTTP 401 for unauthenticated.
         """
         system_user = self.get_object()
+        if system_user.organization_id is not None:
+            self.entitlement_service.check_not_restricted(system_user.organization)
 
         # Validate input
         input_serializer = SystemUserTokenUpdateSerializer(data=request.data)

@@ -190,6 +190,32 @@ class CalendarSyncService:
         # CHANGE_REQUEST and FORBIDDEN require the service to be injected.
         self._external_event_change_request_service = external_event_change_request_service
 
+    def _check_not_restricted(self) -> None:
+        """Raise ``OverLimitError`` (``remedy=resolve_billing``) if this context's
+        organization's billing root is ``RESTRICTED`` (Phase 11) -- **sync pause**,
+        the other half of the write guard defined once on
+        ``EntitlementService.is_billing_root_restricted``.
+
+        Called by every ``request_*`` method on this service (``request_calendar_sync``,
+        ``request_calendars_import``, ``request_organization_calendar_resources_import``)
+        *before* the ``CalendarSync`` / ``CalendarOrganizationResourcesImport`` row is
+        created and *before* the Celery task is enqueued -- so a restricted
+        organization's sync work is never queued in the first place, not merely
+        skipped once a worker picks it up (that early-return also exists, in
+        ``calendar_integration.tasks.calendar_sync_tasks``, as defense in depth for
+        anything already in flight when an organization becomes restricted mid-sync).
+
+        A no-op when ``entitlement_service`` is not on the context (a sub-service
+        built directly in a test without DI) or
+        ``context.bypass_entitlement_limits`` put the whole facade in bypass mode.
+        """
+        if self._context.bypass_entitlement_limits:
+            return
+        entitlement_service = self._context.entitlement_service
+        if entitlement_service is None or self._context.organization is None:
+            return
+        entitlement_service.check_not_restricted(self._context.organization)
+
     # ------------------------------------------------------------------
     # Organization-resource import
     # ------------------------------------------------------------------
@@ -204,6 +230,7 @@ class CalendarSyncService:
         context = cast("BaseCalendarService", self._context)
         if not is_authenticated_calendar_service(context):
             raise
+        self._check_not_restricted()
 
         import_workflow_state = CalendarOrganizationResourcesImport.objects.create(
             organization=context.organization,
@@ -482,6 +509,7 @@ class CalendarSyncService:
         context = cast("BaseCalendarService", self._context)
         if not is_authenticated_calendar_service(context):
             raise
+        self._check_not_restricted()
 
         # Capture ids by value so the closure is independent of mutable self state.
         _account_type = (
@@ -697,6 +725,7 @@ class CalendarSyncService:
         context = cast("BaseCalendarService", self._context)
         if not is_authenticated_calendar_service(context):
             raise
+        self._check_not_restricted()
 
         if not context.calendar_adapter:
             raise NotImplementedError(

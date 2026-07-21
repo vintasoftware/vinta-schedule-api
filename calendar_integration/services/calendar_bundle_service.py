@@ -332,6 +332,10 @@ class CalendarBundleService:
         if not is_initialized_or_authenticated_calendar_service(context):
             raise
 
+        entitlement_service = self._context.entitlement_service
+        if entitlement_service is not None and not self._context.bypass_entitlement_limits:
+            entitlement_service.check_not_restricted(context.organization)
+
         if bundle_calendar.calendar_type != CalendarType.BUNDLE:
             raise ValueError("Calendar is not a bundle.")
 

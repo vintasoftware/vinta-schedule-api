@@ -441,6 +441,26 @@ class CalendarService(BaseCalendarService):
         if not self.entitlement_service.has_entitlement(self.organization, entitlement_key):
             raise OverLimitError.from_missing_entitlement(entitlement_key)
 
+    def _check_not_restricted(self, bypass_limits: bool = False) -> None:
+        """Raise ``OverLimitError`` if this facade's organization's billing root is
+        ``RESTRICTED`` (Phase 11).
+
+        A no-op when ``entitlement_service`` is not injected, ``self.organization``
+        is not yet resolved, ``bypass_limits`` is ``True`` for this call, or
+        ``authenticate(bypass_limits=True)`` put this instance in bypass mode --
+        the same two-source bypass ``_assert_provider_entitlement`` honours.
+
+        The single call every update/delete method on this facade that is not
+        already covered by ``check_limit`` / ``check_postpaid_allowance``
+        (which fold the restricted check in directly -- see
+        ``EntitlementService.is_billing_root_restricted``) makes before writing.
+        """
+        if bypass_limits or self._bypass_entitlement_limits or self.entitlement_service is None:
+            return
+        if self.organization is None:
+            return
+        self.entitlement_service.check_not_restricted(self.organization)
+
     def authenticate(
         self,
         account: "User | SocialAccount | GoogleCalendarServiceAccount",
@@ -1019,6 +1039,7 @@ class CalendarService(BaseCalendarService):
         """
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
+        self._check_not_restricted()
 
         calendar = Calendar.objects.filter_by_organization(self.organization.id).get(id=calendar_id)
 
@@ -1069,6 +1090,7 @@ class CalendarService(BaseCalendarService):
         """
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
+        self._check_not_restricted()
 
         calendar = Calendar.objects.filter_by_organization(self.organization.id).get(id=calendar_id)
 
@@ -1129,6 +1151,7 @@ class CalendarService(BaseCalendarService):
         """
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
+        self._check_not_restricted()
 
         calendar = Calendar.objects.filter_by_organization(self.organization.id).get(id=calendar_id)
 
@@ -1206,6 +1229,7 @@ class CalendarService(BaseCalendarService):
         """
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
+        self._check_not_restricted()
 
         calendar = Calendar.objects.filter_by_organization(self.organization.id).get(id=bundle_id)
 

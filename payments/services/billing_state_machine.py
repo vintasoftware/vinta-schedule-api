@@ -44,15 +44,21 @@ LEGAL_BILLING_STATE_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
     {
         (BillingState.FREE, BillingState.ACTIVE),  # upgrade paid
         (BillingState.ACTIVE, BillingState.ACTIVE),  # renewal succeeds
-        # payment fails (driven by DunningService.enter_grace).
-        # TODO(phase-11): the diagram's second reason for this edge -- "downgrade
-        # leaves org over limit" -- has no driver yet; _schedule_downgrade stamps
-        # grace_period_ends_at but leaves billing_state ACTIVE, so process_dunning
-        # never sweeps it. Payment-failure is the only reason that reaches it today.
+        # Two drivers reach this edge: a failed recurring charge
+        # (DunningService.enter_grace) and a downgrade that leaves the
+        # organization over its new (lower) limits
+        # (SubscriptionService._schedule_downgrade, Phase 11). Both stamp
+        # grace_period_ends_at and drive billing_state through this same
+        # transition, so process_dunning's GRACE/RESTRICTED sweep (payments/tasks.py)
+        # sees either kind of grace episode identically; DunningService
+        # distinguishes them internally (see DunningService._is_downgrade_grace)
+        # only to decide whether there is a charge to retry, never to change which
+        # edges are legal.
         (BillingState.ACTIVE, BillingState.GRACE),
-        # payment fails on a first-upgrade charge (driven by DunningService.enter_grace).
-        # TODO(phase-11): the diagram's "downgrade leaves org over limit" reason for
-        # this edge has no driver yet -- same gap as (ACTIVE, GRACE) above.
+        # Same two drivers as (ACTIVE, GRACE) above, from FREE: a failed
+        # first-upgrade charge (DunningService.enter_grace), or a downgrade
+        # requested while still FREE that leaves the organization over the new
+        # plan's limits (SubscriptionService._schedule_downgrade, Phase 11).
         (BillingState.FREE, BillingState.GRACE),
         (BillingState.GRACE, BillingState.ACTIVE),  # payment succeeds
         (BillingState.GRACE, BillingState.FREE),  # org returns under free limits
