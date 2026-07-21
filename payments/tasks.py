@@ -29,6 +29,7 @@ from dependency_injector.wiring import Provide, inject
 
 from payments.billing_constants import BillingState
 from payments.models import Subscription
+from payments.services.cycle_close_service import CycleCloseService
 from payments.services.dunning_service import DunningService
 from payments.services.metering_service import MeteringService
 from payments.services.usage_warning_service import UsageWarningService
@@ -168,6 +169,71 @@ def process_dunning_for_subscription(
         )
         return
     dunning_service.process_subscription(subscription)
+
+
+@app.task
+def close_billing_periods() -> None:
+    """Beat entry point: fan out one cycle-close per subscription whose current
+    billing period has ended.
+
+    The window (which subscriptions are due) is decided **once here** from
+    ``timezone.now()`` and each subscription is closed in its own task, so one
+    subscription's close failing (a declined overage charge, a provider error)
+    records its failure and does not abort the rest of the sweep — the plan's
+    best-effort-across-subscriptions rule. Each close is idempotent (the rolled
+    ``current_period_start`` is the durable marker; the overage charge carries a
+    ``(subscription, period_start)`` idempotency key), so a
+    ``CELERY_TASK_ACKS_LATE`` redelivery is harmless.
+
+    Only billing-root subscriptions with an elapsed period are selected
+    (``CycleCloseService.subscriptions_to_close`` reuses
+    ``MeteringService.subscriptions_to_sweep`` so "which subscription owns this
+    usage" has a single definition).
+    """
+    for subscription_id in CycleCloseService.subscriptions_to_close():
+        close_subscription_billing_period.delay(subscription_id)
+
+
+@app.task
+@inject
+def close_subscription_billing_period(
+    subscription_id: int,
+    cycle_close_service: Annotated[CycleCloseService, Provide["cycle_close_service"]],
+) -> None:
+    """Close every elapsed period for one subscription, dispatched through
+    ``CycleCloseService.close_subscription`` — the single place a period is
+    settled and rolled (see that method's docstring).
+
+    A subscription deleted between fan-out and execution is logged and skipped
+    rather than raising (same reasoning as ``meter_subscription_event_occurrences``).
+
+    A close failure (declined charge, provider error) is caught and logged rather
+    than re-raised: the period stays unrolled, so the next beat tick re-dispatches
+    and retries it (with the same overage idempotency key, so a partially-charged
+    period does not double-charge), and one poison subscription never spins the
+    task or blocks the rest of the sweep.
+    """
+    subscription = Subscription.objects.filter(pk=subscription_id).first()
+    if subscription is None:
+        logger.info(
+            "Skipping cycle close for subscription %s: it no longer exists.",
+            subscription_id,
+        )
+        return
+    try:
+        closed = cycle_close_service.close_subscription(subscription)
+    except Exception:  # noqa: BLE001 - best-effort: never let one close abort the sweep
+        logger.exception(
+            "Cycle close failed for subscription %s; the period is left unrolled and will be "
+            "retried on the next sweep (the overage idempotency key prevents a double charge).",
+            subscription_id,
+        )
+        return
+    logger.info(
+        "Cycle close for subscription %s settled %s period(s).",
+        subscription_id,
+        len(closed),
+    )
 
 
 @app.task

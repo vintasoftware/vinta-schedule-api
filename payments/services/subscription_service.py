@@ -122,6 +122,28 @@ def billing_interval_step(billing_interval: str) -> relativedelta:
     return relativedelta(months=1)
 
 
+def overage_settlement_step() -> relativedelta:
+    """The length of one **overage settlement** cycle: always one month.
+
+    The single definition of the spec's *Time-bounded behavior* rule — "post-paid
+    overage settles monthly regardless of whether the plan is billed annually"
+    (Billing Plans and Limits spec §4.2). ``billing_interval`` governs the
+    *recurring plan fee* (an annual plan is charged its fee once a year, by the
+    provider's own subscription), but the overage that ``CycleCloseService`` sweeps
+    settles every month for every plan — so the period cycle-close rolls forward by
+    is deliberately independent of ``billing_interval``.
+
+    Reuses ``billing_interval_step(MONTHLY)`` rather than a fresh ``relativedelta``
+    so "one month" has exactly one definition shared with subscription creation
+    (``SubscriptionService._period_end`` also anchors the stored period monthly) and
+    ``resolve_billing_period``'s monthly branch. A subscription's stored period is
+    created one month long (``create_subscription_for_organization``) and rolled one
+    month forward here, so the current period the meter and the usage counter read
+    stays monthly for every plan, matching what this step produces.
+    """
+    return billing_interval_step(BillingInterval.MONTHLY)
+
+
 def resolve_billing_period(
     subscription: Subscription, moment: datetime.datetime
 ) -> tuple[datetime.datetime, datetime.datetime]:
