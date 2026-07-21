@@ -1,0 +1,1 @@
+{% load i18n %}{% blocktrans with organization_name=organization_name %}{{ organization_name }}'s account has been restricted{% endblocktrans %}

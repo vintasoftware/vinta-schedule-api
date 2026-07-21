@@ -403,6 +403,29 @@ class UnconfirmedPlanChangeError(PaymentError):
         self.organization_id = organization_id
 
 
+class IllegalBillingStateTransitionError(BillingError):
+    """Raised by ``payments.services.billing_state_machine.transition_billing_state``
+    when the requested ``(from_state, to_state)`` pair is not an edge on the spec's
+    lifecycle diagram (Billing Plans and Limits spec, Use-case 5).
+
+    The diagram is the authority on which transitions exist -- Phase 10's guiding
+    decision is that an illegal transition is refused outright, never silently
+    coerced or turned into a no-op. Inherits ``BillingError`` rather than
+    ``PaymentError`` (a ``ValueError``) so the ``except ValueError`` wrappers
+    scattered across the codebase cannot flatten a state-machine violation into a
+    generic validation message.
+    """
+
+    def __init__(self, subscription_id: int | None, from_state: str, to_state: str):
+        super().__init__(
+            f"Illegal billing state transition for Subscription {subscription_id}: "
+            f"{from_state!r} -> {to_state!r} is not on the billing lifecycle diagram."
+        )
+        self.subscription_id = subscription_id
+        self.from_state = from_state
+        self.to_state = to_state
+
+
 class AddOnNotPurchasableError(PaymentError):
     """Raised when ``purchase_add_on`` is asked to sell capacity for a resource
     whose current ``SubscriptionPlanLimit`` carries no ``overage_unit_price`` —

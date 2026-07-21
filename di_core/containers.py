@@ -31,6 +31,7 @@ from notifications.notification_template_renderers.django_in_app_renderer import
 )
 from organizations.services import OrganizationService
 from payments.constants import PaymentProviders
+from payments.services.dunning_service import DunningService
 from payments.services.entitlement_service import EntitlementService
 from payments.services.metering_service import MeteringService
 from payments.services.payment_adapters.mercadopago_payment_adapter import MercadoPagoPaymentAdapter
@@ -156,6 +157,13 @@ class AppContainer(containers.DeclarativeContainer):
             ),
         ],
         notification_backend=DjangoDbNotificationBackend(),
+    )
+
+    dunning_service = providers.Factory(
+        DunningService,
+        subscription_service=subscription_service,
+        entitlement_service=entitlement_service,
+        notification_service=notification_service,
     )
 
     webhook_service = providers.Factory(

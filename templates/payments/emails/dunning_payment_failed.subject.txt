@@ -1,0 +1,1 @@
+{% load i18n %}{% blocktrans with organization_name=organization_name %}Action needed: we couldn't process {{ organization_name }}'s payment{% endblocktrans %}

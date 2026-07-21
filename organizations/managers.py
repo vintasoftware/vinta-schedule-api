@@ -19,6 +19,10 @@ class OrganizationMembershipManager(Manager):
         """Wraps :meth:`OrganizationMembershipQuerySet.occupying_a_seat`."""
         return self.get_queryset().occupying_a_seat(organization_ids)
 
+    def billing_recipients(self, organization_id: int) -> OrganizationMembershipQuerySet:
+        """Wraps :meth:`OrganizationMembershipQuerySet.billing_recipients`."""
+        return self.get_queryset().billing_recipients(organization_id)
+
     def active_for_user(self, user) -> OrganizationMembershipQuerySet:
         """Return all active memberships for *user*, ordered by creation date.
 

@@ -234,6 +234,16 @@ class Subscription(BaseModel):
     current_period_start = models.DateTimeField()
     current_period_end = models.DateTimeField(db_index=True)
     grace_period_ends_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    # Phase 10: the last time `DunningService`'s beat task (`process_dunning`)
+    # retried the charge / sent that day's rung of the dunning ladder for this
+    # subscription. The per-attempt idempotency gate that keeps a Celery task
+    # redelivery (`CELERY_TASK_ACKS_LATE`) or an accidental double beat-tick from
+    # double-charging the provider for the same logical attempt or double-sending
+    # that attempt's notification. Provider-side idempotency (the retry charge's
+    # `idempotency_key`) is what makes the charge itself safe either way; this is
+    # what keeps the *notification* side just as safe. Cleared whenever the
+    # subscription leaves GRACE, so a later re-entry starts its own ladder fresh.
+    last_dunning_attempt_at = models.DateTimeField(null=True, blank=True)
     external_id = models.CharField(max_length=255, blank=True, db_index=True)
     plan_external_id = models.CharField(max_length=255, blank=True)
     payment_provider = models.CharField(max_length=50, choices=PaymentProviders)

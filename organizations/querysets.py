@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
+from django.db.models import Q
 from django.db.models.query import QuerySet
 from django.utils import timezone
 
@@ -25,6 +26,28 @@ class OrganizationMembershipQuerySet(QuerySet):
         ``OrganizationMembership``, not about billing.
         """
         return self.filter(organization_id__in=organization_ids, is_active=True)
+
+    def billing_recipients(self, organization_id: int) -> OrganizationMembershipQuerySet:
+        """Active memberships eligible to receive billing/dunning notifications for
+        ``organization_id``: admins and billing owners (``is_billing_owner=True``)
+        -- the same two roles ``IsBillingOwnerOrAdmin`` gates billing writes to.
+
+        Used by ``DunningService`` (``payments/services/dunning_service.py``) to
+        resolve who receives the dunning ladder's email/in-app notifications --
+        billing is organization-owned, not user-owned (Phase 1's guiding
+        decision), so there is no single "the" recipient; every eligible member
+        gets one.
+
+        ``OrganizationRole`` is imported here rather than at module level to avoid
+        a cycle: ``organizations.models`` imports this module (via
+        ``organizations.managers``), so this module cannot import back from
+        ``organizations.models`` at import time.
+        """
+        from organizations.models import OrganizationRole
+
+        return self.filter(organization_id=organization_id, is_active=True).filter(
+            Q(role=OrganizationRole.ADMIN) | Q(is_billing_owner=True)
+        )
 
     def active_for_user(self, user: User) -> OrganizationMembershipQuerySet:
         """Return all active memberships for *user*, with organization pre-fetched.

@@ -182,6 +182,11 @@ envVarGroups:
       # Shared secret used to verify Stripe's `Stripe-Signature` webhook header.
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      # Global fallback grace window (days) between a failed recurring charge and
+      # an organization moving from GRACE to RESTRICTED, used when the
+      # subscription's plan carries no grace_period_days of its own.
+      - key: BILLING_DEFAULT_GRACE_PERIOD_DAYS
+        value: 7
 
   # AWS S3 + CloudFront storage. Values come from the Terragrunt/Scalr stack
   # under infrastructure/ — see `terragrunt output`. Secrets are sync:false so
