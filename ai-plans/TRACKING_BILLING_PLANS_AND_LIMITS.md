@@ -375,25 +375,47 @@ Three more of the plan's signature two-predicates defects, all fixed: `confirm_p
 - ⚠️ **`MercadoPagoPaymentAdapter.refund` has the same idempotency-key bug** the fixer corrected in `process`: it uses a `{refund.id}` set-literal for `x-idempotency-key`. Latent, not in any finding, left untouched — worth a follow-up.
 - The adapter idempotency-key plumbing is **unit-tested only** (no live provider in this environment — same caveat Phase 2b left).
 
+### Phase 10 — Grace, dunning, and the restricted transition ✅
+
+- **Status**: reviewed clean (1 round, 1 BLOCKER + 3 SHOULD-FIX fixed), gates green, ready to integrate
+- **Models**: implementer Tier 3 (relaunched once — first run's process died on a transient OAuth error mid-implementation, before committing; a second implementer completed the uncommitted work and caught a real ordering defect the first left); reviewer Tier 4 (stepped up from the default — real retry charges + billing lifecycle); fixer Tier 4
+- **Branch**: `plan/billing-plans-and-limits/phase-10` · **Base**: `plan/billing-plans-and-limits/phase-9`
+- **Commits**: `722db5d` implementation, `7e99730` review fixes · **Migration**: `0014` (`last_dunning_attempt_at`) — reverses cleanly
+
+**Gates** (implementer, then re-run independently with credentials cleared): suite **4451 passed** (base 4384; +67); `mypy` **305 / 57** at ceiling, zero new; `ruff` clean (511); `makemigrations --check` clean.
+
+The lifecycle is a **single transition table** — `payments/services/billing_state_machine.py::LEGAL_BILLING_STATE_TRANSITIONS` / `transition_billing_state` — that every webhook handler and the `process_dunning` beat task route through; no caller writes `billing_state` directly (the one that did, `cancel_subscription`, was routed through in the fix round). `DunningService` orchestrates: `enter_grace` (`ACTIVE|FREE → GRACE`, stamps `grace_period_ends_at` from `BillingPlan.grace_period_days` falling back to the `BILLING_DEFAULT_GRACE_PERIOD_DAYS` setting), `resolve_payment_success` (`GRACE|RESTRICTED → ACTIVE`), `expire_grace` (`GRACE → RESTRICTED`, or `GRACE → FREE` if under free limits at expiry), `cancel`.
+
+**Both inherited constraints held** (reviewer-confirmed, not just asserted): `has_payment_method` is untouched — a `GRACE` org with a card still reads `True` and accrues postpaid; `enter_grace` clears `plan_change_pending_confirmation` in the same transaction, unsticking a failed first-upgrade.
+
+**The BLOCKER was a two-clocks divergence I missed in my own spot-check.** The retry throttle (`MIN_DUNNING_RETRY_INTERVAL = 20h`) and the idempotency key (`%Y-%m-%d`, 24h buckets) quantized time differently. A first retry landing 00:00–03:59 UTC would fire its second attempt 20h later *the same calendar day*, reuse the same `x-idempotency-key`, get deduped by the provider → **no real charge** → while still emailing the customer "we retried and it failed." ~1/6 of subscriptions silently skipped a genuine collection attempt — a direct breach of the phase's own "retry across the grace window" acceptance criterion, invisible because the schedule test froze at 09:00. Fixed by deriving **both** the throttle decision and the key from one shared **retry-bucket ordinal** `floor((now − grace_start) / MIN_DUNNING_RETRY_INTERVAL)`; two views of one number can't disagree. My spot-check had verified the *inverse* (no double-charge across midnight — correct) and stopped there; the reviewer found the suppression direction.
+
+Three SHOULD-FIX, all fixed: `cancel_subscription` bypassed the machine (now routed through, with justified `FREE|GRACE|RESTRICTED → CANCELLED` edges added and dunning bookkeeping cleared on cancel); free-fallback ran *before* the retry on every GRACE tick, so a payer under free limits was dropped to `FREE` on the first tick and never retried (moved to grace **expiry**, so the ladder runs the full window first); and the dead-edge documentation below.
+
+**Known gap carried into Phase 11 — the downgrade-over-limit → GRACE driver.** `LEGAL_BILLING_STATE_TRANSITIONS` lists `(ACTIVE, GRACE)` and `(FREE, GRACE)` for two reasons each: *payment failure* (driven today by `DunningService.enter_grace`) and *downgrade leaves org over limit* (the diagram's other reason). The downgrade reason has **no driver**: `SubscriptionService._schedule_downgrade` stamps `grace_period_ends_at` but leaves `billing_state` ACTIVE/FREE, and `process_dunning` only sweeps GRACE/RESTRICTED, so a downgrade's grace deadline is stamped on a row the sweep never inspects and never expires. The two table entries carry a `TODO(phase-11)` marker. Phase 11 should either add the downgrade→GRACE driver or move the over-limit-after-downgrade enforcement onto a path the sweep sees.
+
+**Carried forward from 10:**
+- The `_grace_period_days` ordinal anchor recomputes `grace_start` from the *current* `plan.grace_period_days`; editing a plan's grace window mid-episode would shift the anchor slightly. Low-risk edge; deriving without a new column was the chosen (schema-free) fix.
+- `MercadoPagoPaymentAdapter.refund`'s `{refund.id}` idempotency-key bug (from Phase 9) still stands — not copied into the new retry path, which uses the correct plumbing.
+
 ## Current phase
 
-**Phase 10 — Grace, dunning, and the restricted transition** (implementer Tier 3)
+**Phase 11 — Restricted enforcement and sync pause** (implementer Tier 3, reviewer Tier 4)
 
-Base: `plan/billing-plans-and-limits/phase-9` · Branch: `plan/billing-plans-and-limits/phase-10`
+Base: `plan/billing-plans-and-limits/phase-10` · Branch: `plan/billing-plans-and-limits/phase-11`
 
-A failed payment moves an org through a warned grace period with retries, into `RESTRICTED` if unresolved. Implements the spec's lifecycle diagram as explicit transitions in `payments/services/dunning_service.py`, rejecting any transition not on it. Celery beat `process_dunning` retries on schedule with escalating email and moves `GRACE → RESTRICTED` on expiry; `RESTRICTED → ACTIVE` on payment success; cancellation `ACTIVE → CANCELLED` running to period end.
+Makes `RESTRICTED` actually restrict: the state Phase 10 transitions *into* on grace expiry must now block the writes and pause the sync it is supposed to. This is the enforcement half of the dunning lifecycle.
 
-**Two hard constraints inherited from earlier phases — both load-bearing:**
-1. **`GRACE` must keep `has_payment_method` reading `True` via the real `PaymentMethod` record** (Phase 8/9). Phase 10 moves `ACTIVE → GRACE` on a *failed charge*, which says nothing about whether the card is still attached. Do **not** reintroduce a `billing_state`-based answer to "has a payment method" — that was deleted in Phase 9 on purpose. A `GRACE` org with a card on file still accrues postpaid; the dunning ladder, not the postpaid guard, is what escalates it. If Phase 10 needs to block writes it does so through the `RESTRICTED` state (Phase 11), not by lying about the payment method.
-2. **Phase 9 left `plan_change_pending_confirmation` set when a first-upgrade charge fails** (no APPROVED webhook clears it). Phase 10 owns the failed-charge path — it should **clear that flag when it moves the subscription to `GRACE`/`RESTRICTED` on a failed initial charge**, or the org is stuck unable to switch plans. Wire it into the same transition.
+**Inherited from Phase 10 (load-bearing):**
+1. `RESTRICTED` is the *only* state that write-blocks — `GRACE` stays fully operational (a `GRACE` org with a card keeps accruing; escalation is the dunning ladder, not a write block). Do not block `GRACE`.
+2. **The downgrade→GRACE dead-edge gap** (above) lands in this phase's lap: either add the downgrade-over-limit driver so that grace window is swept, or move over-limit-after-downgrade enforcement onto a swept path. Whichever, don't leave `grace_period_ends_at` stamped on a row nothing inspects.
 
-**Watch for the plan's recurring failure shape** — the state machine is the host this time: the set of transitions the diagram permits and the set `process_dunning` can actually drive must be the same set, defined once. A transition the beat task performs that the validator does not list (or vice versa) is the two-predicates defect in state-machine form.
+**Watch for the plan's recurring failure shape** — the block predicate and the pause predicate must agree on *what RESTRICTED means*. If write-enforcement keys off `billing_state == RESTRICTED` but sync-pause keys off something else (a flag, a limit check), the two can diverge and an org can be write-blocked while still syncing, or vice versa. One definition of "restricted", consulted by both.
 
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |
 |---|---|---|---|---|
-| 11 | Restricted enforcement and sync pause | 3 | 4 | — |
 | 12 | Usage API and approaching-limit warnings | 2 | — | — |
 | 13 | Cycle close, overage charge, and reconciliation | 4 | 4 | 3 |
 

@@ -1,0 +1,1 @@
+{% load i18n %}{% if urgency == "final_warning" %}{% blocktrans with organization_name=organization_name %}Final notice: {{ organization_name }} will be restricted soon{% endblocktrans %}{% else %}{% blocktrans with organization_name=organization_name %}Reminder: {{ organization_name }}'s payment is still failing{% endblocktrans %}{% endif %}

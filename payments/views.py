@@ -21,9 +21,11 @@ from payments.exceptions import ProviderWebhookEventIdMissingError, UnknownPayme
 from payments.models import BillingProfile, SubscriptionAddOn
 from payments.models import PaymentStatusUpdate as PaymentStatusUpdateModel
 from payments.serializers import BillingProfileSerializer
+from payments.services.dunning_service import FAILED_SUBSCRIPTION_PAYMENT_STATUSES
 
 
 if TYPE_CHECKING:
+    from payments.services.dunning_service import DunningService
     from payments.services.payment_service import PaymentService
     from payments.services.subscription_service import SubscriptionService
 
@@ -60,11 +62,13 @@ class PaymentsViewSet(ViewSet):
         *args,
         payment_service: Annotated["PaymentService", Provide["payment_service"]],
         subscription_service: Annotated["SubscriptionService", Provide["subscription_service"]],
+        dunning_service: Annotated["DunningService", Provide["dunning_service"]],
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.payment_service = payment_service
         self.subscription_service = subscription_service
+        self.dunning_service = dunning_service
 
     @extend_schema(
         summary="Receive payment updates",
@@ -210,32 +214,46 @@ class PaymentsViewSet(ViewSet):
             )
 
         if status_update is not None:
-            self._apply_confirmed_subscription_payment_side_effects(status_update)
+            self._apply_subscription_payment_side_effects(status_update)
 
         return Response({"message": "Subscription payment update received."})
 
-    def _apply_confirmed_subscription_payment_side_effects(
+    def _apply_subscription_payment_side_effects(
         self, status_update: PaymentStatusUpdateModel
     ) -> None:
-        """Phase 9: a subscription charge confirmed ``APPROVED`` (the
-        ``subscription-payment-update`` webhook) is what grants the capacity
-        for whichever plan the subscription is currently on
-        (``SubscriptionService.confirm_plan_change``) and records a confirmed
-        payment method -- never the request that merely *initiates* an
-        upgrade. Runs on every approved charge, not only the first one after an
-        upgrade; both calls are idempotent (see their docstrings), so a routine
-        renewal simply re-affirms state that was already correct.
+        """Phase 9/10: react to a subscription charge's outcome.
+
+        - **Approved**: grants the capacity for whichever plan the subscription
+          is currently on (``SubscriptionService.confirm_plan_change``), records
+          a confirmed payment method, and -- **first**, Phase 10 -- resolves any
+          GRACE/RESTRICTED dunning state back to ACTIVE
+          (``DunningService.resolve_payment_success``). Runs on every approved
+          charge, not only the first one after an upgrade or a dunning retry;
+          every call here is idempotent, so a routine renewal simply re-affirms
+          state that was already correct. ``resolve_payment_success`` runs
+          *before* ``confirm_plan_change`` so the latter's own (idempotent)
+          ``billing_state`` write is a same-state no-op by the time it runs --
+          the two never disagree about which write actually happened.
+        - **Failed** (``FAILED_SUBSCRIPTION_PAYMENT_STATUSES``): moves the
+          subscription into GRACE (``DunningService.enter_grace``) -- Phase 10's
+          dunning ladder owns everything from here (retry schedule, escalating
+          notification, eventual RESTRICTED on expiry). Never touches
+          ``PaymentMethod`` -- see ``DunningService``'s module docstring.
+        - Anything else (``PENDING``, ``IN_PROCESS``, ...) is not yet a final
+          outcome; no side effect fires until a later delivery resolves it.
         """
-        if status_update.status != PaymentStatuses.APPROVED:
-            return
         payment = status_update.payment
         subscription = payment.subscription
         if subscription is None:
             return
-        self.subscription_service.confirm_plan_change(subscription)
-        self.subscription_service.record_payment_method(
-            subscription.organization, subscription.payment_provider, subscription.external_id
-        )
+        if status_update.status == PaymentStatuses.APPROVED:
+            self.dunning_service.resolve_payment_success(subscription)
+            self.subscription_service.confirm_plan_change(subscription)
+            self.subscription_service.record_payment_method(
+                subscription.organization, subscription.payment_provider, subscription.external_id
+            )
+        elif status_update.status in FAILED_SUBSCRIPTION_PAYMENT_STATUSES:
+            self.dunning_service.enter_grace(subscription)
 
 
 class BillingProfileViewSet(

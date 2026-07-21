@@ -21,4 +21,13 @@ CELERYBEAT_SCHEDULE = {
         "schedule": crontab(minute="*/15"),
         "task": "payments.tasks.meter_event_occurrences",
     },
+    # Grace/dunning sweep (Phase 10). Hourly rather than daily so a subscription
+    # whose grace window elapses moves to RESTRICTED promptly rather than sitting
+    # unresolved for up to a day; `DunningService`'s own per-subscription gate
+    # (`Subscription.last_dunning_attempt_at`, ~20h) is what keeps the actual
+    # charge retry / ladder email to roughly once a day despite the hourly beat.
+    "process_dunning": {
+        "schedule": crontab(minute=0),
+        "task": "payments.tasks.process_dunning",
+    },
 }

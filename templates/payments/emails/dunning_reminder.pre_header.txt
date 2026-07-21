@@ -1,0 +1,1 @@
+{% load i18n %}{% if urgency == "final_warning" %}{% blocktrans %}This is the last reminder before your account is restricted.{% endblocktrans %}{% else %}{% blocktrans %}We're still unable to charge your payment method.{% endblocktrans %}{% endif %}

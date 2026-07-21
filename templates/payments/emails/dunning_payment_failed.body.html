@@ -1,0 +1,17 @@
+{% load i18n %}
+{% block email_header %}
+  <h1>{% trans "We couldn't process your payment" %}</h1>
+{% endblock %}
+
+{% block email_content %}
+<p>
+{% blocktrans with organization_name=organization_name %}We were unable to charge the payment method on file for {{ organization_name }}.{% endblocktrans %}
+</p>
+<p>
+{% blocktrans with grace_period_ends_at=grace_period_ends_at %}We will keep retrying automatically until {{ grace_period_ends_at }}. Your account remains fully functional in the meantime -- please make sure a valid payment method is on file before then to avoid any interruption.{% endblocktrans %}
+</p>
+{% endblock %}
+
+{% block email_footer %}
+  <p><small>{% blocktrans %}This is an automated message. Please do not reply to this email.{% endblocktrans %}</small></p>
+{% endblock %}

@@ -542,6 +542,14 @@ STRIPE_WEBHOOK_SECRET = config("STRIPE_WEBHOOK_SECRET", default="")
 # setting rather than defining its own tolerance window.
 WEBHOOK_SIGNATURE_TOLERANCE_SECONDS = 300
 
+# Phase 10: the global fallback grace window (days) between a failed recurring
+# charge and an organization moving from GRACE to RESTRICTED, used whenever the
+# subscription's BillingPlan.grace_period_days is NULL. A per-plan override can
+# still tune it without a deploy; this setting is only the catalog-wide default.
+# Tunable per environment with no code change, per the plan's "Grace and
+# proration" guiding decision.
+BILLING_DEFAULT_GRACE_PERIOD_DAYS = config("BILLING_DEFAULT_GRACE_PERIOD_DAYS", default=7, cast=int)
+
 SALT_KEY = config("SALT_KEY")
 
 TWILIO_ACCOUNT_SID = config("TWILIO_ACCOUNT_SID")

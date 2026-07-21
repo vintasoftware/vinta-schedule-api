@@ -3,6 +3,7 @@ import logging
 from decimal import Decimal
 from typing import TYPE_CHECKING, Annotated
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -17,6 +18,7 @@ from payments.exceptions import (
     AddOnNotPurchasableError,
     BillingPeriodResolutionError,
     BillingRootCycleError,
+    IllegalBillingStateTransitionError,
     IncompleteBillingPlanError,
     NoDefaultBillingPlanError,
     PaymentTokenRequiredError,
@@ -30,6 +32,7 @@ from payments.models import (
     SubscriptionEntitlement,
     SubscriptionPlanLimit,
 )
+from payments.services.billing_state_machine import transition_billing_state
 from payments.services.dataclasses import CreatedPlan, Plan
 
 
@@ -38,14 +41,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-#: Fallback grace window (days) stamped on a downgrade when the target plan
-#: carries no ``grace_period_days`` of its own. A per-plan, settings-backed
-#: global default (``BillingPlan.grace_period_days`` falling back to a
-#: ``BILLING_DEFAULT_GRACE_PERIOD_DAYS`` setting) is Phase 10's own change --
-#: this constant only covers the one place *this* phase stamps
-#: ``grace_period_ends_at`` (a scheduled downgrade) ahead of that.
-_DOWNGRADE_DEFAULT_GRACE_PERIOD_DAYS = 7
 
 
 def is_billing_root(organization: Organization) -> bool:
@@ -551,6 +546,48 @@ class SubscriptionService:
         subscription.save(update_fields=["plan_external_id"])
         return created
 
+    def retry_failed_charge(self, subscription: Subscription, idempotency_key: str) -> Subscription:
+        """Ask the provider to re-attempt billing ``subscription`` at its current
+        plan and billing interval -- the charge ``DunningService``'s dunning
+        ladder (``payments/tasks.py::process_dunning``) retries across the grace
+        window.
+
+        Reuses the exact provider round trip ``_initiate_upgrade`` drives for an
+        already-attached subscription (``_ensure_provider_plan`` +
+        ``change_subscription_plan``) against ``subscription.plan``/
+        ``subscription.billing_interval`` themselves -- nothing here changes what
+        the org is subscribed to, only asks the provider to bill it again.
+
+        ``idempotency_key`` reaches the provider's own idempotency header (see
+        ``BaseSubscriptionAdapter.change_subscription_plan``), so a Celery task
+        redelivery of the same logical dunning attempt (``CELERY_TASK_ACKS_LATE``)
+        cannot double-charge -- the same fail-closed-for-money plumbing Phase 9
+        built for plan-change/add-on charges, reused rather than re-invented here.
+
+        Writes nothing about the outcome locally -- success or a further failure
+        arrives later through the subscription-payment webhook, exactly like
+        every other provider-driven charge in this service.
+
+        A subscription that never attached a payment method (blank
+        ``external_id``) has nothing to retry against; returned unchanged rather
+        than driving a pointless provider round trip.
+        """
+        if not subscription.external_id:
+            logger.warning(
+                "retry_failed_charge: Subscription %s has no external_id -- nothing "
+                "attached at the provider to retry.",
+                subscription.pk,
+            )
+            return subscription
+        created_plan = self._ensure_provider_plan(
+            subscription, subscription.plan, subscription.billing_interval
+        )
+        payment_service = self._require_payment_service()
+        payment_service.change_subscription_plan(
+            subscription, created_plan, idempotency_key=idempotency_key
+        )
+        return subscription
+
     def _schedule_downgrade(
         self, subscription: Subscription, plan: BillingPlan, billing_interval: str
     ) -> Subscription:
@@ -569,7 +606,7 @@ class SubscriptionService:
             subscription.pending_plan_effective_at = subscription.current_period_end
             grace_days = plan.grace_period_days
             if grace_days is None:
-                grace_days = _DOWNGRADE_DEFAULT_GRACE_PERIOD_DAYS
+                grace_days = settings.BILLING_DEFAULT_GRACE_PERIOD_DAYS
             subscription.grace_period_ends_at = timezone.now() + datetime.timedelta(days=grace_days)
             subscription.save(
                 update_fields=[
@@ -611,6 +648,22 @@ class SubscriptionService:
         only the first one after an upgrade) — both sync paths are bulk upserts —
         and clears ``plan_change_pending_confirmation`` so a further plan change
         is allowed again.
+
+        The ``billing_state -> ACTIVE`` write goes through
+        ``billing_state_machine.transition_billing_state`` — the same validator
+        ``DunningService`` uses for every other transition (Phase 10) — rather
+        than writing the field directly, so this and the dunning ladder can never
+        define "which transitions are legal" two different ways. In practice
+        this is a same-state no-op on every call that lands here: a webhook's
+        ``PaymentsViewSet`` handler calls ``DunningService.resolve_payment_success``
+        first, which already moves ``GRACE``/``RESTRICTED`` subscriptions to
+        ``ACTIVE`` before this runs. ``FREE -> ACTIVE`` (a first-ever upgrade
+        confirming) and ``ACTIVE -> ACTIVE`` (a routine renewal) are both legal
+        edges on the diagram and are what this call actually drives. A stray
+        approved payment for an already-``CANCELLED`` subscription is not on the
+        diagram at all (cancellation has no automatic reactivation edge) — logged
+        and left alone rather than raised, since a webhook handler must not 500
+        on a real, if unusual, provider delivery.
         """
         pending_plan = subscription.pending_plan
         if pending_plan is not None and self._pending_downgrade_is_future(subscription):
@@ -619,15 +672,21 @@ class SubscriptionService:
         else:
             self.change_plan(subscription, subscription.plan)
 
-        update_fields = []
         if subscription.plan_change_pending_confirmation:
             subscription.plan_change_pending_confirmation = False
-            update_fields.append("plan_change_pending_confirmation")
-        if subscription.billing_state != BillingState.ACTIVE:
-            subscription.billing_state = BillingState.ACTIVE
-            update_fields.append("billing_state")
-        if update_fields:
-            subscription.save(update_fields=update_fields)
+            subscription.save(update_fields=["plan_change_pending_confirmation"])
+
+        try:
+            transition_billing_state(subscription, BillingState.ACTIVE)
+        except IllegalBillingStateTransitionError:
+            logger.warning(
+                "confirm_plan_change: Subscription %s received an approved payment "
+                "while billing_state=%s, which has no ACTIVE edge on the billing "
+                "lifecycle diagram (e.g. a stray webhook for a cancelled subscription). "
+                "Plan/limit sync above still applied; billing_state left unchanged.",
+                subscription.pk,
+                subscription.billing_state,
+            )
         return subscription
 
     def _pending_downgrade_is_future(self, subscription: Subscription) -> bool:
@@ -646,16 +705,28 @@ class SubscriptionService:
         (best-effort skipped when the org never attached a payment method) and
         moves ``billing_state`` to ``CANCELLED`` immediately.
 
+        The move goes through ``transition_billing_state`` like every other
+        ``billing_state`` write, not a raw field assignment, so it is validated
+        against ``LEGAL_BILLING_STATE_TRANSITIONS`` (which carries the
+        ``FREE``/``GRACE``/``RESTRICTED`` -> ``CANCELLED`` edges this action
+        needs, beyond the diagram's single ``ACTIVE -> CANCELLED``). Any dunning
+        bookkeeping (``grace_period_ends_at``/``last_dunning_attempt_at``) is
+        cleared in the same write so a cancelled row never carries a stale grace
+        deadline the dunning sweep would otherwise ignore anyway.
+
         The spec's full "runs to the end of the paid cycle, then reverts to
-        FREE" lifecycle is Phase 10's dunning state machine
-        (``BillingState`` transition table) -- this method only exposes the
-        action Phase 9's endpoint needs; it does not re-implement that machine.
+        FREE" lifecycle is Phase 13's cycle-close sweep (the
+        ``CANCELLED -> FREE`` edge) -- this method only exposes the immediate
+        cancel action Phase 9's endpoint needs.
         """
         payment_service = self._require_payment_service()
         if subscription.external_id:
             payment_service.cancel_subscription(subscription)
-        subscription.billing_state = BillingState.CANCELLED
-        subscription.save(update_fields=["billing_state"])
+        with transaction.atomic():
+            transition_billing_state(subscription, BillingState.CANCELLED)
+            subscription.grace_period_ends_at = None
+            subscription.last_dunning_attempt_at = None
+            subscription.save(update_fields=["grace_period_ends_at", "last_dunning_attempt_at"])
         return subscription
 
     def _resolve_add_on_unit_price(self, subscription: Subscription, resource_key: str) -> Decimal:

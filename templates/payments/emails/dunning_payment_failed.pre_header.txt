@@ -1,0 +1,1 @@
+{% load i18n %}{% blocktrans %}We'll retry automatically, but please check your payment method.{% endblocktrans %}

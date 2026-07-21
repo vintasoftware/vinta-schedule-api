@@ -3,6 +3,13 @@
 ``meter_event_occurrences`` is the only thing that turns computed calendar
 occurrences into billable rows, so the correctness of post-paid billing rests on
 it running — and on it being harmless when it runs twice.
+
+``process_dunning`` is Phase 10's beat entry point for the grace/dunning state
+machine: it fans out one tick per subscription currently GRACE or RESTRICTED to
+``DunningService.process_subscription`` — the single dispatch point that also
+backs the webhook handlers in ``payments/views.py`` — so the transitions this
+task can drive and the transitions the webhooks can drive are the same set,
+defined once (``payments.services.billing_state_machine``).
 """
 
 import datetime
@@ -13,7 +20,9 @@ from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
 
+from payments.billing_constants import BillingState
 from payments.models import Subscription
+from payments.services.dunning_service import DunningService
 from payments.services.metering_service import MeteringService
 from vinta_schedule_api.celery import app
 
@@ -100,3 +109,54 @@ def meter_subscription_event_occurrences(
         result.occurrences_seen,
         result.occurrences_recorded,
     )
+
+
+@app.task
+def process_dunning() -> None:
+    """Beat entry point: fan out one dunning tick per subscription currently
+    GRACE or RESTRICTED.
+
+    Subscriptions on any other ``billing_state`` (``ACTIVE``, ``FREE``,
+    ``CANCELLED``) are never selected -- once a subscription leaves GRACE for
+    ACTIVE (a successful retry, confirmed through the subscription-payment
+    webhook), the next run of this query no longer includes it, which is what
+    stops the ladder from retrying an already-resolved subscription.
+    """
+    subscription_ids = list(
+        Subscription.objects.filter(
+            billing_state__in=(BillingState.GRACE, BillingState.RESTRICTED)
+        ).values_list("pk", flat=True)
+    )
+    for subscription_id in subscription_ids:
+        process_dunning_for_subscription.delay(subscription_id)
+
+
+@app.task
+@inject
+def process_dunning_for_subscription(
+    subscription_id: int,
+    dunning_service: Annotated[DunningService, Provide["dunning_service"]],
+) -> None:
+    """One dunning tick for one subscription, dispatched through
+    ``DunningService.process_subscription`` -- never a direct
+    ``billing_state`` write here (see ``payments.services.billing_state_machine``).
+
+    Idempotent under ``CELERY_TASK_ACKS_LATE`` redelivery:
+    ``DunningService``'s own retry-bucket gate (``Subscription.last_dunning_attempt_at``)
+    and the retry charge's bucket-derived ``idempotency_key`` -- both views of
+    one ``_retry_attempt_ordinal`` -- are what make a redelivered tick harmless,
+    not anything here.
+
+    A subscription deleted between fan-out and execution is logged and skipped
+    rather than raising -- a raising task is redelivered and fails identically
+    forever, turning a benign race into a permanent stream of alerts (same
+    reasoning as ``meter_subscription_event_occurrences``, above).
+    """
+    subscription = Subscription.objects.filter(pk=subscription_id).first()
+    if subscription is None:
+        logger.info(
+            "Skipping dunning tick for subscription %s: it no longer exists.",
+            subscription_id,
+        )
+        return
+    dunning_service.process_subscription(subscription)

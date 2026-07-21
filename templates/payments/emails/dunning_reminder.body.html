@@ -1,0 +1,27 @@
+{% load i18n %}
+{% block email_header %}
+{% if urgency == "final_warning" %}
+  <h1>{% trans "Final notice before restriction" %}</h1>
+{% else %}
+  <h1>{% trans "We're still unable to process your payment" %}</h1>
+{% endif %}
+{% endblock %}
+
+{% block email_content %}
+<p>
+{% blocktrans with organization_name=organization_name %}We retried charging the payment method on file for {{ organization_name }} and it failed again.{% endblocktrans %}
+</p>
+{% if urgency == "final_warning" %}
+<p>
+{% blocktrans with grace_period_ends_at=grace_period_ends_at %}Your account will be restricted on {{ grace_period_ends_at }} if this is not resolved. Once restricted, new and updated data cannot be saved until payment succeeds -- your existing data stays intact and readable.{% endblocktrans %}
+</p>
+{% else %}
+<p>
+{% blocktrans with grace_period_ends_at=grace_period_ends_at %}We will keep retrying until {{ grace_period_ends_at }}. Please update your payment method to avoid any interruption.{% endblocktrans %}
+</p>
+{% endif %}
+{% endblock %}
+
+{% block email_footer %}
+  <p><small>{% blocktrans %}This is an automated message. Please do not reply to this email.{% endblocktrans %}</small></p>
+{% endblock %}

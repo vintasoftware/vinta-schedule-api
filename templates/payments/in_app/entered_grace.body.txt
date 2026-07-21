@@ -1,0 +1,1 @@
+{% load i18n %}{% blocktrans with organization_name=organization_name grace_period_ends_at=grace_period_ends_at %}We couldn't process {{ organization_name }}'s payment. We'll keep retrying until {{ grace_period_ends_at }} -- please check your payment method.{% endblocktrans %}
