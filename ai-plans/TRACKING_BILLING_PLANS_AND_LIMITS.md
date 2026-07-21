@@ -398,19 +398,22 @@ Three SHOULD-FIX, all fixed: `cancel_subscription` bypassed the machine (now rou
 - The `_grace_period_days` ordinal anchor recomputes `grace_start` from the *current* `plan.grace_period_days`; editing a plan's grace window mid-episode would shift the anchor slightly. Low-risk edge; deriving without a new column was the chosen (schema-free) fix.
 - `MercadoPagoPaymentAdapter.refund`'s `{refund.id}` idempotency-key bug (from Phase 9) still stands — not copied into the new retry path, which uses the correct plumbing.
 
-## Current phase
+### Phase 11 — Restricted enforcement and sync pause ✅
 
-**Phase 11 — Restricted enforcement and sync pause** (implementer Tier 3, reviewer Tier 4)
+- **Status**: reviewed clean (no BLOCKER; 1 round of SHOULD-FIX + NITs), gates green, ready to integrate
+- **Models**: implementer Tier 3; reviewer Tier 4 (per plan — the failure mode is locking a paying customer out of the endpoints they need to pay); fixer Tier 4
+- **Branch**: `plan/billing-plans-and-limits/phase-11` · **Base**: `plan/billing-plans-and-limits/phase-10` (still unmerged — #201 open)
+- **Commits**: `b7ed0a0` implementation, `47c08ff` review fixes · **No migration** (no model change)
 
-Base: `plan/billing-plans-and-limits/phase-10` · Branch: `plan/billing-plans-and-limits/phase-11`
+**Gates** (implementer 4538; fixer's post-fix run **4564 passed / 0 failed**; my independent run showed 9 failures that ALL passed in isolation at 2–3× runtime — contention phantoms, confirmed by the fixer's clean run): `mypy` **305 / 57** at ceiling; `ruff` clean (514); `makemigrations --check` clean; `schema.yml` unchanged.
 
-Makes `RESTRICTED` actually restrict: the state Phase 10 transitions *into* on grace expiry must now block the writes and pause the sync it is supposed to. This is the enforcement half of the dunning lifecycle.
+`RESTRICTED` now actually restricts. **One predicate, `EntitlementService.is_billing_root_restricted` (resolved at the billing root), is consulted by both halves** — the write guard (`check_limit` / `check_postpaid_allowance` short-circuits + `check_not_restricted` on the update/delete paths those two don't cover) and every sync-pause site (the three `calendar_sync_tasks` bodies, the `request_*` methods on `CalendarSyncService`, and `CalendarWebhookService`). The reseller cascade is automatic from resolving at the root. Reads, exports, auth, and **every `/billing/` write stay open** — `SubscriptionService` calls none of the guards, so a restricted org can always pay its way out (reviewer- and orchestrator-verified independently). `GRACE` is never blocked; a missing subscription reads as not-restricted (fail-open).
 
-**Inherited from Phase 10 (load-bearing):**
-1. `RESTRICTED` is the *only* state that write-blocks — `GRACE` stays fully operational (a `GRACE` org with a card keeps accruing; escalation is the dunning ladder, not a write block). Do not block `GRACE`.
-2. **The downgrade→GRACE dead-edge gap** (above) lands in this phase's lap: either add the downgrade-over-limit driver so that grace window is swept, or move over-limit-after-downgrade enforcement onto a swept path. Whichever, don't leave `grace_period_ends_at` stamped on a row nothing inspects.
+Resync-on-recovery is real: `RESTRICTED → ACTIVE` fans `resync_organization_calendars_task` across the pooled subtree on `transaction.on_commit`, each re-checking restricted, and a test asserts a stale local row is actually updated from provider data.
 
-**Watch for the plan's recurring failure shape** — the block predicate and the pause predicate must agree on *what RESTRICTED means*. If write-enforcement keys off `billing_state == RESTRICTED` but sync-pause keys off something else (a flag, a limit check), the two can diverge and an org can be write-blocked while still syncing, or vice versa. One definition of "restricted", consulted by both.
+**Item 2 (the Phase 10 downgrade→GRACE dead edge) resolved** by adding the driver: `_schedule_downgrade` now transitions into `GRACE` so the sweep inspects it and can expire it to `RESTRICTED`. This is what spawns Deferrals A and B below — the driver reuses `GRACE`/`RESTRICTED` (payment-failure states) for a voluntary action.
+
+**Reviewer found no BLOCKER.** SHOULD-FIX all applied: `GoogleCalendarServiceAccount` CRUD (an `OrganizationModel` write the phase had left unguarded) now calls `check_not_restricted`; a derivation test binds the restricted-write probe set to `LimitedResource.values` + the guarded update/delete methods (was a hand-maintained dict missing 2 members — a test gap, not a code hole); a reseller **sync-pause** cascade test now proves a restricted root pauses a child's sync (previously only the write-block cascade was tested). NIT: the group service now honors the bypass flag. NIT (predicate copies): the two hot-path short-circuits keep an inline `billing_state == RESTRICTED` against already-resolved state rather than re-calling `is_billing_root_restricted` (which would re-walk the parent chain + re-fetch on the hottest create paths); it is the same *semantic* predicate against already-resolved data, so it cannot diverge — docstring corrected to say so.
 
 **Carried forward from 11:** (two judgment calls recorded here, not fixed — both inert today because every org is on `unlimited`, so no voluntary downgrade-over-limit and no real renewal charge happens yet. No code changed for either.)
 
@@ -418,11 +421,22 @@ Makes `RESTRICTED` actually restrict: the state Phase 10 transitions *into* on g
 
 - **B — voluntary downgrade-over-limit escalates to `RESTRICTED` with payment-failure copy (needs product sign-off).** The Item-2 downgrade→GRACE driver means a *healthy, paying* customer who voluntarily downgrades but still holds more resources than the new plan allows is moved `ACTIVE → GRACE` and, at grace expiry if still over limit, `GRACE → RESTRICTED` — fully write-blocked and sync-paused. That reuses `RESTRICTED`, which the spec's Use-case 5 defines as the *payment-failure* state, and the `RESTRICTED`/dunning notification copy (`templates/payments/emails/dunning_restricted.body.html` and the grace emails) reads as "your payment failed," which is wrong for this cohort. **Needs product input** on whether voluntary downgrade-over-limit should reach `RESTRICTED` at all; if so, the notification copy must branch on grace reason (ties into Deferral A's reason field). Inert until real plans exist.
 
+## Current phase
+
+**Phase 12 — Usage API and approaching-limit warnings** (implementer Tier 2)
+
+Base: `plan/billing-plans-and-limits/phase-11` · Branch: `plan/billing-plans-and-limits/phase-12`
+
+A read-only usage surface plus proactive approaching-limit warnings — the lightest phase (Tier 2, no reviewer override). Read the plan's Phase 12 body (~line 692) for the endpoint shape and warning thresholds.
+
+**Watch for the plan's recurring failure shape** — the usage number the API reports and the number the enforcement guards actually count against must be the **same** derivation. If the usage readout computes usage one way and `check_limit` / `check_postpaid_allowance` / the meter compute it another, the API will tell a customer they have headroom the guard then denies (or vice versa). Reuse `EntitlementService.get_current_usage` / `get_effective_limit` and `MeteringService`'s existing expansion — do not re-implement counting. **Note the standing Phase 7 rule:** if the bundle-booking unit is ever revisited, the usage readout is one of the three places (meter, Phase 8 guard, Phase 12 readout) that must change together.
+
+The warning half is proactive (approaching-limit), so it must define "approaching" once and read the same effective limit the guard enforces — another instance of the same one-definition discipline.
+
 ## Remaining phases
 
 | Phase | Title | Impl | Reviewer | Fixer |
 |---|---|---|---|---|
-| 12 | Usage API and approaching-limit warnings | 2 | — | — |
 | 13 | Cycle close, overage charge, and reconciliation | 4 | 4 | 3 |
 
 ## Deferred phases
